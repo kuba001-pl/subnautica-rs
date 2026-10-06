@@ -27,6 +27,9 @@ Tested on Windows 11 with game build 10 (Steam):
   `.assets` files (423,677 objects), matching UnityPy's listing exactly.
 - Decoding the game's textures (matches UnityPy pixel for pixel on a 506-texture
   sample) and finding every terrain material (233 types, 211 textures).
+- Reading where every world object is placed (`sn-inspect entities`): all
+  4,581 placement files, 419,846 objects, each resolved to its prefab name
+  (`prefabs.db`), in about a second.
 - `sn-client`: a desktop window (Bevy) with a fly camera. Terrain streams in
   and out as you move, with four levels of detail out to 1.2 km, textured
   with the game's own terrain materials, blended between neighbouring
@@ -38,8 +41,8 @@ Tested on Windows 11 with game build 10 (Steam):
 ## What doesn't work yet
 
 Water surface and underwater look (lighting, fog, caustics), terrain
-specular colour, models, world objects, player, audio, multiplayer. Next up:
-M7 (world objects).
+specular colour, models (world objects are placed but not drawn yet),
+player, audio, multiplayer. Next up: M7b (prefabs → meshes).
 Linux/macOS: not tested.
 
 ## Try it

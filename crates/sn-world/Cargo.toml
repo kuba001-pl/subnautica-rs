@@ -1,6 +1,6 @@
 [package]
 name = "sn-world"
-description = "Subnautica world layout: dimensions, batch addressing, index.txt"
+description = "Subnautica world layout: dimensions, batch addressing, index.txt, saved world objects"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

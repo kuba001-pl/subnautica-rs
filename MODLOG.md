@@ -2,6 +2,41 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-06 — M7a: world object placements, headless
+
+**What:**
+- `sn-world`: `wire` (minimal protobuf wire reader, checked, byte offsets in
+  errors) and `entities`: `ObjectTree` (batch objects), `BatchCells` (baked
+  cells), `parse_prefab_database`, world transforms through the parent chain.
+  `BatchCoord::from_file_name` (octree names now use it too). 6 + 3 new tests,
+  including every truncation and byte flip of a sample.
+- `sn-install`: `read_batch_objects`, `read_batch_cells`,
+  `read_prefab_database`, `object_batches`, `cell_batches`; directory scans
+  share one helper.
+- `sn-inspect entities <X> <Y> <Z>` and `entities --all`.
+- Opt-in real-data test `crates/sn-install/tests/entities.rs`.
+- Format notes: `docs/formats/entities.md`.
+No new dependencies: the wire reader is ~150 lines of our own.
+
+**How the format was found:** throwaway Python dumpers in `out/` (not
+committed) tried a grammar on all files before any Rust was written.
+
+**Verified (2026-10-06):**
+1. `sn-inspect entities --all`: 2,975 batch-object files (5,779 objects) and
+   1,606 cell files (437,003 cells, 414,067 objects), 0 errors, 0 unresolved
+   ClassIds, 0 missing parents, about 1.0 s. Two runs print the same hash
+   (`660cae260060d787`).
+2. Positions: 63 batch roots are stored off their batch corner (moved back;
+   hypothesis in the format doc), 1,473 cell objects sit at exactly the
+   world origin, 32 others are outside their batch (30 within 13 m). Cell
+   roots lie on a 16 m (level 0) / 32 m (levels 1–3) grid.
+3. `cargo test --workspace`, clippy, fmt: pass. Real-data test passes
+   (`cargo test --release -p sn-install -- --ignored`).
+
+**Dead ends:** the first prototype read one cells file and took header field
+2 (256) for a constant; across all files it is the cell count, and the
+version is 9 or 10. Caught by the real-data test, which asserted version 9.
+
 ## 2026-10-06 — M6b: the game's per-level cap on material layers
 
 **Why:** the redone M6b drew every type of every chunk at every distance:

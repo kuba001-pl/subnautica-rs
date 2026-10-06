@@ -1,9 +1,20 @@
 //! Subnautica world layout: how big the world is, how it is cut into octrees
 //! and batches, and how batch files are named.
 //!
-//! Pure: parses strings and does arithmetic, never touches the filesystem.
+//! Also reads the world's saved objects (`entities`).
+//!
+//! Pure: parses bytes and strings and does arithmetic, never touches the
+//! filesystem.
+
+mod entities;
+mod wire;
 
 use std::fmt;
+
+pub use entities::{
+    BakedCell, BatchCells, EntityError, ObjectTree, SavedComponent, SavedObject, TREE_MAGIC,
+    Transform, parse_prefab_database,
+};
 
 /// Offset between voxel indices and Unity world coordinates. **Plausible
 /// hypothesis**, not confirmed (see `docs/formats/optoctrees.md`): it puts the
@@ -175,6 +186,16 @@ impl BatchCoord {
         Self::new(self.x + dx, self.y + dy, self.z + dz)
     }
 
+    /// `batch-objects-X-Y-Z.bin` (in `BatchObjectsCache`)
+    pub fn objects_file_name(self) -> String {
+        format!("batch-objects-{}-{}-{}.bin", self.x, self.y, self.z)
+    }
+
+    /// `baked-batch-cells-X-Y-Z.bin` (in `CellsCache`)
+    pub fn cells_file_name(self) -> String {
+        format!("baked-batch-cells-{}-{}-{}.bin", self.x, self.y, self.z)
+    }
+
     /// `compiled-batch-X-Y-Z.optoctrees`
     pub fn octree_file_name(self) -> String {
         format!("compiled-batch-{}-{}-{}.optoctrees", self.x, self.y, self.z)
@@ -183,9 +204,12 @@ impl BatchCoord {
     /// Inverse of [`BatchCoord::octree_file_name`]. Negative coordinates are
     /// not supported (the game has none; the name format would be ambiguous).
     pub fn from_octree_file_name(name: &str) -> Option<Self> {
-        let rest = name
-            .strip_prefix("compiled-batch-")?
-            .strip_suffix(".optoctrees")?;
+        Self::from_file_name(name, "compiled-batch-", ".optoctrees")
+    }
+
+    /// `PREFIX` + `X-Y-Z` + `SUFFIX` → coordinates (non-negative only).
+    pub fn from_file_name(name: &str, prefix: &str, suffix: &str) -> Option<Self> {
+        let rest = name.strip_prefix(prefix)?.strip_suffix(suffix)?;
         let mut parts = rest.split('-').map(str::parse::<i32>);
         let coord = Self::new(
             parts.next()?.ok()?,

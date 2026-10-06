@@ -2,6 +2,7 @@
 //! a Subnautica install. Reads the game folder, never writes to it.
 
 mod density;
+mod entities;
 mod game;
 mod materials;
 mod mesh;
@@ -43,6 +44,9 @@ Commands:
   textures --pixels <FILE>...
                          The same, plus a CRC-32 of each decoded image
   textures --census      Count texture formats over the whole game
+  entities <X> <Y> <Z>   A batch's saved objects (batch objects, baked cells)
+                         with prefab paths and world positions
+  entities --all         Parse every object cache file; totals and checks
   terrain-materials      Terrain block types → materials → textures, checked
                          against the type ids used by the octrees
   terrain-materials --props
@@ -117,6 +121,8 @@ fn run(mut args: Vec<String>) -> Result<ExitCode> {
             texture::list(&game, paths, true)
         }
         ["textures", paths @ ..] if !paths.is_empty() => texture::list(&game, paths, false),
+        ["entities", "--all"] => entities::all(&game),
+        ["entities", x, y, z] => entities::one(&game, parse_coord(x, y, z)?),
         ["terrain-materials"] => materials::run(&game),
         ["terrain-materials", "--props"] => materials::props(&game),
         ["terrain-materials", "--region", x, y, z, r] => {
