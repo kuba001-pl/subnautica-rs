@@ -69,7 +69,10 @@ pub fn run(game: &GameData) -> Result<ExitCode> {
         };
         let cap = format!("{} ({:.2})", describe(&m.cap.albedo), m.cap.scale);
         let side = format!("{} ({:.2})", describe(&m.side.albedo), m.side.scale);
-        println!("{:>4}  {:>5}  {:<30} {cap:<40} {side}", m.type_id, m.layer, m.name);
+        println!(
+            "{:>4}  {:>5}  {:<30} {cap:<40} {side}",
+            m.type_id, m.layer, m.name
+        );
     }
 
     let used = octree_type_ids(game)?;
@@ -113,6 +116,30 @@ pub fn run(game: &GameData) -> Result<ExitCode> {
     })
 }
 
+/// Every material property (textures, floats, colours, keywords) of every
+/// block type, one block per type.
+pub fn props(game: &GameData) -> Result<ExitCode> {
+    let assets = Assets::index(game)?;
+    let materials = terrain_materials(&assets)?;
+    for m in materials.types.iter().flatten() {
+        println!(
+            "type {} layer {} {} [{}]",
+            m.type_id, m.layer, m.name, m.shader_keywords
+        );
+        println!("  textures: {}", m.texture_slots.join(" "));
+        for (name, value) in &m.floats {
+            println!("  {name} = {value}");
+        }
+        for (name, c) in &m.colors {
+            println!(
+                "  {name} = ({:.3}, {:.3}, {:.3}, {:.3})",
+                c[0], c[1], c[2], c[3]
+            );
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
 /// Which block types make up the terrain *surface* (solid voxels next to an
 /// empty one) in a cube of batches, with their materials.
 pub fn region(game: &GameData, center: sn_world::BatchCoord, radius: i32) -> Result<ExitCode> {
@@ -123,7 +150,9 @@ pub fn region(game: &GameData, center: sn_world::BatchCoord, radius: i32) -> Res
         for dy in -radius..=radius {
             for dx in -radius..=radius {
                 let coord = center.offset(dx, dy, dz);
-                let Some(batch) = game.load_batch(&index, coord)? else { continue };
+                let Some(batch) = game.load_batch(&index, coord)? else {
+                    continue;
+                };
                 let grid = batch
                     .batch
                     .rasterize(batch.octree_dims)
@@ -136,9 +165,16 @@ pub fn region(game: &GameData, center: sn_world::BatchCoord, radius: i32) -> Res
                             if !v.is_solid() {
                                 continue;
                             }
-                            let open = [[x - 1, y, z], [x + 1, y, z], [x, y - 1, z], [x, y + 1, z], [x, y, z - 1], [x, y, z + 1]]
-                                .iter()
-                                .any(|p| !grid.get(*p).is_solid());
+                            let open = [
+                                [x - 1, y, z],
+                                [x + 1, y, z],
+                                [x, y - 1, z],
+                                [x, y + 1, z],
+                                [x, y, z - 1],
+                                [x, y, z + 1],
+                            ]
+                            .iter()
+                            .any(|p| !grid.get(*p).is_solid());
                             if open {
                                 counts[usize::from(v.ty)] += 1;
                                 total += 1;
@@ -152,7 +188,9 @@ pub fn region(game: &GameData, center: sn_world::BatchCoord, radius: i32) -> Res
     let assets = Assets::index(game)?;
     let materials = terrain_materials(&assets)?;
     println!("surface voxels around batch {center} (radius {radius}): {total}");
-    println!(" type   layer  share  source  material                       cap texture / side texture");
+    println!(
+        " type   layer  share  source  material                       cap texture / side texture"
+    );
     let mut order: Vec<usize> = (0..256).filter(|&t| counts[t] > 0).collect();
     order.sort_by_key(|&t| std::cmp::Reverse(counts[t]));
     for t in order {
@@ -160,9 +198,15 @@ pub fn region(game: &GameData, center: sn_world::BatchCoord, radius: i32) -> Res
         match &materials.types[t] {
             Some(m) => {
                 let name = |l: &sn_assets::SurfaceLayer| {
-                    l.albedo.as_ref().map_or("-".to_string(), |a| a.texture.name.clone())
+                    l.albedo
+                        .as_ref()
+                        .map_or("-".to_string(), |a| a.texture.name.clone())
                 };
-                let conflict = if materials.conflicts.contains(&t) { " CONFLICT" } else { "" };
+                let conflict = if materials.conflicts.contains(&t) {
+                    " CONFLICT"
+                } else {
+                    ""
+                };
                 println!(
                     "{t:>5}  {:>5} {share:>6.2}%  {:<6}  {:<30} {} / {}{conflict}",
                     m.layer,

@@ -24,7 +24,15 @@ fn terrain_materials_resolve_and_decode() {
     assert_eq!(materials.prefabs_without_id, 10);
     assert_eq!(materials.conflicts, vec![53, 54, 101, 102]);
     assert_eq!(materials.types.iter().flatten().count(), 233);
-    assert_eq!(materials.texture_count, 183);
+    // 183 colour and normal maps + 28 specular/illumination (SIG) maps.
+    assert_eq!(materials.texture_count, 211);
+    let cap_side = materials
+        .types
+        .iter()
+        .flatten()
+        .filter(|m| m.cap_side)
+        .count();
+    assert_eq!(cap_side, 119);
     assert!(materials.types[0].is_none(), "type 0 is empty space");
 
     // Every texture's pixel data is complete enough to decode its base level.

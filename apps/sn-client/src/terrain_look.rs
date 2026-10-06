@@ -1,6 +1,7 @@
 //! Real terrain materials: the game's textures (uploaded to the GPU in their
 //! compressed form) and a triplanar shader (`terrain.wgsl`).
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use bevy::asset::RenderAssetUsages;
@@ -15,15 +16,37 @@ use sn_assets::{TerrainMaterials, TerrainTexture};
 
 pub type TerrainMaterial = ExtendedMaterial<StandardMaterial, TriplanarExtension>;
 
-/// Must match `TerrainParams` in `terrain.wgsl`.
+/// The sun's illuminance (lux). Emission 1.0 in the game is as bright as a
+/// white surface lit by it.
+pub const SUN_ILLUMINANCE: f32 = 8_000.0;
+
+/// Bits of `TriplanarParams::flags`; must match `terrain.wgsl`.
+const CAP_SIDE: u32 = 1;
+const CAP_NORMAL: u32 = 2;
+const SIDE_NORMAL: u32 = 4;
+const CAP_SIG: u32 = 8;
+const SIDE_SIG: u32 = 16;
+
+/// Must match `TerrainParams` in `terrain.wgsl`. Colours are linear.
 #[derive(Clone, Copy, Debug, Default, Reflect, ShaderType)]
 pub struct TriplanarParams {
     pub cap_tint: Vec4,
     pub side_tint: Vec4,
+    pub border_tint: Vec4,
     pub cap_scale: f32,
     pub side_scale: f32,
-    pub has_cap_normal: u32,
-    pub has_side_normal: u32,
+    pub triplanar: f32,
+    pub border_range: f32,
+    pub border_offset: f32,
+    pub inner_range: f32,
+    pub inner_offset: f32,
+    pub cap_range: f32,
+    pub cap_offset: f32,
+    pub cap_angle: f32,
+    pub cap_emission: f32,
+    pub side_emission: f32,
+    pub emission_unit: f32,
+    pub flags: u32,
 }
 
 #[derive(Asset, AsBindGroup, Reflect, Debug, Clone)]
@@ -38,10 +61,16 @@ pub struct TriplanarExtension {
     pub cap_normal: Handle<Image>,
     #[texture(105)]
     #[sampler(106)]
-    pub side_albedo: Handle<Image>,
+    pub cap_sig: Handle<Image>,
     #[texture(107)]
     #[sampler(108)]
+    pub side_albedo: Handle<Image>,
+    #[texture(109)]
+    #[sampler(110)]
     pub side_normal: Handle<Image>,
+    #[texture(111)]
+    #[sampler(112)]
+    pub side_sig: Handle<Image>,
 }
 
 impl MaterialExtension for TriplanarExtension {
@@ -68,12 +97,48 @@ impl Plugin for TerrainLookPlugin {
 #[derive(Resource)]
 pub struct PendingTerrainLook(pub Option<TerrainMaterials>);
 
-/// Material per octree type id (`None`: use the debug colour).
+/// The game's terrain look: per octree type id, the material settings
+/// (`None`: use the debug colour), and the GPU materials made from them.
 #[derive(Resource, Default)]
 pub struct TerrainLook {
-    pub by_type: Vec<Option<Handle<TerrainMaterial>>>,
+    by_type: Vec<Option<TriplanarExtension>>,
+    /// Per (type id, rank in the chunk's draw order).
+    materials: HashMap<(u8, u8), Handle<TerrainMaterial>>,
     pub textures: usize,
     pub texture_bytes: usize,
+}
+
+impl TerrainLook {
+    /// The material for `type_id` drawn `rank`-th in its chunk: rank 0 is
+    /// opaque, later ranks are alpha-blended over it, in rank order.
+    pub fn material(
+        &mut self,
+        type_id: u8,
+        rank: u8,
+        assets: &mut Assets<TerrainMaterial>,
+    ) -> Option<Handle<TerrainMaterial>> {
+        let extension = self.by_type.get(usize::from(type_id))?.as_ref()?;
+        let handle = self.materials.entry((type_id, rank)).or_insert_with(|| {
+            assets.add(ExtendedMaterial {
+                base: StandardMaterial {
+                    alpha_mode: if rank == 0 {
+                        AlphaMode::Opaque
+                    } else {
+                        AlphaMode::Blend
+                    },
+                    // Transparent meshes are drawn by distance plus this
+                    // bias. All layers of a batch share one bounding box
+                    // (see terrain.rs), so this keeps the game's order. It
+                    // also nudges each layer towards the camera, so coplanar
+                    // layers pass the depth test.
+                    depth_bias: f32::from(rank),
+                    ..default()
+                },
+                extension: extension.clone(),
+            })
+        });
+        Some(handle.clone())
+    }
 }
 
 fn sampler() -> ImageSampler {
@@ -154,11 +219,17 @@ fn to_image(t: &TerrainTexture, srgb: bool) -> Option<Image> {
     Some(image)
 }
 
+/// Unity stores material colours in sRGB and, in a linear-colour-space
+/// project like Subnautica, converts them to linear for the shader.
+fn linear(c: [f32; 4]) -> Vec4 {
+    let l = Color::srgba(c[0], c[1], c[2], c[3]).to_linear();
+    Vec4::new(l.red, l.green, l.blue, l.alpha)
+}
+
 fn build_look(
     mut commands: Commands,
     mut pending: ResMut<PendingTerrainLook>,
     mut images: ResMut<Assets<Image>>,
-    mut materials: ResMut<Assets<TerrainMaterial>>,
 ) {
     let Some(source) = pending.0.take() else {
         commands.insert_resource(TerrainLook::default());
@@ -173,7 +244,8 @@ fn build_look(
     ));
     let mut uploaded: Vec<(*const TerrainTexture, bool, Handle<Image>)> = Vec::new();
     let mut look = TerrainLook::default();
-    let mut upload = |t: &Arc<TerrainTexture>, srgb: bool, look: &mut TerrainLook| {
+    let mut upload = |t: &Option<Arc<TerrainTexture>>, srgb: bool, look: &mut TerrainLook| {
+        let t = t.as_ref()?;
         let key = Arc::as_ptr(t);
         if let Some((_, _, handle)) = uploaded.iter().find(|(k, s, _)| *k == key && *s == srgb) {
             return Some(handle.clone());
@@ -190,52 +262,50 @@ fn build_look(
             look.by_type.push(None);
             continue;
         };
-        let cap_albedo = m
-            .cap
-            .albedo
-            .as_ref()
-            .and_then(|t| upload(t, true, &mut look));
-        let side_albedo = m
-            .side
-            .albedo
-            .as_ref()
-            .and_then(|t| upload(t, true, &mut look));
-        let cap_normal = m
-            .cap
-            .normal
-            .as_ref()
-            .and_then(|t| upload(t, false, &mut look));
-        let side_normal = m
-            .side
-            .normal
-            .as_ref()
-            .and_then(|t| upload(t, false, &mut look));
+        let cap_albedo = upload(&m.cap.albedo, true, &mut look);
+        let side_albedo = upload(&m.side.albedo, true, &mut look);
+        let cap_normal = upload(&m.cap.normal, false, &mut look);
+        let side_normal = upload(&m.side.normal, false, &mut look);
+        // Specular/illumination maps hold data, not colours.
+        let cap_sig = upload(&m.cap.sig, false, &mut look);
+        let side_sig = upload(&m.side.sig, false, &mut look);
         let (Some(cap_albedo), Some(side_albedo)) = (cap_albedo, side_albedo) else {
             look.by_type.push(None);
             continue;
         };
-        let tint = |c: [f32; 4]| Vec4::new(c[0], c[1], c[2], 1.0);
-        let handle = materials.add(ExtendedMaterial {
-            base: StandardMaterial {
-                perceptual_roughness: 0.85,
-                ..default()
+        let flag = |on: bool, bit: u32| if on { bit } else { 0 };
+        let b = &m.blend;
+        look.by_type.push(Some(TriplanarExtension {
+            params: TriplanarParams {
+                cap_tint: linear(m.cap.tint),
+                side_tint: linear(m.side.tint),
+                border_tint: linear(b.border_tint),
+                cap_scale: m.cap.scale,
+                side_scale: m.side.scale,
+                triplanar: b.triplanar,
+                border_range: b.border_range,
+                border_offset: b.border_offset,
+                inner_range: b.inner_range,
+                inner_offset: b.inner_offset,
+                cap_range: b.cap_range,
+                cap_offset: b.cap_offset,
+                cap_angle: b.cap_angle,
+                cap_emission: m.cap.emission,
+                side_emission: m.side.emission,
+                emission_unit: SUN_ILLUMINANCE / std::f32::consts::PI,
+                flags: flag(m.cap_side, CAP_SIDE)
+                    | flag(cap_normal.is_some(), CAP_NORMAL)
+                    | flag(side_normal.is_some(), SIDE_NORMAL)
+                    | flag(cap_sig.is_some(), CAP_SIG)
+                    | flag(side_sig.is_some(), SIDE_SIG),
             },
-            extension: TriplanarExtension {
-                params: TriplanarParams {
-                    cap_tint: tint(m.cap.tint),
-                    side_tint: tint(m.side.tint),
-                    cap_scale: m.cap.scale,
-                    side_scale: m.side.scale,
-                    has_cap_normal: u32::from(cap_normal.is_some()),
-                    has_side_normal: u32::from(side_normal.is_some()),
-                },
-                cap_albedo,
-                side_albedo,
-                cap_normal: cap_normal.unwrap_or_else(|| white.clone()),
-                side_normal: side_normal.unwrap_or_else(|| white.clone()),
-            },
-        });
-        look.by_type.push(Some(handle));
+            cap_albedo,
+            side_albedo,
+            cap_normal: cap_normal.unwrap_or_else(|| white.clone()),
+            side_normal: side_normal.unwrap_or_else(|| white.clone()),
+            cap_sig: cap_sig.unwrap_or_else(|| white.clone()),
+            side_sig: side_sig.unwrap_or_else(|| white.clone()),
+        }));
     }
     info!(
         "terrain look: {} materials, {} textures ({:.0} MiB on the GPU)",

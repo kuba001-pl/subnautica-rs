@@ -2,7 +2,80 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
-## 2026-10-06 — M6b: soft blending between terrain materials
+## 2026-10-06 — M6b redone: the game's own material layering and terrain shader
+
+**Why:** the first M6b (entry below) didn't match the game, and broke docs.
+- It painted the batch's "base" material (lowest layer, ties by triangle count)
+  under the *whole batch*, then dithered the other materials over it. Where an
+  overlay faded, a material from elsewhere in the batch showed through: the
+  random green patches on sand in its screenshot.
+- The Laplacian smoothing and Bayer-dither `discard` were invented. The game
+  uses real alpha blending, and none of the material's border settings were
+  used.
+- Its MODLOG/README claims ("completely eliminated", 300+ fps with blending)
+  were not backed by the screenshot. It also deleted the README's controls,
+  licence and credits sections, rewrote the DESIGN tree glyphs, put a literal
+  `\n\n` into `terrain-materials.md`, and added a stray space to the M4 entry.
+  All restored.
+
+M6 mistakes, also fixed:
+- The cap texture was used for every face with a large |normal.y|, so
+  overhangs and cave ceilings got sand. The game uses the cap only on upward
+  slopes, with a ragged switch to the side texture (`_CapBorderBlend*` + cap
+  alpha).
+- Projections were in Bevy space with other axes: X (z,y) / Z (x,y) instead
+  of the game's X (y,z) / Z (y,x) in Unity space. The textures were mirrored
+  and rotated against the game.
+- The triplanar exponent was a fixed 4, not each material's `_TriplanarBlendRange`.
+- Material colours were used as stored (sRGB). The game is linear-colour-space
+  (PlayerSettings, read with UnityPy), so they are converted.
+- Doc claimed both kinds share one shader and listed 133 plain / 100 cap types.
+  Really there are 3 shaders and 114 plain / 119 cap/side types.
+
+**What:**
+- Found how the game does it (documented in `docs/formats/terrain-materials.md`):
+  property values of all materials (new `sn-inspect terrain-materials --props`),
+  the terrain shaders' Direct3D bytecode (LZ4 blob in the `Shader` object,
+  disassembled with Windows' `d3dcompiler_47.dll`, by throwaway scripts in
+  `out/`), the scene's `Voxeland.chunkSize` (16), and the chunk mesher in
+  `Assembly-CSharp.dll` (read for behaviour only).
+- `sn-mesh::build_layers` (new, pure, 7 tests): per-chunk layers ordered by
+  (`layer`, type id), weights = share of adjacent faces, 9-vertex faces at
+  level of detail 0.
+- `sn-assets`: materials carry blend settings, SIG maps, specular colours and
+  emission scales.
+- `sn-client`: rank 0 opaque, later ranks alpha-blended in order (shared
+  bounding box per batch plus a depth bias = rank). `terrain.wgsl` is a port of
+  the game's shader: cap/side by slope, border alpha from weight + splotch,
+  border tint, SIG emission, gloss → roughness. 4 new tests. Stats log the
+  number of meshes on screen.
+
+**Verified (2026-10-06, RTX 3080, 1600×900):**
+1. `cargo test --workspace`, `cargo clippy --workspace --all-targets`: pass, no warnings.
+2. `sn-inspect terrain-materials`: result OK, 211 textures (183 + 28 SIG maps).
+   Real-data test `sn-assets` (`-- --ignored`) updated to 211 textures, 119 cap/side types; passes.
+3. `sn-client --benchmark 120`: start area 1,393 batches, 10,076 meshes,
+   9.7 M triangles; mean 12.4 ms (81 fps), p95 15.6 ms. With the blended layers
+   skipped (temporary experiment): 1,653 meshes, 3.3 ms. So the ~8,400 blended
+   draws cost ~9 ms. Without face subdivision: 5.4 M triangles but no faster
+   (14.4 ms), so the cost is draw calls, not triangles.
+4. `--flythrough 1700 -80 0`: mean 5.1 ms (198 fps), p95 16.8 ms, worst 82 ms,
+   peak memory 1.29 GiB. LOD-0 meshing mean 427 ms (was ~400 ms).
+5. Visual (`out/client-benchmark.png` vs `out/client-benchmark-m6b.png`): no
+   foreign patches, coral/grass borders are ragged blobs instead of voxel
+   steps, and cliff tops are sand turning into rock by slope. The game itself
+   was not run side by side: **not compared against the real game.**
+
+**Not done:** specular colour (the game's deferred lighting is custom; unchecked),
+lava flow animation, the game's lighting/fog (M8), and fewer draw calls
+(merge layers across batches, or one bindless/texture-array material).
+
+**Dead ends:** the first M6b's screen-space dither (below) was dropped in
+favour of real alpha blending. Reading the shader's binding table, our first
+parse got the offsets wrong: entries are 4-byte aligned from the start of the
+blob, not from the start of the file.
+
+## 2026-10-06 — M6b: soft blending between terrain materials (superseded; see above)
 
 **What:**
 - `sn-client`: soft blending between adjacent terrain materials, eliminating blocky voxel borders.
@@ -107,7 +180,7 @@ crept into the random file names. Fixed in the harness, not the code.
 - `sn-mesh`: `Field::with_step` (sample spacing 1/2/4/8) and `add_skirts` (strips hanging from open edges
   into the solid, to hide cracks between levels of detail).
 - `sn-terrain`: works on parsed `TerrainBatch`es (sampling) instead of fully expanded grids; `batch_field` /
-  `batch_mesh` take a level of detail (0..=3). `sn-install::load_batch` returns a validated `TerrainBatch` .
+  `batch_mesh` take a level of detail (0..=3). `sn-install::load_batch` returns a validated `TerrainBatch`.
 - `sn-client`: `TerrainStreamer`. Worker threads with a queue rebuilt on every 8 m of camera movement
   (missing batches first, then nearest); level of detail by distance to the batch box
   (100 / 260 / 600 / 1200 m, scaled by `--view`) with 20 m hysteresis; old mesh kept until the new

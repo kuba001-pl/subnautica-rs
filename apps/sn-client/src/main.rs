@@ -18,8 +18,8 @@ use bevy::render::view::screenshot::{Screenshot, ScreenshotCaptured, save_to_dis
 use bevy::window::PresentMode;
 use sn_install::GameData;
 
-use crate::terrain::{LodRanges, TerrainStreamer};
-use crate::terrain_look::{PendingTerrainLook, TerrainLookPlugin};
+use crate::terrain::{BlockSettings, LodRanges, TerrainStreamer};
+use crate::terrain_look::{PendingTerrainLook, SUN_ILLUMINANCE, TerrainLookPlugin};
 
 const USAGE: &str = "\
 Usage: sn-client [--game-dir <PATH>] [--start <X> <Y> <Z>] [--look <X> <Y> <Z>]
@@ -142,16 +142,20 @@ fn main() -> AppExit {
         }
     };
     let ranges = lod_ranges(args.view);
-    let (look, layers) = if args.debug_colours {
-        (None, [0i32; 256])
+    let (look, blocks) = if args.debug_colours {
+        (None, None)
     } else {
         match load_terrain_look(args.game_dir.clone()) {
-            Ok(mats) => {
-                let mut layers = [0i32; 256];
-                for m in mats.types.iter().flatten() {
-                    layers[m.type_id] = m.layer;
+            Ok(materials) => {
+                let mut blocks = BlockSettings {
+                    layer: [0; 256],
+                    gloss: [0.0; 256],
+                };
+                for m in materials.types.iter().flatten() {
+                    blocks.layer[m.type_id] = m.layer;
+                    blocks.gloss[m.type_id] = m.blend.gloss;
                 }
-                (Some(mats), layers)
+                (Some(materials), Some(blocks))
             }
             Err(message) => {
                 eprintln!("error: {message}");
@@ -161,7 +165,7 @@ fn main() -> AppExit {
     };
     let streamer = match GameData::locate(args.game_dir.clone())
         .map_err(String::from)
-        .and_then(|game| TerrainStreamer::start(game, ranges, layers))
+        .and_then(|game| TerrainStreamer::start(game, ranges, blocks))
     {
         Ok(streamer) => streamer,
         Err(message) => {
@@ -254,7 +258,7 @@ fn setup(mut commands: Commands, settings: Res<Setup>) {
     ));
     commands.spawn((
         DirectionalLight {
-            illuminance: 8_000.0,
+            illuminance: SUN_ILLUMINANCE,
             ..default()
         },
         Transform::from_xyz(0.0, 100.0, 0.0).looking_at(Vec3::new(30.0, 0.0, -50.0), Vec3::Y),
@@ -375,9 +379,10 @@ fn measure(
         Phase::Loading => {
             if streamer.settled() {
                 info!(
-                    "measure: start area loaded after {:.2} s: {} batches, {} triangles",
+                    "measure: start area loaded after {:.2} s: {} batches, {} meshes, {} triangles",
                     now.as_secs_f32(),
                     stats.shown_batches,
+                    stats.shown_meshes,
                     stats.shown_triangles
                 );
                 // Only latencies from here on describe streaming while moving.

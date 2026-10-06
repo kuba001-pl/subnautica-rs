@@ -17,9 +17,11 @@
 //! bit-identical in both pieces.
 
 mod check;
+mod layers;
 mod skirt;
 
 pub use check::{EdgeReport, edge_report};
+pub use layers::{LayerMesh, LayerSettings, build_layers};
 pub use skirt::add_skirts;
 
 /// A dense grid of samples with a value and a material id each, x fastest.

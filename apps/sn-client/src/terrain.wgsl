@@ -1,6 +1,15 @@
-// Terrain shader: Bevy's standard PBR material, with colour and normal maps
-// projected from the three world axes ("triplanar"), since terrain meshes have
-// no texture coordinates. Written for subnautica-rs.
+// Terrain shader: Bevy's standard PBR lighting fed with the surface the
+// game's terrain shaders compute. Written for subnautica-rs from the
+// behaviour described in docs/formats/terrain-materials.md:
+//
+// - Textures are projected along the three world axes ("triplanar"), in
+//   Unity's world space: X uses (y, z), Y uses (x, z), Z uses (y, x).
+// - Cap/side materials use the cap texture on the Y projection only, and
+//   switch to the side textures by slope, with a ragged edge from the cap
+//   texture's alpha ("splotch").
+// - Every mesh carries a per-vertex weight for its material (uv.x) and a
+//   gloss (uv.y). Weight and splotch give the alpha for soft borders between
+//   materials, and a tint towards the edge of a patch.
 
 #import bevy_pbr::{
     pbr_fragment::pbr_input_from_standard_material,
@@ -19,93 +28,165 @@
 }
 #endif
 
-// "Cap" textures cover upward-facing surfaces (the Y projection), "side"
-// textures slopes and cliffs (the X and Z projections). Plain materials use
-// the same textures for both.
+// Must match `TriplanarParams` in terrain_look.rs. Colours are linear.
 struct TerrainParams {
     cap_tint: vec4<f32>,
     side_tint: vec4<f32>,
+    border_tint: vec4<f32>,
     // Texture repeats per metre.
     cap_scale: f32,
     side_scale: f32,
-    // 1 if the normal map is real (else a flat placeholder is bound).
-    has_cap_normal: u32,
-    has_side_normal: u32,
+    // Exponent of the projection weights (_TriplanarBlendRange).
+    triplanar: f32,
+    border_range: f32,
+    border_offset: f32,
+    inner_range: f32,
+    inner_offset: f32,
+    cap_range: f32,
+    cap_offset: f32,
+    cap_angle: f32,
+    cap_emission: f32,
+    side_emission: f32,
+    // Emission 1.0 in the game → this many nits here.
+    emission_unit: f32,
+    flags: u32,
 }
+
+const CAP_SIDE: u32 = 1u;
+const CAP_NORMAL: u32 = 2u;
+const SIDE_NORMAL: u32 = 4u;
+const CAP_SIG: u32 = 8u;
+const SIDE_SIG: u32 = 16u;
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(100) var<uniform> terrain: TerrainParams;
 @group(#{MATERIAL_BIND_GROUP}) @binding(101) var cap_albedo: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(102) var cap_albedo_sampler: sampler;
 @group(#{MATERIAL_BIND_GROUP}) @binding(103) var cap_normal: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(104) var cap_normal_sampler: sampler;
-@group(#{MATERIAL_BIND_GROUP}) @binding(105) var side_albedo: texture_2d<f32>;
-@group(#{MATERIAL_BIND_GROUP}) @binding(106) var side_albedo_sampler: sampler;
-@group(#{MATERIAL_BIND_GROUP}) @binding(107) var side_normal: texture_2d<f32>;
-@group(#{MATERIAL_BIND_GROUP}) @binding(108) var side_normal_sampler: sampler;
+@group(#{MATERIAL_BIND_GROUP}) @binding(105) var cap_sig: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(106) var cap_sig_sampler: sampler;
+@group(#{MATERIAL_BIND_GROUP}) @binding(107) var side_albedo: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(108) var side_albedo_sampler: sampler;
+@group(#{MATERIAL_BIND_GROUP}) @binding(109) var side_normal: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(110) var side_normal_sampler: sampler;
+@group(#{MATERIAL_BIND_GROUP}) @binding(111) var side_sig: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(112) var side_sig_sampler: sampler;
 
-// Unity's DXT5nm normal maps keep X in alpha and Y in green.
+// Normal maps: X = alpha × red (DXT5nm keeps X in alpha, red = 1), Y = green.
 fn unpack_normal(t: vec4<f32>) -> vec3<f32> {
-    let xy = vec2<f32>(t.a, t.g) * 2.0 - 1.0;
-    return vec3<f32>(xy, sqrt(max(1.0 - dot(xy, xy), 0.0)));
+    let xy = vec2<f32>(t.a * t.r, t.g) * 2.0 - 1.0;
+    return vec3<f32>(xy, sqrt(1.0 - min(dot(xy, xy), 1.0)));
+}
+
+// Tangent-space normal → world, one frame per projection (n: surface normal).
+fn from_x(t: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
+    let s = sign(n.x);
+    return t.x * s * vec3<f32>(n.y, n.x, -n.z) + t.y * s * vec3<f32>(-n.z, n.y, n.x) + t.z * n;
+}
+
+fn from_y(t: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
+    let s = sign(n.y);
+    return t.x * s * vec3<f32>(n.y, -n.x, n.z) + t.y * s * vec3<f32>(n.x, -n.z, n.y) + t.z * n;
+}
+
+fn from_z(t: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
+    let s = sign(n.z);
+    return t.x * s * vec3<f32>(n.x, n.z, n.y) + t.y * s * vec3<f32>(n.z, n.y, n.x) + t.z * n;
+}
+
+// Weight + splotch → 0..1, the shape shared by the border alpha and the
+// border tint.
+fn border(weight: f32, splotch: f32, range: f32, offset: f32) -> f32 {
+    let r = max(range, 1e-4);
+    let threshold = (r + 1.0) / (1.01 - offset) * (1.0 - weight - offset) - r;
+    return saturate((splotch - threshold) / r);
 }
 
 @fragment
 fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> FragmentOutput {
-    // Smooth material transition at boundaries (Milestone 6b)
-    let blend_w = in.uv.x;
-    if blend_w < 0.999 {
-        let bayer = array<f32, 16>(
-             0.0 / 16.0,  8.0 / 16.0,  2.0 / 16.0, 10.0 / 16.0,
-            12.0 / 16.0,  4.0 / 16.0, 14.0 / 16.0,  6.0 / 16.0,
-             3.0 / 16.0, 11.0 / 16.0,  1.0 / 16.0,  9.0 / 16.0,
-            15.0 / 16.0,  7.0 / 16.0, 13.0 / 16.0,  5.0 / 16.0,
-        );
-        let coord = vec2<u32>(in.position.xy) % 4u;
-        let threshold = bayer[coord.y * 4u + coord.x];
-        let blend = smoothstep(0.0, 1.0, blend_w);
-        if blend < threshold {
-            discard;
+    var pbr_input = pbr_input_from_standard_material(in, is_front);
+
+    // Unity's world space (z flipped).
+    let flip = vec3<f32>(1.0, 1.0, -1.0);
+    let n = normalize(in.world_normal) * flip;
+    let p = in.world_position.xyz * flip;
+    let weight = in.uv.x;
+    let gloss = in.uv.y;
+
+    var w = pow(max(1.96 * n * n, vec3<f32>(1e-8)), vec3<f32>(terrain.triplanar));
+    w = w / (w.x + w.y + w.z);
+
+    var colour: vec4<f32>;
+    var normal: vec3<f32>;
+    var sig = vec2<f32>(0.0);
+    if (terrain.flags & CAP_SIDE) != 0u {
+        let uv_cap = p.xz * terrain.cap_scale;
+        let cap = textureSample(cap_albedo, cap_albedo_sampler, uv_cap);
+        var cap_n = n;
+        if (terrain.flags & CAP_NORMAL) != 0u {
+            cap_n = normalize(from_y(unpack_normal(textureSample(cap_normal, cap_normal_sampler, uv_cap)), n));
+        }
+        if (terrain.flags & CAP_SIG) != 0u {
+            sig = textureSample(cap_sig, cap_sig_sampler, uv_cap).rg * vec2<f32>(1.0, terrain.cap_emission);
+        }
+        // 0 = cap, 1 = side.
+        let edge = clamp(1.0 - (n.y + terrain.cap_offset) * terrain.cap_angle - cap.a, -1.0, 1.0);
+        let side = saturate((edge + terrain.cap_range) / max(2.0 * terrain.cap_range, 1e-4));
+
+        let s = p * terrain.side_scale;
+        let side_colour = textureSample(side_albedo, side_albedo_sampler, s.yz) * w.x
+            + textureSample(side_albedo, side_albedo_sampler, s.xz) * w.y
+            + textureSample(side_albedo, side_albedo_sampler, s.yx) * w.z;
+        var side_n = n;
+        if (terrain.flags & SIDE_NORMAL) != 0u {
+            side_n = normalize(
+                from_x(unpack_normal(textureSample(side_normal, side_normal_sampler, s.yz)), n) * w.x
+                + from_y(unpack_normal(textureSample(side_normal, side_normal_sampler, s.xz)), n) * w.y
+                + from_z(unpack_normal(textureSample(side_normal, side_normal_sampler, s.yx)), n) * w.z
+            );
+        }
+        var side_sig_value = vec2<f32>(0.0);
+        if (terrain.flags & SIDE_SIG) != 0u {
+            side_sig_value = (textureSample(side_sig, side_sig_sampler, s.yz).rg * w.x
+                + textureSample(side_sig, side_sig_sampler, s.xz).rg * w.y
+                + textureSample(side_sig, side_sig_sampler, s.yx).rg * w.z)
+                * vec2<f32>(1.0, terrain.side_emission);
+        }
+        colour = mix(cap * terrain.cap_tint, side_colour * terrain.side_tint, side);
+        normal = normalize(mix(cap_n, side_n, side));
+        sig = mix(sig, side_sig_value, side);
+    } else {
+        let s = p * terrain.cap_scale;
+        let albedo = textureSample(cap_albedo, cap_albedo_sampler, s.yz) * w.x
+            + textureSample(cap_albedo, cap_albedo_sampler, s.xz) * w.y
+            + textureSample(cap_albedo, cap_albedo_sampler, s.yx) * w.z;
+        colour = vec4<f32>(albedo.rgb * terrain.cap_tint.rgb, albedo.a);
+        normal = n;
+        if (terrain.flags & CAP_NORMAL) != 0u {
+            normal = normalize(
+                from_x(unpack_normal(textureSample(cap_normal, cap_normal_sampler, s.yz)), n) * w.x
+                + from_y(unpack_normal(textureSample(cap_normal, cap_normal_sampler, s.xz)), n) * w.y
+                + from_z(unpack_normal(textureSample(cap_normal, cap_normal_sampler, s.yx)), n) * w.z
+            );
+        }
+        if (terrain.flags & CAP_SIG) != 0u {
+            sig = (textureSample(cap_sig, cap_sig_sampler, s.yz).rg * w.x
+                + textureSample(cap_sig, cap_sig_sampler, s.xz).rg * w.y
+                + textureSample(cap_sig, cap_sig_sampler, s.yx).rg * w.z)
+                * vec2<f32>(1.0, terrain.cap_emission);
         }
     }
 
-    var pbr_input = pbr_input_from_standard_material(in, is_front);
+    // Towards the edge of a patch the colour turns to the border tint, and
+    // the alpha falls off.
+    let inner = border(weight, colour.a, terrain.inner_range, terrain.inner_offset);
+    let rgb = mix(terrain.border_tint.rgb, colour.rgb, inner);
+    let alpha = border(weight, colour.a, terrain.border_range, terrain.border_offset);
 
-    let n = normalize(in.world_normal);
-    // Blend weights: mostly the axis the surface faces, sharpened.
-    var w = pow(abs(n), vec3<f32>(4.0));
-    w = w / (w.x + w.y + w.z);
-
-    let world = in.world_position.xyz;
-    let uv_x = world.zy * terrain.side_scale;
-    let uv_y = world.xz * terrain.cap_scale;
-    let uv_z = world.xy * terrain.side_scale;
-
-    let colour = textureSample(side_albedo, side_albedo_sampler, uv_x) * terrain.side_tint * w.x
-        + textureSample(cap_albedo, cap_albedo_sampler, uv_y) * terrain.cap_tint * w.y
-        + textureSample(side_albedo, side_albedo_sampler, uv_z) * terrain.side_tint * w.z;
-    pbr_input.material.base_color = pbr_input.material.base_color * vec4<f32>(colour.rgb, 1.0);
-
-    // "Whiteout" blend: each projection's tangent-space normal is combined
-    // with the surface normal in that projection's plane. A missing normal
-    // map counts as flat.
-    var tx = vec3<f32>(0.0, 0.0, 1.0);
-    var ty = vec3<f32>(0.0, 0.0, 1.0);
-    var tz = vec3<f32>(0.0, 0.0, 1.0);
-    let sx = textureSample(side_normal, side_normal_sampler, uv_x);
-    let sy = textureSample(cap_normal, cap_normal_sampler, uv_y);
-    let sz = textureSample(side_normal, side_normal_sampler, uv_z);
-    if terrain.has_side_normal != 0u {
-        tx = unpack_normal(sx);
-        tz = unpack_normal(sz);
-    }
-    if terrain.has_cap_normal != 0u {
-        ty = unpack_normal(sy);
-    }
-    tx = vec3<f32>(tx.xy + n.zy, abs(tx.z) * n.x);
-    ty = vec3<f32>(ty.xy + n.xz, abs(ty.z) * n.y);
-    tz = vec3<f32>(tz.xy + n.xy, abs(tz.z) * n.z);
-    pbr_input.N = normalize(tx.zyx * w.x + ty.xzy * w.y + tz.xyz * w.z);
-
+    pbr_input.material.base_color = vec4<f32>(rgb, alpha);
+    pbr_input.material.perceptual_roughness = clamp(1.0 - gloss, 0.089, 1.0);
+    pbr_input.material.emissive = vec4<f32>(rgb * sig.y * terrain.emission_unit, 1.0);
+    pbr_input.N = normal * flip;
     pbr_input.material.base_color = alpha_discard(pbr_input.material, pbr_input.material.base_color);
 
 #ifdef PREPASS_PIPELINE

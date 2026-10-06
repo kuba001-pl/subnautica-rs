@@ -38,11 +38,42 @@ pub enum BlockSource {
 /// One set of surface textures.
 #[derive(Clone)]
 pub struct SurfaceLayer {
+    /// Colour in RGB, "splotch" in alpha (drives the soft borders).
     pub albedo: Option<Arc<TerrainTexture>>,
     pub normal: Option<Arc<TerrainTexture>>,
+    /// Specular (R) and illumination (G); only with the `UWE_SIG` keyword.
+    pub sig: Option<Arc<TerrainTexture>>,
     /// Texture repeats per metre.
     pub scale: f32,
+    /// Colour multiplier, as stored (sRGB).
     pub tint: [f32; 4],
+    /// Specular colour, as stored (sRGB).
+    pub specular: [f32; 4],
+    /// Multiplier of the illumination channel.
+    pub emission: f32,
+}
+
+/// The shader settings that shape borders and blends, with the property
+/// each comes from. See `docs/formats/terrain-materials.md`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BlendSettings {
+    /// `_TriplanarBlendRange`: exponent of the projection weights.
+    pub triplanar: f32,
+    /// `_BorderBlendRange`, `_BorderBlendOffset`: vertex weight + splotch → alpha.
+    pub border_range: f32,
+    pub border_offset: f32,
+    /// `_InnerBorderBlendRange`, `_InnerBorderBlendOffset`, `_BorderTint`
+    /// (sRGB): colour towards the edge of a patch.
+    pub inner_range: f32,
+    pub inner_offset: f32,
+    pub border_tint: [f32; 4],
+    /// `_CapBorderBlendRange`, `_CapBorderBlendOffset`, `_CapBorderBlendAngle`:
+    /// cap → side transition (cap/side materials only).
+    pub cap_range: f32,
+    pub cap_offset: f32,
+    pub cap_angle: f32,
+    /// `_Gloss`.
+    pub gloss: f32,
 }
 
 /// What a terrain block type looks like. Terrain materials come in two
@@ -55,9 +86,18 @@ pub struct TerrainMaterial {
     pub source: BlockSource,
     pub name: String,
     pub shader_keywords: String,
+    /// A cap/side material (else plain, with `cap` and `side` the same).
+    pub cap_side: bool,
     pub cap: SurfaceLayer,
     pub side: SurfaceLayer,
+    pub blend: BlendSettings,
+    /// `VoxelandBlockType.layer`.
     pub layer: i32,
+    /// Every float and colour property of the material, as stored.
+    pub floats: Vec<(String, f32)>,
+    pub colors: Vec<(String, [f32; 4])>,
+    /// Texture slots that reference a texture.
+    pub texture_slots: Vec<String>,
 }
 
 pub struct TerrainMaterials {
@@ -180,38 +220,79 @@ fn load_material(
         textures.insert(target.key(), loaded.clone());
         Ok(Some(loaded))
     };
-    let tint = material.color("_Color").unwrap_or([1.0; 4]);
-    let (cap, side) = if material.texture("_CapTexture").is_some() {
+    let float = |name: &str, default: f32| material.float(name).unwrap_or(default);
+    let color = |name: &str| material.color(name).unwrap_or([1.0; 4]);
+    // Specular/illumination maps are only read with the keyword set.
+    let sig_on = material.keywords.split_whitespace().any(|k| k == "UWE_SIG");
+    let cap_side = material.texture("_CapTexture").is_some();
+    let (cap, side) = if cap_side {
         let cap = SurfaceLayer {
             albedo: texture("_CapTexture")?,
             normal: texture("_CapBumpMap")?,
-            scale: material.float("_CapScale").unwrap_or(0.1),
-            tint: material.color("_CapColor").unwrap_or([1.0; 4]),
+            sig: if sig_on { texture("_CapSIGMap")? } else { None },
+            scale: float("_CapScale", 0.1),
+            tint: color("_CapColor"),
+            specular: color("_CapSpecColor"),
+            emission: float("_CapEmissionScale", 1.0),
         };
         let side = SurfaceLayer {
             albedo: texture("_SideTexture")?,
             normal: texture("_SideBumpMap")?,
-            scale: material.float("_SideScale").unwrap_or(0.1),
-            tint,
+            sig: if sig_on {
+                texture("_SideSIGMap")?
+            } else {
+                None
+            },
+            scale: float("_SideScale", 0.1),
+            tint: color("_Color"),
+            specular: color("_SpecColor"),
+            emission: float("_SideEmissionScale", 1.0),
         };
         (cap, side)
     } else {
         let plain = SurfaceLayer {
             albedo: texture("_MainTex")?,
             normal: texture("_BumpMap")?,
-            scale: material.float("_TriplanarScale").unwrap_or(0.1),
-            tint,
+            sig: if sig_on { texture("_SIGMap")? } else { None },
+            scale: float("_TriplanarScale", 0.1),
+            tint: color("_Color"),
+            specular: color("_SpecColor"),
+            emission: float("_EmissionScale", 1.0),
         };
         (plain.clone(), plain)
+    };
+    // Defaults (for the two materials on other shaders) are the most common
+    // values among the terrain materials.
+    let blend = BlendSettings {
+        triplanar: float("_TriplanarBlendRange", 2.0),
+        border_range: float("_BorderBlendRange", 0.5),
+        border_offset: float("_BorderBlendOffset", 0.5),
+        inner_range: float("_InnerBorderBlendRange", 0.5),
+        inner_offset: float("_InnerBorderBlendOffset", 1.0),
+        border_tint: color("_BorderTint"),
+        cap_range: float("_CapBorderBlendRange", 0.1),
+        cap_offset: float("_CapBorderBlendOffset", 0.0),
+        cap_angle: float("_CapBorderBlendAngle", 1.0),
+        gloss: float("_Gloss", 0.5),
     };
     Ok(TerrainMaterial {
         type_id,
         source,
+        cap_side,
         cap,
         side,
+        blend,
         shader_keywords: material.keywords.clone(),
-        name: material.name,
         layer: block.layer,
+        texture_slots: material
+            .textures
+            .iter()
+            .filter(|t| !t.texture.is_null())
+            .map(|t| t.name.clone())
+            .collect(),
+        floats: material.floats,
+        colors: material.colors,
+        name: material.name,
     })
 }
 

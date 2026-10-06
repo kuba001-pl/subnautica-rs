@@ -19,7 +19,8 @@ use sn_install::GameData;
 use sn_unity::{Bundle, BundleDirectory, ObjectInfo, PPtr, SerializedFile};
 
 pub use terrain::{
-    BlockSource, SurfaceLayer, TerrainMaterial, TerrainMaterials, TerrainTexture, terrain_materials,
+    BlendSettings, BlockSource, SurfaceLayer, TerrainMaterial, TerrainMaterials, TerrainTexture,
+    terrain_materials,
 };
 
 pub type Result<T> = std::result::Result<T, String>;
