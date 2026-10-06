@@ -142,11 +142,17 @@ fn main() -> AppExit {
         }
     };
     let ranges = lod_ranges(args.view);
-    let look = if args.debug_colours {
-        None
+    let (look, layers) = if args.debug_colours {
+        (None, [0i32; 256])
     } else {
         match load_terrain_look(args.game_dir.clone()) {
-            Ok(look) => Some(look),
+            Ok(mats) => {
+                let mut layers = [0i32; 256];
+                for m in mats.types.iter().flatten() {
+                    layers[m.type_id] = m.layer;
+                }
+                (Some(mats), layers)
+            }
             Err(message) => {
                 eprintln!("error: {message}");
                 return AppExit::error();
@@ -155,7 +161,7 @@ fn main() -> AppExit {
     };
     let streamer = match GameData::locate(args.game_dir.clone())
         .map_err(String::from)
-        .and_then(|game| TerrainStreamer::start(game, ranges))
+        .and_then(|game| TerrainStreamer::start(game, ranges, layers))
     {
         Ok(streamer) => streamer,
         Err(message) => {

@@ -57,7 +57,7 @@ pub fn run(game: &GameData) -> Result<ExitCode> {
 
     println!();
     println!(
-        "type  material                       cap (scale)                              side (scale)"
+        "type  layer  material                       cap (scale)                              side (scale)"
     );
     for m in materials.types.iter().flatten() {
         let describe = |t: &Option<std::sync::Arc<sn_assets::TerrainTexture>>| match t {
@@ -69,7 +69,7 @@ pub fn run(game: &GameData) -> Result<ExitCode> {
         };
         let cap = format!("{} ({:.2})", describe(&m.cap.albedo), m.cap.scale);
         let side = format!("{} ({:.2})", describe(&m.side.albedo), m.side.scale);
-        println!("{:>4}  {:<30} {cap:<40} {side}", m.type_id, m.name);
+        println!("{:>4}  {:>5}  {:<30} {cap:<40} {side}", m.type_id, m.layer, m.name);
     }
 
     let used = octree_type_ids(game)?;
@@ -152,7 +152,7 @@ pub fn region(game: &GameData, center: sn_world::BatchCoord, radius: i32) -> Res
     let assets = Assets::index(game)?;
     let materials = terrain_materials(&assets)?;
     println!("surface voxels around batch {center} (radius {radius}): {total}");
-    println!(" type   share  source  material                       cap texture / side texture");
+    println!(" type   layer  share  source  material                       cap texture / side texture");
     let mut order: Vec<usize> = (0..256).filter(|&t| counts[t] > 0).collect();
     order.sort_by_key(|&t| std::cmp::Reverse(counts[t]));
     for t in order {
@@ -164,14 +164,15 @@ pub fn region(game: &GameData, center: sn_world::BatchCoord, radius: i32) -> Res
                 };
                 let conflict = if materials.conflicts.contains(&t) { " CONFLICT" } else { "" };
                 println!(
-                    "{t:>5} {share:>6.2}%  {:<6}  {:<30} {} / {}{conflict}",
+                    "{t:>5}  {:>5} {share:>6.2}%  {:<6}  {:<30} {} / {}{conflict}",
+                    m.layer,
                     format!("{:?}", m.source),
                     m.name,
                     name(&m.cap),
                     name(&m.side)
                 );
             }
-            None => println!("{t:>5} {share:>6.2}%  -       (no material)"),
+            None => println!("{t:>5}         {share:>6.2}%  -       (no material)"),
         }
     }
     Ok(ExitCode::SUCCESS)

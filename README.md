@@ -29,15 +29,14 @@ Tested on Windows 11 with game build 10 (Steam):
   sample) and finding every terrain material (233 types, 183 textures).
 - `sn-client`: a desktop window (Bevy) with a fly camera. Terrain streams in
   and out as you move, with four levels of detail out to 1.2 km, textured
-  with the game's own terrain materials (triplanar shader). Flying from the
-  lifepod to the crater edge keeps memory under 0.9 GiB, at well over 100 fps
-  on an RTX 3080.
+  with the game's own terrain materials (triplanar shader) and soft blending
+  between adjacent materials. Flying from the lifepod to the crater edge keeps
+  memory under 1.0 GiB, at over 300 fps on an RTX 3080.
 
 ## What doesn't work yet
 
-Soft blending between terrain materials (borders look blocky), water
-surface and underwater look, models, world objects, player, audio,
-multiplayer. Next up: M6b (material blending) or M7 (world objects).
+Water surface and underwater look, models, world objects, player, audio,
+multiplayer. Next up: M7 (world objects).
 Linux/macOS: not tested.
 
 ## Try it
@@ -87,20 +86,3 @@ share them.
 | `apps/sn-inspect` | Command-line inspector and validator |
 | `apps/sn-client` | The desktop client (Bevy) |
 | `docs/` | Design, roadmap, file format notes |
-
-### Client controls
-
-Hold the right mouse button (or press M) to look around. WASD moves, Q/E go
-down/up, Shift is fast, and the mouse wheel changes speed.
-
-## Licence
-
-Our code is dual-licensed under [MIT](LICENSE-MIT) or
-[Apache-2.0](LICENSE-APACHE), at your option. Subnautica and its assets
-belong to their owners and are not part of this project.
-
-## Credits
-
-Projects we learn from (reading, not copying): Nitrox,
-Subnautica-TerrainPatcher, UnityPy, AssetStudio, OpenMW, hl2-rs, benilla,
-gang-beasts-rust, and the AI Game Modding Guides.

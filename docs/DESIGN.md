@@ -1,6 +1,6 @@
 # subnautica-rs — Design
 
-Status: **M1–M6 done** (2026-10-06). Everything after M6 is a plan, not code.
+Status: **M1–M6b done** (2026-10-06). Everything after M6b is a plan, not code.
 
 ## 1. Goal
 
@@ -80,34 +80,34 @@ confirmed on all 5,416 files:
 
 ```
 subnautica-rs/
-├─ Cargo.toml                 workspace
-├─ AGENTS.md  README.md  MODLOG.md  .gitignore (whitelist)
-├─ docs/
-│  ├─ DESIGN.md               this file
-│  └─ formats/                prose specs of every format we decode
-├─ crates/
+├── Cargo.toml                 workspace
+├── AGENTS.md  README.md  MODLOG.md  .gitignore (whitelist)
+├── docs/
+│  ├── DESIGN.md               this file
+│  └── formats/                prose specs of every format we decode
+├── crates/
 │  │  ── layer 0: foundation ──
-│  ├─ sn-core/                coordinate types (voxel/octree/batch/cell/world), ids, errors
+│  ├── sn-core/                coordinate types (voxel/octree/batch/cell/world), ids, errors
 │  │  ── layer 1: data access & formats (pure, headless) ──
-│  ├─ sn-octree/              .optoctrees decode/encode, voxel sampling, LOD by depth
-│  ├─ sn-world/               meta/index, batch/cell addressing, biome map, entity caches
-│  ├─ sn-unity/               UnityFS bundles, SerializedFile, type trees, Addressables,
+│  ├── sn-octree/              .optoctrees decode/encode, voxel sampling, LOD by depth
+│  ├── sn-world/               meta/index, batch/cell addressing, biome map, entity caches
+│  ├── sn-unity/               UnityFS bundles, SerializedFile, type trees, Addressables,
 │  │                          Texture2D (BCn) / Mesh decoding → engine-neutral structs
 │  │  ── layer 2: algorithms & rules (pure, headless) ──
-│  ├─ sn-terrain/             batch + neighbours → meshing field → mesh (chunk seams)
-│  ├─ sn-mesh/                SDF → triangles (surface nets → dual contouring), chunking,
+│  ├── sn-terrain/             batch + neighbours → meshing field → mesh (chunk seams)
+│  ├── sn-mesh/                SDF → triangles (surface nets → dual contouring), chunking,
 │  │                          seam stitching, per-LOD simplification
-│  ├─ sn-sim/                 shared gameplay rules: swim movement, inventory, ownership
-│  ├─ sn-protocol/            message types + versioned binary codec, no sockets
+│  ├── sn-sim/                 shared gameplay rules: swim movement, inventory, ownership
+│  ├── sn-protocol/            message types + versioned binary codec, no sockets
 │  │  ── layer 3: OS, engine & IO edges ──
-│  ├─ sn-install/             find the install (--game-dir, SUBNAUTICA_DIR, Steam
+│  ├── sn-install/             find the install (--game-dir, SUBNAUTICA_DIR, Steam
 │  │                          library scan), check build number, read/mmap files
-│  ├─ sn-net/                 UDP transport (reliable + unreliable channels)
-│  └─ sn-render/              Bevy plugins: terrain material, water/fog, camera, debug UI
-└─ apps/
-   ├─ sn-inspect/             headless CLI: inspect, validate, export to out/ (OBJ/PNG)
-   ├─ sn-client/              Bevy desktop game client
-   └─ sn-server/              headless dedicated server (reads the host's own install)
+│  ├── sn-net/                 UDP transport (reliable + unreliable channels)
+│  └── sn-render/              Bevy plugins: terrain material, water/fog, camera, debug UI
+└── apps/
+   ├── sn-inspect/             headless CLI: inspect, validate, export to out/ (OBJ/PNG)
+   ├── sn-client/              Bevy desktop game client
+   └── sn-server/              headless dedicated server (reads the host's own install)
 ```
 
 Dependency direction is strictly downward:
@@ -140,12 +140,12 @@ and reading files) and `apps/sn-client` (Bevy). M5 added `sn-unity`; M6 added
 ### 3.4 Data flow (target state)
 
 ```
-sn-install (game dir) ─▶ sn-world (which batches exist, where)
-                      ─▶ sn-octree (batch bytes → octrees → voxel SDF at LOD n)
-                            ─▶ sn-mesh (chunk SDF → mesh + material ids)   [worker threads]
-                                  ─▶ sn-render (GPU upload, terrain material from sn-unity textures)
-                      ─▶ sn-unity (Addressables → prefab → mesh/texture) ─▶ sn-render
-sn-client ⇄ sn-net (UDP) ⇄ sn-server   (sn-protocol messages; sn-sim rules on both sides)
+sn-install (game dir) ──▶ sn-world (which batches exist, where)
+                      ──▶ sn-octree (batch bytes → octrees → voxel SDF at LOD n)
+                            ──▶ sn-mesh (chunk SDF → mesh + material ids)   [worker threads]
+                                  ──▶ sn-render (GPU upload, terrain material from sn-unity textures)
+                      ──▶ sn-unity (Addressables → prefab → mesh/texture) ──▶ sn-render
+sn-client ◀──▶ sn-net (UDP) ◀──▶ sn-server   (sn-protocol messages; sn-sim rules on both sides)
 ```
 
 ## 4. Roadmap
@@ -170,7 +170,7 @@ reach them — expect the far end of this list to change.
 |---|---|---|
 | **M5** ✅ | `sn-unity`: read UnityFS bundles + SerializedFiles, list objects (`sn-inspect unity`). The Addressables catalog moved to M7, its first user. | Object counts/types for `resources.assets` and N bundles match UnityPy on the dev machine. |
 | **M6** ✅ | Textures + terrain look: decode Texture2D (BC1/3/5/7; detect crunch), map octree type ids → terrain materials, triplanar shader. | Terrain textured; decoded texture hashes match UnityPy output for a sample set. |
-| **M6b** | Soft blending between terrain materials (the game's `_BorderBlend*`), so patchy materials like red grass stop following the voxel grid. | Side-by-side screenshots; no visible voxel-grid edges at material borders. |
+| **M6b** ✅ | Soft blending between terrain materials (`VoxelandBlockType.layer` ordering + Laplacian vertex weights + screen-space Bayer dither), eliminating blocky borders. | Side-by-side screenshots; no visible voxel-grid edges at material borders. |
 | **M7** | World entities: decode CellsCache / BatchObjectsCache (likely protobuf-net), read the Addressables catalog, resolve prefabs → meshes, spawn static flora/rocks; biome map. | Entity counts per batch logged and stable; Safe Shallows shows coral/rocks in place. |
 
 ### Phase C — Being underwater

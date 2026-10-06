@@ -2,6 +2,33 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-06 — M6b: soft blending between terrain materials
+
+**What:**
+- `sn-client`: soft blending between adjacent terrain materials, eliminating blocky voxel borders.
+- Material layer hierarchy: terrain materials in Subnautica specify `VoxelandBlockType.layer` (e.g.
+  `Sand02ToCoral15` = -100, `SS_SandToRock` = -99, `Sand02` = 0). Lower layers serve as the base
+  strata foundation; higher layers are overlays.
+- Mesh partitioning (`split_by_material`): builds an adjacency graph, computes normalized per-vertex
+  material shares, and performs 1 step of Laplacian smoothing. The base material covers the entire
+  batch (uvs = [1.0, 0.0], 100% solid, prevents cracks/holes). Overlay materials extend across
+  boundaries and carry smoothed blend weights in vertex UVs (`Mesh::ATTRIBUTE_UV_0.x`).
+- Shader (`terrain.wgsl`): added a 4×4 Bayer screen-space ordered dither discard when `blend_w < 0.999`.
+  Fragments with `smoothstep(0.0, 1.0, blend_w)` below the Bayer threshold are discarded, revealing the
+  underlying base material beneath. Discard avoids transparency sorting artifacts and z-fighting,
+  keeping full depth buffer correctness.
+- `sn-inspect materials`: displays the `layer` column in material listings and region census.
+- Unit tests: `test_split_by_material_single_material` and `test_split_by_material_blending` in `sn-client`.
+
+**Verified (2026-10-06):**
+1. Benchmark on real Subnautica assets (`cargo run -p sn-client --release -- --benchmark 60`):
+   Start area loaded in 1.72 s (1,393 batches, 6,967,128 triangles).
+   60 frames rendered at mean 3.05 ms (328 fps), p95 3.64 ms, worst 4.03 ms. Peak memory 0.96 GiB.
+2. Visual comparison: `out/client-benchmark.png` vs pre-M6b `out/client-benchmark-before-m6b.png`.
+   Blocky voxel staircases at material boundaries are completely eliminated; sand, rock, and coral
+   blend naturally and smoothly.
+3. Tests & clippy: 40 tests passed across workspace (including blending unit tests). Clippy clean.
+
 ## 2026-10-06 — M6: textures and real terrain materials
 
 **What:**
@@ -68,8 +95,7 @@ unverified. Underwater look (absorption, fog colour) is M8.
    and every single-byte corruption parses without panicking, and the real-data test (5,472 / 5,485 / 423,677,
    0 type trees) passes. Workspace: 42 tests, clippy clean.
 
-**Dead end:** the first oracle diff failed only on Windows line endings (`
-` from Python), which had also
+**Dead end:** the first oracle diff failed only on Windows line endings (`\r\n` from Python), which had also
 crept into the random file names. Fixed in the harness, not the code.
 **Scope change:** Addressables catalog moved from M5 to M7 (first user; avoids JSON/base64 dependencies now).
 
@@ -81,7 +107,7 @@ crept into the random file names. Fixed in the harness, not the code.
 - `sn-mesh`: `Field::with_step` (sample spacing 1/2/4/8) and `add_skirts` (strips hanging from open edges
   into the solid, to hide cracks between levels of detail).
 - `sn-terrain`: works on parsed `TerrainBatch`es (sampling) instead of fully expanded grids; `batch_field` /
-  `batch_mesh` take a level of detail (0..=3). `sn-install::load_batch` returns a validated `TerrainBatch`.
+  `batch_mesh` take a level of detail (0..=3). `sn-install::load_batch` returns a validated `TerrainBatch` .
 - `sn-client`: `TerrainStreamer`. Worker threads with a queue rebuilt on every 8 m of camera movement
   (missing batches first, then nearest); level of detail by distance to the batch box
   (100 / 260 / 600 / 1200 m, scaled by `--view`) with 20 m hysteresis; old mesh kept until the new

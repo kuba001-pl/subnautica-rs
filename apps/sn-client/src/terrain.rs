@@ -39,6 +39,7 @@ pub struct TerrainPart {
     pub material: u8,
     pub positions: Vec<[f32; 3]>,
     pub normals: Vec<[f32; 3]>,
+    pub uvs: Vec<[f32; 2]>,
     pub indices: Vec<u32>,
 }
 
@@ -99,6 +100,7 @@ impl BatchCache {
 struct Shared {
     game: GameData,
     index: WorldIndex,
+    layers: [i32; 256],
     /// Pending jobs, most urgent last.
     queue: Mutex<Vec<Job>>,
     wake: Condvar,
@@ -139,7 +141,7 @@ impl Shared {
         };
         // Skirts hide cracks next to batches at another level of detail.
         add_skirts(&mut mesh, 2.0 * (1u32 << job.lod) as f32);
-        Ok(split_by_material(&mesh))
+        Ok(split_by_material(&mesh, &self.layers))
     }
 }
 
@@ -210,13 +212,18 @@ pub struct TerrainStreamer {
 }
 
 impl TerrainStreamer {
-    pub fn start(game: GameData, ranges: LodRanges) -> Result<Self, String> {
+    pub fn start(
+        game: GameData,
+        ranges: LodRanges,
+        layers: [i32; 256],
+    ) -> Result<Self, String> {
         let index = game.read_index()?;
         let (existing, _) = game.octree_batches()?;
         let (tx, rx) = channel();
         let shared = Arc::new(Shared {
             game,
             index,
+            layers,
             queue: Mutex::new(Vec::new()),
             wake: Condvar::new(),
             cache: Mutex::new(BatchCache::default()),
@@ -265,6 +272,7 @@ impl TerrainStreamer {
     /// True when everything wanted at the current position is on screen.
     pub fn settled(&self) -> bool {
         self.last_update_at.is_some()
+            && self.shared.queue.lock().unwrap().is_empty()
             && self.in_flight.is_empty()
             && self.ready.is_empty()
             && self
@@ -374,9 +382,9 @@ impl Drop for TerrainStreamer {
     }
 }
 
-/// Unity is left-handed (x right, y up, z forward); Bevy is right-handed with
-/// the same x and y, so z flips and triangle winding reverses.
-fn unity_to_bevy(p: [f32; 3]) -> [f32; 3] {
+/// Unity position (left-handed, +Z into the screen) → Bevy (right-handed,
+/// -Z into the screen).
+pub fn unity_to_bevy(p: [f32; 3]) -> [f32; 3] {
     [p[0], p[1], -p[2]]
 }
 
@@ -385,31 +393,179 @@ pub fn bevy_to_voxel(p: Vec3) -> [f32; 3] {
     world_to_voxel(unity_to_bevy(p.to_array()))
 }
 
-fn split_by_material(mesh: &sn_mesh::Mesh) -> Vec<TerrainPart> {
-    let mut parts: HashMap<u8, (TerrainPart, Vec<u32>)> = HashMap::new();
-    for (tri, &material) in mesh.triangles.iter().zip(&mesh.triangle_materials) {
-        let (part, remap) = parts.entry(material).or_insert_with(|| {
-            let part = TerrainPart {
-                material,
-                positions: Vec::new(),
-                normals: Vec::new(),
-                indices: Vec::new(),
-            };
-            (part, vec![u32::MAX; mesh.positions.len()])
-        });
-        let [a, b, c] = tri.map(|v| {
-            let slot = &mut remap[v as usize];
-            if *slot == u32::MAX {
-                *slot = part.positions.len() as u32;
-                part.positions
-                    .push(unity_to_bevy(voxel_to_world(mesh.positions[v as usize])));
-                part.normals.push(unity_to_bevy(mesh.normals[v as usize]));
-            }
-            *slot
-        });
-        part.indices.extend([a, c, b]);
+/// Partitions a terrain mesh by material with soft transitions across boundaries.
+/// The base material forms the solid foundation, while overlay materials fade out
+/// at edges using per-vertex blend weights.
+pub fn split_by_material(mesh: &sn_mesh::Mesh, layers: &[i32; 256]) -> Vec<TerrainPart> {
+    if mesh.triangles.is_empty() {
+        return Vec::new();
     }
-    parts.into_values().map(|(part, _)| part).collect()
+
+    let n_verts = mesh.positions.len();
+    let n_tris = mesh.triangles.len();
+
+    // 1. Identify all materials used in this mesh and their triangle counts.
+    let mut mat_tri_counts: HashMap<u8, usize> = HashMap::new();
+    for &mat in &mesh.triangle_materials {
+        *mat_tri_counts.entry(mat).or_default() += 1;
+    }
+
+    // Fast path: if there is only 1 material, no blending is needed.
+    if mat_tri_counts.len() <= 1 {
+        let &mat = mesh.triangle_materials.first().unwrap_or(&0);
+        let mut positions = Vec::with_capacity(n_verts);
+        let mut normals = Vec::with_capacity(n_verts);
+        let mut uvs = Vec::with_capacity(n_verts);
+        for i in 0..n_verts {
+            positions.push(unity_to_bevy(voxel_to_world(mesh.positions[i])));
+            normals.push(unity_to_bevy(mesh.normals[i]));
+            uvs.push([1.0, 0.0]);
+        }
+        let mut indices = Vec::with_capacity(n_tris * 3);
+        for tri in &mesh.triangles {
+            indices.extend([tri[0], tri[2], tri[1]]);
+        }
+        return vec![TerrainPart {
+            material: mat,
+            positions,
+            normals,
+            uvs,
+            indices,
+        }];
+    }
+
+    // 2. Count total adjacent triangles and build neighbor graph for Laplacian smoothing.
+    let mut vert_total_adj = vec![0u16; n_verts];
+    let mut neighbors: Vec<Vec<u32>> = vec![Vec::new(); n_verts];
+
+    for (tri, &mat) in mesh.triangles.iter().zip(&mesh.triangle_materials) {
+        let _ = mat;
+        for i in 0..3 {
+            let u = tri[i];
+            let v = tri[(i + 1) % 3];
+            vert_total_adj[u as usize] += 1;
+            neighbors[u as usize].push(v);
+            neighbors[v as usize].push(u);
+        }
+    }
+
+    for nbrs in &mut neighbors {
+        nbrs.sort_unstable();
+        nbrs.dedup();
+    }
+
+    // 3. Sort materials: lowest layer first (as base), ties broken by triangle count (most common first).
+    let mut sorted_mats: Vec<u8> = mat_tri_counts.keys().copied().collect();
+    sorted_mats.sort_by(|&a, &b| {
+        let la = layers[usize::from(a)];
+        let lb = layers[usize::from(b)];
+        la.cmp(&lb).then_with(|| mat_tri_counts[&b].cmp(&mat_tri_counts[&a]))
+    });
+
+    let base_mat = sorted_mats[0];
+
+    // Compute raw per-material triangle counts per vertex
+    let mut vert_mat_tris: HashMap<u8, Vec<u16>> = HashMap::new();
+    for (tri, &mat) in mesh.triangles.iter().zip(&mesh.triangle_materials) {
+        let counts = vert_mat_tris.entry(mat).or_insert_with(|| vec![0u16; n_verts]);
+        for &v in tri {
+            counts[v as usize] += 1;
+        }
+    }
+
+    // Compute smoothed weights w1 for each secondary material
+    let mut smoothed_weights: HashMap<u8, Vec<f32>> = HashMap::new();
+    for &mat in &sorted_mats[1..] {
+        let raw_counts = &vert_mat_tris[&mat];
+        let mut w0 = vec![0.0f32; n_verts];
+        for v in 0..n_verts {
+            let tot = vert_total_adj[v];
+            if tot > 0 {
+                w0[v] = raw_counts[v] as f32 / tot as f32;
+            }
+        }
+
+        // 1 step of Laplacian smoothing
+        let mut w1 = vec![0.0f32; n_verts];
+        for v in 0..n_verts {
+            let nbrs = &neighbors[v];
+            if nbrs.is_empty() {
+                w1[v] = w0[v];
+            } else {
+                let nbr_sum: f32 = nbrs.iter().map(|&n| w0[n as usize]).sum();
+                w1[v] = 0.5 * w0[v] + 0.5 * (nbr_sum / nbrs.len() as f32);
+            }
+        }
+        smoothed_weights.insert(mat, w1);
+    }
+
+    let mut parts = Vec::new();
+
+    // 4. Base Material Part:
+    // Solid foundation for the entire batch surface (100% opaque, uvs = [1.0, 0.0]).
+    {
+        let mut positions = Vec::with_capacity(n_verts);
+        let mut normals = Vec::with_capacity(n_verts);
+        let mut uvs = Vec::with_capacity(n_verts);
+        for i in 0..n_verts {
+            positions.push(unity_to_bevy(voxel_to_world(mesh.positions[i])));
+            normals.push(unity_to_bevy(mesh.normals[i]));
+            uvs.push([1.0, 0.0]);
+        }
+        let mut indices = Vec::with_capacity(n_tris * 3);
+        for tri in &mesh.triangles {
+            indices.extend([tri[0], tri[2], tri[1]]);
+        }
+        parts.push(TerrainPart {
+            material: base_mat,
+            positions,
+            normals,
+            uvs,
+            indices,
+        });
+    }
+
+    // 5. Overlay Material Parts:
+    // Secondary materials include their own triangles plus boundary triangles touching their region.
+    for &mat in &sorted_mats[1..] {
+        let w = &smoothed_weights[&mat];
+        let mut part_positions = Vec::new();
+        let mut part_normals = Vec::new();
+        let mut part_uvs = Vec::new();
+        let mut part_indices = Vec::new();
+        let mut remap = vec![u32::MAX; n_verts];
+
+        for (tri, &tri_mat) in mesh.triangles.iter().zip(&mesh.triangle_materials) {
+            let touches = tri_mat == mat || tri.iter().any(|&v| w[v as usize] > 0.005);
+            if !touches {
+                continue;
+            }
+
+            let [a, b, c] = tri.map(|v| {
+                let slot = &mut remap[v as usize];
+                if *slot == u32::MAX {
+                    *slot = part_positions.len() as u32;
+                    part_positions.push(unity_to_bevy(voxel_to_world(mesh.positions[v as usize])));
+                    part_normals.push(unity_to_bevy(mesh.normals[v as usize]));
+                    part_uvs.push([w[v as usize].clamp(0.0, 1.0), 0.0]);
+                }
+                *slot
+            });
+            part_indices.extend([a, c, b]);
+        }
+
+        if !part_indices.is_empty() {
+            parts.push(TerrainPart {
+                material: mat,
+                positions: part_positions,
+                normals: part_normals,
+                uvs: part_uvs,
+                indices: part_indices,
+            });
+        }
+    }
+
+    parts
 }
 
 /// Triangles uploaded to the GPU per frame at most, so a burst of finished
@@ -498,6 +654,7 @@ pub fn stream(
             );
             mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, part.positions);
             mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, part.normals);
+            mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, part.uvs);
             mesh.insert_indices(Indices::U32(part.indices));
             let mesh = Mesh3d(meshes.add(mesh));
             // The game's material if we have one, else a debug colour.
@@ -534,5 +691,55 @@ pub fn stream(
                 triangles,
             },
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_split_by_material_single_material() {
+        let mesh = sn_mesh::Mesh {
+            positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            normals: vec![[0.0, 0.0, 1.0]; 3],
+            triangles: vec![[0, 1, 2]],
+            triangle_materials: vec![5],
+        };
+        let layers = [0i32; 256];
+        let parts = split_by_material(&mesh, &layers);
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0].material, 5);
+        assert_eq!(parts[0].uvs, vec![[1.0, 0.0]; 3]);
+    }
+
+    #[test]
+    fn test_split_by_material_blending() {
+        let mesh = sn_mesh::Mesh {
+            positions: vec![
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [2.0, 1.0, 0.0],
+            ],
+            normals: vec![[0.0, 0.0, 1.0]; 4],
+            triangles: vec![[0, 1, 2], [2, 1, 3]],
+            triangle_materials: vec![1, 2],
+        };
+        let mut layers = [0i32; 256];
+        layers[1] = -10; // material 1 is base
+        layers[2] = 0;   // material 2 is overlay
+        let parts = split_by_material(&mesh, &layers);
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0].material, 1);
+        assert_eq!(parts[1].material, 2);
+        // Base covers both triangles (6 indices)
+        assert_eq!(parts[0].indices.len(), 6);
+        // Overlay covers triangle 1 and extends into boundary triangle 0
+        assert_eq!(parts[1].indices.len(), 6);
+        // Verify overlay vertices have blend weights in [0.0, 1.0]
+        for uv in &parts[1].uvs {
+            assert!(uv[0] >= 0.0 && uv[0] <= 1.0);
+        }
     }
 }

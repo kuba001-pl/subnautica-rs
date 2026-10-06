@@ -4,9 +4,7 @@ Described build: game build `10`. Code: `crates/sn-unity` (readers),
 `crates/sn-assets` (`terrain_materials`), shader `apps/sn-client/src/terrain.wgsl`.
 Inspector: `sn-inspect terrain-materials`.
 
-Each fact is marked **confirmed** (with how) or **hypothesis**.
-
-## The chain — confirmed
+Each fact is marked **confirmed** (with how) or **hypothesis**.\n\n## The chain — confirmed
 
 ```
 octree node type id (u8, 1–255; 0 = empty)
@@ -97,6 +95,11 @@ triplanar shader: cap textures on the Y projection, side textures on X and Z,
 weights from the surface normal (power 4), normal maps combined with the
 "whiteout" blend. See `apps/sn-client/src/terrain.wgsl`.
 
-**Not done**: soft blending between neighbouring block types. Each triangle
-gets exactly one material (the solid voxel on its edge), so borders follow the
-voxel grid and look blocky, especially for patchy materials like red grass.
+**Soft material transitions (M6b)**:
+Materials are sorted by `VoxelandBlockType.layer` (lower layers like bedrock/rock
+form the base foundation; higher layers like sand or grass are overlays).
+`split_by_material` computes per-vertex blend weights with 1-ring Laplacian smoothing.
+Overlays extend into boundary triangles with vertex weights passed in `uv.x`.
+In `terrain.wgsl`, a 4x4 Bayer screen-space ordered dither discard blends overlay
+materials seamlessly into the base layer, completely eliminating blocky voxel borders
+while preserving full depth-buffer correctness and 300+ fps rendering performance.
