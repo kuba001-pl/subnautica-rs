@@ -13,6 +13,7 @@ sn-world.workspace = true
 sn-install.workspace = true
 sn-mesh.workspace = true
 sn-terrain.workspace = true
+sn-unity.workspace = true
 
 [lints]
 workspace = true

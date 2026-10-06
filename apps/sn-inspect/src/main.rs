@@ -6,6 +6,7 @@ mod game;
 mod mesh;
 mod octree;
 mod orient;
+mod unity;
 mod voxel;
 
 use std::path::PathBuf;
@@ -32,6 +33,10 @@ Commands:
                          every 8th voxel) and write an OBJ to out/
   voxel <X> <Y> <Z>      What is at a Unity world position; terrain surfaces
                          in that column
+  unity <FILE>...        List the contents of Unity files (bundles, *.assets);
+                         paths relative to Subnautica_Data or absolute
+  unity --types <FILE>   The same, with class names
+  unity --all            Parse every Unity file of the game and print totals
   orient <X> <Y> <Z>     Score candidate child/octree orders using a batch and
                          its +X/+Y/+Z neighbours (default batch: 12 18 12)
 ";
@@ -92,6 +97,9 @@ fn run(mut args: Vec<String>) -> Result<ExitCode> {
             };
             voxel::run(&game, [parse(x)?, parse(y)?, parse(z)?])
         }
+        ["unity", "--all"] => unity::all(&game),
+        ["unity", "--types", path] => unity::types(&game, path),
+        ["unity", paths @ ..] if !paths.is_empty() => unity::list(&game, paths),
         ["orient"] => orient::run(&game, BatchCoord::new(12, 18, 12)),
         ["orient", x, y, z] => orient::run(&game, parse_coord(x, y, z)?),
         _ => Err(format!(

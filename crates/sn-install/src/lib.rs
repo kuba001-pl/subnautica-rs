@@ -36,8 +36,11 @@ fn io_error(path: &Path, e: std::io::Error) -> Error {
     Error(format!("{}: {e}", path.display()))
 }
 
-/// The terrain data folder of an install (`.../SNUnmanagedData/Build<N>`).
+/// Folders of an install that we read from.
 pub struct GameData {
+    /// `Subnautica_Data`: Unity serialized files (`*.assets`, `level0`, …).
+    pub data_dir: PathBuf,
+    /// The terrain data folder (`.../SNUnmanagedData/Build<N>`).
     pub build_dir: PathBuf,
 }
 
@@ -54,7 +57,8 @@ impl GameData {
                     ))
                 })?,
         };
-        let unmanaged = root.join("Subnautica_Data/StreamingAssets/SNUnmanagedData");
+        let data_dir = root.join("Subnautica_Data");
+        let unmanaged = data_dir.join("StreamingAssets/SNUnmanagedData");
         let entries = std::fs::read_dir(&unmanaged).map_err(|e| {
             Error(format!(
                 "{} does not look like a Subnautica install (can't read {}: {e})",
@@ -73,7 +77,60 @@ impl GameData {
             .max_by_key(|(n, _)| *n)
             .map(|(_, path)| path)
             .ok_or_else(|| Error(format!("no Build<N> folder in {}", unmanaged.display())))?;
-        Ok(GameData { build_dir })
+        Ok(GameData {
+            data_dir,
+            build_dir,
+        })
+    }
+
+    /// Addressables bundles (`StreamingAssets/aa/StandaloneWindows64`).
+    pub fn bundle_dir(&self) -> PathBuf {
+        self.data_dir.join("StreamingAssets/aa/StandaloneWindows64")
+    }
+
+    /// Reads a whole file. Relative paths are taken from `Subnautica_Data`.
+    pub fn read_file(&self, path: &Path) -> Result<Vec<u8>> {
+        let full = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            self.data_dir.join(path)
+        };
+        std::fs::read(&full).map_err(|e| io_error(&full, e))
+    }
+
+    /// Unity files outside the bundles: `*.assets`, `level<N>` and
+    /// `globalgamemanagers` in `Subnautica_Data` (sorted).
+    pub fn serialized_files(&self) -> Result<Vec<PathBuf>> {
+        let mut out = Vec::new();
+        let dir = &self.data_dir;
+        for entry in std::fs::read_dir(dir).map_err(|e| io_error(dir, e))? {
+            let path = entry.map_err(|e| io_error(dir, e))?.path();
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            let is_level = name
+                .strip_prefix("level")
+                .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
+            if path.is_file()
+                && (name.ends_with(".assets") || is_level || name == "globalgamemanagers")
+            {
+                out.push(path);
+            }
+        }
+        out.sort();
+        Ok(out)
+    }
+
+    /// All `*.bundle` files in [`GameData::bundle_dir`] (sorted).
+    pub fn bundles(&self) -> Result<Vec<PathBuf>> {
+        let dir = self.bundle_dir();
+        let mut out = Vec::new();
+        for entry in std::fs::read_dir(&dir).map_err(|e| io_error(&dir, e))? {
+            let path = entry.map_err(|e| io_error(&dir, e))?.path();
+            if path.extension().is_some_and(|e| e == "bundle") {
+                out.push(path);
+            }
+        }
+        out.sort();
+        Ok(out)
     }
 
     pub fn octree_dir(&self) -> PathBuf {

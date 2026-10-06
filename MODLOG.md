@@ -2,6 +2,36 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-06 — M5: Unity bundles and serialized files
+
+**What:**
+- New crate `sn-unity` (layer 1). `Bundle::parse` (UnityFS format 6–8; LZ4/LZ4HC/stored blocks; LZMA is
+  reported as unsupported because the game has none) and `SerializedFile::parse` (versions 14–22: types, optional
+  type trees, object table, externals) with `object_data`. Also `class_name` (built-in class ids) and
+  `write_bundle` (synthetic bundles for tests). Bounds-checked reader: errors carry byte offsets.
+- New dependency: `lz4_flex` 0.14 (MIT, pure Rust): LZ4 block decompression for bundles.
+- `sn-install`: `data_dir`, `bundle_dir`, `read_file`, `serialized_files`, `bundles`.
+- `sn-inspect unity <FILE>…` (canonical listing), `unity --types` (with class names), `unity --all`.
+- `docs/formats/unity.md`.
+
+**Findings:** Unity 2019.4.36f1, serialized format 21 and UnityFS 7 everywhere; **no type trees in any file**
+(the risk from DESIGN.md is real); no LZMA. 5,472 files, 5,485 serialized files, 423,677 objects.
+
+**Verified (2026-10-06):**
+1. Oracle: UnityPy 1.25.4 in a temp venv (outside the repo), with a summary script in the same temp folder.
+   Ran on 35 files: the 5 player files, the 5 largest bundles and 25 random bundles (seed 5).
+   Our `sn-inspect unity` output is **identical** (395 lines: versions, type and object counts per class,
+   object byte totals, externals, resource sizes).
+2. `sn-inspect unity --all`: every file parses, 0 errors, 2.9 s.
+3. `cargo test -p sn-unity -- --include-ignored`: synthetic round trips (with/without LZ4), every truncation
+   and every single-byte corruption parses without panicking, and the real-data test (5,472 / 5,485 / 423,677,
+   0 type trees) passes. Workspace: 42 tests, clippy clean.
+
+**Dead end:** the first oracle diff failed only on Windows line endings (`
+` from Python), which had also
+crept into the random file names. Fixed in the harness, not the code.
+**Scope change:** Addressables catalog moved from M5 to M7 (first user; avoids JSON/base64 dependencies now).
+
 ## 2026-10-06 — M4: terrain streaming and levels of detail
 
 **What:**

@@ -15,6 +15,7 @@ sn-world = { path = "crates/sn-world" }
 sn-mesh = { path = "crates/sn-mesh" }
 sn-install = { path = "crates/sn-install" }
 sn-terrain = { path = "crates/sn-terrain" }
+sn-unity = { path = "crates/sn-unity" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

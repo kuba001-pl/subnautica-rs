@@ -3386,6 +3386,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
 
 [[package]]
+name = "lz4_flex"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ecbdfe44b1bd960b68170b417450a628c43f7cf56bb3c5317e61cb230ee7f226"
+
+[[package]]
 name = "mach2"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4769,6 +4775,7 @@ dependencies = [
  "sn-mesh",
  "sn-octree",
  "sn-terrain",
+ "sn-unity",
  "sn-world",
 ]
 
@@ -4796,6 +4803,13 @@ dependencies = [
  "sn-mesh",
  "sn-octree",
  "sn-world",
+]
+
+[[package]]
+name = "sn-unity"
+version = "0.0.0"
+dependencies = [
+ "lz4_flex",
 ]
 
 [[package]]

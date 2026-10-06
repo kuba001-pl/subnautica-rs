@@ -1,6 +1,6 @@
 # subnautica-rs — Design
 
-Status: **M1–M4 done** (2026-10-06). Everything after M4 is a plan, not code.
+Status: **M1–M5 done** (2026-10-06). Everything after M5 is a plan, not code.
 
 ## 1. Goal
 
@@ -167,9 +167,9 @@ reach them — expect the far end of this list to change.
 
 | # | Goal | Done when |
 |---|---|---|
-| **M5** | `sn-unity`: read UnityFS bundles + SerializedFiles, list objects, read Addressables catalog. `sn-inspect unity ls`. | Object counts/types for `resources.assets` and N bundles match UnityPy on the dev machine. |
+| **M5** ✅ | `sn-unity`: read UnityFS bundles + SerializedFiles, list objects (`sn-inspect unity`). The Addressables catalog moved to M7, its first user. | Object counts/types for `resources.assets` and N bundles match UnityPy on the dev machine. |
 | **M6** | Textures + terrain look: decode Texture2D (BC1/3/5/7; detect crunch), map octree type ids → terrain materials, triplanar shader. | Terrain textured; decoded texture hashes match UnityPy output for a sample set. |
-| **M7** | World entities: decode CellsCache / BatchObjectsCache (likely protobuf-net), resolve prefabs → meshes, spawn static flora/rocks; biome map. | Entity counts per batch logged and stable; Safe Shallows shows coral/rocks in place. |
+| **M7** | World entities: decode CellsCache / BatchObjectsCache (likely protobuf-net), read the Addressables catalog, resolve prefabs → meshes, spawn static flora/rocks; biome map. | Entity counts per batch logged and stable; Safe Shallows shows coral/rocks in place. |
 
 ### Phase C — Being underwater
 
@@ -253,7 +253,7 @@ Out of scope for M1: density semantics, meshing, rendering, Bevy.
 
 | Risk | Impact | Mitigation |
 |---|---|---|
-| Asset bundles have type trees stripped | Can't decode MonoBehaviours generically | Derive layouts from `Assembly-CSharp.dll` metadata at runtime (our own reader), document findings, never commit the DLL or generated dumps |
+| Asset bundles have type trees stripped — **confirmed in M5: no file has them** | Can't decode any object generically | Built-in classes (Texture2D, Mesh, Material, …): hand-written readers for the Unity 2019.4 layouts, checked against UnityPy. MonoBehaviours: derive layouts from `Assembly-CSharp.dll` metadata at runtime (our own reader); never commit the DLL or generated dumps |
 | Crunch-compressed textures | Need a crunch decoder | Pure-Rust port or a licence-compatible crate; decide at M6 |
 | Entity caches are protobuf-net with game-specific schemas | M7 slips | Build schemas incrementally; count-only validation first |
 | 1.2 GB of terrain | Memory/IO pressure | Stream and evict by batch; mmap files; keep only meshes + nearby octrees resident |

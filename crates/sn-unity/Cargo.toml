@@ -1,0 +1,15 @@
+[package]
+name = "sn-unity"
+description = "Readers for Unity container formats: UnityFS bundles and serialized files"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+# LZ4 block decompression (UnityFS bundles use LZ4/LZ4HC blocks). Pure Rust.
+lz4_flex = { version = "0.14", default-features = false, features = ["std", "safe-decode", "safe-encode"] }
+
+[lints]
+workspace = true
