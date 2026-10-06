@@ -2,6 +2,31 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-06 — M6b: the game's per-level cap on material layers
+
+**Why:** the redone M6b drew every type of every chunk at every distance:
+~8,400 blended draws in the start area, ~9 ms per frame. The game doesn't.
+`StreamingAssets/SNUnmanagedData/clipmaps-{high,medium,low}.json` (the
+terrain clipmap settings) cap the types per chunk per level (`maxBlockTypes`,
+"high": 32, 8, 2, 1, 1), and the chunk mesher keeps the most-used types
+(by face count) before sorting by layer. The files also confirm
+`chunkMeshRes` 16 and the 9-vertex mesh at level 0 only.
+
+**What:** `LayerSettings::max_types`; the client caps our levels 0–3 at
+32, 2, 1, 1 (matched to the game's levels by sample spacing; that mapping is
+ours). One new test in `sn-mesh` (8 there now).
+
+**Verified (2026-10-06, RTX 3080):**
+1. `cargo test --workspace`, clippy, fmt: pass.
+2. `sn-client --benchmark 120`: start area 1,393 batches, 2,050 meshes (was 10,076),
+   7.8 M triangles; mean 6.06 ms (165 fps, was 12.4 ms), p95 6.5 ms.
+3. `--flythrough 1700 -80 0`, three runs: mean 15.4, 3.2 and 3.8 ms. The first
+   run is an outlier (the GPU sat at 225 MHz idle clocks; not investigated
+   further); the other two give 315 / 260 fps. Peak memory 1.16 GiB.
+4. Visual: near terrain unchanged (`out/client-benchmark.png` vs
+   `out/client-benchmark-uncapped.png`); far chunks show only their dominant
+   materials. **Not compared against the real game.**
+
 ## 2026-10-06 — M6b redone: the game's own material layering and terrain shader
 
 **Why:** the first M6b (entry below) didn't match the game, and broke docs.

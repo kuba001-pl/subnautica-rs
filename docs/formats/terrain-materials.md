@@ -138,6 +138,13 @@ repository; below is our own description.
   type. Its gloss is the average of its faces' block-type gloss
   (**hypothesis**: the block type's cached gloss is the material's `_Gloss`).
   Both go to the mesh as `uv0 = (weight, gloss)`. The first draw uses weight 1.
+- Each level of the terrain clipmap caps the types per chunk
+  (`maxBlockTypes` in `StreamingAssets/SNUnmanagedData/clipmaps-*.json`;
+  "high" preset: levels 0–4 allow 32, 8, 2, 1, 1). Over the cap, the chunk
+  keeps the types with the most faces, then sorts those by layer; faces of
+  dropped types only get the first draw. The same files confirm
+  `chunkMeshRes` 16 at run time, and that only level 0 of "high" uses the
+  9-vertex mesh (`useLowMesh` false).
 - Near the camera ("hi-res" chunks) every face has 9 vertices — corners,
   edge midpoints, centre — and 8 triangles; a centre vertex touches only its
   own face, so a lone face of one type still reaches weight 1 in its middle.
@@ -180,6 +187,9 @@ All in Unity world space, `p` = position, `n` = unit normal.
 `sn_mesh::build_layers` rebuilds the layers from our surface-nets mesh: a
 surface-nets quad is one face, it belongs to the chunk holding the solid cell
 behind it, and faces are split into 9 vertices at level of detail 0 only.
+Types per chunk are capped at 32, 2, 1, 1 for our levels 0–3 (the "high"
+preset's caps for levels with the same sample spacing; mapping our levels to
+the game's clipmap levels is our choice, not the game's).
 Layers with the same type and rank in a batch become one mesh.
 
 The client (`apps/sn-client/src/terrain.wgsl`) ports steps 1–6 into Bevy's PBR

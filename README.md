@@ -32,9 +32,8 @@ Tested on Windows 11 with game build 10 (Steam):
   with the game's own terrain materials, blended between neighbouring
   materials the way the game does it (layers per chunk, soft ragged borders,
   cap/side transitions by slope). Flying from the lifepod to the crater edge
-  keeps memory under 1.3 GiB, at about 200 fps on average on an RTX 3080
-  (80 fps in the dense start area: the blended layers cost about 9 ms per
-  frame there in draw calls; to be optimised).
+  keeps memory under 1.2 GiB, at 260–315 fps on average on an RTX 3080
+  (165 fps in the dense start area).
 
 ## What doesn't work yet
 

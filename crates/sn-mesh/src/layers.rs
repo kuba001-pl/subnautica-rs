@@ -33,6 +33,9 @@ pub struct LayerSettings<'a> {
     pub cell: f32,
     /// Split faces into 9 vertices (the game's high-resolution chunks).
     pub subdivide: bool,
+    /// At most this many types get a draw per chunk: the ones with the most
+    /// faces. Faces of the others show the chunk's first type.
+    pub max_types: usize,
 }
 
 /// The faces of one draw: one material at one place in the chunk order.
@@ -260,9 +263,15 @@ pub fn build_layers(mesh: &Mesh, settings: &LayerSettings) -> Vec<LayerMesh> {
     keys.sort_unstable(); // deterministic output
     for key in keys {
         let chunk = &chunks[&key];
-        let mut used: Vec<u8> = chunk.iter().map(|&f| faces[f as usize].material).collect();
-        used.sort_unstable();
-        used.dedup();
+        let mut count = [0u32; 256];
+        for &f in chunk {
+            count[usize::from(faces[f as usize].material)] += 1;
+        }
+        let mut used: Vec<u8> = (0..=255u8).filter(|&t| count[usize::from(t)] > 0).collect();
+        if used.len() > settings.max_types.max(1) {
+            used.sort_by_key(|&t| (std::cmp::Reverse(count[usize::from(t)]), t));
+            used.truncate(settings.max_types.max(1));
+        }
         used.sort_by_key(|&t| (settings.layer[usize::from(t)], t));
         for (rank, &material) in used.iter().enumerate() {
             let rank = rank.min(255) as u8;
@@ -394,6 +403,7 @@ mod tests {
             chunk: 16.0,
             cell: 1.0,
             subdivide,
+            max_types: 32,
         }
     }
 
@@ -510,5 +520,27 @@ mod tests {
         let layers = build_layers(&mesh, &settings(&layer, &gloss, true));
         assert_eq!(layers.len(), 1);
         assert_eq!(layers[0].triangles.len(), 8 + 1);
+    }
+
+    #[test]
+    fn type_cap_keeps_the_most_used_types() {
+        // Type 1: 1 face, type 2: 3 faces, type 3: 12 faces. Capped at 2,
+        // type 1 gets no draw and its face shows type 2 (first by id).
+        let mesh = grid(4, |x, z| match (x, z) {
+            (0, 0) => 1,
+            (1..=3, 0) => 2,
+            _ => 3,
+        });
+        let (layer, gloss) = ([0; 256], [0.0; 256]);
+        let mut s = settings(&layer, &gloss, false);
+        s.max_types = 2;
+        let layers = build_layers(&mesh, &s);
+        let order: Vec<(u8, u8)> = layers.iter().map(|l| (l.material, l.rank)).collect();
+        assert_eq!(order, vec![(2, 0), (3, 1)]);
+        assert_eq!(layers[0].triangles.len(), 32);
+        s.max_types = 1;
+        let layers = build_layers(&mesh, &s);
+        let order: Vec<(u8, u8)> = layers.iter().map(|l| (l.material, l.rank)).collect();
+        assert_eq!(order, vec![(3, 0)]);
     }
 }

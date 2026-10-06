@@ -418,6 +418,11 @@ pub struct BlockSettings {
 /// at coarser levels of detail a chunk covers as many coarser cells.
 const CHUNK_CELLS: f32 = 16.0;
 
+/// Types drawn per chunk at each level of detail. The game's "high" preset
+/// (`clipmaps-high.json`) allows 32 at full resolution, 2 at half, 1 beyond;
+/// we map its levels to ours by sample spacing.
+const MAX_TYPES: [usize; MAX_LOD as usize + 1] = [32, 2, 1, 1];
+
 /// The game's material layers for a batch mesh (see `sn_mesh::build_layers`).
 /// Faces are split into 9 vertices only at the finest level, like the game's
 /// high-resolution chunks.
@@ -431,6 +436,7 @@ fn layered_parts(mesh: &sn_mesh::Mesh, blocks: &BlockSettings, lod: u32) -> Vec<
             chunk: CHUNK_CELLS * cell,
             cell,
             subdivide: lod == 0,
+            max_types: MAX_TYPES[lod as usize],
         },
     );
     let mut parts: Vec<TerrainPart> = layers
