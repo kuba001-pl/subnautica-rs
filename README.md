@@ -23,15 +23,16 @@ Tested on Windows 11 with game build 10 (Steam):
 - Reading the world index (`index.txt`): world, octree and batch dimensions.
 - Turning terrain into meshes (surface nets) and exporting them as OBJ for
   Blender. Meshes of neighbouring batches join without holes.
-- `sn-client`: a desktop window (Bevy) with a fly camera over the terrain
-  around the lifepod start (3×3×3 batches, 2 M triangles, about 280 fps on an
-  RTX 3080). Terrain uses false colours per material id.
+- `sn-client`: a desktop window (Bevy) with a fly camera. Terrain streams in
+  and out as you move, with four levels of detail out to 1.2 km. Flying from
+  the lifepod to the crater edge keeps memory under 0.9 GiB, at well over
+  100 fps on an RTX 3080. Terrain uses false colours per material id.
 
 ## What doesn't work yet
 
-Everything else: streaming more terrain as you move, real terrain textures,
-water surface, models, world objects, player, audio, multiplayer. Next up is
-M4: streaming and level of detail.
+Everything else: real terrain textures, water surface, models, world
+objects, player, audio, multiplayer. Next up is M5: reading Unity asset
+bundles.
 Linux/macOS: not tested.
 
 ## Try it
@@ -48,9 +49,12 @@ cargo run -p sn-inspect -- octree 12 18 12  # statistics for one terrain batch
 cargo run -p sn-inspect -- octree --all     # decode and validate every batch
 cargo run -p sn-inspect -- orient 7 17 10   # show how octree data maps onto space
 cargo run -p sn-inspect -- mesh 12 18 12 --radius 1   # Safe Shallows → out/*.obj
+cargo run -p sn-inspect -- mesh 12 18 12 --radius 1 --lod 2   # coarser level of detail
+cargo run -p sn-inspect -- voxel 0 -10 0    # what's at a world position, surfaces below
 
-cargo run -p sn-client                      # fly around the Safe Shallows
-cargo run -p sn-client -- --radius 2        # more terrain (5x5x5 batches)
+cargo run -p sn-client                      # fly around, starting at the lifepod
+cargo run -p sn-client -- --view 2000       # see further
+cargo run -p sn-client -- --flythrough 1700 -80 0   # automated test flight to the crater edge
 
 cargo test --workspace                      # tests that don't need the game
 cargo test -p sn-octree -- --ignored        # full-world test (needs SUBNAUTICA_DIR)

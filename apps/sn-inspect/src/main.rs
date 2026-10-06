@@ -6,6 +6,7 @@ mod game;
 mod mesh;
 mod octree;
 mod orient;
+mod voxel;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -25,9 +26,12 @@ Commands:
   octree <X> <Y> <Z>     Decode one terrain batch and print statistics
   octree --all           Decode and validate every terrain batch
   density <X> <Y> <Z>    Relate density bytes to empty/solid and surface voxels
-  mesh <X> <Y> <Z> [--radius <R>]
+  mesh <X> <Y> <Z> [--radius <R>] [--lod <L>]
                          Mesh the terrain of a batch (or a cube of batches
-                         R around it) and write an OBJ to out/
+                         R around it) at level of detail L (0 = full, 3 =
+                         every 8th voxel) and write an OBJ to out/
+  voxel <X> <Y> <Z>      What is at a Unity world position; terrain surfaces
+                         in that column
   orient <X> <Y> <Z>     Score candidate child/octree orders using a batch and
                          its +X/+Y/+Z neighbours (default batch: 12 18 12)
 ";
@@ -64,12 +68,29 @@ fn run(mut args: Vec<String>) -> Result<ExitCode> {
         ["octree", "--all"] => octree::all(&game),
         ["octree", x, y, z] => octree::one(&game, parse_coord(x, y, z)?),
         ["density", x, y, z] => density::run(&game, parse_coord(x, y, z)?),
-        ["mesh", x, y, z] => mesh::run(&game, parse_coord(x, y, z)?, 0),
-        ["mesh", x, y, z, "--radius", r] => {
-            let radius = r
-                .parse()
-                .map_err(|_| format!("radius {r:?} is not a whole number"))?;
-            mesh::run(&game, parse_coord(x, y, z)?, radius)
+        ["mesh", x, y, z, options @ ..] => {
+            let mut radius = 0;
+            let mut lod = 0;
+            let mut it = options.iter();
+            while let Some(flag) = it.next() {
+                let value = it.next().ok_or(format!("{flag} needs a value"))?;
+                let value: i64 = value
+                    .parse()
+                    .map_err(|_| format!("{flag} value {value:?} is not a whole number"))?;
+                match *flag {
+                    "--radius" => radius = value as i32,
+                    "--lod" => lod = value as u32,
+                    _ => return Err(format!("unknown mesh option {flag}")),
+                }
+            }
+            mesh::run(&game, parse_coord(x, y, z)?, radius, lod)
+        }
+        ["voxel", x, y, z] => {
+            let parse = |s: &str| {
+                s.parse::<f32>()
+                    .map_err(|_| format!("{s:?} is not a number"))
+            };
+            voxel::run(&game, [parse(x)?, parse(y)?, parse(z)?])
         }
         ["orient"] => orient::run(&game, BatchCoord::new(12, 18, 12)),
         ["orient", x, y, z] => orient::run(&game, parse_coord(x, y, z)?),

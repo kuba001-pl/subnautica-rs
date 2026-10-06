@@ -168,3 +168,57 @@ fn origin_offsets_positions() {
         );
     }
 }
+
+#[test]
+fn step_scales_positions() {
+    let unit = surface_nets(&sphere([12, 12, 12], [5.5, 5.5, 5.5], 3.0));
+    let coarse = surface_nets(
+        &sphere([12, 12, 12], [5.5, 5.5, 5.5], 3.0)
+            .with_origin([-8, 16, 0])
+            .with_step(4),
+    );
+    assert_eq!(unit.triangles, coarse.triangles);
+    for (a, b) in unit.positions.iter().zip(&coarse.positions) {
+        let expected = [a[0] * 4.0 - 8.0, a[1] * 4.0 + 16.0, a[2] * 4.0];
+        assert!(
+            (0..3).all(|i| (expected[i] - b[i]).abs() < 1e-3),
+            "{expected:?} vs {b:?}"
+        );
+    }
+}
+
+#[test]
+fn skirts_hang_from_every_open_edge_and_keep_orientation() {
+    use sn_mesh::add_skirts;
+    // A sphere cut open by the edge of the field.
+    let mut mesh = surface_nets(&sphere([14, 14, 14], [6.0, 6.0, 12.0], 5.0));
+    let before = edge_report(&mesh);
+    assert!(before.boundary > 0);
+    let triangles = mesh.triangles.len();
+
+    let quads = add_skirts(&mut mesh, 2.0);
+    assert_eq!(quads, before.boundary);
+    assert_eq!(mesh.triangles.len(), triangles + 2 * quads);
+    assert_eq!(mesh.triangle_materials.len(), mesh.triangles.len());
+    assert_eq!(mesh.normals.len(), mesh.positions.len());
+    let after = edge_report(&mesh);
+    // The old open edges are now shared; the skirts' bottom edges are open.
+    assert_eq!(after.boundary, before.boundary);
+    assert_eq!(after.inconsistent, 0, "{after:?}");
+
+    // Skirt vertices lie inside the sphere (moved into the solid).
+    for p in &mesh.positions[mesh.positions.len() - quads..] {
+        let d: f32 = [p[0] - 6.0, p[1] - 6.0, p[2] - 12.0]
+            .iter()
+            .map(|c| c * c)
+            .sum::<f32>()
+            .sqrt();
+        assert!(d < 5.0, "skirt vertex outside the solid: {d}");
+    }
+}
+
+#[test]
+fn closed_meshes_get_no_skirts() {
+    let mut mesh = surface_nets(&sphere([21, 21, 21], [10.0, 10.0, 10.0], 7.0));
+    assert_eq!(sn_mesh::add_skirts(&mut mesh, 2.0), 0);
+}

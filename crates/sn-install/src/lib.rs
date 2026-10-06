@@ -6,7 +6,8 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use sn_octree::{Batch, BatchGrid};
+use sn_octree::Batch;
+use sn_terrain::TerrainBatch;
 use sn_world::{BatchCoord, WorldIndex};
 
 /// Environment variable naming the folder that contains `Subnautica.exe`.
@@ -95,20 +96,32 @@ impl GameData {
         }
     }
 
-    /// Reads, parses and rasterizes a batch. `None` if it has no file or lies
-    /// outside the world.
-    pub fn load_batch(&self, index: &WorldIndex, coord: BatchCoord) -> Result<Option<BatchGrid>> {
-        let Some(dims) = index.batch_octree_dims(coord) else {
+    /// Reads and parses a batch and validates every octree in it. `None` if
+    /// it has no file or lies outside the world.
+    pub fn load_batch(
+        &self,
+        index: &WorldIndex,
+        coord: BatchCoord,
+    ) -> Result<Option<TerrainBatch>> {
+        let Some(octree_dims) = index.batch_octree_dims(coord) else {
             return Ok(None);
         };
         let Some(bytes) = self.read_batch(coord)? else {
             return Ok(None);
         };
         let batch = Batch::parse(&bytes).map_err(|e| Error(format!("batch {coord}: {e}")))?;
-        batch
-            .rasterize(dims)
-            .map(Some)
-            .map_err(|e| Error(format!("batch {coord}: {e}")))
+        if batch.octrees.len() != octree_dims.iter().product::<usize>() {
+            return Err(Error(format!(
+                "batch {coord}: {} octrees, expected {octree_dims:?}",
+                batch.octrees.len()
+            )));
+        }
+        for (i, octree) in batch.octrees.iter().enumerate() {
+            octree
+                .validate()
+                .map_err(|e| Error(format!("batch {coord} octree {i}: {e}")))?;
+        }
+        Ok(Some(TerrainBatch { batch, octree_dims }))
     }
 
     /// All batches that have an octree file, sorted. Also returns the names

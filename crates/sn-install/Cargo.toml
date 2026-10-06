@@ -9,6 +9,7 @@ publish.workspace = true
 
 [dependencies]
 sn-octree.workspace = true
+sn-terrain.workspace = true
 sn-world.workspace = true
 
 [lints]

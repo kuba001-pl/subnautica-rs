@@ -285,3 +285,48 @@ fn batch_rasterize_places_octrees_in_game_order() {
     assert_eq!(grid.get([1, 2, 32 + 3]).ty, 11);
     assert!(batch.rasterize([5, 5, 5]).is_err());
 }
+
+#[test]
+fn sampling_matches_rasterizing() {
+    use sn_octree::GAME_CHILD_ORDER;
+    let dims = [2, 1, 1];
+    let octrees = vec![
+        Octree::from_voxels(&seabed(), GAME_CHILD_ORDER),
+        Octree::from_voxels(&noise(9), GAME_CHILD_ORDER),
+    ];
+    let batch = Batch {
+        version: FORMAT_VERSION,
+        octrees,
+    };
+    let grid = batch.rasterize(dims).unwrap();
+    for z in 0..32 {
+        for y in 0..32 {
+            for x in 0..64 {
+                assert_eq!(batch.sample(dims, [x, y, z]), Some(grid.get([x, y, z])));
+            }
+        }
+    }
+    assert_eq!(batch.sample(dims, [64, 0, 0]), None);
+    assert_eq!(batch.sample(dims, [0, 32, 0]), None);
+}
+
+#[test]
+fn sampling_malformed_trees_does_not_panic() {
+    let broken = Octree {
+        nodes: vec![Node {
+            first_child: 1,
+            ..Node::default()
+        }],
+    };
+    assert_eq!(broken.sample([3, 4, 5], AxisOrder::XYZ), None);
+    let looping = Octree {
+        nodes: vec![
+            Node {
+                first_child: 1,
+                ..Node::default()
+            };
+            9
+        ],
+    };
+    assert_eq!(looping.sample([3, 4, 5], AxisOrder::XYZ), None);
+}

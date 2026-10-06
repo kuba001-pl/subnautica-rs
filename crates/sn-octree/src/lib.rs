@@ -144,3 +144,46 @@ impl Batch {
         Ok(BatchGrid { dims, voxels })
     }
 }
+
+impl Octree {
+    /// The voxel at `pos` (each coordinate < 32), found by walking down the
+    /// tree. `None` if the tree is malformed on the way.
+    pub fn sample(&self, pos: [usize; 3], order: AxisOrder) -> Option<Voxel> {
+        let mut index = 0;
+        let mut origin = [0usize; 3];
+        let mut size = OCTREE_SIZE;
+        loop {
+            let node = self.nodes.get(index)?;
+            if node.is_leaf() {
+                return Some(Voxel {
+                    ty: node.ty,
+                    density: node.density,
+                });
+            }
+            if size == 1 {
+                return None;
+            }
+            let half = size / 2;
+            let offset = [0, 1, 2].map(|a| usize::from(pos[a] >= origin[a] + half));
+            index = usize::from(node.first_child) + order.linearize(offset, [2, 2, 2]);
+            origin = [0, 1, 2].map(|a| origin[a] + offset[a] * half);
+            size = half;
+        }
+    }
+}
+
+impl Batch {
+    /// The voxel at `pos` (in voxels, relative to the batch corner) using the
+    /// game's layout. `None` if `pos` is outside the batch or the data is
+    /// malformed. `octree_dims` is the batch size in octrees.
+    pub fn sample(&self, octree_dims: [usize; 3], pos: [usize; 3]) -> Option<Voxel> {
+        let octree = pos.map(|p| p / OCTREE_SIZE);
+        if (0..3).any(|a| octree[a] >= octree_dims[a]) {
+            return None;
+        }
+        let index = GAME_OCTREE_ORDER.linearize(octree, octree_dims);
+        self.octrees
+            .get(index)?
+            .sample(pos.map(|p| p % OCTREE_SIZE), GAME_CHILD_ORDER)
+    }
+}

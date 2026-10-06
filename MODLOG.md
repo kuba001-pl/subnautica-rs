@@ -2,6 +2,42 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-06 — M4: terrain streaming and levels of detail
+
+**What:**
+- `sn-octree`: `Octree::sample` / `Batch::sample` look up one voxel by walking down the tree, so coarse
+  levels never expand whole batches.
+- `sn-mesh`: `Field::with_step` (sample spacing 1/2/4/8) and `add_skirts` (strips hanging from open edges
+  into the solid, to hide cracks between levels of detail).
+- `sn-terrain`: works on parsed `TerrainBatch`es (sampling) instead of fully expanded grids; `batch_field` /
+  `batch_mesh` take a level of detail (0..=3). `sn-install::load_batch` returns a validated `TerrainBatch`.
+- `sn-client`: `TerrainStreamer`. Worker threads with a queue rebuilt on every 8 m of camera movement
+  (missing batches first, then nearest); level of detail by distance to the batch box
+  (100 / 260 / 600 / 1200 m, scaled by `--view`) with 20 m hysteresis; old mesh kept until the new
+  one is ready (no holes); unload outside the view; parsed-batch cache with a 1,200-batch limit
+  (least-recently-used eviction); at most 300k triangles uploaded per frame.
+  New options `--start`, `--look`, `--view`, `--flythrough X Y Z [--speed]`; `--radius` removed.
+- `sn-inspect`: `mesh --lod L`, and `voxel X Y Z` (what's at a world position + surfaces in that column).
+
+**Verified (2026-10-06, RTX 3080, debug build):**
+1. `sn-inspect mesh 12 18 12 --radius 1 --lod 0..3`: 2,031,606 / 493,862 / 118,880 / 27,316 triangles,
+   0 open edges on batch seams at every level. Level 0 matches M2/M3 exactly (sampling = expanding).
+2. `sn-client --flythrough 1700 -80 0` (lifepod → crater edge, 40 m/s, 42.5 s): process memory
+   0.61–0.89 GiB throughout, batch cache capped at 1,200, start area loaded in 2.0–2.3 s, destination
+   loaded 0.1–0.25 s after arrival. Request→screen latency per level: lod0 ~400 ms (meshing-bound),
+   lod1 ~60 ms, lod2 ~15 ms, lod3 ~10 ms.
+3. Frame times vary a lot between identical runs on this machine (mean 104 / 288 / 300 / 405 fps over 4 runs),
+   so something else was loading the PC. Best run with the upload cap: p95 3.0 ms, worst 26 ms (before the
+   cap: p95 5.3 ms, worst 64 ms).
+4. `cargo test --workspace`: 37 passed (sampling = expanding; step scaling; skirts; seams closed at
+   lod 0–2; coarser levels have fewer triangles; mixed levels crack and get skirts). clippy clean.
+
+**Investigated, not bugs:** the flythrough's final screenshot is pure fog: the camera looks outward over the
+crater-edge drop (seafloor 390 m below, per `sn-inspect voxel 1700 -80 0`). A mid-way screenshot showed a grid
+of strips: the straight fly path was 22 m inside rock there (`voxel 800 -40 0` → solid, surface at −18), and the
+strips are skirts seen from inside the rock. Players can't be there.
+**Not tested:** interactive flying by a human; release build; whether the upload cap helps reliably (noisy machine).
+
 ## 2026-10-06 — M3: Bevy client with free-fly camera
 
 **What:**

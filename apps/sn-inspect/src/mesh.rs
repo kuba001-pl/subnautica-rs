@@ -15,7 +15,7 @@ use std::time::Instant;
 
 use sn_install::GameData;
 use sn_mesh::{Mesh, edge_report, surface_nets};
-use sn_terrain::{Neighbourhood, batch_field, batch_voxels, debug_colour};
+use sn_terrain::{MAX_LOD, Neighbourhood, batch_field, batch_voxels, debug_colour};
 use sn_world::{BatchCoord, VOXEL_WORLD_OFFSET, voxel_to_world};
 
 use crate::Result;
@@ -23,6 +23,8 @@ use crate::Result;
 /// A batch face whose neighbour was not meshed: open edges near it are expected.
 struct OpenFace {
     axis: usize,
+    /// How far from the face open edges may lie: 1.5 samples.
+    tolerance: f32,
     plane: f32,
     min: [f32; 3],
     max: [f32; 3],
@@ -30,13 +32,16 @@ struct OpenFace {
 
 impl OpenFace {
     fn contains(&self, p: [f32; 3]) -> bool {
-        (p[self.axis] - self.plane).abs() <= 1.5
-            && (0..3)
-                .all(|a| a == self.axis || (self.min[a] - 1.5..=self.max[a] + 1.5).contains(&p[a]))
+        let t = self.tolerance;
+        (p[self.axis] - self.plane).abs() <= t
+            && (0..3).all(|a| a == self.axis || (self.min[a] - t..=self.max[a] + t).contains(&p[a]))
     }
 }
 
-pub fn run(game: &GameData, center: BatchCoord, radius: i32) -> Result<ExitCode> {
+pub fn run(game: &GameData, center: BatchCoord, radius: i32, lod: u32) -> Result<ExitCode> {
+    if lod > MAX_LOD {
+        return Err(format!("--lod must be 0..={MAX_LOD}"));
+    }
     let start = Instant::now();
     let index = game.read_index()?;
     let size = batch_voxels(&index);
@@ -69,7 +74,7 @@ pub fn run(game: &GameData, center: BatchCoord, radius: i32) -> Result<ExitCode>
     }
     let exported: HashSet<BatchCoord> = coords.iter().copied().collect();
     println!(
-        "meshing {} batches around {center} (radius {radius})...",
+        "meshing {} batches around {center} (radius {radius}, level of detail {lod})...",
         coords.len()
     );
 
@@ -78,7 +83,7 @@ pub fn run(game: &GameData, center: BatchCoord, radius: i32) -> Result<ExitCode>
     let (mut facing_out, mut facing_checked) = (0u64, 0u64);
     for &coord in &coords {
         let around = Neighbourhood::new(coord, size, |n| grids.get(&n));
-        let Some(batch_field) = batch_field(&around) else {
+        let Some(batch_field) = batch_field(&around, lod) else {
             continue;
         };
         let field = &batch_field.field;
@@ -92,7 +97,9 @@ pub fn run(game: &GameData, center: BatchCoord, radius: i32) -> Result<ExitCode>
             if len == 0.0 {
                 continue;
             }
-            let probe = [0, 1, 2].map(|a| (centroid[a] + n[a] / len - origin[a] as f32).round());
+            let step = field.step() as f32;
+            let probe = [0, 1, 2]
+                .map(|a| ((centroid[a] + step * n[a] / len - origin[a] as f32) / step).round());
             if (0..3).all(|a| probe[a] >= 0.0 && (probe[a] as usize) < field.dims()[a]) {
                 facing_checked += 1;
                 if field.value(probe.map(|p| p as usize)) <= 0.0 {
@@ -101,10 +108,10 @@ pub fn run(game: &GameData, center: BatchCoord, radius: i32) -> Result<ExitCode>
             }
         }
 
-        let grid = &grids[&coord];
+        let dims = grids[&coord].voxel_dims();
         let lo = [coord.x, coord.y, coord.z].map(|c| c as f32);
         let lo = [0, 1, 2].map(|a| lo[a] * size[a] as f32);
-        let hi = [0, 1, 2].map(|a| lo[a] + grid.dims[a] as f32);
+        let hi = [0, 1, 2].map(|a| lo[a] + dims[a] as f32);
         for axis in 0..3 {
             for (step, plane) in [(-1, lo[axis]), (1, hi[axis])] {
                 let mut d = [0; 3];
@@ -112,6 +119,7 @@ pub fn run(game: &GameData, center: BatchCoord, radius: i32) -> Result<ExitCode>
                 if !exported.contains(&coord.offset(d[0], d[1], d[2])) {
                     open_faces.push(OpenFace {
                         axis,
+                        tolerance: 1.5 * (1u32 << lod) as f32,
                         plane,
                         min: lo,
                         max: hi,
@@ -136,7 +144,10 @@ pub fn run(game: &GameData, center: BatchCoord, radius: i32) -> Result<ExitCode>
     let facing = facing_out as f64 / facing_checked.max(1) as f64;
 
     std::fs::create_dir_all("out").map_err(|e| format!("out/: {e}"))?;
-    let name = format!("terrain-{}-{}-{}-r{radius}", center.x, center.y, center.z);
+    let name = format!(
+        "terrain-{}-{}-{}-r{radius}-lod{lod}",
+        center.x, center.y, center.z
+    );
     let obj_path = Path::new("out").join(format!("{name}.obj"));
     write_obj(&combined, &obj_path, &name).map_err(|e| format!("{}: {e}", obj_path.display()))?;
 
@@ -163,7 +174,10 @@ pub fn run(game: &GameData, center: BatchCoord, radius: i32) -> Result<ExitCode>
         " world offset hypothesis voxel - {VOXEL_WORLD_OFFSET:?}. Never commit or share out/.)"
     );
 
-    let ok = unexpected_open == 0 && report.inconsistent == 0 && facing > 0.98;
+    // Coarse levels cross thin features more often when stepping one sample
+    // along the normal; a flipped mesh would score near 0 either way.
+    let min_facing = if lod == 0 { 0.98 } else { 0.90 };
+    let ok = unexpected_open == 0 && report.inconsistent == 0 && facing > min_facing;
     println!(
         "result:           {}",
         if ok { "OK" } else { "PROBLEMS (see above)" }

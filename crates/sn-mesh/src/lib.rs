@@ -4,8 +4,9 @@
 //! zero) in empty space; the surface is where the value crosses zero. Meshes
 //! face outward, i.e. from solid towards empty space.
 //!
-//! Pure: no I/O, no engine types. Positions are in sample-grid units: the
-//! sample at local index `i` sits at `field.origin() + i`.
+//! Pure: no I/O, no engine types. The sample at local index `i` sits at
+//! `field.origin() + i * field.step()` (step 1 unless set, e.g. 2/4/8 for
+//! coarser levels of detail).
 //!
 //! # Chunking
 //! The outermost layer of samples on every side of a field is an *apron*: it
@@ -16,13 +17,16 @@
 //! bit-identical in both pieces.
 
 mod check;
+mod skirt;
 
 pub use check::{EdgeReport, edge_report};
+pub use skirt::add_skirts;
 
 /// A dense grid of samples with a value and a material id each, x fastest.
 #[derive(Clone, Debug)]
 pub struct Field {
     origin: [i32; 3],
+    step: i32,
     dims: [usize; 3],
     values: Vec<f32>,
     materials: Vec<u8>,
@@ -34,6 +38,7 @@ impl Field {
         let n = dims.iter().product();
         Field {
             origin: [0; 3],
+            step: 1,
             dims,
             values: vec![-1.0; n],
             materials: vec![0; n],
@@ -48,6 +53,20 @@ impl Field {
 
     pub fn origin(&self) -> [i32; 3] {
         self.origin
+    }
+
+    /// Spaces samples `step` units apart in the output mesh (default 1).
+    ///
+    /// # Panics
+    /// If `step` is not positive.
+    pub fn with_step(mut self, step: i32) -> Field {
+        assert!(step > 0, "field step must be positive");
+        self.step = step;
+        self
+    }
+
+    pub fn step(&self) -> i32 {
+        self.step
     }
 
     pub fn dims(&self) -> [usize; 3] {
@@ -168,9 +187,13 @@ pub fn surface_nets(field: &Field) -> Mesh {
                     }
                 }
                 cell_vertex[cell_index(base)] = mesh.positions.len() as u32;
-                let global = [0, 1, 2].map(|a| (field.origin[a] + base[a] as i32) as f32);
+                // Integer corner first, then the fraction: neighbouring fields
+                // with the same step then produce bit-identical positions.
+                let step = field.step as f32;
+                let global =
+                    [0, 1, 2].map(|a| (field.origin[a] + base[a] as i32 * field.step) as f32);
                 mesh.positions
-                    .push([0, 1, 2].map(|a| global[a] + sum[a] / crossings));
+                    .push([0, 1, 2].map(|a| global[a] + sum[a] / crossings * step));
                 mesh.normals.push(normalize(gradient.map(|g| -g)));
             }
         }

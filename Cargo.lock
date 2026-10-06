@@ -4777,6 +4777,7 @@ name = "sn-install"
 version = "0.0.0"
 dependencies = [
  "sn-octree",
+ "sn-terrain",
  "sn-world",
 ]
 
