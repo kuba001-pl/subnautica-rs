@@ -1,0 +1,11 @@
+[package]
+name = "sn-octree"
+description = "Reader/writer for Subnautica's compiled terrain octrees (.optoctrees)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

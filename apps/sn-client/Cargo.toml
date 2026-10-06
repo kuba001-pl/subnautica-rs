@@ -1,0 +1,21 @@
+[package]
+name = "sn-client"
+description = "Desktop client: renders the Subnautica world from the player's own install"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+# Engine: windowing, input, ECS, PBR rendering (see docs/DESIGN.md §3.3);
+# free_camera: built-in fly camera controller.
+bevy = { version = "0.19.1", features = ["free_camera"] }
+sn-install.workspace = true
+sn-mesh.workspace = true
+sn-octree.workspace = true
+sn-terrain.workspace = true
+sn-world.workspace = true
+
+[lints]
+workspace = true

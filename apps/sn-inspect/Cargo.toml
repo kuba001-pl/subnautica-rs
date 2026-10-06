@@ -1,0 +1,18 @@
+[package]
+name = "sn-inspect"
+description = "Headless CLI to inspect and validate Subnautica game data"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+sn-octree.workspace = true
+sn-world.workspace = true
+sn-install.workspace = true
+sn-mesh.workspace = true
+sn-terrain.workspace = true
+
+[lints]
+workspace = true

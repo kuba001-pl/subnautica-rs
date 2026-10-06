@@ -1,0 +1,64 @@
+# WHITELIST .gitignore — read AGENTS.md before editing.
+#
+# Everything is ignored by default. A file can only be committed if it matches
+# one of the `!` patterns below. This makes it impossible to accidentally commit
+# game assets, extracted data, exported meshes/images, or build output.
+#
+# To allow a new kind of file, add the narrowest pattern that works and mention
+# it in your change summary. Never add broad patterns like `!*` or `!**/*`.
+# Never whitelist binary formats (.bin, .png, .obj, .assets, .bundle, ...).
+
+# 1. Ignore everything.
+*
+
+# 2. Let git descend into directories (files inside are still ignored unless
+#    whitelisted below).
+!*/
+
+# 3. Repository metadata and project docs.
+!/.gitignore
+!/.gitattributes
+!/AGENTS.md
+!/README.md
+!/MODLOG.md
+!/STATUS.md
+!/LICENSE-MIT
+!/LICENSE-APACHE
+!/THIRD-PARTY-NOTICES.md
+!/docs/**/*.md
+
+# 4. Rust workspace configuration.
+!/Cargo.toml
+!/Cargo.lock
+!/rust-toolchain.toml
+!/rustfmt.toml
+!/clippy.toml
+!/deny.toml
+!/.cargo/config.toml
+
+# 5. Our source code. Only Rust sources, manifests and our own WGSL shaders.
+!/crates/*/Cargo.toml
+!/crates/*/README.md
+!/crates/*/src/**/*.rs
+!/crates/*/src/**/*.wgsl
+!/crates/*/tests/**/*.rs
+!/crates/*/benches/**/*.rs
+!/crates/*/examples/**/*.rs
+!/apps/*/Cargo.toml
+!/apps/*/README.md
+!/apps/*/src/**/*.rs
+!/apps/*/src/**/*.wgsl
+!/apps/*/tests/**/*.rs
+
+# 6. CI.
+!/.github/workflows/*.yml
+
+# 7. Hard re-ignores. These win over everything above because they come last.
+#    Build output, local game copies, extraction/export scratch space, and the
+#    third-party guides folder that lives next to the repo.
+/target/
+/out/
+/game/
+/extracted/
+/scratch/
+/ai-game-modding-guides-main/

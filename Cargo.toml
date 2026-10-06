@@ -1,0 +1,31 @@
+[workspace]
+resolver = "3"
+members = ["crates/*", "apps/*"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[workspace.dependencies]
+sn-octree = { path = "crates/sn-octree" }
+sn-world = { path = "crates/sn-world" }
+sn-mesh = { path = "crates/sn-mesh" }
+sn-install = { path = "crates/sn-install" }
+sn-terrain = { path = "crates/sn-terrain" }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+
+# Parsing ~1.2 GB of octrees in an unoptimised build is painfully slow, and the
+# Bevy client will need this too. Our code gets light optimisation, deps full.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
