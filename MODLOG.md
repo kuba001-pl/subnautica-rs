@@ -2,6 +2,47 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-06 — M6: textures and real terrain materials
+
+**What:**
+- `sn-unity`: `Texture2D` (2019.4 layout) with `decode_rgba` (DXT1/5, BC4/5/7, RGBA32, RGB24, Alpha8, …);
+  `PPtr`, `Material`, `MonoScript`, `MonoBehaviourHeader`; game scripts `Voxeland`, `VoxelandBlockType`,
+  `VoxelandBlockTypePrefab`; `BundleDirectory` (header + directory only, from a file prefix).
+- New dependency: `texture2ddecoder` 0.1.2 (MIT OR Apache-2.0, pure Rust): block-compressed texture decoding.
+- New crate `sn-assets` (layer 3): bundle index from directory prefixes (5,467 bundles in ~0.5 s), cached
+  loading of bundles *and* standalone files (`resources.assets`; `.resS` read by byte range), cross-file
+  `PPtr` resolution (`archive:/CAB-…`, player files, `library/` → `Resources/`), `terrain_materials`.
+- `sn-install`: `read_file_prefix`, `read_file_range`.
+- `sn-inspect`: `textures [--pixels]`, `textures --census`, `terrain-materials`.
+- `sn-client`: real terrain look. DXT textures uploaded compressed with mip chains, `terrain.wgsl` triplanar
+  shader on top of Bevy's standard material (cap/side layers, DXT5nm normal maps, whiteout blend), built-in
+  shader via `embedded_asset!`; `--debug-colours` keeps the old false colours.
+- `docs/formats/terrain-materials.md`; Texture2D/Material layouts in `docs/formats/unity.md`.
+
+**Findings:** texture formats are DXT5/DXT1 (+ a few RGBA32/Alpha8/RGB24, one BC7), **no crunch**. Type ids map to
+block types from the scene's `Voxeland.types` (56) and `BlockPrefabs` prefabs keyed by `globalId` (233, plus 10 with
+id 0, skipped). The layouts came from the game's own DLLs via UnityPy's type-tree generator (dev machine only).
+Terrain materials are plain (`_MainTex`…) or cap/side blends (`_CapTexture`/`_SideTexture`…); normal maps are DXT5nm.
+
+**Verified (2026-10-06):**
+1. Texture metadata identical to UnityPy for 1,062 textures in 43 files; decoded pixel CRCs identical for 506
+   textures (all formats in the sample). The first run differed only for Alpha8: I had guessed (255,255,255,a);
+   UnityPy and the GPU give (0,0,0,a). Fixed.
+2. `sn-inspect terrain-materials`: every type id used by the octrees (209 non-empty) has a material with cap and
+   side textures; 183 textures, read in ~0.2 s.
+3. Real-data test `sn-assets`: 233 materials, all textures decode completely, scales sane. Workspace: 47 tests,
+   clippy clean.
+4. Client: flythrough to the crater edge 374 fps mean, worst frame 45 ms, peak memory 0.90 GiB, 138 MiB of terrain
+   textures on the GPU. Screenshots (gitignored) show sand with ripples, porous and striated rock, moss.
+
+**Dead ends / bugs:** (a) only 56 of 210 types had materials until the `BlockPrefabs` were found; (b) the first
+"conflict" check compared material objects, but the scene keeps its own copies; comparing names leaves 4 real
+conflicts; (c) type 0 briefly got a material from prefabs with `globalId` 0, caught by the real-data test;
+(d) references to `library/unity default resources` needed mapping to `Resources/`.
+**Not done / known issues:** no soft blending between materials, so borders follow the voxel grid and patchy
+materials (red grass) look blocky; new roadmap item M6b. `_SIGMap` (gloss/emission) unused. Map mirroring still
+unverified. Underwater look (absorption, fog colour) is M8.
+
 ## 2026-10-06 — M5: Unity bundles and serialized files
 
 **What:**

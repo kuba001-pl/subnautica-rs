@@ -90,6 +90,36 @@ Two class ids in `globalgamemanagers`/`main.unity` are not built-in classes
 (937362698, 1403656975, 1542919678). They look like hashes, probably
 script-defined or editor-only types — **hypothesis**.
 
+## Object layouts we read — confirmed
+
+Without type trees, these are hand-written for Unity 2019.4 and checked as
+noted.
+
+- **Texture2D** (class 28): `string m_Name, i32 forced fallback format, u8
+  downscale fallback (align 4), i32 width, i32 height, i32 complete image size,
+  i32 format, i32 mip count, u8 readable, u8 ignore master texture limit, u8
+  streaming mipmaps (align 4), i32 streaming priority, i32 image count, i32
+  dimension, texture settings {i32 filter, i32 aniso, f32 mip bias, i32 wrap
+  U, V, W}, i32 lightmap format, i32 colour space, byte[] image data (align
+  4), streaming info {u32 offset, u32 size, string path}`.
+  Checked: metadata of 1,062 textures in 43 files identical to UnityPy; decoded
+  pixels (CRC-32 of RGBA) identical for 506 textures, including DXT1, DXT5,
+  RGBA32, RGB24, Alpha8 and BC7. Alpha8 expands to (0, 0, 0, a), like the GPU
+  and UnityPy.
+- **Material** (class 21): `string name, PPtr shader, string keywords, u32
+  lightmap flags, u8 + u8 (align 4), i32 custom render queue, map<string,string>
+  tags, string[] disabled passes, saved properties {TexEnv[] (string name, PPtr
+  texture, vec2 scale, vec2 offset), (string, f32)[] floats, (string, rgba)[]
+  colours}`. Checked against UnityPy's reading of the terrain materials.
+- **MonoScript** (class 115): `string name, i32 execution order, 16-byte hash,
+  string class name, string namespace, string assembly`.
+- **MonoBehaviour** (class 114) header: `PPtr game object, u8 enabled (align
+  4), PPtr script, string name`, then the script's own fields.
+
+Texture census (whole game): 5,631 textures; DXT5 3,651 (2.8 GB), DXT1 1,498
+(705 MB), RGBA32 333, Alpha8 138, RGB24 10, BC7 1. **No crunch compression.**
+5,611 keep their pixels in `.resS` files.
+
 ## Not yet read
 
 - `StreamingAssets/aa/catalog.json` (Addressables catalog: asset name → bundle).

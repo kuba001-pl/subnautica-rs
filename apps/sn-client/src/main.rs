@@ -3,6 +3,7 @@
 //! around it.
 
 mod terrain;
+mod terrain_look;
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -18,16 +19,19 @@ use bevy::window::PresentMode;
 use sn_install::GameData;
 
 use crate::terrain::{LodRanges, TerrainStreamer};
+use crate::terrain_look::{PendingTerrainLook, TerrainLookPlugin};
 
 const USAGE: &str = "\
 Usage: sn-client [--game-dir <PATH>] [--start <X> <Y> <Z>] [--look <X> <Y> <Z>]
-                 [--view <METRES>]
+                 [--view <METRES>] [--debug-colours]
                  [--benchmark <FRAMES> | --flythrough <X> <Y> <Z> [--speed <M/S>]]
 
   --game-dir     folder containing Subnautica.exe (or set SUBNAUTICA_DIR)
   --start        camera start, Unity world coordinates (default 0 -10 0, the
                  lifepod start in the Safe Shallows)
   --look         point the camera looks at, Unity world coordinates
+  --debug-colours  false colours per terrain type instead of the game's
+                 terrain materials
   --view         view distance in metres (default 1200); level-of-detail
                  ranges scale with it
   --benchmark    once the start area is loaded, render FRAMES frames without
@@ -49,6 +53,7 @@ struct Args {
     benchmark: Option<usize>,
     flythrough: Option<Vec3>,
     speed: f32,
+    debug_colours: bool,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -60,6 +65,7 @@ fn parse_args() -> Result<Args, String> {
         benchmark: None,
         flythrough: None,
         speed: 40.0,
+        debug_colours: false,
     };
     let raw: Vec<String> = std::env::args().skip(1).collect();
     let mut it = raw.iter();
@@ -86,6 +92,7 @@ fn parse_args() -> Result<Args, String> {
             "--benchmark" => args.benchmark = Some(number(it.next(), "--benchmark")? as usize),
             "--flythrough" => args.flythrough = Some(vec3(&mut it, "--flythrough")?),
             "--speed" => args.speed = number(it.next(), "--speed")?,
+            "--debug-colours" => args.debug_colours = true,
             "-h" | "--help" => return Err(USAGE.into()),
             other => return Err(format!("unknown argument {other:?}\n\n{USAGE}")),
         }
@@ -94,6 +101,24 @@ fn parse_args() -> Result<Args, String> {
         return Err("--view must be at least 100 metres".into());
     }
     Ok(args)
+}
+
+/// Reads the game's terrain materials and textures (about a second).
+fn load_terrain_look(game_dir: Option<PathBuf>) -> Result<sn_assets::TerrainMaterials, String> {
+    let start = std::time::Instant::now();
+    let game = GameData::locate(game_dir).map_err(String::from)?;
+    let assets = sn_assets::Assets::index(&game)?;
+    let materials = sn_assets::terrain_materials(&assets)?;
+    for w in &materials.warnings {
+        eprintln!("warning: {w}");
+    }
+    eprintln!(
+        "terrain materials: {} types, {} textures read in {:.2} s",
+        materials.types.iter().flatten().count(),
+        materials.texture_count,
+        start.elapsed().as_secs_f64()
+    );
+    Ok(materials)
 }
 
 /// Unity world coordinates → Bevy (flip z; see terrain.rs).
@@ -117,6 +142,17 @@ fn main() -> AppExit {
         }
     };
     let ranges = lod_ranges(args.view);
+    let look = if args.debug_colours {
+        None
+    } else {
+        match load_terrain_look(args.game_dir.clone()) {
+            Ok(look) => Some(look),
+            Err(message) => {
+                eprintln!("error: {message}");
+                return AppExit::error();
+            }
+        }
+    };
     let streamer = match GameData::locate(args.game_dir.clone())
         .map_err(String::from)
         .and_then(|game| TerrainStreamer::start(game, ranges))
@@ -148,7 +184,9 @@ fn main() -> AppExit {
         FrameTimeDiagnosticsPlugin::default(),
         SystemInformationDiagnosticsPlugin,
         FreeCameraPlugin,
+        TerrainLookPlugin,
     ))
+    .insert_resource(PendingTerrainLook(look))
     .insert_resource(ClearColor(WATER_COLOUR))
     .insert_resource(GlobalAmbientLight {
         color: Color::WHITE,

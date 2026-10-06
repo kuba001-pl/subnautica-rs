@@ -99,8 +99,23 @@ fn decompress(compression: Compression, src: &[u8], size: usize, at: usize) -> R
     }
 }
 
-impl Bundle {
-    pub fn parse(bytes: &[u8]) -> Result<Bundle> {
+/// A bundle's header and directory: everything before the data blocks.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BundleDirectory {
+    pub format: u32,
+    pub player_version: String,
+    pub unity_version: String,
+    pub flags: u32,
+    pub blocks: Vec<BlockInfo>,
+    pub nodes: Vec<BundleNode>,
+    /// Where the first data block starts in the file.
+    pub data_start: usize,
+}
+
+impl BundleDirectory {
+    /// Reads the header and directory. For bundles whose directory follows
+    /// the header (all of Subnautica's), a prefix of the file is enough.
+    pub fn parse(bytes: &[u8]) -> Result<BundleDirectory> {
         let mut r = Reader::new(bytes, true);
         let signature = r.cstr()?;
         if signature != "UnityFS" {
@@ -175,6 +190,32 @@ impl Bundle {
         if flags & BLOCK_INFO_NEEDS_PADDING != 0 {
             r.align(16)?;
         }
+        Ok(BundleDirectory {
+            format,
+            player_version,
+            unity_version,
+            flags,
+            blocks,
+            nodes,
+            data_start: r.pos(),
+        })
+    }
+}
+
+impl Bundle {
+    pub fn parse(bytes: &[u8]) -> Result<Bundle> {
+        let dir = BundleDirectory::parse(bytes)?;
+        let mut r = Reader::new(bytes, true);
+        r.seek(dir.data_start)?;
+        let BundleDirectory {
+            format,
+            player_version,
+            unity_version,
+            flags,
+            blocks,
+            nodes,
+            ..
+        } = dir;
         let total: u64 = blocks.iter().map(|b| u64::from(b.uncompressed_size)).sum();
         if total > MAX_UNCOMPRESSED {
             return Err(r.error(ErrorKind::Invalid(format!("{total} bytes uncompressed"))));
@@ -194,7 +235,7 @@ impl Bundle {
         for node in &nodes {
             if node.offset.saturating_add(node.size) > data.len() as u64 {
                 return Err(Error {
-                    offset: info_at,
+                    offset: 0,
                     kind: ErrorKind::Invalid(format!("node {} runs past the data", node.path)),
                 });
             }

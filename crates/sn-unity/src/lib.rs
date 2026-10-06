@@ -7,16 +7,22 @@
 
 mod bundle;
 mod classes;
+mod objects;
 mod reader;
 mod serialized;
+mod texture;
+mod voxeland;
 
 use std::fmt;
 
-pub use bundle::{BlockInfo, Bundle, BundleNode, Compression, write_bundle};
+pub use bundle::{BlockInfo, Bundle, BundleDirectory, BundleNode, Compression, write_bundle};
 pub use classes::class_name;
+pub use objects::{Material, MonoBehaviourHeader, MonoScript, PPtr, TexEnv};
 pub use serialized::{
     External, ObjectInfo, SUPPORTED_VERSIONS, SerializedFile, SerializedType, TypeTreeNode,
 };
+pub use texture::{StreamingInfo, Texture2D, TextureFormat};
+pub use voxeland::{Voxeland, VoxelandBlockType, VoxelandBlockTypePrefab};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Error {

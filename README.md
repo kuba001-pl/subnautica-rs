@@ -25,16 +25,19 @@ Tested on Windows 11 with game build 10 (Steam):
   Blender. Meshes of neighbouring batches join without holes.
 - Reading Unity's containers: all 5,467 asset bundles and the player's
   `.assets` files (423,677 objects), matching UnityPy's listing exactly.
+- Decoding the game's textures (matches UnityPy pixel for pixel on a 506-texture
+  sample) and finding every terrain material (233 types, 183 textures).
 - `sn-client`: a desktop window (Bevy) with a fly camera. Terrain streams in
-  and out as you move, with four levels of detail out to 1.2 km. Flying from
-  the lifepod to the crater edge keeps memory under 0.9 GiB, at well over
-  100 fps on an RTX 3080. Terrain uses false colours per material id.
+  and out as you move, with four levels of detail out to 1.2 km, textured
+  with the game's own terrain materials (triplanar shader). Flying from the
+  lifepod to the crater edge keeps memory under 0.9 GiB, at well over 100 fps
+  on an RTX 3080.
 
 ## What doesn't work yet
 
-Everything else: real terrain textures, water surface, models, world
-objects, player, audio, multiplayer. Next up is M6: decoding textures and
-real terrain materials.
+Soft blending between terrain materials (borders look blocky), water
+surface and underwater look, models, world objects, player, audio,
+multiplayer. Next up: M6b (material blending) or M7 (world objects).
 Linux/macOS: not tested.
 
 ## Try it
@@ -55,6 +58,8 @@ cargo run -p sn-inspect -- mesh 12 18 12 --radius 1 --lod 2   # coarser level of
 cargo run -p sn-inspect -- voxel 0 -10 0    # what's at a world position, surfaces below
 cargo run -p sn-inspect -- unity --types resources.assets   # what's inside a Unity file
 cargo run -p sn-inspect -- unity --all      # parse every Unity file of the game
+cargo run -p sn-inspect -- textures --census          # texture formats in the game
+cargo run -p sn-inspect -- terrain-materials          # terrain type → material → textures
 
 cargo run -p sn-client                      # fly around, starting at the lifepod
 cargo run -p sn-client -- --view 2000       # see further
@@ -77,6 +82,7 @@ share them.
 | `crates/sn-mesh` | Surface nets mesher and mesh topology checks (pure, no dependencies) |
 | `crates/sn-terrain` | Terrain batches → meshing fields → meshes (pure) |
 | `crates/sn-unity` | Unity containers: UnityFS bundles, serialized files (pure) |
+| `crates/sn-assets` | Finds Unity objects across bundles; terrain materials |
 | `crates/sn-install` | Finds the game folder and reads its files (read-only) |
 | `apps/sn-inspect` | Command-line inspector and validator |
 | `apps/sn-client` | The desktop client (Bevy) |

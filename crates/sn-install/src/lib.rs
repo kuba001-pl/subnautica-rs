@@ -98,6 +98,39 @@ impl GameData {
         std::fs::read(&full).map_err(|e| io_error(&full, e))
     }
 
+    /// Reads at most `max` bytes from the start of a file.
+    pub fn read_file_prefix(&self, path: &Path, max: usize) -> Result<Vec<u8>> {
+        use std::io::Read;
+        let full = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            self.data_dir.join(path)
+        };
+        let file = std::fs::File::open(&full).map_err(|e| io_error(&full, e))?;
+        let mut out = Vec::with_capacity(max.min(1 << 20));
+        file.take(max as u64)
+            .read_to_end(&mut out)
+            .map_err(|e| io_error(&full, e))?;
+        Ok(out)
+    }
+
+    /// Reads `len` bytes at `offset` of a file (relative paths are taken
+    /// from `Subnautica_Data`).
+    pub fn read_file_range(&self, path: &Path, offset: u64, len: usize) -> Result<Vec<u8>> {
+        use std::io::{Read, Seek, SeekFrom};
+        let full = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            self.data_dir.join(path)
+        };
+        let mut file = std::fs::File::open(&full).map_err(|e| io_error(&full, e))?;
+        file.seek(SeekFrom::Start(offset))
+            .map_err(|e| io_error(&full, e))?;
+        let mut out = vec![0; len];
+        file.read_exact(&mut out).map_err(|e| io_error(&full, e))?;
+        Ok(out)
+    }
+
     /// Unity files outside the bundles: `*.assets`, `level<N>` and
     /// `globalgamemanagers` in `Subnautica_Data` (sorted).
     pub fn serialized_files(&self) -> Result<Vec<PathBuf>> {

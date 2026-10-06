@@ -11,5 +11,9 @@ publish.workspace = true
 # LZ4 block decompression (UnityFS bundles use LZ4/LZ4HC blocks). Pure Rust.
 lz4_flex = { version = "0.14", default-features = false, features = ["std", "safe-decode", "safe-encode"] }
 
+# Decodes compressed texture formats (BC1-7, …) to pixels, to verify textures
+# and for tools. Pure Rust, no_std, MIT OR Apache-2.0.
+texture2ddecoder = "0.1.2"
+
 [lints]
 workspace = true

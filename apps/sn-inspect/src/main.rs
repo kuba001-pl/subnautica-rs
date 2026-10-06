@@ -3,9 +3,11 @@
 
 mod density;
 mod game;
+mod materials;
 mod mesh;
 mod octree;
 mod orient;
+mod texture;
 mod unity;
 mod voxel;
 
@@ -37,6 +39,14 @@ Commands:
                          paths relative to Subnautica_Data or absolute
   unity --types <FILE>   The same, with class names
   unity --all            Parse every Unity file of the game and print totals
+  textures <FILE>...     List the Texture2D objects in Unity files
+  textures --pixels <FILE>...
+                         The same, plus a CRC-32 of each decoded image
+  textures --census      Count texture formats over the whole game
+  terrain-materials      Terrain block types → materials → textures, checked
+                         against the type ids used by the octrees
+  terrain-materials --region <X> <Y> <Z> <R>
+                         Which types form the surface around a batch
   orient <X> <Y> <Z>     Score candidate child/octree orders using a batch and
                          its +X/+Y/+Z neighbours (default batch: 12 18 12)
 ";
@@ -100,6 +110,16 @@ fn run(mut args: Vec<String>) -> Result<ExitCode> {
         ["unity", "--all"] => unity::all(&game),
         ["unity", "--types", path] => unity::types(&game, path),
         ["unity", paths @ ..] if !paths.is_empty() => unity::list(&game, paths),
+        ["textures", "--census"] => texture::census(&game),
+        ["textures", "--pixels", paths @ ..] if !paths.is_empty() => {
+            texture::list(&game, paths, true)
+        }
+        ["textures", paths @ ..] if !paths.is_empty() => texture::list(&game, paths, false),
+        ["terrain-materials"] => materials::run(&game),
+        ["terrain-materials", "--region", x, y, z, r] => {
+            let radius = r.parse().map_err(|_| format!("radius {r:?} is not a whole number"))?;
+            materials::region(&game, parse_coord(x, y, z)?, radius)
+        }
         ["orient"] => orient::run(&game, BatchCoord::new(12, 18, 12)),
         ["orient", x, y, z] => orient::run(&game, parse_coord(x, y, z)?),
         _ => Err(format!(

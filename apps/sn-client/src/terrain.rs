@@ -426,6 +426,7 @@ pub fn stream(
     mut streamer: ResMut<TerrainStreamer>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    look: Option<Res<crate::terrain_look::TerrainLook>>,
     camera: Query<&Transform, With<Camera3d>>,
     mut exit: MessageWriter<AppExit>,
 ) {
@@ -491,18 +492,6 @@ pub fn stream(
             .sum::<usize>();
         for part in done.parts {
             triangles += part.indices.len() / 3;
-            let material = streamer
-                .materials
-                .entry(part.material)
-                .or_insert_with(|| {
-                    let [r, g, b] = debug_colour(part.material);
-                    materials.add(StandardMaterial {
-                        base_color: Color::srgb(r, g, b),
-                        perceptual_roughness: 0.9,
-                        ..default()
-                    })
-                })
-                .clone();
             let mut mesh = Mesh::new(
                 PrimitiveTopology::TriangleList,
                 RenderAssetUsages::RENDER_WORLD,
@@ -510,11 +499,30 @@ pub fn stream(
             mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, part.positions);
             mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, part.normals);
             mesh.insert_indices(Indices::U32(part.indices));
-            entities.push(
-                commands
-                    .spawn((Mesh3d(meshes.add(mesh)), MeshMaterial3d(material)))
-                    .id(),
-            );
+            let mesh = Mesh3d(meshes.add(mesh));
+            // The game's material if we have one, else a debug colour.
+            let real = look
+                .as_ref()
+                .and_then(|l| l.by_type.get(usize::from(part.material)).cloned().flatten());
+            let entity = match real {
+                Some(material) => commands.spawn((mesh, MeshMaterial3d(material))).id(),
+                None => {
+                    let material = streamer
+                        .materials
+                        .entry(part.material)
+                        .or_insert_with(|| {
+                            let [r, g, b] = debug_colour(part.material);
+                            materials.add(StandardMaterial {
+                                base_color: Color::srgb(r, g, b),
+                                perceptual_roughness: 0.9,
+                                ..default()
+                            })
+                        })
+                        .clone();
+                    commands.spawn((mesh, MeshMaterial3d(material))).id()
+                }
+            };
+            entities.push(entity);
         }
         let latency = job.requested.elapsed().as_secs_f32() * 1000.0;
         streamer.latencies.push((job.lod, latency, done.mesh_ms));

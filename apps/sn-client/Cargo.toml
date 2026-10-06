@@ -11,6 +11,7 @@ publish.workspace = true
 # Engine: windowing, input, ECS, PBR rendering (see docs/DESIGN.md §3.3);
 # free_camera: built-in fly camera controller.
 bevy = { version = "0.19.1", features = ["free_camera"] }
+sn-assets.workspace = true
 sn-install.workspace = true
 sn-mesh.workspace = true
 sn-octree.workspace = true

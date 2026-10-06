@@ -110,3 +110,13 @@ impl Reader<'_> {
         Ok(n as usize)
     }
 }
+
+impl Reader<'_> {
+    /// Unity's serialized string: i32 length, UTF-8 bytes, then align to 4.
+    pub fn aligned_string(&mut self) -> Result<String> {
+        let len = self.count(1)?;
+        let s = String::from_utf8_lossy(self.bytes(len)?).into_owned();
+        self.align(4)?;
+        Ok(s)
+    }
+}

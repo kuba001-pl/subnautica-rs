@@ -1,6 +1,6 @@
 # subnautica-rs — Design
 
-Status: **M1–M5 done** (2026-10-06). Everything after M5 is a plan, not code.
+Status: **M1–M6 done** (2026-10-06). Everything after M6 is a plan, not code.
 
 ## 1. Goal
 
@@ -118,7 +118,8 @@ Crates are created only when a milestone needs them. M1 created
 `sn-octree`, `sn-world` and `apps/sn-inspect` (which reads files itself until
 `sn-install` is needed). M2 added `sn-mesh`. M3 added `sn-terrain` (layer 2: batch + 26
 neighbours → field → mesh, pure), `sn-install` (layer 3: finding the install
-and reading files) and `apps/sn-client` (Bevy). Rendering code lives in
+and reading files) and `apps/sn-client` (Bevy). M5 added `sn-unity`; M6 added
+`sn-assets` (layer 3: bundle index, cross-file references, terrain materials). Rendering code lives in
 `sn-client` until a second app needs it; then it moves to `sn-render`.
 
 ### 3.3 Key decisions
@@ -168,7 +169,8 @@ reach them — expect the far end of this list to change.
 | # | Goal | Done when |
 |---|---|---|
 | **M5** ✅ | `sn-unity`: read UnityFS bundles + SerializedFiles, list objects (`sn-inspect unity`). The Addressables catalog moved to M7, its first user. | Object counts/types for `resources.assets` and N bundles match UnityPy on the dev machine. |
-| **M6** | Textures + terrain look: decode Texture2D (BC1/3/5/7; detect crunch), map octree type ids → terrain materials, triplanar shader. | Terrain textured; decoded texture hashes match UnityPy output for a sample set. |
+| **M6** ✅ | Textures + terrain look: decode Texture2D (BC1/3/5/7; detect crunch), map octree type ids → terrain materials, triplanar shader. | Terrain textured; decoded texture hashes match UnityPy output for a sample set. |
+| **M6b** | Soft blending between terrain materials (the game's `_BorderBlend*`), so patchy materials like red grass stop following the voxel grid. | Side-by-side screenshots; no visible voxel-grid edges at material borders. |
 | **M7** | World entities: decode CellsCache / BatchObjectsCache (likely protobuf-net), read the Addressables catalog, resolve prefabs → meshes, spawn static flora/rocks; biome map. | Entity counts per batch logged and stable; Safe Shallows shows coral/rocks in place. |
 
 ### Phase C — Being underwater
@@ -254,7 +256,7 @@ Out of scope for M1: density semantics, meshing, rendering, Bevy.
 | Risk | Impact | Mitigation |
 |---|---|---|
 | Asset bundles have type trees stripped — **confirmed in M5: no file has them** | Can't decode any object generically | Built-in classes (Texture2D, Mesh, Material, …): hand-written readers for the Unity 2019.4 layouts, checked against UnityPy. MonoBehaviours: derive layouts from `Assembly-CSharp.dll` metadata at runtime (our own reader); never commit the DLL or generated dumps |
-| Crunch-compressed textures | Need a crunch decoder | Pure-Rust port or a licence-compatible crate; decide at M6 |
+| Crunch-compressed textures — **not used by this game (M6 census)** | — | `texture2ddecoder` could decode it anyway |
 | Entity caches are protobuf-net with game-specific schemas | M7 slips | Build schemas incrementally; count-only validation first |
 | 1.2 GB of terrain | Memory/IO pressure | Stream and evict by batch; mmap files; keep only meshes + nearby octrees resident |
 | Game updates change formats | Breakage | Handshake checks build number; format docs record the build they describe |
