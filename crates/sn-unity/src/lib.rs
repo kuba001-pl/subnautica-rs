@@ -30,7 +30,7 @@ pub use prefab::{AssetBundleManifest, GameObject, Lod, LodGroup, MeshRenderer, T
 pub use serialized::{
     External, ObjectInfo, SUPPORTED_VERSIONS, SerializedFile, SerializedType, TypeTreeNode,
 };
-pub use sky::{Gradient, SkyLight, SkyManager};
+pub use sky::{Gradient, SkyDome, SkyLight, SkyManager};
 pub use texture::{StreamingInfo, Texture2D, TextureFormat};
 pub use voxeland::{Voxeland, VoxelandBlockType, VoxelandBlockTypePrefab};
 pub use water::{BiomeWater, WaterBiomeManager, WaterSettings, WaterscapeVolume};

@@ -213,6 +213,46 @@ fn sky_system_values() {
     );
     assert!((manager.mean_sky_color.keys[0][2] - 0.0902).abs() < 1e-4);
     assert!((manager.mean_sky_color.keys[1][1] - 0.1608).abs() < 1e-4);
+    // The sky dome's fields (read to the object's end).
+    let d = &manager.dome;
+    assert_eq!(
+        (d.planet_radius, d.planet_zenith, d.planet_distance),
+        (3500.0, 59.0, 10000.0)
+    );
+    assert_eq!((d.planet_orbit_speed, d.clouds_rotate_speed), (1000.0, 1.0));
+    assert_eq!(
+        (d.sun_color_multiplier, d.sky_color_multiplier),
+        (3.72, 1.87)
+    );
+    assert_eq!(
+        (d.clouds_attenuation, d.clouds_alpha_saturation),
+        (1.05, 2.5)
+    );
+    assert_eq!(d.night_sky, 2);
+    assert_eq!((d.moon_size, d.star_intensity), (0.2, 1.0));
+    assert!(d.linear_space && !d.skybox_hdr);
+    assert!(!d.clouds_texture.is_null() && !d.planet_texture.is_null());
+    assert!(!d.sun_burst_texture.is_null() && !d.moon_texture.is_null());
+    let t = sn_assets::sky_textures(&assets, &manager).unwrap();
+    for (what, tex) in [
+        ("planet", &t.planet),
+        ("sun burst", &t.sun_burst),
+        ("moon", &t.moon),
+        ("clouds", &t.clouds),
+    ] {
+        let x = &tex.texture;
+        eprintln!(
+            "{what}: {} {}x{} {:?} mips {} wrap {:?} colour space {}",
+            x.name,
+            x.width,
+            x.height,
+            x.texture_format(),
+            x.mip_count,
+            x.wrap,
+            x.color_space
+        );
+        assert!(x.width > 0 && !tex.data.is_empty());
+    }
 }
 
 #[test]

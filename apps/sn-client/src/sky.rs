@@ -15,7 +15,13 @@ pub const NEW_GAME_HOURS: f32 = 9.6;
 pub struct SkyState {
     /// The sky system's time (hours), derived from the clock.
     pub timeline: f32,
+    /// Towards the directional light (the sun by day, a moon-like light at
+    /// night; `uSkyLight`'s light, which always points down).
     pub to_sun: Vec3,
+    /// Towards the sun itself: `uSkyManager.SunDir`, a plain hour angle that
+    /// sets at night. The sky, its day/night factors, the water fog and the
+    /// water surface use this one.
+    pub to_sun_water: Vec3,
     /// Sun colour × intensity.
     pub sun: Vec3,
     pub top_ambient: Vec3,
@@ -23,6 +29,24 @@ pub struct SkyState {
     pub fog_density: f32,
     /// `uSkyManager.GetMeanSkyColor()`, linear.
     pub mean_sky: Vec3,
+    /// For the sky dome (Unity coordinates, raw sRGB colours).
+    pub dome: DomeInputs,
+}
+
+/// Intermediate values of the sky system the sky dome uses.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct DomeInputs {
+    /// `uSkyManager.SunDir`: towards the sun along the light's path, Unity
+    /// coordinates.
+    pub sun_dir: Vec3,
+    pub day: f32,
+    pub sunset: f32,
+    pub night: f32,
+    /// `uSkyLight.CurrentLightColor` (sun colour gradient), sRGB.
+    pub light_colour: Vec3,
+    /// `uSkyLight.CurrentSkyColor` (sky gradient with its colour offset),
+    /// sRGB, before exposure.
+    pub sky_colour: Vec3,
 }
 
 /// The game's day/night cycle maps clock time to the sky's timeline so that
@@ -51,7 +75,7 @@ fn to_linear(c: f32) -> f32 {
     }
 }
 
-fn linear(c: Vec3) -> Vec3 {
+pub fn linear(c: Vec3) -> Vec3 {
     Vec3::new(to_linear(c.x), to_linear(c.y), to_linear(c.z))
 }
 
@@ -75,9 +99,19 @@ fn light_direction(m: &SkyManager, timeline: f32) -> Vec3 {
     q * Vec3::Z
 }
 
+/// `uSkyManager.GetLightDirection()`: the direction of `sunEuler`, which
+/// turns 15° per hour (`Timeline × 15° − 90°`) without the light's clamping,
+/// in Unity coordinates. The water fog and surface use this one.
+fn water_light_direction(m: &SkyManager, timeline: f32) -> Vec3 {
+    let q = Quat::from_rotation_y(m.sun_direction.to_radians())
+        * Quat::from_rotation_z(m.north_pole_offset.to_radians())
+        * Quat::from_rotation_x((timeline * 15.0 - 90.0).to_radians());
+    q * Vec3::Z
+}
+
 /// `uSkyManager.BetaR` × 1000 (Rayleigh coefficients from the tinted
 /// wavelengths).
-fn beta_r(m: &SkyManager) -> Vec3 {
+pub fn beta_r(m: &SkyManager) -> Vec3 {
     let w: [f32; 3] = std::array::from_fn(|i| {
         let (a, b) = (m.wavelengths[i] + 150.0, m.wavelengths[i] - 150.0);
         (a + (b - a) * m.sky_tint[i]) * 1e-9
@@ -88,7 +122,11 @@ fn beta_r(m: &SkyManager) -> Vec3 {
 
 pub fn state(m: &SkyManager, l: &SkyLight, timeline: f32) -> SkyState {
     let forward = light_direction(m, timeline);
-    let sun_dir = -forward;
+    let water = -water_light_direction(m, timeline);
+    let light_dir = -forward;
+    // `uSkyManager.uMuS` from `SunDir` (inside the manager, its own
+    // `GetLightDirection`: the hour angle), not from the light.
+    let sun_dir = water;
     let mu = (sun_dir.y.max(-0.1975) * 5.35).atan() / 1.1 + 0.739;
     let day = mu.clamp(0.0, 1.0);
     let sunset = ((mu - 1.0) * (1.5 / m.rayleigh_scattering.powi(4))).clamp(0.0, 1.0);
@@ -116,6 +154,7 @@ pub fn state(m: &SkyManager, l: &SkyLight, timeline: f32) -> SkyState {
         let b = sky / beta * 4.0;
         sky += (b - sky) * ((slider - 1.0).max(0.0) / 4.0 * rayleigh_offset);
     }
+    let sky_colour = sky;
     let sky = sky * m.exposure;
     let top_ambient = linear(sky) * l.ambient_light;
 
@@ -123,12 +162,21 @@ pub fn state(m: &SkyManager, l: &SkyLight, timeline: f32) -> SkyState {
     let mean = m.mean_sky_color.evaluate(t01);
     SkyState {
         timeline,
-        to_sun: Vec3::new(sun_dir.x, sun_dir.y, -sun_dir.z),
+        to_sun: Vec3::new(light_dir.x, light_dir.y, -light_dir.z),
+        to_sun_water: Vec3::new(water.x, water.y, -water.z),
         sun,
         top_ambient,
         fog_color: linear(Vec3::new(f[0], f[1], f[2])),
         fog_density: m.sky_fog_density,
         mean_sky: linear(Vec3::new(mean[0], mean[1], mean[2])),
+        dome: DomeInputs {
+            sun_dir,
+            day,
+            sunset,
+            night,
+            light_colour: Vec3::new(c[0], c[1], c[2]),
+            sky_colour,
+        },
     }
 }
 
@@ -172,6 +220,7 @@ mod tests {
             sky_fog_density: 0.0002,
             sky_fog_color: g.clone(),
             mean_sky_color: g,
+            dome: Default::default(),
         }
     }
 
@@ -185,6 +234,15 @@ mod tests {
             (morning.y + 25f32.to_radians().sin()).abs() < 1e-5,
             "{morning}"
         );
+    }
+
+    #[test]
+    fn water_sun_turns_with_the_hour() {
+        let m = manager();
+        // Noon: straight down; 06:00 on the horizon; midnight straight up.
+        assert!((water_light_direction(&m, 12.0) - Vec3::NEG_Y).length() < 1e-5);
+        assert!(water_light_direction(&m, 6.0).y.abs() < 1e-5);
+        assert!((water_light_direction(&m, 0.0) - Vec3::Y).length() < 1e-5);
     }
 
     #[test]

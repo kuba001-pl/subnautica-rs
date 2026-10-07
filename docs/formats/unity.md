@@ -102,6 +102,9 @@ noted.
   dimension, texture settings {i32 filter, i32 aniso, f32 mip bias, i32 wrap
   U, V, W}, i32 lightmap format, i32 colour space, byte[] image data (align
   4), streaming info {u32 offset, u32 size, string path}`.
+  Colour space: 1 = colour data stored sRGB, 0 = linear data (confirmed:
+  every terrain albedo is 1, every terrain normal map 0; the water's
+  displacement frames are 0).
   Checked: metadata of 1,062 textures in 43 files identical to UnityPy; decoded
   pixels (CRC-32 of RGBA) identical for 506 textures, including DXT1, DXT5,
   RGBA32, RGB24, Alpha8 and BC7. Alpha8 expands to (0, 0, 0, a), like the GPU

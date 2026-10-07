@@ -53,6 +53,7 @@ use sn_assets::WaterSurfaceData;
 use sn_unity::WaterSurface;
 
 use crate::sky::SkyState;
+use crate::sky_dome::{SkyMap, SkyWorld};
 use crate::textures::{linear, to_image};
 use crate::water::{WaterFog, WaterFogPass, WaterWorld};
 
@@ -217,8 +218,15 @@ fn update_water_surface(
     world: Res<WaterSurfaceWorld>,
     water: Res<WaterWorld>,
     sky: Res<SkyState>,
+    sky_world: Option<Res<SkyWorld>>,
     mut cameras: Query<(&Transform, &mut WaterSurfaceUniform)>,
 ) {
+    // The sky map is in game units; 0 = no sky map (mean sky colour).
+    let sky_map_unit = if sky_world.is_some() {
+        water.light_unit
+    } else {
+        0.0
+    };
     let s = &world.surface;
     let unit = water.light_unit;
     let level = water.volume.water_offset + s.water_offset;
@@ -242,7 +250,7 @@ fn update_water_surface(
                 1.0 / s.screen_space_refraction_index,
                 s.under_water_refraction_index + depth * s.under_water_refraction_depth_scale,
             ),
-            reflection: linear(s.reflection_color).truncate().extend(0.0),
+            reflection: linear(s.reflection_color).truncate().extend(sky_map_unit),
             refraction: linear(s.refraction_color).truncate().extend(0.0),
             back_light: back.extend(s.sun_reflection_gloss),
             sun: (sky.sun * unit).extend(s.sun_reflection_amount),
@@ -416,6 +424,8 @@ fn init_gpu(
                     float(),
                     depth,
                     sampler(SamplerBindingType::Filtering),
+                    sampler(SamplerBindingType::Filtering),
+                    float(),
                     sampler(SamplerBindingType::Filtering),
                 ),
             ),
@@ -615,6 +625,7 @@ fn water_surface_pass(
     pipeline_cache: Res<PipelineCache>,
     pipelines: Res<WaterSurfacePipelines>,
     maps: Res<WaterMaps>,
+    sky_map: Res<SkyMap>,
     images: Option<Res<WaterSurfaceImages>>,
     gpu_images: Res<RenderAssets<GpuImage>>,
     view_uniforms: Res<ViewUniforms>,
@@ -762,6 +773,8 @@ fn water_surface_pass(
             depth.view(),
             &pipelines.repeat_sampler,
             &pipelines.clamp_sampler,
+            &sky_map.view,
+            &sky_map.sampler,
         )),
     );
     let span = diagnostics.time_span(ctx.command_encoder(), "water_surface");

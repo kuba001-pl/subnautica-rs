@@ -239,8 +239,10 @@ pub fn update_water_fog(
     sky: Res<SkyState>,
     mut cameras: Query<(&Transform, &mut WaterFog)>,
 ) {
-    // The game keeps the light at least slightly downwards for the fog.
-    let to_sun = Vec3::new(sky.to_sun.x, sky.to_sun.y.max(0.01), sky.to_sun.z).normalize();
+    // `WaterscapeVolume.PreRender`: `uSkyManager.GetLightDirection`, kept at
+    // least slightly downwards (y only, not renormalised).
+    let w = sky.to_sun_water;
+    let to_sun = Vec3::new(w.x, w.y.max(0.01), w.z);
     let v = &water.volume;
     let g = v.scattering_phase;
     for (transform, mut fog) in &mut cameras {

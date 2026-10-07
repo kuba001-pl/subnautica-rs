@@ -40,7 +40,9 @@ pub struct Texture2D {
     /// Wrap modes U, V, W (0 repeat, 1 clamp, 2 mirror, 3 mirror once).
     pub wrap: [i32; 3],
     pub lightmap_format: i32,
-    /// 0 gamma (sRGB), 1 linear.
+    /// 1: colour data stored sRGB (sampled with sRGB decoding), 0: linear
+    /// data (normal maps, masks). Confirmed: every terrain albedo is 1,
+    /// every terrain normal map 0.
     pub color_space: i32,
     /// Pixel data stored inside the object (empty if streamed).
     pub image_data: Vec<u8>,

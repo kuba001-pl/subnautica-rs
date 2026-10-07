@@ -5,6 +5,7 @@
 mod object_look;
 mod objects;
 mod sky;
+mod sky_dome;
 mod terrain;
 mod terrain_look;
 mod textures;
@@ -27,6 +28,7 @@ use sn_install::GameData;
 
 use crate::object_look::ObjectLookPlugin;
 use crate::objects::ObjectStreamer;
+use crate::sky_dome::{PendingSky, SkyDomePlugin, SkyWorld};
 use crate::terrain::{BlockSettings, LodRanges, TerrainStreamer};
 use crate::terrain_look::{PendingTerrainLook, SUN_ILLUMINANCE, TerrainLookPlugin};
 use crate::water::{WaterData, WaterFog, WaterFogOff, WaterFogPlugin, WaterWorld};
@@ -140,18 +142,18 @@ fn parse_args() -> Result<Args, String> {
     Ok(args)
 }
 
-/// Reads the game's terrain materials and textures (about a second).
-fn load_terrain_look(
-    game_dir: Option<PathBuf>,
-) -> Result<
-    (
-        sn_assets::TerrainMaterials,
-        WaterData,
-        (sn_unity::SkyManager, sn_unity::SkyLight),
-        sn_assets::WaterSurfaceData,
-    ),
-    String,
-> {
+/// What the client reads from the game at start-up.
+struct GameLook {
+    materials: sn_assets::TerrainMaterials,
+    water: WaterData,
+    sky: (sn_unity::SkyManager, sn_unity::SkyLight),
+    surface: sn_assets::WaterSurfaceData,
+    sky_textures: sn_assets::SkyTextures,
+}
+
+/// Reads the game's terrain materials and textures, water and sky (about a
+/// second).
+fn load_terrain_look(game_dir: Option<PathBuf>) -> Result<GameLook, String> {
     let start = std::time::Instant::now();
     let game = GameData::locate(game_dir).map_err(String::from)?;
     let assets = sn_assets::Assets::index(&game)?;
@@ -159,6 +161,7 @@ fn load_terrain_look(
     let water = load_water(&game, &assets)?;
     let sky = sn_assets::sky(&assets)?;
     let surface = sn_assets::water_surface(&assets)?;
+    let sky_textures = sn_assets::sky_textures(&assets, &sky.0)?;
     for w in &materials.warnings {
         eprintln!("warning: {w}");
     }
@@ -168,7 +171,13 @@ fn load_terrain_look(
         materials.texture_count,
         start.elapsed().as_secs_f64()
     );
-    Ok((materials, water, sky, surface))
+    Ok(GameLook {
+        materials,
+        water,
+        sky,
+        surface,
+        sky_textures,
+    })
 }
 
 /// The biome map, batch override biomes and the scene's water settings.
@@ -235,11 +244,17 @@ fn main() -> AppExit {
         }
     };
     let ranges = lod_ranges(args.view);
-    let (look, blocks, water, sky_data, surface) = if args.debug_colours {
-        (None, None, None, None, None)
+    let (look, blocks, water, sky_data, surface, sky_textures) = if args.debug_colours {
+        (None, None, None, None, None, None)
     } else {
         match load_terrain_look(args.game_dir.clone()) {
-            Ok((materials, water, sky_data, surface)) => {
+            Ok(GameLook {
+                materials,
+                water,
+                sky: sky_data,
+                surface,
+                sky_textures,
+            }) => {
                 let mut blocks = BlockSettings {
                     layer: [0; 256],
                     gloss: [0.0; 256],
@@ -254,6 +269,7 @@ fn main() -> AppExit {
                     Some(water),
                     Some(sky_data),
                     Some(surface),
+                    Some(sky_textures),
                 )
             }
             Err(message) => {
@@ -297,6 +313,7 @@ fn main() -> AppExit {
         ObjectLookPlugin,
         WaterFogPlugin,
         WaterSurfacePlugin,
+        SkyDomePlugin,
     ))
     .insert_resource(PendingTerrainLook(look))
     .insert_resource(ClearColor(WATER_COLOUR))
@@ -335,6 +352,15 @@ fn main() -> AppExit {
             args.time, state.timeline, state.sun, state.to_sun, state.top_ambient
         );
         app.insert_resource(state);
+        if let Some(textures) = sky_textures {
+            // A new game's first day: the clock's fraction of it (the
+            // planet's orbit depends on the day).
+            app.insert_resource(PendingSky(Some(textures)))
+                .insert_resource(SkyWorld {
+                    manager: manager.clone(),
+                    day: f64::from(args.time) / 24.0,
+                });
+        }
     }
     let underwater = water.is_some();
     if let Some(water) = water {
@@ -401,16 +427,21 @@ fn setup(
     settings: Res<Setup>,
     underwater: Res<Underwater>,
     sky: Option<Res<sky::SkyState>>,
+    measuring: Option<Res<Measurement>>,
 ) {
     let mut camera = commands.spawn((
         Camera3d::default(),
         Transform::from_translation(settings.start).looking_at(settings.look, Vec3::Y),
-        FreeCamera {
+    ));
+    // Measurements keep the camera where they put it (mouse or keyboard
+    // input in the window would otherwise move it).
+    if measuring.is_none() {
+        camera.insert(FreeCamera {
             walk_speed: 15.0,
             run_speed: 80.0,
             ..default()
-        },
-    ));
+        });
+    }
     if underwater.on {
         // The fog pass reads depth and works on linear HDR colour.
         camera.insert((

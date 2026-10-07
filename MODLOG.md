@@ -2,6 +2,46 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-07 — M8c2: the game's sky (dome and sky map); sun direction fix
+
+**What:**
+- Decoded uSky's skybox and sky-map shaders and `uSkyManager`'s inputs;
+  written up in `docs/formats/sky.md`.
+- `sn-unity`: `SkyManager` now reads every field to the object's end
+  (`SkyDome`: planet, clouds, night sky, moon, textures). `sn-assets`:
+  `sky_textures`. Real-data test `sky_system_values` extended.
+- `sn-client`: `sky_common.wgsl` (the sky function), `sky_dome.rs` +
+  `sky_dome.wgsl` (sky map 256² with mips each frame; the dome where the
+  depth buffer is empty, before the fog). The water surface reflects the sky
+  map (its mean-colour stand-in is gone).
+- **Fix (M8b):** the game's sky, day/night factors, water fog and water
+  surface use `uSkyManager.SunDir`, a plain hour angle, not the directional
+  light's direction (which always points down, moon-like at night). We used
+  the light's: wrong by 7° at 09:36 and a day sky at night. Unit test
+  `water_sun_turns_with_the_hour`. Also the fog clamp no longer renormalises
+  (as the game).
+- Fix: `Texture2D.color_space` doc comment had the meaning backwards (1 =
+  sRGB colour, 0 = linear data; confirmed on terrain albedos vs normal maps).
+  The code was right.
+- Benchmarks no longer attach the free camera (mouse/keyboard input in the
+  window had moved the camera during earlier screenshots — the likely cause
+  of the odd M8c1 start shot).
+
+**Verified (2026-10-07, RTX 3080, 2400×1350):**
+1. `uSkyManager` read to its last byte; values equal UnityPy's.
+2. Screenshots: `out/m8c2-above.png` (09:36, blue sky, clouds),
+   `out/m8c2-up.png` (sun disc and halo), `out/m8c2-dusk.png` (20:30, orange
+   clouds, glint path), `out/m8c2-night.png` (23:00, dark sky),
+   `out/m8c2-below.png` (sky through the surface), `out/m8c2-start.png`
+   (lifepod, unchanged). **Not compared with the game yet.**
+3. `--benchmark 300 --gpu-timings` at the lifepod: sky 0.07 ms, water surface
+   0.14 ms, mean 11.0 ms.
+4. Workspace tests, real-data tests (5), clippy, fmt: pass.
+
+**Dead end:** the first sky came out washed-out grey: our `beta_r()` helper
+returns the game's `BetaR` × 1000 (the form the ambient colour code needs);
+the sky shader needs `BetaR` itself.
+
 ## 2026-10-07 — M8c1: the water surface, ported from the game
 
 **What:**

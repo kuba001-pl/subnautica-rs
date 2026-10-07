@@ -9,7 +9,7 @@ use crate::reader::Reader;
 
 /// Unity's `Gradient` (2019): 8 colour keys (RGBA), 8 colour-key times and 8
 /// alpha-key times (u16, 0..65535 → 0..1), mode, key counts.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Gradient {
     pub keys: [[f32; 4]; 8],
     pub color_times: [u16; 8],
@@ -143,6 +143,51 @@ pub struct SkyManager {
     /// Average sky colour over the day (the water surface's reflection far
     /// away and without a sky map).
     pub mean_sky_color: Gradient,
+    /// What the sky dome shader needs.
+    pub dome: SkyDome,
+}
+
+/// `uSkyManager`'s sky-dome fields: sun disc, planet, clouds, night sky,
+/// moon. Colours as stored (sRGB).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SkyDome {
+    pub sun_burst_texture: PPtr,
+    pub planet_radius: f32,
+    pub planet_texture: PPtr,
+    /// Degrees from the zenith.
+    pub planet_zenith: f32,
+    pub planet_distance: f32,
+    pub planet_rim_color: [f32; 4],
+    pub planet_ambient_light: [f32; 4],
+    /// Degrees per game day.
+    pub planet_orbit_speed: f32,
+    pub planet_light_wrap: f32,
+    pub planet_inner_corona: [f32; 4],
+    pub planet_outer_corona: [f32; 4],
+    pub clouds_texture: PPtr,
+    /// Degrees per second.
+    pub clouds_rotate_speed: f32,
+    pub cloud_night_brightness: f32,
+    pub clouds_attenuation: f32,
+    pub clouds_alpha_saturation: f32,
+    pub sun_color_multiplier: f32,
+    pub sky_color_multiplier: f32,
+    pub clouds_scattering_multiplier: f32,
+    pub clouds_scattering_exponent: f32,
+    pub secondary_light_dir: [f32; 3],
+    pub secondary_light_color: [f32; 4],
+    pub secondary_light_pow: f32,
+    /// 1 off, 2 static, 3 rotating.
+    pub night_sky: i32,
+    pub night_zenith_color: Gradient,
+    pub night_horizon_color: [f32; 4],
+    pub star_intensity: f32,
+    pub moon_inner_corona: [f32; 4],
+    pub moon_outer_corona: [f32; 4],
+    pub moon_size: f32,
+    pub moon_texture: PPtr,
+    pub linear_space: bool,
+    pub skybox_hdr: bool,
 }
 
 impl SkyManager {
@@ -161,23 +206,99 @@ impl SkyManager {
         let mie_scattering = r.f32()?;
         let sun_anisotropy = r.f32()?;
         let sun_size = r.f32()?;
-        PPtr::read(&mut r)?; // sun burst texture
+        let sun_burst_texture = PPtr::read(&mut r)?;
         let wavelengths = [r.f32()?, r.f32()?, r.f32()?];
         let sky_tint = [r.f32()?, r.f32()?, r.f32()?, r.f32()?];
         let ground_color = [r.f32()?, r.f32()?, r.f32()?, r.f32()?];
         PPtr::read(&mut r)?; // sun light
         let sky_fog_density = r.f32()?;
         let sky_fog_color = Gradient::read(&mut r)?;
-        // Planet: radius, texture, normal map, zenith, distance, rim colour,
-        // ambient light, orbit speed, light wrap, inner and outer corona.
-        r.f32()?;
-        PPtr::read(&mut r)?;
-        PPtr::read(&mut r)?;
-        r.bytes(2 * 4 + 2 * 16 + 2 * 4 + 2 * 16)?;
-        // Clouds: texture, then 8 floats (rotate speed … scattering exponent).
-        PPtr::read(&mut r)?;
-        r.bytes(8 * 4)?;
+        let color =
+            |r: &mut Reader| -> Result<[f32; 4]> { Ok([r.f32()?, r.f32()?, r.f32()?, r.f32()?]) };
+        let planet_radius = r.f32()?;
+        let planet_texture = PPtr::read(&mut r)?;
+        PPtr::read(&mut r)?; // planet normal map (not used by the shader)
+        let planet_zenith = r.f32()?;
+        let planet_distance = r.f32()?;
+        let planet_rim_color = color(&mut r)?;
+        let planet_ambient_light = color(&mut r)?;
+        let planet_orbit_speed = r.f32()?;
+        let planet_light_wrap = r.f32()?;
+        let planet_inner_corona = color(&mut r)?;
+        let planet_outer_corona = color(&mut r)?;
+        let clouds_texture = PPtr::read(&mut r)?;
+        let clouds_rotate_speed = r.f32()?;
+        let cloud_night_brightness = r.f32()?;
+        let clouds_attenuation = r.f32()?;
+        let clouds_alpha_saturation = r.f32()?;
+        let sun_color_multiplier = r.f32()?;
+        let sky_color_multiplier = r.f32()?;
+        let clouds_scattering_multiplier = r.f32()?;
+        let clouds_scattering_exponent = r.f32()?;
         let mean_sky_color = Gradient::read(&mut r)?;
+        let secondary_light_dir = [r.f32()?, r.f32()?, r.f32()?];
+        let secondary_light_color = color(&mut r)?;
+        let secondary_light_pow = r.f32()?;
+        let night_sky = r.i32()?;
+        let night_zenith_color = Gradient::read(&mut r)?;
+        let night_horizon_color = color(&mut r)?;
+        let star_intensity = r.f32()?;
+        let moon_inner_corona = color(&mut r)?;
+        let moon_outer_corona = color(&mut r)?;
+        let moon_size = r.f32()?;
+        let moon_texture = PPtr::read(&mut r)?;
+        let _moon_position_offset = r.f32()?;
+        PPtr::read(&mut r)?; // moon light
+        PPtr::read(&mut r)?; // skybox material
+        let _auto_apply_skybox = r.bool_aligned()?;
+        let linear_space = r.bool_aligned()?;
+        let skybox_hdr = r.bool_aligned()?;
+        // Then: direct and indirect light fraction, lens flare (2 refs),
+        // three end-sequence helpers, space transition, end-sequence light
+        // intensity, sun size multiplier and planet radius, light colour,
+        // sun-burst colour, day-time transition, stars mesh: check the end.
+        r.bytes(2 * 4 + 5 * 12 + 4 * 4 + 2 * 16 + 4 + 12)?;
+        if r.pos() != data.len() {
+            return Err(r.error(crate::ErrorKind::Invalid(format!(
+                "uSkyManager: {} bytes left after the last field",
+                data.len() - r.pos()
+            ))));
+        }
+        let dome = SkyDome {
+            sun_burst_texture,
+            planet_radius,
+            planet_texture,
+            planet_zenith,
+            planet_distance,
+            planet_rim_color,
+            planet_ambient_light,
+            planet_orbit_speed,
+            planet_light_wrap,
+            planet_inner_corona,
+            planet_outer_corona,
+            clouds_texture,
+            clouds_rotate_speed,
+            cloud_night_brightness,
+            clouds_attenuation,
+            clouds_alpha_saturation,
+            sun_color_multiplier,
+            sky_color_multiplier,
+            clouds_scattering_multiplier,
+            clouds_scattering_exponent,
+            secondary_light_dir,
+            secondary_light_color,
+            secondary_light_pow,
+            night_sky,
+            night_zenith_color,
+            night_horizon_color,
+            star_intensity,
+            moon_inner_corona,
+            moon_outer_corona,
+            moon_size,
+            moon_texture,
+            linear_space,
+            skybox_hdr,
+        };
         Ok(SkyManager {
             timeline,
             use_time_of_day,
@@ -195,6 +316,7 @@ impl SkyManager {
             sky_fog_density,
             sky_fog_color,
             mean_sky_color,
+            dome,
         })
     }
 }

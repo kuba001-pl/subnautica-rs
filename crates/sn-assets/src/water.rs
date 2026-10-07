@@ -117,3 +117,29 @@ pub fn water_surface(assets: &Assets) -> Result<WaterSurfaceData> {
         foam_mask,
     })
 }
+
+/// The sky dome's textures, referenced by the main scene's `uSkyManager`.
+pub struct SkyTextures {
+    pub planet: TerrainTexture,
+    pub sun_burst: TerrainTexture,
+    pub moon: TerrainTexture,
+    pub clouds: TerrainTexture,
+}
+
+/// Reads the textures of the sky dome (`uSkyManager`).
+pub fn sky_textures(assets: &Assets, manager: &SkyManager) -> Result<SkyTextures> {
+    let scene = main_scene(assets)?;
+    let texture = |pptr, what: &str| -> Result<TerrainTexture> {
+        let object = assets
+            .resolve(&scene, pptr)?
+            .ok_or_else(|| format!("uSkyManager: no {what}"))?;
+        load_texture(assets, &object)
+    };
+    let d = &manager.dome;
+    Ok(SkyTextures {
+        planet: texture(d.planet_texture, "planet texture")?,
+        sun_burst: texture(d.sun_burst_texture, "sun burst texture")?,
+        moon: texture(d.moon_texture, "moon texture")?,
+        clouds: texture(d.clouds_texture, "clouds texture")?,
+    })
+}

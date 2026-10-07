@@ -18,7 +18,7 @@ struct WaterSurface {
     // 2 × normal texel length (cm), Fresnel R0, screen-space refraction
     // ratio (1 / index), under-water refraction index
     optics: vec4<f32>,
-    // reflection colour (linear), unused
+    // reflection colour (linear), light unit for the sky map (0: no sky map)
     reflection: vec4<f32>,
     // refraction colour (linear), unused
     refraction: vec4<f32>,
@@ -50,6 +50,8 @@ struct WaterSurface {
 #endif
 @group(0) @binding(10) var repeat_sampler: sampler;
 @group(0) @binding(11) var clamp_sampler: sampler;
+@group(0) @binding(12) var sky_map_texture: texture_2d<f32>;
+@group(0) @binding(13) var sky_map_sampler: sampler;
 
 // Waves fade out with horizontal distance from the camera (m).
 const WAVE_FADE_END = 200.0;
@@ -160,11 +162,21 @@ fn scene_eye_depth(uv: vec2<f32>) -> f32 {
     return view.clip_from_view[3][2] / d;
 }
 
-// The sky seen along `dir`. The game reads its sky map here; until the sky
-// dome exists (M8c2) this is the game's mean sky colour, which the game
-// itself uses for reflections further than a few tens of metres.
-fn sky_map(dir: vec3<f32>) -> vec3<f32> {
-    return surface.mean_sky.rgb;
+// Where the sky map holds the direction `dir` (Bevy coordinates; the
+// game's mapping of the upper hemisphere).
+fn sky_uv(dir: vec3<f32>) -> vec2<f32> {
+    let u = vec3<f32>(dir.x, dir.y, -dir.z);
+    return u.xz * (2.0 / (1.0 + u.y)) * 0.227273 + 0.5;
+}
+
+// The sky map at `uv` (in our units); the game's mean sky colour when
+// there is no sky map.
+fn sky_map(uv: vec2<f32>, ddx: vec2<f32>, ddy: vec2<f32>) -> vec3<f32> {
+    let unit = surface.reflection.w;
+    if unit <= 0.0 {
+        return surface.mean_sky.rgb;
+    }
+    return textureSampleGrad(sky_map_texture, sky_map_sampler, uv, ddx, ddy).rgb * unit;
 }
 
 // Texture-space normal (Unity x, y, z) → Bevy.
@@ -196,14 +208,22 @@ fn fragment(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0
     let n = to_bevy(normalize(vec3<f32>(nt.x * fade, texel2, nt.y * fade)));
     let to_sun = fog.sun.xyz;
     let sun = surface.sun.rgb;
+    // Sky map coordinates of the reflected (from above) and refracted (from
+    // below) rays, with their screen derivatives.
+    let reflected = reflect(-v, n);
+    let reflected_up = vec3<f32>(reflected.x, max(reflected.y, 0.0), reflected.z);
+    let refracted_out = refract(-v, -n, surface.optics.w);
+    let uv_reflected = sky_uv(reflected_up);
+    let uv_refracted = sky_uv(refracted_out);
+    let dr = mat2x2<f32>(dpdx(uv_reflected), dpdy(uv_reflected));
+    let dt = mat2x2<f32>(dpdx(uv_refracted), dpdy(uv_refracted));
 
     var colour: vec3<f32>;
     if front {
         // Above the water.
-        let r = reflect(-v, n);
-        let r_up = vec3<f32>(r.x, max(r.y, 0.0), r.z);
+        let r_up = reflected_up;
         let far = max(1.0 - 1.0 / (0.03 * flat_dist), 0.0);
-        let sky = mix(sky_map(r_up), surface.mean_sky.rgb, far);
+        let sky = mix(sky_map(uv_reflected, dr[0], dr[1]), surface.mean_sky.rgb, far);
 
         // Refraction: the fogged scene, offset by the refracted ray's
         // direction in view space (less near the top of the screen).
@@ -254,12 +274,12 @@ fn fragment(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0
             colour = fog_in_scattering(fog, down, 1000.0, 0.0) + fog_emission(fog, 1000.0);
             colour = apply_water_fog(fog, colour, camera, -v, dist, false);
         } else {
-            let t = refract(-v, -n, eta);
+            let t = refracted_out;
             let tv = (view.view_from_world * vec4<f32>(t, 0.0)).xy;
             let uv = screen_uv + tv / eye * vec2<f32>(-0.1, 0.2);
             let behind = scene_eye_depth(uv);
             if behind >= 1000.0 || behind < eye {
-                colour = apply_water_fog(fog, sky_map(t), camera, -v, dist, false);
+                colour = apply_water_fog(fog, sky_map(uv_refracted, dt[0], dt[1]), camera, -v, dist, false);
             } else {
                 colour = textureSampleLevel(scene, clamp_sampler, uv, 0.0).rgb;
             }

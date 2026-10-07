@@ -128,8 +128,10 @@ Where the light values come from (from the classes): the sun colour is
 time-of-day gradient, the exposure and day/night factors; the top ambient
 colour is `sky colour (linear) × indirect light fraction × ambientLight`
 (`uSkyLight`); sky fog density and colour come from `uSkyManager`
-(`skyFogDensity`, a gradient over the day). The sun direction is a rotation
-from the time of day (`Timeline`), `SunDirection` and `NorthPoleOffset`.
+(`skyFogDensity`, a gradient over the day). The sun direction is
+`uSkyManager.GetLightDirection()`: a plain hour angle (`Timeline × 15° −
+90°`) with `SunDirection` and `NorthPoleOffset`, not the directional
+light's own direction (see `docs/formats/sky.md` § Two sun directions).
 
 ## Sky — confirmed
 
