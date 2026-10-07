@@ -2,6 +2,44 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-07 — M8b (first pass): the game's underwater fog; plan for missing objects
+
+**What:**
+- Decoded the game's water fog (the compiled fog shader, its constant layout,
+  the scene's `WaterscapeVolume` values, and how `WaterBiomeManager` fills its
+  volume textures); written up in `docs/formats/water.md`.
+- `sn-unity::WaterscapeVolume`, `sn-assets::water_volume`.
+- `sn-client`: HDR camera with a readable depth buffer; `water.rs` (water at
+  the camera from the biome map, batch overrides and the 145 biome settings,
+  blended over 16 m cells, into a per-frame uniform) and a full-screen pass
+  `water_fog.wgsl` before tone mapping, replacing Bevy's distance fog.
+  `--fog-unit` (light calibration), `--no-water-fog` (HDR without the pass),
+  `--gpu-timings` (GPU time per render pass at the end of a measurement).
+- Roadmap: M7d spawn slots (the 90,289 `EntitySlotsPlaceholder`s; likely
+  much of the missing small vegetation), M7e terrain grass, M7f scenes (the
+  Aurora is the `aurora.unity` scene: 3,189 GameObjects; Lifepod 5 is in
+  `escapepod.unity` and placed at run time) and skinned meshes; M8b next
+  steps (sky values, atmosphere volumes, calibration against the game); M8c
+  surface lighting, caustics, water surface, sky.
+
+**Verified (2026-10-07, RTX 3080, game closed):**
+1. `--benchmark 300 --gpu-timings` twice: identical object counts (15,276),
+   0 warnings; mean 10.1 / 9.95 ms (≈ 100 fps; ≈ 8 ms before M8b), peak
+   1.6 GiB; GPU time of the fog pass 0.062 / 0.067 ms (opaque pass 1.3 ms).
+2. `--flythrough 1700 -80 0`: mean 4.62 ms (217 fps), worst 137 ms, 1.59 GiB.
+3. Screenshots `out/m8b-overview.png`, `out/m8b-closeup.png`: turquoise
+   near the seabed, blue into the distance, kelp silhouettes in the haze.
+   **Not compared with the game yet** (sky values are placeholders).
+4. Unit tests (1 new: coefficients), clippy, fmt; all real-data tests
+   (incl. the scene's fog values) pass.
+
+**Dead ends:** the first measurements (140–220 ms per frame, then two
+`DeviceLost` crashes) were taken while `Subnautica.exe` and another
+`sn-client` were running on the same GPU; with the GPU free, no crash and
+the pass costs 0.06 ms. Several later runs sat at ≈ 16.6 ms regardless of
+the shader (presentation pacing, not GPU work); `--gpu-timings` was added to
+measure passes directly.
+
 ## 2026-10-07 — M8a: biomes and water settings, headless
 
 **What:**

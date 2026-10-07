@@ -118,6 +118,16 @@ fn water_biomes_and_biome_map() {
     assert_eq!(water.biomes.len(), 145);
     assert_eq!((water.texture_size, water.upsampled_size), (8, 32));
     assert_eq!(water.region_bounds, 64.0);
+    let volume = sn_assets::water_volume(&assets).unwrap();
+    assert_eq!(
+        (
+            volume.water_transmission,
+            volume.sun_attenuation,
+            volume.sun_light_amount
+        ),
+        (0.7, 0.25, 100.0)
+    );
+    assert_eq!(volume.scattering_phase, -0.3);
     let shallows = water
         .biomes
         .iter()

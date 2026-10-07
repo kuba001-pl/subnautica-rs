@@ -59,16 +59,88 @@ Examples: `safeShallows` absorption (125, 20, 4), scattering 1.2, murkiness
 0.18, ambient ×1.5, 28 °C; `kelpForest` (80, 25, 30), murkiness 0.16;
 `grandReef` (16, 12, 6), murkiness 0.25, ambient ×20; lava zones 60–80 °C.
 
-## How the game uses them — confirmed from the class, shader not yet read
+## Volume textures — confirmed from the class
 
-- Extinction and scattering coefficients (`GetExtinctionAndScatteringCoefficients`):
-  `(absorption + scattering, scattering) × murkiness / 100`; emissive:
-  `linear(emissive) × emissiveScale / 100`.
-- `WaterBiomeManager` keeps a volume texture around the camera:
-  `settingsTextureSize`³ cells over ±`regionBounds` metres (8³ over ±64 m:
-  16 m cells), each holding the settings of the biome at its position,
-  blurred and upsampled to 32³, exposed to shaders as
-  `_UweExtinctionTexture`, `_UweScatteringTexture`, `_UweEmissiveTexture`.
-- How shaders turn these into colour (in-scattering, sun and ambient
-  scales, start distance) is in the compiled water shaders; to be read for
-  M8b.
+`WaterBiomeManager` keeps a volume around the camera:
+`settingsTextureSize`³ cells over ±`regionBounds` metres (8³ over ±64 m:
+16 m cells). Each cell gets the biome at its position (plus local
+`AtmosphereVolume` shapes, e.g. caves, rasterised on top — not read yet),
+then the volume is blurred and upsampled to 32³ (stored as a 2D atlas of
+slices) into three textures:
+
+| Texture | xyz | w |
+|---|---|---|
+| `_UweExtinctionTexture` | (absorption + scattering) × murkiness / 100 | start distance |
+| `_UweScatteringTexture` | linear(scattering colour) × scattering × murkiness / 100 | sunlight scale × water transmission |
+| `_UweEmissiveTexture` | linear(emissive) × emissive scale / 100 | ambient scale |
+
+## The scene's `WaterscapeVolume` — confirmed
+
+Read from the main scene (layout from the class; the fields end exactly at
+the object's end): water transmission **0.7**, emission ambient scale 1,
+above-water start distance 5, scattering phase −0.3, sun attenuation
+**0.25**, sun light amount **100**, colour cast distance factor 0.1, depth
+factor 0.0002, caustics scale 2, amount 0.1, above-water density scale 10
+between heights −0.5 and 2. (Several differ from the class defaults.)
+
+## The underwater fog — confirmed from the compiled shader
+
+A full-screen pass over the lit image (`WaterscapeVolume.RenderImage`, a
+blit with the scene's fog shader), disassembled once on the dev machine
+(Direct3D 11 bytecode; constant offsets from the subprogram's binding
+table). Per pixel, in view space:
+
+1. Distance `D` to the surface from the depth buffer; ray direction `v`.
+   Sky pixels (depth 1) are recognised.
+2. Water settings are read **once per pixel**, at `settingsSampleDistance`
+   along the ray, from the volume textures: extinction σₜ, start distance
+   `s`, in-scattering σₛ (colour), light scale `k`, emissive `e`.
+3. Water plane `n·p + d = 0` (view space). Camera **above** water (`d > 0`):
+   rays not going down, or hitting geometry before the water, get only "sky
+   fog": `lerp(skyFogColour, C, exp(−D × skyFogDensity))`; otherwise water
+   fog starts at the surface (distance along the ray + above-water start
+   distance). Camera **below**: rays reaching the surface see the colour
+   behind it sky-fogged, and travel `min(D, distance to surface)` in water.
+4. With `t = D_water − s` (only if positive) and all coefficients times the
+   global extinction scale:
+   - transmittance `T = exp(−σₜ t)`;
+   - Henyey–Greenstein phase `P = c₀ (c₁ − c₂ cos θ)^(−1.5)` with
+     `c = ((1 − g²) / 4π, 1 + g², 2g)`, g = −0.3, θ between `v` and the sun;
+   - sunlight below the surface is attenuated along its path to the surface:
+     the exponent changes along the ray at rate
+     `k_sun = −σₜ + (v·n) σₜ a / max(L·n, 10⁻⁴)` (a = sun attenuation 0.25),
+     starting from `h σₜ a / max(L·n, 10⁻⁴)` at the fog start point, `h` its
+     signed height above the water plane;
+   - in-scattered light `∫₀ᵗ exp(k_sun x + start) dx · P σₛ · (sun × amount +
+     top ambient) × k` (closed form; `t·exp(…)` when `k_sun` = 0);
+   - emissive `e (1 − T) / σₜ`;
+   - result `C T + in-scattering + emissive`.
+5. Pixels whose G-buffer normal alpha marks them (fractional part of
+   1.5 × alpha < 0.25), or with `_CameraInside` set, are blended back
+   towards the unfogged colour; `_SpaceTransition` too.
+
+`settingsSampleDistance` is not a shader property and nothing in the
+game's code sets it, so it stays 0 (**hypothesis**, strong): the settings
+are read at the camera, the same for the whole frame.
+
+Where the light values come from (from the classes): the sun colour is
+`sun light colour (linear) × intensity`, both set by `uSkyLight` from a
+time-of-day gradient, the exposure and day/night factors; the top ambient
+colour is `sky colour (linear) × indirect light fraction × ambientLight`
+(`uSkyLight`); sky fog density and colour come from `uSkyManager`
+(`skyFogDensity`, a gradient over the day). The sun direction is a rotation
+from the time of day (`Timeline`), `SunDirection` and `NorthPoleOffset`.
+
+## How we render it (M8b, first pass)
+
+`apps/sn-client/src/water.rs` and `water_fog.wgsl`: an HDR camera and a
+full-screen pass before tone mapping implementing steps 1–4 above in world
+space (water plane y = `waterOffset` = 0). The CPU blends the coefficients of
+the 8 surrounding 16 m cell centres at the camera every frame (the game
+blurs and upsamples its volume; our blend is simpler).
+
+Not done yet: the sky values above (placeholders: white sun, a sky-blue top
+ambient, sky fog density 0.00015), `AtmosphereVolume` shapes, step 5, and
+the units: one game light unit is taken as our radiance of a white surface
+under our sun (`--fog-unit` scales it). These need the sky data and
+screenshots of the game at the same places.

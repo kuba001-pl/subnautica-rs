@@ -30,7 +30,7 @@ pub use serialized::{
 };
 pub use texture::{StreamingInfo, Texture2D, TextureFormat};
 pub use voxeland::{Voxeland, VoxelandBlockType, VoxelandBlockTypePrefab};
-pub use water::{BiomeWater, WaterBiomeManager, WaterSettings};
+pub use water::{BiomeWater, WaterBiomeManager, WaterSettings, WaterscapeVolume};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Error {

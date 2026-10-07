@@ -25,7 +25,7 @@ pub use terrain::{
     BlendSettings, BlockSource, SurfaceLayer, TerrainMaterial, TerrainMaterials, TerrainTexture,
     terrain_materials,
 };
-pub use water::water_biomes;
+pub use water::{water_biomes, water_volume};
 
 pub type Result<T> = std::result::Result<T, String>;
 

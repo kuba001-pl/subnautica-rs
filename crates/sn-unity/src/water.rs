@@ -99,3 +99,56 @@ impl WaterBiomeManager {
         })
     }
 }
+
+/// `WaterscapeVolume` (a MonoBehaviour in the main scene): global settings
+/// of the underwater fog.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WaterscapeVolume {
+    pub fog_shader: PPtr,
+    pub water_offset: f32,
+    /// Share of sunlight that gets below the surface.
+    pub water_transmission: f32,
+    pub emission_ambient_scale: f32,
+    pub above_water_start_distance: f32,
+    /// Henyey–Greenstein asymmetry, −1..0.
+    pub scattering_phase: f32,
+    pub sun_attenuation: f32,
+    pub sun_light_amount: f32,
+    pub color_cast_distance_factor: f32,
+    pub color_cast_depth_factor: f32,
+    pub caustics_scale: f32,
+    pub caustics_amount: f32,
+    pub above_water_density_scale: f32,
+    pub above_water_min_height: f32,
+    pub above_water_max_height: f32,
+}
+
+impl WaterscapeVolume {
+    pub fn parse(data: &[u8], big_endian: bool) -> Result<WaterscapeVolume> {
+        let header = MonoBehaviourHeader::parse(data, big_endian)?;
+        let mut r = Reader::new(data, big_endian);
+        r.seek(header.fields_offset)?;
+        let fog_shader = PPtr::read(&mut r)?;
+        // sky, biome manager, surface, water plane
+        for _ in 0..4 {
+            PPtr::read(&mut r)?;
+        }
+        Ok(WaterscapeVolume {
+            fog_shader,
+            water_offset: r.f32()?,
+            water_transmission: r.f32()?,
+            emission_ambient_scale: r.f32()?,
+            above_water_start_distance: r.f32()?,
+            scattering_phase: r.f32()?,
+            sun_attenuation: r.f32()?,
+            sun_light_amount: r.f32()?,
+            color_cast_distance_factor: r.f32()?,
+            color_cast_depth_factor: r.f32()?,
+            caustics_scale: r.f32()?,
+            caustics_amount: r.f32()?,
+            above_water_density_scale: r.f32()?,
+            above_water_min_height: r.f32()?,
+            above_water_max_height: r.f32()?,
+        })
+    }
+}

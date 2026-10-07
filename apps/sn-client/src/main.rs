@@ -7,6 +7,7 @@ mod objects;
 mod terrain;
 mod terrain_look;
 mod textures;
+mod water;
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -17,6 +18,7 @@ use bevy::diagnostic::{
 };
 use bevy::pbr::{DistanceFog, FogFalloff};
 use bevy::prelude::*;
+use bevy::render::render_resource::TextureUsages;
 use bevy::render::view::screenshot::{Screenshot, ScreenshotCaptured, save_to_disk};
 use bevy::window::PresentMode;
 use sn_install::GameData;
@@ -25,6 +27,7 @@ use crate::object_look::ObjectLookPlugin;
 use crate::objects::ObjectStreamer;
 use crate::terrain::{BlockSettings, LodRanges, TerrainStreamer};
 use crate::terrain_look::{PendingTerrainLook, SUN_ILLUMINANCE, TerrainLookPlugin};
+use crate::water::{WaterData, WaterFog, WaterFogPlugin, WaterWorld};
 
 const USAGE: &str = "\
 Usage: sn-client [--game-dir <PATH>] [--start <X> <Y> <Z>] [--look <X> <Y> <Z>]
@@ -38,6 +41,9 @@ Usage: sn-client [--game-dir <PATH>] [--start <X> <Y> <Z>] [--look <X> <Y> <Z>]
   --debug-colours  false colours per terrain type instead of the game's
                  terrain materials (also turns world objects off)
   --no-objects   terrain only, no world objects (coral, rocks, …)
+  --fog-unit     scale on the water fog's light (calibration; default 1)
+  --no-water-fog HDR camera without the water fog pass (for comparisons)
+  --gpu-timings  with --benchmark/--flythrough: log GPU time per render pass
   --view         view distance in metres (default 1200); level-of-detail
                  ranges scale with it
   --benchmark    once the start area is loaded, render FRAMES frames without
@@ -61,6 +67,9 @@ struct Args {
     speed: f32,
     debug_colours: bool,
     no_objects: bool,
+    fog_unit: f32,
+    no_water_fog: bool,
+    gpu_timings: bool,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -74,6 +83,9 @@ fn parse_args() -> Result<Args, String> {
         speed: 40.0,
         debug_colours: false,
         no_objects: false,
+        fog_unit: 1.0,
+        no_water_fog: false,
+        gpu_timings: false,
     };
     let raw: Vec<String> = std::env::args().skip(1).collect();
     let mut it = raw.iter();
@@ -102,6 +114,9 @@ fn parse_args() -> Result<Args, String> {
             "--speed" => args.speed = number(it.next(), "--speed")?,
             "--debug-colours" => args.debug_colours = true,
             "--no-objects" => args.no_objects = true,
+            "--no-water-fog" => args.no_water_fog = true,
+            "--gpu-timings" => args.gpu_timings = true,
+            "--fog-unit" => args.fog_unit = number(it.next(), "--fog-unit")?,
             "-h" | "--help" => return Err(USAGE.into()),
             other => return Err(format!("unknown argument {other:?}\n\n{USAGE}")),
         }
@@ -113,11 +128,14 @@ fn parse_args() -> Result<Args, String> {
 }
 
 /// Reads the game's terrain materials and textures (about a second).
-fn load_terrain_look(game_dir: Option<PathBuf>) -> Result<sn_assets::TerrainMaterials, String> {
+fn load_terrain_look(
+    game_dir: Option<PathBuf>,
+) -> Result<(sn_assets::TerrainMaterials, WaterData), String> {
     let start = std::time::Instant::now();
     let game = GameData::locate(game_dir).map_err(String::from)?;
     let assets = sn_assets::Assets::index(&game)?;
     let materials = sn_assets::terrain_materials(&assets)?;
+    let water = load_water(&game, &assets)?;
     for w in &materials.warnings {
         eprintln!("warning: {w}");
     }
@@ -127,7 +145,50 @@ fn load_terrain_look(game_dir: Option<PathBuf>) -> Result<sn_assets::TerrainMate
         materials.texture_count,
         start.elapsed().as_secs_f64()
     );
-    Ok(materials)
+    Ok((materials, water))
+}
+
+/// The biome map, batch override biomes and the scene's water settings.
+fn load_water(game: &GameData, assets: &sn_assets::Assets) -> Result<WaterData, String> {
+    let index = game.read_index()?;
+    let batch_size = sn_terrain::batch_voxels(&index);
+    let (map, names) = game.read_biome_map()?;
+    let manager = sn_assets::water_biomes(assets)?;
+    let volume = sn_assets::water_volume(assets)?;
+    let mut overrides = std::collections::HashMap::new();
+    let (batches, _) = game.object_batches()?;
+    for coord in batches {
+        let Some(tree) = game.read_batch_objects(coord)? else {
+            continue;
+        };
+        for o in tree.objects.iter().filter(|o| o.parent.is_none()) {
+            for c in o
+                .components
+                .iter()
+                .filter(|c| c.type_name == "LargeWorldBatchRoot")
+            {
+                let s = sn_world::BatchRootSettings::parse(&c.data)
+                    .map_err(|e| format!("batch {coord}: {e}"))?;
+                if let Some(b) = s.override_biome {
+                    overrides.insert(coord, b);
+                }
+            }
+        }
+    }
+    Ok(WaterData {
+        cell: 2.0 * manager.region_bounds / manager.texture_size.max(1) as f32,
+        biomes: manager
+            .biomes
+            .into_iter()
+            .map(|b| (b.name, b.settings))
+            .collect(),
+        land_size: (index.batches()[0] as i32 * batch_size[0]) as usize,
+        batch_size,
+        map,
+        names,
+        overrides,
+        volume,
+    })
 }
 
 /// Unity world coordinates → Bevy (flip z; see terrain.rs).
@@ -151,11 +212,11 @@ fn main() -> AppExit {
         }
     };
     let ranges = lod_ranges(args.view);
-    let (look, blocks) = if args.debug_colours {
-        (None, None)
+    let (look, blocks, water) = if args.debug_colours {
+        (None, None, None)
     } else {
         match load_terrain_look(args.game_dir.clone()) {
-            Ok(materials) => {
+            Ok((materials, water)) => {
                 let mut blocks = BlockSettings {
                     layer: [0; 256],
                     gloss: [0.0; 256],
@@ -164,7 +225,7 @@ fn main() -> AppExit {
                     blocks.layer[m.type_id] = m.layer;
                     blocks.gloss[m.type_id] = m.blend.gloss;
                 }
-                (Some(materials), Some(blocks))
+                (Some(materials), Some(blocks), Some(water))
             }
             Err(message) => {
                 eprintln!("error: {message}");
@@ -205,6 +266,7 @@ fn main() -> AppExit {
         FreeCameraPlugin,
         TerrainLookPlugin,
         ObjectLookPlugin,
+        WaterFogPlugin,
     ))
     .insert_resource(PendingTerrainLook(look))
     .insert_resource(ClearColor(WATER_COLOUR))
@@ -233,6 +295,18 @@ fn main() -> AppExit {
             log_stats,
         ),
     );
+    if args.gpu_timings {
+        app.add_plugins(bevy::render::diagnostic::RenderDiagnosticsPlugin);
+    }
+    let underwater = water.is_some();
+    if let Some(water) = water {
+        let exposure = bevy::camera::Exposure::default().exposure();
+        app.insert_resource(WaterWorld::new(
+            water,
+            water::unit(SUN_ILLUMINANCE, exposure) * args.fog_unit,
+        ));
+    }
+    app.insert_resource(Underwater(underwater, args.no_water_fog));
     if !args.debug_colours && !args.no_objects {
         match GameData::locate(args.game_dir.clone()) {
             Ok(game) => {
@@ -268,8 +342,12 @@ struct Setup {
     fog_end: f32,
 }
 
-fn setup(mut commands: Commands, settings: Res<Setup>) {
-    commands.spawn((
+/// Whether the game's water fog replaces the plain distance fog.
+#[derive(Resource)]
+struct Underwater(bool, /* fog pass off */ bool);
+
+fn setup(mut commands: Commands, settings: Res<Setup>, underwater: Res<Underwater>) {
+    let mut camera = commands.spawn((
         Camera3d::default(),
         Transform::from_translation(settings.start).looking_at(settings.look, Vec3::Y),
         FreeCamera {
@@ -277,15 +355,31 @@ fn setup(mut commands: Commands, settings: Res<Setup>) {
             run_speed: 80.0,
             ..default()
         },
-        DistanceFog {
+    ));
+    if underwater.0 {
+        // The fog pass reads depth and works on linear HDR colour.
+        camera.insert((
+            Camera3d {
+                depth_texture_usages: (TextureUsages::RENDER_ATTACHMENT
+                    | TextureUsages::TEXTURE_BINDING)
+                    .into(),
+                ..default()
+            },
+            bevy::camera::Hdr,
+        ));
+        if !underwater.1 {
+            camera.insert(WaterFog::default());
+        }
+    } else {
+        camera.insert(DistanceFog {
             color: WATER_COLOUR,
             falloff: FogFalloff::Linear {
                 start: settings.fog_end * 0.1,
                 end: settings.fog_end,
             },
             ..default()
-        },
-    ));
+        });
+    }
     commands.spawn((
         DirectionalLight {
             illuminance: SUN_ILLUMINANCE,
@@ -496,6 +590,16 @@ fn measure(
         return;
     }
 
+    // With --gpu-timings: the render diagnostics' GPU times.
+    let mut gpu: Vec<(String, f64)> = diagnostics
+        .iter()
+        .filter(|d| d.path().as_str().ends_with("elapsed_gpu"))
+        .filter_map(|d| Some((d.path().as_str().to_string(), d.average()?)))
+        .collect();
+    gpu.sort_by(|a, b| b.1.total_cmp(&a.1));
+    for (path, ms) in gpu.iter().take(12) {
+        info!("measure: gpu {path}: {ms:.3} ms");
+    }
     let (mean, p95, worst) = percentiles(&m.frame_ms);
     info!(
         "measure: {} frames; mean {mean:.2} ms ({:.0} fps), 95th percentile {p95:.2} ms, worst {worst:.2} ms",
