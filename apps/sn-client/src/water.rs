@@ -34,6 +34,8 @@ use bevy::render::view::{
 };
 use bevy::render::{Render, RenderApp, RenderStartup, RenderSystems};
 use sn_unity::{WaterSettings, WaterscapeVolume};
+
+use crate::sky::SkyState;
 use sn_world::{BatchCoord, BiomeMap, world_to_voxel};
 
 /// Uniform of the fog pass; must match `WaterFog` in `water_fog.wgsl`.
@@ -226,22 +228,14 @@ pub fn unit(sun_lux: f32, exposure: f32) -> f32 {
     sun_lux / std::f32::consts::PI * exposure
 }
 
-/// Placeholders until the sky system is read (`uSkyManager`, `uSkyLight`):
-/// sun colour, top-ambient colour, sky fog colour and density.
-const SUN_COLOUR: Vec3 = Vec3::new(1.0, 1.0, 1.0);
-const TOP_AMBIENT: Vec3 = Vec3::new(0.4 * 0.28, 0.6 * 0.28, 0.9 * 0.28);
-const SKY_FOG: Vec4 = Vec4::new(0.6, 0.75, 0.9, 0.00015);
-
 /// Every frame: the water at the camera into its fog uniform.
 pub fn update_water_fog(
     water: Res<WaterWorld>,
+    sky: Res<SkyState>,
     mut cameras: Query<(&Transform, &mut WaterFog)>,
-    sun: Query<&Transform, With<DirectionalLight>>,
 ) {
-    let to_sun = sun
-        .single()
-        .map(|t| -t.forward().as_vec3())
-        .unwrap_or(Vec3::Y);
+    // The game keeps the light at least slightly downwards for the fog.
+    let to_sun = Vec3::new(sky.to_sun.x, sky.to_sun.y.max(0.01), sky.to_sun.z).normalize();
     let v = &water.volume;
     let g = v.scattering_phase;
     for (transform, mut fog) in &mut cameras {
@@ -254,7 +248,7 @@ pub fn update_water_fog(
             .clamp(0.0, 1.0);
         let scale = 1.0 + (v.above_water_density_scale - 1.0) * t;
         let unit = water.light_unit;
-        let light = (SUN_COLOUR * v.sun_light_amount * v.water_transmission + TOP_AMBIENT) * unit;
+        let light = (sky.sun * v.sun_light_amount * v.water_transmission + sky.top_ambient) * unit;
         *fog = WaterFog {
             extinction: (c.extinction.truncate() * scale).extend(c.extinction.w),
             scattering: (c.scattering.truncate() * scale).extend(c.scattering.w),
@@ -267,7 +261,7 @@ pub fn update_water_fog(
                 2.0 * g,
                 0.0,
             ),
-            sky: (SKY_FOG.truncate() * unit).extend(SKY_FOG.w),
+            sky: (sky.fog_color * unit).extend(sky.fog_density),
             misc: Vec4::new(v.above_water_start_distance, v.water_offset, 1.0, 0.0),
         };
     }
@@ -284,7 +278,9 @@ impl Plugin for WaterFogPlugin {
         ))
         .add_systems(
             Update,
-            update_water_fog.run_if(resource_exists::<WaterWorld>),
+            update_water_fog
+                .run_if(resource_exists::<WaterWorld>)
+                .run_if(resource_exists::<SkyState>),
         );
         let Some(render_app) = app.get_sub_app_mut(RenderApp) else {
             return;

@@ -131,16 +131,53 @@ colour is `sky colour (linear) × indirect light fraction × ambientLight`
 (`skyFogDensity`, a gradient over the day). The sun direction is a rotation
 from the time of day (`Timeline`), `SunDirection` and `NorthPoleOffset`.
 
-## How we render it (M8b, first pass)
+## Sky — confirmed
+
+Read from the main scene's `uSkyManager` and `uSkyLight` MonoBehaviours.
+Their layouts were generated once with UnityPy's type-tree generator from
+the game's own assembly (dev machine, `out/`), our readers
+(`crates/sn-unity/src/sky.rs`) are written by hand from them, and the values
+match UnityPy's reading exactly (real-data test `sky_system_values`).
+
+- `uSkyLight` (716 bytes = header + 3 floats + 4 Unity `Gradient`s of 168
+  bytes): sun intensity 1.37, sun colour gradient (7 keys: grey-blue night,
+  orange at sunrise/sunset, near-white at noon), moon intensity 0.5, sky /
+  equator / ground colour gradients, ambient light 0.35.
+- `uSkyManager` (fields up to the sky fog): timeline 8.2 h (editor value),
+  sun direction −141°, max sun angle 65°, north pole offset 0, exposure
+  0.66, Rayleigh/Mie 1, wavelengths (680, 550, 440) nm, sky tint 0.5, sky
+  fog density 0.0002, sky fog colour gradient (4 keys).
+- A Unity `Gradient` (2019): 8 RGBA keys, 8 colour-key times and 8 alpha-key
+  times as u16 (/ 65535), mode (0 blend, 1 fixed), key counts, align 4.
+
+How the game turns them into light (classes `uSkyManager`, `uSkyLight`,
+`DayNightCycle`):
+- A new game starts at clock 09:36. The sky's timeline maps the clock's day
+  (sunrise 0.125 → sunset 0.875 of the day) onto 6 h → 18 h: 09:36 → 10.4 h.
+- Sun rotation: `Euler(0, sunDirection, northPoleOffset) · Euler(a + 90°, 0, 0)`
+  with `a` going from −max angle at 6 h to +max angle at 18 h (and towards 0
+  at night): the sun is at the zenith at 12 h and 25° up at 6 h and 18 h.
+- Day/night factors from the sun's height (`uMuS`); sun light =
+  `exposure × (sunIntensity × day + moonIntensity × night)` × the sun-colour
+  gradient (linearised). Top ambient = sky-colour gradient through a small
+  Rayleigh colour offset (from the wavelengths; our port reproduces the
+  class's reference values 5.81, 13.57, 33.13) × exposure, linearised, ×
+  ambient light. Sky fog colour = its gradient, linearised.
+- Ignored: eclipses (the planet in front of the sun; the fog density is
+  multiplied by 1 − eclipse).
+
+## How we render it (M8b)
 
 `apps/sn-client/src/water.rs` and `water_fog.wgsl`: an HDR camera and a
 full-screen pass before tone mapping implementing steps 1–4 above in world
 space (water plane y = `waterOffset` = 0). The CPU blends the coefficients of
 the 8 surrounding 16 m cell centres at the camera every frame (the game
-blurs and upsamples its volume; our blend is simpler).
+blurs and upsamples its volume; our blend is simpler). `apps/sn-client/src/sky.rs`
+computes the sky state for `--time` (default 09:36) and drives both the fog
+and Bevy's sun (direction, colour, illuminance = 8000 lux per game light
+unit).
 
-Not done yet: the sky values above (placeholders: white sun, a sky-blue top
-ambient, sky fog density 0.00015), `AtmosphereVolume` shapes, step 5, and
-the units: one game light unit is taken as our radiance of a white surface
-under our sun (`--fog-unit` scales it). These need the sky data and
-screenshots of the game at the same places.
+Not done yet: `AtmosphereVolume` shapes, step 5, the game's ambient lighting
+of surfaces, and the units: one game light unit is taken as our radiance of
+a white surface under 8000 lux (`--fog-unit` scales the fog's light). These
+need screenshots of the game at the same places to check.

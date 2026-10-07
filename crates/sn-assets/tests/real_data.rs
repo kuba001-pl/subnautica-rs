@@ -154,3 +154,49 @@ fn water_biomes_and_biome_map() {
         );
     }
 }
+
+#[test]
+#[ignore = "needs SUBNAUTICA_DIR pointing at a Subnautica install"]
+fn sky_system_values() {
+    let Some(dir) = std::env::var_os("SUBNAUTICA_DIR") else {
+        eprintln!("SUBNAUTICA_DIR not set; skipping");
+        return;
+    };
+    let game = GameData::locate(Some(PathBuf::from(dir))).unwrap();
+    let assets = Assets::index(&game).unwrap();
+    let (manager, light) = sn_assets::sky(&assets).unwrap();
+    // Values as UnityPy reads them with layouts generated from the game's
+    // assembly (see MODLOG, M8b).
+    assert_eq!(
+        (
+            manager.timeline,
+            manager.sun_direction,
+            manager.sun_max_angle
+        ),
+        (8.2, -141.0, 65.0)
+    );
+    assert_eq!((manager.exposure, manager.sky_fog_density), (0.66, 0.0002));
+    assert_eq!(manager.wavelengths, [680.0, 550.0, 440.0]);
+    assert_eq!(manager.sky_fog_color.color_keys, 4);
+    assert_eq!(
+        manager.sky_fog_color.color_times[..4],
+        [16769, 19661, 45875, 49151]
+    );
+    assert_eq!(
+        (
+            light.sun_intensity,
+            light.moon_intensity,
+            light.ambient_light
+        ),
+        (1.37, 0.5, 0.35)
+    );
+    assert_eq!(
+        (light.light_color.mode, light.light_color.color_keys),
+        (0, 7)
+    );
+    assert_eq!(
+        light.light_color.color_times[..7],
+        [15073, 17039, 20971, 32768, 44564, 48496, 50469]
+    );
+    assert!((light.light_color.keys[3][1] - 0.9686).abs() < 1e-4);
+}

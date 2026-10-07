@@ -2,6 +2,37 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-07 — M8b: the game's sky values (sun, ambient, sky fog) for the fog and the sun light
+
+**What:**
+- `sn-unity::sky`: Unity `Gradient` (read + evaluate), `SkyLight`
+  (`uSkyLight`), `SkyManager` (`uSkyManager` up to the sky fog);
+  `sn-assets::sky`. 2 unit tests, real-data test `sky_system_values`.
+- `sn-client/sky.rs`: clock → sky timeline, sun path, day/night factors,
+  sun colour × intensity, top ambient (with the class's Rayleigh colour
+  offset), sky fog; `--time` (default 09:36, a new game's start). The fog
+  now uses these instead of placeholders, and Bevy's sun takes the game's
+  direction and colour (8000 lux per game light unit). 3 unit tests.
+- How the layouts were found: UnityPy's type-tree generator on the game's
+  assembly, once, in a throwaway venv in `out/` (`TypeTreeGeneratorAPI`).
+
+**Verified (2026-10-07, RTX 3080):**
+1. Our readers give exactly UnityPy's values (sun intensity 1.37, exposure
+   0.66, sun direction −141°, gradient key times, …).
+2. Our Rayleigh port reproduces the class's reference coefficients
+   (5.81, 13.57, 33.13); noon sun points straight down, 06:00 is 25° up.
+3. At 09:36: sky timeline 10.40 h, sun 73° up, colour (0.89, 0.73, 0.54),
+   top ambient (0.042, 0.064, 0.098).
+4. `--benchmark 120 --gpu-timings`: 15,276 objects, mean 9.4 ms; fog pass
+   0.3 ms GPU. Screenshots `out/m8b-sky-overview.png`, `out/m8b-sky-closeup.png`
+   (warmer sunlit sand). **Not compared with the game yet.**
+5. Unit, real-data tests, clippy, fmt: pass.
+
+**Dead ends:** UnityPy could not resolve the scene's scripts (they live in
+another file); the objects were found with our own reader and decoded with
+UnityPy by class name. The first attempt also read path id 390 from the
+wrong serialized file of the bundle (204 bytes; the scene's is 716).
+
 ## 2026-10-07 — M8b (first pass): the game's underwater fog; plan for missing objects
 
 **What:**

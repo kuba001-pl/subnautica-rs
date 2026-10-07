@@ -43,7 +43,8 @@ Tested on Windows 11 with game build 10 (Steam):
   cap/side transitions by slope), with the world's placed objects (coral,
   plants, rocks, wrecks; about 15,000 around the lifepod) streamed in with
   it, seen through the game's own water fog model (colours and distances
-  per biome; sky light values still placeholders). Flying from the lifepod
+  per biome) under the game's sun and sky light for a time of day
+  (`--time`; no water surface or sky dome yet). Flying from the lifepod
   to the crater edge
   keeps memory under 1.6 GiB, at about 220 fps on average on an RTX 3080
   (about 100 fps in the dense start area).

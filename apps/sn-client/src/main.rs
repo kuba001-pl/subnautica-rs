@@ -4,6 +4,7 @@
 
 mod object_look;
 mod objects;
+mod sky;
 mod terrain;
 mod terrain_look;
 mod textures;
@@ -44,6 +45,8 @@ Usage: sn-client [--game-dir <PATH>] [--start <X> <Y> <Z>] [--look <X> <Y> <Z>]
   --fog-unit     scale on the water fog's light (calibration; default 1)
   --no-water-fog HDR camera without the water fog pass (for comparisons)
   --gpu-timings  with --benchmark/--flythrough: log GPU time per render pass
+  --time         game clock in hours for the sun and sky (default 9.6, i.e.
+                 09:36, when a new game starts)
   --view         view distance in metres (default 1200); level-of-detail
                  ranges scale with it
   --benchmark    once the start area is loaded, render FRAMES frames without
@@ -70,6 +73,8 @@ struct Args {
     fog_unit: f32,
     no_water_fog: bool,
     gpu_timings: bool,
+    /// Game clock, hours.
+    time: f32,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -86,6 +91,7 @@ fn parse_args() -> Result<Args, String> {
         fog_unit: 1.0,
         no_water_fog: false,
         gpu_timings: false,
+        time: sky::NEW_GAME_HOURS,
     };
     let raw: Vec<String> = std::env::args().skip(1).collect();
     let mut it = raw.iter();
@@ -116,6 +122,7 @@ fn parse_args() -> Result<Args, String> {
             "--no-objects" => args.no_objects = true,
             "--no-water-fog" => args.no_water_fog = true,
             "--gpu-timings" => args.gpu_timings = true,
+            "--time" => args.time = number(it.next(), "--time")?,
             "--fog-unit" => args.fog_unit = number(it.next(), "--fog-unit")?,
             "-h" | "--help" => return Err(USAGE.into()),
             other => return Err(format!("unknown argument {other:?}\n\n{USAGE}")),
@@ -130,12 +137,20 @@ fn parse_args() -> Result<Args, String> {
 /// Reads the game's terrain materials and textures (about a second).
 fn load_terrain_look(
     game_dir: Option<PathBuf>,
-) -> Result<(sn_assets::TerrainMaterials, WaterData), String> {
+) -> Result<
+    (
+        sn_assets::TerrainMaterials,
+        WaterData,
+        (sn_unity::SkyManager, sn_unity::SkyLight),
+    ),
+    String,
+> {
     let start = std::time::Instant::now();
     let game = GameData::locate(game_dir).map_err(String::from)?;
     let assets = sn_assets::Assets::index(&game)?;
     let materials = sn_assets::terrain_materials(&assets)?;
     let water = load_water(&game, &assets)?;
+    let sky = sn_assets::sky(&assets)?;
     for w in &materials.warnings {
         eprintln!("warning: {w}");
     }
@@ -145,7 +160,7 @@ fn load_terrain_look(
         materials.texture_count,
         start.elapsed().as_secs_f64()
     );
-    Ok((materials, water))
+    Ok((materials, water, sky))
 }
 
 /// The biome map, batch override biomes and the scene's water settings.
@@ -212,11 +227,11 @@ fn main() -> AppExit {
         }
     };
     let ranges = lod_ranges(args.view);
-    let (look, blocks, water) = if args.debug_colours {
-        (None, None, None)
+    let (look, blocks, water, sky_data) = if args.debug_colours {
+        (None, None, None, None)
     } else {
         match load_terrain_look(args.game_dir.clone()) {
-            Ok((materials, water)) => {
+            Ok((materials, water, sky_data)) => {
                 let mut blocks = BlockSettings {
                     layer: [0; 256],
                     gloss: [0.0; 256],
@@ -225,7 +240,7 @@ fn main() -> AppExit {
                     blocks.layer[m.type_id] = m.layer;
                     blocks.gloss[m.type_id] = m.blend.gloss;
                 }
-                (Some(materials), Some(blocks), Some(water))
+                (Some(materials), Some(blocks), Some(water), Some(sky_data))
             }
             Err(message) => {
                 eprintln!("error: {message}");
@@ -298,6 +313,14 @@ fn main() -> AppExit {
     if args.gpu_timings {
         app.add_plugins(bevy::render::diagnostic::RenderDiagnosticsPlugin);
     }
+    if let Some((manager, light)) = &sky_data {
+        let state = sky::state(manager, light, sky::timeline_from_clock(args.time));
+        info!(
+            "sky at {:.2} h (sky timeline {:.2} h): sun {:?} from {:?}, top ambient {:?}",
+            args.time, state.timeline, state.sun, state.to_sun, state.top_ambient
+        );
+        app.insert_resource(state);
+    }
     let underwater = water.is_some();
     if let Some(water) = water {
         let exposure = bevy::camera::Exposure::default().exposure();
@@ -346,7 +369,12 @@ struct Setup {
 #[derive(Resource)]
 struct Underwater(bool, /* fog pass off */ bool);
 
-fn setup(mut commands: Commands, settings: Res<Setup>, underwater: Res<Underwater>) {
+fn setup(
+    mut commands: Commands,
+    settings: Res<Setup>,
+    underwater: Res<Underwater>,
+    sky: Option<Res<sky::SkyState>>,
+) {
     let mut camera = commands.spawn((
         Camera3d::default(),
         Transform::from_translation(settings.start).looking_at(settings.look, Vec3::Y),
@@ -380,12 +408,31 @@ fn setup(mut commands: Commands, settings: Res<Setup>, underwater: Res<Underwate
             ..default()
         });
     }
+    // The game's sun when we have its sky (one game light unit is
+    // SUN_ILLUMINANCE), else a fixed white one.
+    let (direction, colour, illuminance) = match sky.as_deref() {
+        Some(s) => {
+            let peak = s.sun.max_element().max(1e-6);
+            let c = s.sun / peak;
+            (
+                -s.to_sun,
+                Color::linear_rgb(c.x, c.y, c.z),
+                SUN_ILLUMINANCE * peak,
+            )
+        }
+        None => (
+            Vec3::new(30.0, -100.0, -50.0).normalize(),
+            Color::WHITE,
+            SUN_ILLUMINANCE,
+        ),
+    };
     commands.spawn((
         DirectionalLight {
-            illuminance: SUN_ILLUMINANCE,
+            illuminance,
+            color: colour,
             ..default()
         },
-        Transform::from_xyz(0.0, 100.0, 0.0).looking_at(Vec3::new(30.0, 0.0, -50.0), Vec3::Y),
+        Transform::default().looking_to(direction, Vec3::Y),
     ));
 }
 
