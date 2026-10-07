@@ -2,6 +2,22 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-07 — Build fix: debug `sn-client` failed to link (no code change)
+
+**What happened:** `cargo build -p sn-client` (debug) failed with `LNK1120:
+211 unresolved externals`, all Bevy generic instantiations with
+`.llvm.<hash>` suffixes. Cause: stale/corrupt incremental artifacts in
+`target/debug`, most likely from two cargo builds writing the same target
+directory at once (a cargo build was waiting on the file lock during the
+fix). Release builds were not affected.
+
+**Fix:** `cargo clean -p sn-client`, then rebuild. Verified: debug and release
+`--benchmark 30` both run (start area 1,393 batches; 89 / 95 fps).
+
+**Not ours:** the Vulkan loader logs `ERROR … Failed to open JSON file …
+EOSOverlayVkLayer-Win64.json` at start-up: a Vulkan layer registered by the
+Epic Games overlay whose file is missing. Harmless.
+
 ## 2026-10-07 — M8b: the game's sky values (sun, ambient, sky fog) for the fog and the sun light
 
 **What:**
