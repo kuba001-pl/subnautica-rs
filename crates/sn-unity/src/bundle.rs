@@ -252,6 +252,11 @@ impl Bundle {
     }
 
     /// The bytes of one node (bounds were checked in `parse`).
+    /// Size of the decompressed data held in memory.
+    pub fn data_len(&self) -> usize {
+        self.data.len()
+    }
+
     pub fn node_data(&self, node: &BundleNode) -> &[u8] {
         &self.data[node.offset as usize..(node.offset + node.size) as usize]
     }

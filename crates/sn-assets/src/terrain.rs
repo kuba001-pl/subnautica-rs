@@ -22,7 +22,8 @@ const MATERIAL: i32 = 21;
 const TEXTURE_2D: i32 = 28;
 const MONO_SCRIPT: i32 = 115;
 
-/// A texture with its pixel data (all stored mip levels, in the stored format).
+/// A texture with its pixel data (all stored mip levels, in the stored
+/// format). Used for terrain and object textures alike.
 pub struct TerrainTexture {
     pub texture: Texture2D,
     pub data: Vec<u8>,
@@ -168,7 +169,7 @@ fn behaviours<'f>(assets: &Assets, file: &'f FileRef, class_name: &str) -> Resul
     Ok(out)
 }
 
-fn load_texture(assets: &Assets, object: &ObjectRef) -> Result<TerrainTexture> {
+pub(crate) fn load_texture(assets: &Assets, object: &ObjectRef) -> Result<TerrainTexture> {
     let data = expect_class(object, TEXTURE_2D)?;
     let texture =
         Texture2D::parse(data, object.file.file().big_endian).map_err(|e| e.to_string())?;

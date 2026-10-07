@@ -180,6 +180,7 @@ pub fn placed(game: &GameData, oracle: bool) -> Result<ExitCode> {
     let (mut nodes, mut visible, mut vertices, mut triangles) = (0usize, 0usize, 0usize, 0usize);
     let mut meshes: BTreeMap<(std::path::PathBuf, String, i64), String> = BTreeMap::new();
     let mut lod_groups = 0;
+    let mut skinned: Vec<String> = Vec::new();
     for key in &keys {
         let prefab: Prefab = match assets.prefab(&catalog, key) {
             Ok(p) => p,
@@ -192,6 +193,9 @@ pub fn placed(game: &GameData, oracle: bool) -> Result<ExitCode> {
         nodes += prefab.nodes.len();
         if prefab.nodes.iter().any(|n| n.lod.is_some()) {
             lod_groups += 1;
+        }
+        if prefab.nodes.iter().any(|n| n.active && n.skinned) {
+            skinned.push(key.clone());
         }
         let mut any = false;
         for node in prefab.visible_nodes() {
@@ -250,6 +254,16 @@ pub fn placed(game: &GameData, oracle: bool) -> Result<ExitCode> {
         "prefabs without a visible mesh: {} (e.g. {:?})",
         without_mesh.len(),
         without_mesh.iter().take(5).collect::<Vec<_>>()
+    );
+    let skinned_only: Vec<&String> = skinned
+        .iter()
+        .filter(|k| without_mesh.contains(k))
+        .collect();
+    println!(
+        "prefabs with skinned meshes (not read yet): {} ({} with nothing else to draw, e.g. {:?})",
+        skinned.len(),
+        skinned_only.len(),
+        skinned_only.iter().take(4).collect::<Vec<_>>()
     );
     println!("errors: {}", errors.len());
     // Group by message with numbers and ids removed.

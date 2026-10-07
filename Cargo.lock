@@ -4780,6 +4780,7 @@ dependencies = [
  "sn-mesh",
  "sn-octree",
  "sn-terrain",
+ "sn-unity",
  "sn-world",
 ]
 

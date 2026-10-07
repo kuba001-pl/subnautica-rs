@@ -19,6 +19,7 @@ const MESH_FILTER: i32 = 33;
 const MESH: i32 = 43;
 const ASSET_BUNDLE: i32 = 142;
 const LOD_GROUP: i32 = 205;
+const SKINNED_MESH_RENDERER: i32 = 137;
 
 /// Hierarchies deeper than this are treated as broken.
 const MAX_DEPTH: usize = 64;
@@ -40,6 +41,8 @@ pub struct PrefabNode {
     /// From an enabled MeshRenderer, one per sub-mesh.
     pub materials: Vec<Option<ObjectRef>>,
     pub renderer_enabled: bool,
+    /// Has a SkinnedMeshRenderer (animated mesh; not read yet).
+    pub skinned: bool,
     /// Level in its LOD group (0 = most detailed); `None` if not in one.
     pub lod: Option<usize>,
 }
@@ -52,12 +55,22 @@ pub struct Prefab {
 }
 
 impl Prefab {
-    /// Nodes that the game would draw at full detail: active, with a mesh
-    /// and an enabled renderer, and in LOD 0 (or no LOD group).
+    /// Nodes we draw at full detail: active, with a mesh and an enabled
+    /// renderer, outside LOD groups or in the most detailed LOD level that
+    /// has such a node (LOD 0 is sometimes only a skinned mesh, which we
+    /// don't read yet).
     pub fn visible_nodes(&self) -> impl Iterator<Item = &PrefabNode> {
-        self.nodes.iter().filter(|n| {
-            n.active && n.renderer_enabled && n.mesh.is_some() && n.lod.is_none_or(|l| l == 0)
-        })
+        let drawable = |n: &&PrefabNode| n.active && n.renderer_enabled && n.mesh.is_some();
+        let best = self
+            .nodes
+            .iter()
+            .filter(drawable)
+            .filter_map(|n| n.lod)
+            .min();
+        self.nodes
+            .iter()
+            .filter(drawable)
+            .filter(move |n| n.lod.is_none() || n.lod == best)
     }
 }
 
@@ -171,6 +184,7 @@ impl Assets<'_> {
                     mesh: n.mesh,
                     materials: n.materials,
                     renderer_enabled: n.renderer_enabled,
+                    skinned: n.skinned,
                     lod: n.lod,
                 })
                 .collect(),
@@ -197,6 +211,7 @@ impl Assets<'_> {
         let mut mesh = None;
         let mut materials = Vec::new();
         let mut renderer_enabled = false;
+        let mut skinned = false;
         for component in &go.components {
             let Some(c) = self.resolve(file, *component)? else {
                 continue;
@@ -222,6 +237,7 @@ impl Assets<'_> {
                         materials.push(self.resolve(file, m)?);
                     }
                 }
+                SKINNED_MESH_RENDERER => skinned = true,
                 LOD_GROUP => {
                     let g = LodGroup::parse(data, big_endian)
                         .map_err(|e| format!("LODGroup {}: {e}", c.path_id))?;
@@ -256,6 +272,7 @@ impl Assets<'_> {
             mesh,
             materials,
             renderer_enabled,
+            skinned,
             lod: None,
         });
         for child in &transform.children {
@@ -277,6 +294,11 @@ impl Assets<'_> {
             self.add_node(&child_go, Some(index), active, prefab, lods, depth + 1)?;
         }
         Ok(())
+    }
+
+    /// Reads a texture with its pixel data (inline or from a resource file).
+    pub fn texture(&self, object: &ObjectRef) -> Result<crate::TerrainTexture> {
+        crate::terrain::load_texture(self, object)
     }
 
     /// Reads a mesh and decodes its geometry (vertex data inline or from
@@ -315,6 +337,7 @@ struct BuildingNode {
     mesh: Option<ObjectRef>,
     materials: Vec<Option<ObjectRef>>,
     renderer_enabled: bool,
+    skinned: bool,
     lod: Option<usize>,
 }
 

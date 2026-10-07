@@ -2,6 +2,54 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-07 — M7c: world objects in the client
+
+**What:**
+- `sn-client/objects.rs`: a worker thread (own asset index, catalog,
+  `prefabs.db`) reads a batch's baked cells, loads each placed prefab once
+  and sends new textures, materials, meshes (one per sub-mesh, only the
+  vertices it uses; z flipped, winding reversed, tangent w negated) and the
+  batch's instances. The main thread uploads assets once and spawns one
+  entity per placed mesh part. Cell level *n* is shown while its batch's
+  terrain level of detail is ≤ *n* (our choice). The worker forgets loaded
+  bundles beyond 512 MiB (`Assets::trim_cache`).
+- `object_look.rs` + `object.wgsl`: standard material with `_MainTex` ×
+  `_Color` (texture scale/offset), alpha clip (`MARMO_ALPHA_CLIP`,
+  `_Cutoff`), blending (render queue ≥ 2500, `MARMO_ALPHA`, `WBOIT`,
+  `_ALPHAPREMULTIPLY_ON`), two-sided when `_MyCullVariable` = 0, and the
+  game's DXT5nm normal maps through Bevy's mikktspace helpers.
+- Shared texture upload (`textures.rs`, moved out of `terrain_look.rs`).
+- `Prefab::visible_nodes` falls back to the most detailed LOD level with a
+  plain mesh (LOD 0 is sometimes only skinned, e.g. `BrainCoral`); nodes
+  record `skinned`. `sn-inspect prefab --placed` reports skinned prefabs.
+- Not drawn: creatures (`WorldEntities/Creatures/…`: they move and animate;
+  their spawn points were drawn frozen, e.g. Reefbacks hanging in the water),
+  skinned meshes, extra (multi-pass) materials, LOD levels > the best one.
+- `--no-objects`; stats log objects per cell level; benchmark/flythrough wait
+  for objects as well as terrain.
+- `sn-client` now depends on `sn-unity` (reads object materials).
+
+**Verified (2026-10-07, RTX 3080, 1600×900):**
+1. `--benchmark 120` twice: 15,276 entities (cell levels 0–3: 4,670 / 4,333 /
+   1,582 / 4,691) from 775 prefabs, 0 warnings, identical in both runs;
+   mean 8.27 / 8.06 ms (121 / 124 fps), worst 18.9 ms; peak memory 1.57 GiB
+   (terrain only: 6.1 ms, 1.16 GiB).
+2. `--flythrough 1700 -80 0`: mean 3.94 ms (254 fps), p95 6.4 ms, worst 136 ms
+   (spikes while assets upload; not investigated), peak 1.59 GiB; objects
+   despawn and respawn per level as the camera moves.
+3. Screenshots (`out/m7c-overview.png`, `out/m7c-closeup.png`): coral and
+   plants sit on the matching purple/orange terrain patches, kelp and a wreck
+   piece in place; the floating boulder in the overview is
+   `FloatingStone4_Floaters` (the game's floating rocks, minus the Floater
+   creatures). **Not compared with the game side by side.**
+4. `cargo test --workspace` (2 new tests: mirrored transforms, level
+   mapping), clippy, fmt, real-data tests: pass.
+
+**Dead ends:** first run peaked at 4.31 GiB: the worker's bundle cache kept
+every decompressed bundle, and every sub-mesh copied its mesh's full vertex
+arrays. Cache cap + per-sub-mesh vertices: 1.6 GiB. The double-sided flag
+bit in Bevy is `1 << 4`, not `2`; caught before running.
+
 ## 2026-10-07 — M7b: prefabs → meshes
 
 **What:**

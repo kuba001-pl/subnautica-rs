@@ -281,6 +281,11 @@ impl TerrainStreamer {
         stats
     }
 
+    /// Batches on screen and their level of detail.
+    pub fn shown_lods(&self) -> impl Iterator<Item = (BatchCoord, u32)> + '_ {
+        self.shown.iter().map(|(c, s)| (*c, s.lod))
+    }
+
     /// True when everything wanted at the current position is on screen.
     pub fn settled(&self) -> bool {
         self.last_update_at.is_some()

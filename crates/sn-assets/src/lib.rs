@@ -192,6 +192,27 @@ impl<'g> Assets<'g> {
         Ok(loaded)
     }
 
+    /// Bytes held by loaded bundles and files.
+    pub fn cached_bytes(&self) -> usize {
+        self.cache
+            .lock()
+            .unwrap()
+            .values()
+            .map(|b| match &b.storage {
+                Storage::Bundle(bundle) => bundle.data_len(),
+                Storage::Standalone { bytes, .. } => bytes.len(),
+            })
+            .sum()
+    }
+
+    /// Forgets every loaded bundle once they hold more than `max_bytes`
+    /// (objects already handed out keep theirs alive).
+    pub fn trim_cache(&self, max_bytes: usize) {
+        if self.cached_bytes() > max_bytes {
+            self.cache.lock().unwrap().clear();
+        }
+    }
+
     /// The first bundle whose file name starts with `prefix`.
     pub fn bundle_named(&self, prefix: &str) -> Option<&Path> {
         self.bundles

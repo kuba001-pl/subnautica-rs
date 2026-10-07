@@ -2,8 +2,11 @@
 //! camera from the player's install (with levels of detail) and lets you fly
 //! around it.
 
+mod object_look;
+mod objects;
 mod terrain;
 mod terrain_look;
+mod textures;
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -18,6 +21,8 @@ use bevy::render::view::screenshot::{Screenshot, ScreenshotCaptured, save_to_dis
 use bevy::window::PresentMode;
 use sn_install::GameData;
 
+use crate::object_look::ObjectLookPlugin;
+use crate::objects::ObjectStreamer;
 use crate::terrain::{BlockSettings, LodRanges, TerrainStreamer};
 use crate::terrain_look::{PendingTerrainLook, SUN_ILLUMINANCE, TerrainLookPlugin};
 
@@ -31,7 +36,8 @@ Usage: sn-client [--game-dir <PATH>] [--start <X> <Y> <Z>] [--look <X> <Y> <Z>]
                  lifepod start in the Safe Shallows)
   --look         point the camera looks at, Unity world coordinates
   --debug-colours  false colours per terrain type instead of the game's
-                 terrain materials
+                 terrain materials (also turns world objects off)
+  --no-objects   terrain only, no world objects (coral, rocks, …)
   --view         view distance in metres (default 1200); level-of-detail
                  ranges scale with it
   --benchmark    once the start area is loaded, render FRAMES frames without
@@ -54,6 +60,7 @@ struct Args {
     flythrough: Option<Vec3>,
     speed: f32,
     debug_colours: bool,
+    no_objects: bool,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -66,6 +73,7 @@ fn parse_args() -> Result<Args, String> {
         flythrough: None,
         speed: 40.0,
         debug_colours: false,
+        no_objects: false,
     };
     let raw: Vec<String> = std::env::args().skip(1).collect();
     let mut it = raw.iter();
@@ -93,6 +101,7 @@ fn parse_args() -> Result<Args, String> {
             "--flythrough" => args.flythrough = Some(vec3(&mut it, "--flythrough")?),
             "--speed" => args.speed = number(it.next(), "--speed")?,
             "--debug-colours" => args.debug_colours = true,
+            "--no-objects" => args.no_objects = true,
             "-h" | "--help" => return Err(USAGE.into()),
             other => return Err(format!("unknown argument {other:?}\n\n{USAGE}")),
         }
@@ -195,6 +204,7 @@ fn main() -> AppExit {
         SystemInformationDiagnosticsPlugin,
         FreeCameraPlugin,
         TerrainLookPlugin,
+        ObjectLookPlugin,
     ))
     .insert_resource(PendingTerrainLook(look))
     .insert_resource(ClearColor(WATER_COLOUR))
@@ -213,7 +223,27 @@ fn main() -> AppExit {
         fog_end: args.view,
     })
     .add_systems(Startup, setup)
-    .add_systems(Update, (terrain::stream, log_stats));
+    .add_systems(
+        Update,
+        (
+            terrain::stream,
+            objects::stream_objects
+                .after(terrain::stream)
+                .run_if(resource_exists::<ObjectStreamer>),
+            log_stats,
+        ),
+    );
+    if !args.debug_colours && !args.no_objects {
+        match GameData::locate(args.game_dir.clone()) {
+            Ok(game) => {
+                app.insert_resource(ObjectStreamer::start(game));
+            }
+            Err(e) => {
+                eprintln!("error: {e}");
+                return AppExit::error();
+            }
+        }
+    }
     if let Some(frames) = args.benchmark {
         app.insert_resource(Measurement::new(Mode::Benchmark { frames }))
             .add_systems(Update, measure);
@@ -278,6 +308,7 @@ fn log_stats(
     mut last: Local<Duration>,
     diagnostics: Res<DiagnosticsStore>,
     streamer: Res<TerrainStreamer>,
+    objects: Option<Res<ObjectStreamer>>,
     camera: Query<&Transform, With<Camera3d>>,
 ) {
     if time.elapsed() - *last < Duration::from_secs(2) {
@@ -303,6 +334,21 @@ fn log_stats(
         position.y,
         -position.z,
     );
+    if let Some(objects) = objects {
+        let o = objects.stats();
+        info!(
+            "objects: {} entities (cell levels 0..3 {:?}) in {} batches, {} queued | {} prefabs, {} meshes, {} materials, {} textures | {} warnings",
+            o.entities,
+            o.per_level,
+            o.batches,
+            o.queued,
+            o.prefabs,
+            o.meshes,
+            o.materials,
+            o.textures,
+            o.warnings
+        );
+    }
 }
 
 enum Mode {
@@ -363,6 +409,7 @@ fn measure(
     time: Res<Time>,
     diagnostics: Res<DiagnosticsStore>,
     mut streamer: ResMut<TerrainStreamer>,
+    objects: Option<Res<ObjectStreamer>>,
     mut m: ResMut<Measurement>,
     mut camera: Query<&mut Transform, With<Camera3d>>,
 ) {
@@ -374,10 +421,11 @@ fn measure(
     m.max_cached = m.max_cached.max(stats.cached_batches);
     m.max_memory_gib = m.max_memory_gib.max(process_memory_gib(&diagnostics));
     let now = time.elapsed();
+    let settled = streamer.settled() && objects.as_ref().is_none_or(|o| o.settled(&streamer));
 
     match m.phase {
         Phase::Loading => {
-            if streamer.settled() {
+            if settled {
                 info!(
                     "measure: start area loaded after {:.2} s: {} batches, {} meshes, {} triangles",
                     now.as_secs_f32(),
@@ -385,6 +433,19 @@ fn measure(
                     stats.shown_meshes,
                     stats.shown_triangles
                 );
+                if let Some(o) = &objects {
+                    let s = o.stats();
+                    info!(
+                        "measure: objects: {} entities (cell levels 0..3 {:?}), {} prefabs, {} meshes, {} materials, {} textures, {} warnings",
+                        s.entities,
+                        s.per_level,
+                        s.prefabs,
+                        s.meshes,
+                        s.materials,
+                        s.textures,
+                        s.warnings
+                    );
+                }
                 // Only latencies from here on describe streaming while moving.
                 streamer.latencies.clear();
                 m.phase = Phase::Running;
@@ -422,10 +483,9 @@ fn measure(
         Phase::Arriving => {
             m.frame_ms.push(time.delta_secs() * 1000.0);
             let waited = (now - m.phase_started).as_secs_f32();
-            if streamer.settled() || waited > 30.0 {
+            if settled || waited > 30.0 {
                 info!(
-                    "measure: destination loaded {waited:.2} s after arriving (settled: {})",
-                    streamer.settled()
+                    "measure: destination loaded {waited:.2} s after arriving (settled: {settled})"
                 );
                 m.phase = Phase::Done;
             }

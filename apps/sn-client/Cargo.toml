@@ -8,6 +8,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+sn-unity.workspace = true
 # Engine: windowing, input, ECS, PBR rendering (see docs/DESIGN.md §3.3);
 # free_camera: built-in fly camera controller.
 bevy = { version = "0.19.1", features = ["free_camera"] }

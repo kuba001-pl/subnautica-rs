@@ -38,15 +38,17 @@ Tested on Windows 11 with game build 10 (Steam):
   and out as you move, with four levels of detail out to 1.2 km, textured
   with the game's own terrain materials, blended between neighbouring
   materials the way the game does it (layers per chunk, soft ragged borders,
-  cap/side transitions by slope). Flying from the lifepod to the crater edge
-  keeps memory under 1.2 GiB, at 260–315 fps on average on an RTX 3080
-  (165 fps in the dense start area).
+  cap/side transitions by slope), with the world's placed objects (coral,
+  plants, rocks, wrecks; about 15,000 around the lifepod) streamed in with
+  it. Flying from the lifepod to the crater edge
+  keeps memory under 1.6 GiB, at about 250 fps on average on an RTX 3080
+  (about 120 fps in the dense start area).
 
 ## What doesn't work yet
 
 Water surface and underwater look (lighting, fog, caustics), terrain
-specular colour, models (world objects are placed but not drawn yet),
-player, audio, multiplayer. Next up: M7c (drawing world objects).
+specular colour; for world objects: specular/emission maps, animation
+(waving plants), skinned meshes, creatures; player, audio, multiplayer.
 Linux/macOS: not tested.
 
 ## Try it
