@@ -9,7 +9,10 @@ use std::path::{Path, PathBuf};
 
 use sn_octree::Batch;
 use sn_terrain::TerrainBatch;
-use sn_world::{BatchCells, BatchCoord, ObjectTree, WorldIndex, parse_prefab_database};
+use sn_world::{
+    BatchCells, BatchCoord, BiomeMap, ObjectTree, WorldIndex, parse_biome_names,
+    parse_prefab_database,
+};
 
 /// Environment variable naming the folder that contains `Subnautica.exe`.
 pub const GAME_DIR_ENV: &str = "SUBNAUTICA_DIR";
@@ -251,6 +254,16 @@ impl GameData {
         BatchCells::parse(&bytes)
             .map(Some)
             .map_err(|e| Error(format!("{}: {e}", path.display())))
+    }
+
+    /// `biomeMap.bin` and the names from `biomes.csv`.
+    pub fn read_biome_map(&self) -> Result<(BiomeMap, Vec<String>)> {
+        let path = self.build_dir.join("biomeMap.bin");
+        let bytes = std::fs::read(&path).map_err(|e| io_error(&path, e))?;
+        let map = BiomeMap::parse(&bytes).map_err(|e| Error(format!("{}: {e}", path.display())))?;
+        let path = self.build_dir.join("biomes.csv");
+        let text = std::fs::read_to_string(&path).map_err(|e| io_error(&path, e))?;
+        Ok((map, parse_biome_names(&text)))
     }
 
     /// `SNUnmanagedData/prefabs.db`: ClassId → prefab path.

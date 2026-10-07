@@ -34,6 +34,8 @@ Tested on Windows 11 with game build 10 (Steam):
   (`sn-inspect prefab`, exported as OBJ to `out/prefabs/`): all 1,369 placed
   prefabs and their 3,263 meshes, matching UnityPy on every vertex and
   triangle count.
+- Reading the biome map and the water settings of all 145 biomes
+  (`sn-inspect biomes`, `sn-inspect biomes --at X Y Z`).
 - `sn-client`: a desktop window (Bevy) with a fly camera. Terrain streams in
   and out as you move, with four levels of detail out to 1.2 km, textured
   with the game's own terrain materials, blended between neighbouring

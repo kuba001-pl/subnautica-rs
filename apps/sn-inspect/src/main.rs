@@ -1,6 +1,7 @@
 //! `sn-inspect`: headless command-line tool to inspect and validate the data in
 //! a Subnautica install. Reads the game folder, never writes to it.
 
+mod biomes;
 mod density;
 mod entities;
 mod game;
@@ -45,6 +46,10 @@ Commands:
   textures --pixels <FILE>...
                          The same, plus a CRC-32 of each decoded image
   textures --census      Count texture formats over the whole game
+  biomes                 Biome map, batch override biomes, and the water
+                         settings of every biome
+  biomes --at <X> <Y> <Z>
+                         The biome and water settings at a Unity world position
   entities <X> <Y> <Z>   A batch's saved objects (batch objects, baked cells)
                          with prefab paths and world positions
   entities --all         Parse every object cache file; totals and checks
@@ -127,6 +132,14 @@ fn run(mut args: Vec<String>) -> Result<ExitCode> {
             texture::list(&game, paths, true)
         }
         ["textures", paths @ ..] if !paths.is_empty() => texture::list(&game, paths, false),
+        ["biomes"] => biomes::run(&game, None),
+        ["biomes", "--at", x, y, z] => {
+            let n = |s: &str| {
+                s.parse::<f32>()
+                    .map_err(|_| format!("{s:?} is not a number"))
+            };
+            biomes::run(&game, Some([n(x)?, n(y)?, n(z)?]))
+        }
         ["entities", "--all"] => entities::all(&game),
         ["entities", x, y, z] => entities::one(&game, parse_coord(x, y, z)?),
         ["prefab", "--placed"] => prefab::placed(&game, false),

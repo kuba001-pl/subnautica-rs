@@ -36,7 +36,7 @@ pub struct Voxeland {
 }
 
 impl Reader<'_> {
-    fn bool_aligned(&mut self) -> Result<bool> {
+    pub(crate) fn bool_aligned(&mut self) -> Result<bool> {
         let v = self.u8()? != 0;
         self.align(4)?;
         Ok(v)

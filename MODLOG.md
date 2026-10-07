@@ -2,6 +2,33 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-07 — M8a: biomes and water settings, headless
+
+**What:**
+- `sn-world::biomes`: `BiomeMap` (`biomeMap.bin`: size from its last two
+  bytes), `parse_biome_names` (`biomes.csv`), `BatchRootSettings` (a batch's
+  override biome and fog from `LargeWorldBatchRoot`). 3 tests.
+- `sn-unity::water`: `WaterBiomeManager` and `WaterSettings`.
+- `sn-assets::water_biomes` (main scene); `main_scene` helper shared with the
+  terrain materials. `sn-install::read_biome_map`.
+- `sn-inspect biomes` and `biomes --at X Y Z`; real-data test
+  `water_biomes_and_biome_map`.
+- M8 split into M8a (data), M8b (underwater look), M8c (surface, caustics,
+  sky) in `docs/DESIGN.md`; findings in `docs/formats/water.md`.
+- How it was found: the game's classes read with `ilspycmd` into the
+  gitignored `out/decompiled/` (same tool as for `Voxeland` earlier); nothing
+  copied.
+
+**Verified (2026-10-07):**
+1. `sn-inspect biomes`: 145 biomes with plausible values (e.g. Safe Shallows
+   absorption 125/20/4, 28 °C; lava 80 °C); map 1024 × 1024, 4 voxels per
+   cell, 16 indices used; 467 batches override their biome. Biomes without
+   settings: only `void` (open ocean) and `EmperorFacility` (the game falls
+   back to its defaults for those).
+2. `biomes --at`: lifepod (0, −10, 0) → `safeShallows`; (1700, −80, 0) →
+   `crashZone`. Other places not checked against the game.
+3. Unit, real-data tests, clippy, fmt: pass.
+
 ## 2026-10-07 — M7c: world objects in the client
 
 **What:**

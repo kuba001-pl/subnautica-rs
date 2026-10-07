@@ -104,3 +104,43 @@ fn prefabs_resolve_and_meshes_decode() {
         );
     }
 }
+
+#[test]
+#[ignore = "needs SUBNAUTICA_DIR pointing at a Subnautica install"]
+fn water_biomes_and_biome_map() {
+    let Some(dir) = std::env::var_os("SUBNAUTICA_DIR") else {
+        eprintln!("SUBNAUTICA_DIR not set; skipping");
+        return;
+    };
+    let game = GameData::locate(Some(PathBuf::from(dir))).unwrap();
+    let assets = Assets::index(&game).unwrap();
+    let water = sn_assets::water_biomes(&assets).unwrap();
+    assert_eq!(water.biomes.len(), 145);
+    assert_eq!((water.texture_size, water.upsampled_size), (8, 32));
+    assert_eq!(water.region_bounds, 64.0);
+    let shallows = water
+        .biomes
+        .iter()
+        .find(|b| b.name == "safeShallows")
+        .unwrap();
+    assert_eq!(shallows.settings.absorption, [125.0, 20.0, 4.0]);
+
+    let (map, names) = game.read_biome_map().unwrap();
+    assert_eq!((map.width, map.height, names.len()), (1024, 1024, 19));
+    // The lifepod (Unity 0, -10, 0) is in the Safe Shallows.
+    let v = sn_world::world_to_voxel([0.0, -10.0, 0.0]);
+    let i = map.index_at(v[0] as i32, v[2] as i32, 4160).unwrap();
+    assert_eq!(names[usize::from(i)], "safeShallows");
+    // Every named biome in the map except the open ocean has settings.
+    for &c in &map.cells {
+        let name = &names[usize::from(c)];
+        assert!(
+            name == "void"
+                || water
+                    .biomes
+                    .iter()
+                    .any(|b| b.name.eq_ignore_ascii_case(name)),
+            "{name}"
+        );
+    }
+}

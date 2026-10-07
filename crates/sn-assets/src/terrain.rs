@@ -132,7 +132,11 @@ fn expect_class(object: &ObjectRef, class: i32) -> Result<&[u8]> {
 
 /// All MonoBehaviours in `file` whose script class is `class_name`, as raw
 /// object bytes.
-fn behaviours<'f>(assets: &Assets, file: &'f FileRef, class_name: &str) -> Result<Vec<&'f [u8]>> {
+pub(crate) fn behaviours<'f>(
+    assets: &Assets,
+    file: &'f FileRef,
+    class_name: &str,
+) -> Result<Vec<&'f [u8]>> {
     let big_endian = file.file().big_endian;
     let mut script_names: HashMap<(PathBuf, String, i64), bool> = HashMap::new();
     let mut out = Vec::new();
@@ -297,9 +301,8 @@ fn load_material(
     })
 }
 
-/// Reads every terrain block type with its material and textures.
-pub fn terrain_materials(assets: &Assets) -> Result<TerrainMaterials> {
-    // 1. The scene's Voxeland table.
+/// The main scene's serialized file (`main.unity_….bundle`).
+pub(crate) fn main_scene(assets: &Assets) -> Result<FileRef> {
     let bundle = assets
         .bundle_named("main.unity_")
         .ok_or("main scene bundle (main.unity_*.bundle) not found")?
@@ -310,7 +313,13 @@ pub fn terrain_materials(assets: &Assets) -> Result<TerrainMaterials> {
         .find(|n| !n.ends_with(".sharedAssets"))
         .ok_or("main scene bundle has no scene file")?
         .to_string();
-    let scene = assets.file(&bundle, &scene_name)?;
+    assets.file(&bundle, &scene_name)
+}
+
+/// Reads every terrain block type with its material and textures.
+pub fn terrain_materials(assets: &Assets) -> Result<TerrainMaterials> {
+    // 1. The scene's Voxeland table.
+    let scene = main_scene(assets)?;
     let voxeland_data = behaviours(assets, &scene, "Voxeland")?;
     let voxeland_bytes = voxeland_data
         .first()

@@ -11,6 +11,7 @@
 
 mod prefab;
 mod terrain;
+mod water;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -24,6 +25,7 @@ pub use terrain::{
     BlendSettings, BlockSource, SurfaceLayer, TerrainMaterial, TerrainMaterials, TerrainTexture,
     terrain_materials,
 };
+pub use water::water_biomes;
 
 pub type Result<T> = std::result::Result<T, String>;
 

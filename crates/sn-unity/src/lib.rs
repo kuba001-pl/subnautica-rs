@@ -15,6 +15,7 @@ mod reader;
 mod serialized;
 mod texture;
 mod voxeland;
+mod water;
 
 use std::fmt;
 
@@ -29,6 +30,7 @@ pub use serialized::{
 };
 pub use texture::{StreamingInfo, Texture2D, TextureFormat};
 pub use voxeland::{Voxeland, VoxelandBlockType, VoxelandBlockTypePrefab};
+pub use water::{BiomeWater, WaterBiomeManager, WaterSettings};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Error {

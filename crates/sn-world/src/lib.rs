@@ -6,11 +6,13 @@
 //! Pure: parses bytes and strings and does arithmetic, never touches the
 //! filesystem.
 
+mod biomes;
 mod entities;
 mod wire;
 
 use std::fmt;
 
+pub use biomes::{BatchRootSettings, BiomeMap, parse_biome_names};
 pub use entities::{
     BakedCell, BatchCells, EntityError, ObjectTree, SavedComponent, SavedObject, TREE_MAGIC,
     Transform, parse_prefab_database,

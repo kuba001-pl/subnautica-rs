@@ -1,6 +1,6 @@
 # subnautica-rs — Design
 
-Status: **M1–M7c done** (2026-10-07). Everything after M7c is a plan, not code.
+Status: **M1–M8a done** (2026-10-07). Everything after M8a is a plan, not code.
 
 ## 1. Goal
 
@@ -179,7 +179,9 @@ reach them — expect the far end of this list to change.
 
 | # | Goal | Done when |
 |---|---|---|
-| **M8** | Underwater rendering (our own shaders): water surface, depth fog/absorption, caustics, sky above. | Visual pass + perf budget logged. |
+| **M8a** ✅ | Water data, headless: the biome map (`biomeMap.bin`, `biomes.csv`), each batch's override biome (`LargeWorldBatchRoot`), and the per-biome water settings (`WaterBiomeManager.biomeSettings` in the main scene: absorption, scattering, murkiness, emissive, sunlight/ambient scale, …); `sn-inspect biomes`. | Every biome name in the map and the overrides has settings (misses listed); the biome at a few known places (lifepod: safe shallows, …) is right; values logged. |
+| **M8b** | Underwater look: the game's water volume model (extinction/scattering per biome, sampled around the camera like the game's 8³ → 32³ volume) replacing Bevy's distance fog, with the biome's sunlight/ambient scales; port the math from the game's compiled water shader (as done for terrain). | Side-by-side screenshots in Safe Shallows, Kelp Forest and a deep biome; frame time logged. |
+| **M8c** | Water surface from below and above, caustics, sky. | Visual pass + perf budget logged. |
 | **M9** | Player: swim controller, terrain collision, surfacing/air, first-person camera. | Can swim from the Lifepod to the Kelp Forest without clipping through terrain (logged collision checks). |
 
 ### Phase D — Multiplayer
