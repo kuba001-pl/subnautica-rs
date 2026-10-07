@@ -1,0 +1,333 @@
+//! Prefabs: an addressable prefab path → its bundle → the GameObject
+//! hierarchy, with each node's mesh and materials. See
+//! `docs/formats/unity.md`.
+
+use sn_unity::{
+    AssetBundleManifest, Catalog, GameObject, LodGroup, Mesh, MeshFilter, MeshGeometry,
+    MeshRenderer, TransformNode,
+};
+use sn_world::Transform;
+
+use crate::{Assets, ObjectRef, Result};
+
+const GAME_OBJECT: i32 = 1;
+const TRANSFORM: i32 = 4;
+/// A `RectTransform` starts with a Transform's fields.
+const RECT_TRANSFORM: i32 = 224;
+const MESH_RENDERER: i32 = 23;
+const MESH_FILTER: i32 = 33;
+const MESH: i32 = 43;
+const ASSET_BUNDLE: i32 = 142;
+const LOD_GROUP: i32 = 205;
+
+/// Hierarchies deeper than this are treated as broken.
+const MAX_DEPTH: usize = 64;
+
+/// One GameObject of a prefab.
+pub struct PrefabNode {
+    pub name: String,
+    /// Index of the parent node; `None` for the root.
+    pub parent: Option<usize>,
+    pub local: Transform,
+    /// Placement relative to the prefab root (parents applied, the root's
+    /// own transform left out, as the game replaces it when placing).
+    pub in_prefab: Transform,
+    /// Active, and so are all its ancestors.
+    pub active: bool,
+    pub layer: u32,
+    /// From a MeshFilter; `None` without one or with a null mesh.
+    pub mesh: Option<ObjectRef>,
+    /// From an enabled MeshRenderer, one per sub-mesh.
+    pub materials: Vec<Option<ObjectRef>>,
+    pub renderer_enabled: bool,
+    /// Level in its LOD group (0 = most detailed); `None` if not in one.
+    pub lod: Option<usize>,
+}
+
+pub struct Prefab {
+    /// The addressable key, e.g. `WorldEntities/…/X.prefab`.
+    pub key: String,
+    /// Node 0 is the root.
+    pub nodes: Vec<PrefabNode>,
+}
+
+impl Prefab {
+    /// Nodes that the game would draw at full detail: active, with a mesh
+    /// and an enabled renderer, and in LOD 0 (or no LOD group).
+    pub fn visible_nodes(&self) -> impl Iterator<Item = &PrefabNode> {
+        self.nodes.iter().filter(|n| {
+            n.active && n.renderer_enabled && n.mesh.is_some() && n.lod.is_none_or(|l| l == 0)
+        })
+    }
+}
+
+fn expect(object: &ObjectRef, class: i32) -> Result<&[u8]> {
+    let (info, data) = object.data()?;
+    if info.class_id != class {
+        return Err(format!(
+            "{} object {}: class {} where {class} was expected",
+            object.file.name, object.path_id, info.class_id
+        ));
+    }
+    Ok(data)
+}
+
+impl Assets<'_> {
+    /// Reads `StreamingAssets/aa/catalog.json`.
+    pub fn catalog(&self) -> Result<Catalog> {
+        let path = self.game().data_dir.join("StreamingAssets/aa/catalog.json");
+        let bytes = self.game().read_file(&path)?;
+        Catalog::parse(&bytes).map_err(|e| format!("{}: {e}", path.display()))
+    }
+
+    /// Loads the prefab registered under `key` (e.g. a path from `prefabs.db`).
+    pub fn prefab(&self, catalog: &Catalog, key: &str) -> Result<Prefab> {
+        let location = catalog
+            .locate(key)
+            .into_iter()
+            .find(|l| l.resource_type == "UnityEngine.GameObject")
+            .ok_or_else(|| format!("{key}: not a GameObject in the catalog"))?;
+        // The first dependency is the prefab's own bundle.
+        let bundle_id = location
+            .dependencies
+            .first()
+            .ok_or_else(|| format!("{key}: no bundle"))?;
+        let file_name = bundle_id
+            .internal_id
+            .rsplit(['\\', '/'])
+            .next()
+            .unwrap_or(&bundle_id.internal_id);
+        let bundle_path = self.game().bundle_dir().join(file_name);
+        let loaded = self.bundle(&bundle_path)?;
+        let names: Vec<String> = loaded.file_names().map(String::from).collect();
+
+        // Find the AssetBundle object and the prefab's root GameObject.
+        let mut root = None;
+        for name in &names {
+            let file = self.file(&bundle_path, name)?;
+            for info in file.objects().iter().filter(|o| o.class_id == ASSET_BUNDLE) {
+                let Some((_, data)) = file.object(info.path_id) else {
+                    continue;
+                };
+                let manifest = AssetBundleManifest::parse(data, file.file().big_endian)
+                    .map_err(|e| format!("{}: AssetBundle: {e}", bundle_path.display()))?;
+                for (path, pptr) in &manifest.container {
+                    if path.eq_ignore_ascii_case(&location.internal_id) {
+                        let object = self.resolve(&file, *pptr)?;
+                        if let Some(object) = object
+                            && object.data()?.0.class_id == GAME_OBJECT
+                        {
+                            root = Some(object);
+                        }
+                    }
+                }
+            }
+        }
+        let root = root.ok_or_else(|| {
+            format!(
+                "{key}: {} not in the container of {}",
+                location.internal_id,
+                bundle_path.display()
+            )
+        })?;
+
+        let mut prefab = Building::new(key);
+        let mut lods: Vec<(ObjectRef, LodGroup)> = Vec::new();
+        self.add_node(&root, None, true, &mut prefab, &mut lods, 0)?;
+
+        // LOD levels: match each group's renderers to nodes by object.
+        for (file_of, group) in &lods {
+            for (level, lod) in group.lods.iter().enumerate() {
+                for renderer in &lod.renderers {
+                    let Some(r) = self.resolve(&file_of.file, *renderer)? else {
+                        continue;
+                    };
+                    let (_, data) = r.data()?;
+                    let Ok(mr) = MeshRenderer::parse(data, r.file.file().big_endian) else {
+                        continue;
+                    };
+                    let Some(go) = self.resolve(&r.file, mr.game_object)? else {
+                        continue;
+                    };
+                    if let Some(i) = prefab.nodes.iter().position(|n| n.key == go.key()) {
+                        let node = &mut prefab.nodes[i];
+                        node.lod = Some(node.lod.map_or(level, |l: usize| l.min(level)));
+                    }
+                }
+            }
+        }
+        Ok(Prefab {
+            key: prefab.key,
+            nodes: prefab
+                .nodes
+                .into_iter()
+                .map(|n| PrefabNode {
+                    name: n.name,
+                    parent: n.parent,
+                    local: n.local,
+                    in_prefab: n.in_prefab,
+                    active: n.active,
+                    layer: n.layer,
+                    mesh: n.mesh,
+                    materials: n.materials,
+                    renderer_enabled: n.renderer_enabled,
+                    lod: n.lod,
+                })
+                .collect(),
+        })
+    }
+
+    fn add_node(
+        &self,
+        game_object: &ObjectRef,
+        parent: Option<usize>,
+        parent_active: bool,
+        prefab: &mut Building,
+        lods: &mut Vec<(ObjectRef, LodGroup)>,
+        depth: usize,
+    ) -> Result<()> {
+        if depth > MAX_DEPTH {
+            return Err(format!("{}: hierarchy too deep", prefab.key));
+        }
+        let file = &game_object.file;
+        let big_endian = file.file().big_endian;
+        let go = GameObject::parse(expect(game_object, GAME_OBJECT)?, big_endian)
+            .map_err(|e| format!("GameObject {}: {e}", game_object.path_id))?;
+        let mut transform = None;
+        let mut mesh = None;
+        let mut materials = Vec::new();
+        let mut renderer_enabled = false;
+        for component in &go.components {
+            let Some(c) = self.resolve(file, *component)? else {
+                continue;
+            };
+            let (info, data) = c.data()?;
+            match info.class_id {
+                TRANSFORM | RECT_TRANSFORM => {
+                    transform = Some(
+                        TransformNode::parse(data, big_endian)
+                            .map_err(|e| format!("Transform {}: {e}", c.path_id))?,
+                    );
+                }
+                MESH_FILTER => {
+                    let f = MeshFilter::parse(data, big_endian)
+                        .map_err(|e| format!("MeshFilter {}: {e}", c.path_id))?;
+                    mesh = self.resolve(file, f.mesh)?;
+                }
+                MESH_RENDERER => {
+                    let r = MeshRenderer::parse(data, big_endian)
+                        .map_err(|e| format!("MeshRenderer {}: {e}", c.path_id))?;
+                    renderer_enabled = r.enabled;
+                    for m in r.materials {
+                        materials.push(self.resolve(file, m)?);
+                    }
+                }
+                LOD_GROUP => {
+                    let g = LodGroup::parse(data, big_endian)
+                        .map_err(|e| format!("LODGroup {}: {e}", c.path_id))?;
+                    if g.enabled {
+                        lods.push((c.clone(), g));
+                    }
+                }
+                _ => {}
+            }
+        }
+        let transform =
+            transform.ok_or_else(|| format!("{}: GameObject without a Transform", go.name))?;
+        let local = Transform {
+            position: transform.position,
+            rotation: transform.rotation,
+            scale: transform.scale,
+        };
+        let in_prefab = match parent {
+            None => Transform::default(),
+            Some(p) => prefab.nodes[p].in_prefab.then(&local),
+        };
+        let active = parent_active && go.active;
+        let index = prefab.nodes.len();
+        prefab.nodes.push(BuildingNode {
+            key: game_object.key(),
+            name: go.name,
+            parent,
+            local,
+            in_prefab,
+            active,
+            layer: go.layer,
+            mesh,
+            materials,
+            renderer_enabled,
+            lod: None,
+        });
+        for child in &transform.children {
+            let Some(t) = self.resolve(file, *child)? else {
+                continue;
+            };
+            let (info, data) = t.data()?;
+            if info.class_id != TRANSFORM && info.class_id != RECT_TRANSFORM {
+                return Err(format!(
+                    "{} object {}: class {} is not a Transform",
+                    t.file.name, t.path_id, info.class_id
+                ));
+            }
+            let child = TransformNode::parse(data, t.file.file().big_endian)
+                .map_err(|e| format!("Transform {}: {e}", t.path_id))?;
+            let Some(child_go) = self.resolve(&t.file, child.game_object)? else {
+                continue;
+            };
+            self.add_node(&child_go, Some(index), active, prefab, lods, depth + 1)?;
+        }
+        Ok(())
+    }
+
+    /// Reads a mesh and decodes its geometry (vertex data inline or from
+    /// the bundle's resource file).
+    pub fn mesh(&self, object: &ObjectRef) -> Result<(Mesh, MeshGeometry)> {
+        let data = expect(object, MESH)?;
+        let mesh = Mesh::parse(data, object.file.file().big_endian)
+            .map_err(|e| format!("Mesh {}: {e}", object.path_id))?;
+        let geometry = match &mesh.stream {
+            None => mesh.decode(&mesh.vertex_data),
+            Some(stream) => {
+                let bytes = object.file.resource_range(
+                    self.game(),
+                    stream.file_name(),
+                    stream.offset,
+                    stream.size as usize,
+                )?;
+                mesh.decode(&bytes)
+            }
+        }
+        .map_err(|e| format!("Mesh {} ({}): {e}", object.path_id, mesh.name))?;
+        Ok((mesh, geometry))
+    }
+}
+
+/// A node while the hierarchy is being read (keeps the object key for LOD
+/// matching).
+struct BuildingNode {
+    key: (std::path::PathBuf, String, i64),
+    name: String,
+    parent: Option<usize>,
+    local: Transform,
+    in_prefab: Transform,
+    active: bool,
+    layer: u32,
+    mesh: Option<ObjectRef>,
+    materials: Vec<Option<ObjectRef>>,
+    renderer_enabled: bool,
+    lod: Option<usize>,
+}
+
+struct Building {
+    key: String,
+    nodes: Vec<BuildingNode>,
+}
+
+impl Building {
+    fn new(key: &str) -> Building {
+        Building {
+            key: key.to_string(),
+            nodes: Vec::new(),
+        }
+    }
+}

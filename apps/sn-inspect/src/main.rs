@@ -8,6 +8,7 @@ mod materials;
 mod mesh;
 mod octree;
 mod orient;
+mod prefab;
 mod texture;
 mod unity;
 mod voxel;
@@ -47,6 +48,11 @@ Commands:
   entities <X> <Y> <Z>   A batch's saved objects (batch objects, baked cells)
                          with prefab paths and world positions
   entities --all         Parse every object cache file; totals and checks
+  prefab <KEY>           A prefab (e.g. WorldEntities/…/X.prefab): hierarchy,
+                         meshes, materials; writes out/prefabs/<name>.obj
+  prefab --placed [--oracle]
+                         Load every prefab placed in the world and decode
+                         its meshes (--oracle: out/mesh-check-rust.txt)
   terrain-materials      Terrain block types → materials → textures, checked
                          against the type ids used by the octrees
   terrain-materials --props
@@ -123,6 +129,9 @@ fn run(mut args: Vec<String>) -> Result<ExitCode> {
         ["textures", paths @ ..] if !paths.is_empty() => texture::list(&game, paths, false),
         ["entities", "--all"] => entities::all(&game),
         ["entities", x, y, z] => entities::one(&game, parse_coord(x, y, z)?),
+        ["prefab", "--placed"] => prefab::placed(&game, false),
+        ["prefab", "--placed", "--oracle"] => prefab::placed(&game, true),
+        ["prefab", key] => prefab::one(&game, key),
         ["terrain-materials"] => materials::run(&game),
         ["terrain-materials", "--props"] => materials::props(&game),
         ["terrain-materials", "--region", x, y, z, r] => {

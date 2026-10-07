@@ -97,6 +97,7 @@ UTF-8 bytes (.NET `BinaryWriter` style): ClassId, prefab path, e.g.
 `WorldEntities/coral_reef_grass_03_02.prefab`. The file ends right after the
 last pair. Every non-empty ClassId in both caches is in it.
 
-Prefab paths are keys of the Addressables catalog (base64 key table in
-`catalog.json`), which leads to the prefab's bundle in
-`aa/StandaloneWindows64/` (M7b).
+Prefab paths are keys of the Addressables catalog, which leads to the
+prefab's bundle in `aa/StandaloneWindows64/`; see `unity.md` § Prefabs. A
+placed object's saved Transform **replaces** its prefab root's transform
+(confirmed there).

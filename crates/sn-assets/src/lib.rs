@@ -9,6 +9,7 @@
 //!
 //! Read-only: everything comes from the player's install via `sn-install`.
 
+mod prefab;
 mod terrain;
 
 use std::collections::HashMap;
@@ -18,6 +19,7 @@ use std::sync::{Arc, Mutex};
 use sn_install::GameData;
 use sn_unity::{Bundle, BundleDirectory, ObjectInfo, PPtr, SerializedFile};
 
+pub use prefab::{Prefab, PrefabNode};
 pub use terrain::{
     BlendSettings, BlockSource, SurfaceLayer, TerrainMaterial, TerrainMaterials, TerrainTexture,
     terrain_materials,
@@ -102,10 +104,14 @@ impl LoadedBundle {
                     .iter()
                     .find(|n| n.path == name)
                     .ok_or_else(|| format!("{}: no resource {name}", self.path.display()))?;
-                let start = offset as usize;
+                let start =
+                    usize::try_from(offset).map_err(|_| format!("{name}: offset too big"))?;
+                let end = start
+                    .checked_add(len)
+                    .ok_or_else(|| format!("{name}: range overflows"))?;
                 bundle
                     .node_data(node)
-                    .get(start..start + len)
+                    .get(start..end)
                     .map(<[u8]>::to_vec)
                     .ok_or_else(|| format!("{name}: range out of bounds"))
             }
@@ -213,9 +219,15 @@ impl<'g> Assets<'g> {
     /// A serialized file shipped next to the player, e.g. `resources.assets`.
     pub fn standalone(&self, name: &str) -> Result<FileRef> {
         let path = self.game.data_dir.join(name);
+        // Loaded standalone files are keyed by their file name alone.
+        let key = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(name)
+            .to_string();
         Ok(FileRef {
             bundle: self.bundle(&path)?,
-            name: name.to_string(),
+            name: key,
         })
     }
 
@@ -242,7 +254,12 @@ impl<'g> Assets<'g> {
                     .ok_or_else(|| format!("no bundle contains {}", external.path))?
                     .clone();
                 self.file(&bundle, node)?
-            } else if let Some(builtin) = external.path.strip_prefix("library/") {
+            } else if let Some(builtin) = external
+                .path
+                .get(..8)
+                .filter(|p| p.eq_ignore_ascii_case("library/"))
+                .map(|_| &external.path[8..])
+            {
                 // Unity's built-in resources ship in Subnautica_Data/Resources.
                 self.standalone(&format!("Resources/{builtin}"))?
             } else {

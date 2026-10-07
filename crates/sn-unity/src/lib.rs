@@ -5,9 +5,12 @@
 //! *contents* (meshes, textures, …) are decoded elsewhere; this crate only
 //! finds them. See `docs/formats/unity.md`.
 
+mod addressables;
 mod bundle;
 mod classes;
+mod mesh;
 mod objects;
+mod prefab;
 mod reader;
 mod serialized;
 mod texture;
@@ -15,9 +18,12 @@ mod voxeland;
 
 use std::fmt;
 
+pub use addressables::{Catalog, Location};
 pub use bundle::{BlockInfo, Bundle, BundleDirectory, BundleNode, Compression, write_bundle};
 pub use classes::class_name;
+pub use mesh::{Channel, Mesh, MeshFilter, MeshGeometry, SubMesh, channel};
 pub use objects::{Material, MonoBehaviourHeader, MonoScript, PPtr, TexEnv};
+pub use prefab::{AssetBundleManifest, GameObject, Lod, LodGroup, MeshRenderer, TransformNode};
 pub use serialized::{
     External, ObjectInfo, SUPPORTED_VERSIONS, SerializedFile, SerializedType, TypeTreeNode,
 };

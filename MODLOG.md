@@ -2,6 +2,51 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-07 — M7b: prefabs → meshes
+
+**What:**
+- `sn-unity`: `Catalog` (Addressables catalog: own JSON + base64 readers),
+  `Mesh` + `MeshGeometry` (interleaved vertex streams with every vertex
+  format, and Unity's compressed meshes), `MeshFilter`, `MeshRenderer`,
+  `GameObject`, `TransformNode`, `LodGroup`, `AssetBundleManifest`.
+  7 unit tests (incl. a corrupted-catalog test).
+- `sn-assets`: `Assets::catalog`, `Assets::prefab` (key → bundle →
+  container → hierarchy with meshes, materials, LOD levels, active flags),
+  `Assets::mesh` (inline or `.resS` vertex data).
+- Fixed on the way: externals named `Library/…` (capital L) didn't resolve
+  to Unity's built-in resources; `Assets::standalone` keyed files by their
+  relative path, so `FileRef::file` could panic; `resource_range` could
+  overflow on a bad offset.
+- `sn-inspect prefab <KEY>` (hierarchy, OBJ export to `out/prefabs/`) and
+  `prefab --placed [--oracle]`.
+- Opt-in real-data test `prefabs_resolve_and_meshes_decode` in `sn-assets`.
+- Format notes: `docs/formats/unity.md` (prefab/mesh classes, prefabs,
+  Addressables). No new dependencies.
+
+**Verified (2026-10-07):**
+1. `sn-inspect prefab --placed`: all 1,369 placed prefabs load (324 with LOD
+   groups, 457 draw nothing); 3,263 distinct meshes, 16.6 M vertices, 13.9 M
+   triangles; 0 errors; 5.4 s.
+2. Oracle: the same 3,263 meshes decoded by UnityPy (throwaway script in
+   `out/`) agree on name, vertex count and triangles per sub-mesh; position
+   sums agree to float rounding (max 1.29 on sums up to 2.6 × 10⁷).
+3. OBJ exports have plausible sizes (coral 0.4–3 m, Aurora hallway
+   44 × 19 × 58 m). Opened in Blender by the user (2026-10-07): the models
+   came in far from the origin (export bug, fixed, see below); not re-checked
+   in Blender after the fix — bounds now start at the pivot.
+4. `cargo test --workspace`, clippy, fmt: pass; real-data tests pass.
+
+**Dead ends / surprises:** the first export of `Spiral_blue_thing_cluster_07`
+was 10 km wide: its root has scale 0.0001 and the export left the root out.
+The placements carry that scale too, which confirms that a placement
+replaces the root transform; stand-alone exports now apply the root's
+rotation and scale. The user's Blender check then showed models far from
+the origin: the export had also applied the root's *position* (where the
+prefab sat in the artist's scene, e.g. −702, −105, −772). Left out now;
+pivots sit at the origin (corals rest on y ≈ 0). 52
+meshes are compressed (first run: 52 errors), so the compressed form had to
+be decoded rather than skipped.
+
 ## 2026-10-06 — M7a: world object placements, headless
 
 **What:**

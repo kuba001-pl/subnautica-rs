@@ -30,6 +30,10 @@ Tested on Windows 11 with game build 10 (Steam):
 - Reading where every world object is placed (`sn-inspect entities`): all
   4,581 placement files, 419,846 objects, each resolved to its prefab name
   (`prefabs.db`), in about a second.
+- Loading prefabs through the Addressables catalog and decoding their meshes
+  (`sn-inspect prefab`, exported as OBJ to `out/prefabs/`): all 1,369 placed
+  prefabs and their 3,263 meshes, matching UnityPy on every vertex and
+  triangle count.
 - `sn-client`: a desktop window (Bevy) with a fly camera. Terrain streams in
   and out as you move, with four levels of detail out to 1.2 km, textured
   with the game's own terrain materials, blended between neighbouring
@@ -42,7 +46,7 @@ Tested on Windows 11 with game build 10 (Steam):
 
 Water surface and underwater look (lighting, fog, caustics), terrain
 specular colour, models (world objects are placed but not drawn yet),
-player, audio, multiplayer. Next up: M7b (prefabs → meshes).
+player, audio, multiplayer. Next up: M7c (drawing world objects).
 Linux/macOS: not tested.
 
 ## Try it

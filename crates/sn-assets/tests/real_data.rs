@@ -56,3 +56,51 @@ fn terrain_materials_resolve_and_decode() {
         }
     }
 }
+
+#[test]
+#[ignore = "needs SUBNAUTICA_DIR pointing at a Subnautica install"]
+fn prefabs_resolve_and_meshes_decode() {
+    let Some(dir) = std::env::var_os("SUBNAUTICA_DIR") else {
+        eprintln!("SUBNAUTICA_DIR not set; skipping");
+        return;
+    };
+    let game = GameData::locate(Some(PathBuf::from(dir))).unwrap();
+    let assets = Assets::index(&game).unwrap();
+    let catalog = assets.catalog().unwrap();
+    assert_eq!((catalog.key_count(), catalog.entry_count()), (38483, 22406));
+
+    // (prefab, nodes, visible meshes as (vertices, triangles)); counts match
+    // UnityPy (see MODLOG, M7b). The hallway's mesh is a compressed one.
+    type Case<'a> = (&'a str, usize, &'a [(usize, usize)]);
+    let cases: [Case; 3] = [
+        (
+            "WorldEntities/Doodads/Coral_reef/Coral_reef_tree_mushrooms_connector_01.prefab",
+            3,
+            &[(213, 378)],
+        ),
+        (
+            "WorldEntities/Doodads/Coral_reef/Coral_reef_purple_mushrooms_01_04.prefab",
+            4,
+            &[(395, 304)],
+        ),
+        (
+            "WorldEntities/Doodads/Debris/Aurora/Rooms/CrashedShip_T_hallway.prefab",
+            34,
+            &[(43691, 49560)],
+        ),
+    ];
+    for (key, nodes, expected) in cases {
+        let prefab = assets.prefab(&catalog, key).unwrap();
+        assert_eq!(prefab.nodes.len(), nodes, "{key}");
+        let mut found = Vec::new();
+        for node in prefab.visible_nodes() {
+            let (_, g) = assets.mesh(node.mesh.as_ref().unwrap()).unwrap();
+            let triangles: usize = g.sub_meshes.iter().map(|s| s.len() / 3).sum();
+            found.push((g.positions.len(), triangles));
+        }
+        assert!(
+            expected.iter().all(|e| found.contains(e)),
+            "{key}: {found:?}"
+        );
+    }
+}
