@@ -3,7 +3,7 @@
 //! `docs/formats/unity.md`.
 
 use sn_unity::{
-    AssetBundleManifest, Catalog, GameObject, LodGroup, Mesh, MeshFilter, MeshGeometry,
+    AssetBundleManifest, Catalog, GameObject, Location, LodGroup, Mesh, MeshFilter, MeshGeometry,
     MeshRenderer, TransformNode,
 };
 use sn_world::Transform;
@@ -93,18 +93,14 @@ impl Assets<'_> {
         Catalog::parse(&bytes).map_err(|e| format!("{}: {e}", path.display()))
     }
 
-    /// Loads the prefab registered under `key` (e.g. a path from `prefabs.db`).
-    pub fn prefab(&self, catalog: &Catalog, key: &str) -> Result<Prefab> {
-        let location = catalog
-            .locate(key)
-            .into_iter()
-            .find(|l| l.resource_type == "UnityEngine.GameObject")
-            .ok_or_else(|| format!("{key}: not a GameObject in the catalog"))?;
-        // The first dependency is the prefab's own bundle.
+    /// The object of class `class_id` that a catalog location names: the
+    /// entry with its path in the container of its bundle (the location's
+    /// first dependency).
+    pub fn catalog_object(&self, location: &Location, class_id: i32) -> Result<Option<ObjectRef>> {
         let bundle_id = location
             .dependencies
             .first()
-            .ok_or_else(|| format!("{key}: no bundle"))?;
+            .ok_or_else(|| format!("{}: no bundle", location.internal_id))?;
         let file_name = bundle_id
             .internal_id
             .rsplit(['\\', '/'])
@@ -113,9 +109,6 @@ impl Assets<'_> {
         let bundle_path = self.game().bundle_dir().join(file_name);
         let loaded = self.bundle(&bundle_path)?;
         let names: Vec<String> = loaded.file_names().map(String::from).collect();
-
-        // Find the AssetBundle object and the prefab's root GameObject.
-        let mut root = None;
         for name in &names {
             let file = self.file(&bundle_path, name)?;
             for info in file.objects().iter().filter(|o| o.class_id == ASSET_BUNDLE) {
@@ -125,24 +118,28 @@ impl Assets<'_> {
                 let manifest = AssetBundleManifest::parse(data, file.file().big_endian)
                     .map_err(|e| format!("{}: AssetBundle: {e}", bundle_path.display()))?;
                 for (path, pptr) in &manifest.container {
-                    if path.eq_ignore_ascii_case(&location.internal_id) {
-                        let object = self.resolve(&file, *pptr)?;
-                        if let Some(object) = object
-                            && object.data()?.0.class_id == GAME_OBJECT
-                        {
-                            root = Some(object);
-                        }
+                    if path.eq_ignore_ascii_case(&location.internal_id)
+                        && let Some(object) = self.resolve(&file, *pptr)?
+                        && object.data()?.0.class_id == class_id
+                    {
+                        return Ok(Some(object));
                     }
                 }
             }
         }
-        let root = root.ok_or_else(|| {
-            format!(
-                "{key}: {} not in the container of {}",
-                location.internal_id,
-                bundle_path.display()
-            )
-        })?;
+        Ok(None)
+    }
+
+    /// Loads the prefab registered under `key` (e.g. a path from `prefabs.db`).
+    pub fn prefab(&self, catalog: &Catalog, key: &str) -> Result<Prefab> {
+        let location = catalog
+            .locate(key)
+            .into_iter()
+            .find(|l| l.resource_type == "UnityEngine.GameObject")
+            .ok_or_else(|| format!("{key}: not a GameObject in the catalog"))?;
+        let root = self
+            .catalog_object(&location, GAME_OBJECT)?
+            .ok_or_else(|| format!("{key}: {} not found in its bundle", location.internal_id))?;
 
         let mut prefab = Building::new(key);
         let mut lods: Vec<(ObjectRef, LodGroup)> = Vec::new();

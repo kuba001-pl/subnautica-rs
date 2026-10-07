@@ -9,6 +9,7 @@ mod terrain;
 mod terrain_look;
 mod textures;
 mod water;
+mod water_surface;
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -28,7 +29,8 @@ use crate::object_look::ObjectLookPlugin;
 use crate::objects::ObjectStreamer;
 use crate::terrain::{BlockSettings, LodRanges, TerrainStreamer};
 use crate::terrain_look::{PendingTerrainLook, SUN_ILLUMINANCE, TerrainLookPlugin};
-use crate::water::{WaterData, WaterFog, WaterFogPlugin, WaterWorld};
+use crate::water::{WaterData, WaterFog, WaterFogOff, WaterFogPlugin, WaterWorld};
+use crate::water_surface::{PendingWaterSurface, WaterSurfacePlugin, WaterSurfaceUniform};
 
 const USAGE: &str = "\
 Usage: sn-client [--game-dir <PATH>] [--start <X> <Y> <Z>] [--look <X> <Y> <Z>]
@@ -43,7 +45,8 @@ Usage: sn-client [--game-dir <PATH>] [--start <X> <Y> <Z>] [--look <X> <Y> <Z>]
                  terrain materials (also turns world objects off)
   --no-objects   terrain only, no world objects (coral, rocks, …)
   --fog-unit     scale on the water fog's light (calibration; default 1)
-  --no-water-fog HDR camera without the water fog pass (for comparisons)
+  --no-water-fog HDR camera without the water fog (for comparisons)
+  --no-water-surface  no water surface (for comparisons)
   --gpu-timings  with --benchmark/--flythrough: log GPU time per render pass
   --time         game clock in hours for the sun and sky (default 9.6, i.e.
                  09:36, when a new game starts)
@@ -72,6 +75,7 @@ struct Args {
     no_objects: bool,
     fog_unit: f32,
     no_water_fog: bool,
+    no_water_surface: bool,
     gpu_timings: bool,
     /// Game clock, hours.
     time: f32,
@@ -90,6 +94,7 @@ fn parse_args() -> Result<Args, String> {
         no_objects: false,
         fog_unit: 1.0,
         no_water_fog: false,
+        no_water_surface: false,
         gpu_timings: false,
         time: sky::NEW_GAME_HOURS,
     };
@@ -121,6 +126,7 @@ fn parse_args() -> Result<Args, String> {
             "--debug-colours" => args.debug_colours = true,
             "--no-objects" => args.no_objects = true,
             "--no-water-fog" => args.no_water_fog = true,
+            "--no-water-surface" => args.no_water_surface = true,
             "--gpu-timings" => args.gpu_timings = true,
             "--time" => args.time = number(it.next(), "--time")?,
             "--fog-unit" => args.fog_unit = number(it.next(), "--fog-unit")?,
@@ -142,6 +148,7 @@ fn load_terrain_look(
         sn_assets::TerrainMaterials,
         WaterData,
         (sn_unity::SkyManager, sn_unity::SkyLight),
+        sn_assets::WaterSurfaceData,
     ),
     String,
 > {
@@ -151,6 +158,7 @@ fn load_terrain_look(
     let materials = sn_assets::terrain_materials(&assets)?;
     let water = load_water(&game, &assets)?;
     let sky = sn_assets::sky(&assets)?;
+    let surface = sn_assets::water_surface(&assets)?;
     for w in &materials.warnings {
         eprintln!("warning: {w}");
     }
@@ -160,7 +168,7 @@ fn load_terrain_look(
         materials.texture_count,
         start.elapsed().as_secs_f64()
     );
-    Ok((materials, water, sky))
+    Ok((materials, water, sky, surface))
 }
 
 /// The biome map, batch override biomes and the scene's water settings.
@@ -227,11 +235,11 @@ fn main() -> AppExit {
         }
     };
     let ranges = lod_ranges(args.view);
-    let (look, blocks, water, sky_data) = if args.debug_colours {
-        (None, None, None, None)
+    let (look, blocks, water, sky_data, surface) = if args.debug_colours {
+        (None, None, None, None, None)
     } else {
         match load_terrain_look(args.game_dir.clone()) {
-            Ok((materials, water, sky_data)) => {
+            Ok((materials, water, sky_data, surface)) => {
                 let mut blocks = BlockSettings {
                     layer: [0; 256],
                     gloss: [0.0; 256],
@@ -240,7 +248,13 @@ fn main() -> AppExit {
                     blocks.layer[m.type_id] = m.layer;
                     blocks.gloss[m.type_id] = m.blend.gloss;
                 }
-                (Some(materials), Some(blocks), Some(water), Some(sky_data))
+                (
+                    Some(materials),
+                    Some(blocks),
+                    Some(water),
+                    Some(sky_data),
+                    Some(surface),
+                )
             }
             Err(message) => {
                 eprintln!("error: {message}");
@@ -282,6 +296,7 @@ fn main() -> AppExit {
         TerrainLookPlugin,
         ObjectLookPlugin,
         WaterFogPlugin,
+        WaterSurfacePlugin,
     ))
     .insert_resource(PendingTerrainLook(look))
     .insert_resource(ClearColor(WATER_COLOUR))
@@ -329,7 +344,15 @@ fn main() -> AppExit {
             water::unit(SUN_ILLUMINANCE, exposure) * args.fog_unit,
         ));
     }
-    app.insert_resource(Underwater(underwater, args.no_water_fog));
+    let surface = surface.filter(|_| !args.no_water_surface);
+    app.insert_resource(Underwater {
+        on: underwater,
+        surface: surface.is_some(),
+    });
+    if args.no_water_fog {
+        app.insert_resource(WaterFogOff);
+    }
+    app.insert_resource(PendingWaterSurface(surface));
     if !args.debug_colours && !args.no_objects {
         match GameData::locate(args.game_dir.clone()) {
             Ok(game) => {
@@ -365,9 +388,13 @@ struct Setup {
     fog_end: f32,
 }
 
-/// Whether the game's water fog replaces the plain distance fog.
+/// Whether the game's water fog replaces the plain distance fog, and
+/// whether there is a water surface.
 #[derive(Resource)]
-struct Underwater(bool, /* fog pass off */ bool);
+struct Underwater {
+    on: bool,
+    surface: bool,
+}
 
 fn setup(
     mut commands: Commands,
@@ -384,7 +411,7 @@ fn setup(
             ..default()
         },
     ));
-    if underwater.0 {
+    if underwater.on {
         // The fog pass reads depth and works on linear HDR colour.
         camera.insert((
             Camera3d {
@@ -394,9 +421,15 @@ fn setup(
                 ..default()
             },
             bevy::camera::Hdr,
+            WaterFog::default(),
         ));
-        if !underwater.1 {
-            camera.insert(WaterFog::default());
+        if underwater.surface {
+            // The surface pass starts from a copy of the fogged image.
+            camera.insert((
+                WaterSurfaceUniform::default(),
+                bevy::camera::CameraMainTextureUsages::default()
+                    .with(TextureUsages::COPY_SRC | TextureUsages::COPY_DST),
+            ));
         }
     } else {
         camera.insert(DistanceFog {
@@ -652,6 +685,11 @@ fn measure(
         "measure: {} frames; mean {mean:.2} ms ({:.0} fps), 95th percentile {p95:.2} ms, worst {worst:.2} ms",
         m.frame_ms.len(),
         1000.0 / mean.max(0.001),
+    );
+    let (p, f) = (camera.translation, camera.forward());
+    info!(
+        "measure: camera (unity) at {:.1} {:.1} {:.1}, looking {:.2} {:.2} {:.2}",
+        p.x, p.y, -p.z, f.x, f.y, -f.z
     );
     info!(
         "measure: peak {} triangles shown, peak {} batches cached, peak process memory {:.2} GiB; now {} batches shown",

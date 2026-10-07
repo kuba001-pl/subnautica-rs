@@ -2,6 +2,52 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-07 — M8c1: the water surface, ported from the game
+
+**What:**
+- Decoded the game's water surface: `WaterSurface` (class and scene values),
+  its four shaders (surface, interpolate, normals, foam; render states from
+  the shaders' parsed form), where the 64 baked wave frames and the foam
+  textures are; written up in `docs/formats/water.md` § Water surface.
+- `sn-unity`: `WaterSurface` reader, `AnimationCurve` (+ evaluate),
+  `SkyManager` now reads on to `meanSkyColor`. 2 unit tests.
+- `sn-assets`: `water_surface` (settings, frames in catalog order, foam
+  textures), `Assets::catalog_object` (an object named by a catalog
+  location; the prefab loader now uses it too). Real-data test
+  `water_surface_values`, mean sky colour added to `sky_system_values`.
+- `sn-client`: the fog model moved into `water_common.wgsl` (shared, same
+  maths); `water_surface.rs` + `water_sim.wgsl` + `water_surface.wgsl`: the
+  per-frame displacement / normal (mips) / foam maps and the surface, drawn
+  after the fog pass over a copy of the fogged image. `--no-water-surface`.
+  `--no-water-fog` now keeps the fog uniform (fog switched off in it). The
+  benchmark logs the final camera position.
+
+**Verified (2026-10-07, RTX 3080, 2400×1350):**
+1. Our `WaterSurface` reading ends exactly at the object's last byte; values
+   equal UnityPy's (patch 2000 cm, 5 s, gloss 400, curve 3.98 at 47 m, …);
+   64 frames `WaterFrame00…63` in order, 256² RGBA32 linear; foam 1024²
+   and 512² DXT1 sRGB. Displacement over all frames: x −65…72, y −71…75,
+   z −67…68 cm.
+2. `--benchmark 300 --gpu-timings` at the lifepod: wave maps 0.05 ms,
+   surface (copy + draw) 0.55 ms, fog 0.08 ms; mean 10.8 ms.
+3. Screenshots `out/m8c1-above.png` (camera at y = 4), `out/m8c1-below.png`
+   (y = −6, looking up), `out/m8c1-start.png` (lifepod, unchanged: surface
+   out of view); camera positions confirmed in the log. Near-white (foam)
+   pixels: 1.9 % of the water from above, 2.8 % from below. **Not compared
+   with the game yet.**
+4. All tests (workspace, real-data `sn-assets`), clippy, fmt: pass.
+
+**Not done / known:** no sky dome yet, so the reflected sky is the mean sky
+colour and the sky above water is still our clear colour (M8c2); clip map
+(cut-outs for bases/lifepod, shore foam) not read; "High" quality FFT waves
+not ported. Our mesh differs from the game's adaptive patches.
+
+**Dead end / unexplained:** one benchmark screenshot at the lifepod start
+showed an above-water view; three later runs at the same start (camera
+position logged) were right. Not reproduced; the window had a different
+size in the odd runs (2400 vs 1600 wide). The uncommitted work of this
+milestone was also lost once by a local repository reset and redone.
+
 ## 2026-10-07 — Build fix: debug `sn-client` failed to link (no code change)
 
 **What happened:** `cargo build -p sn-client` (debug) failed with `LNK1120:

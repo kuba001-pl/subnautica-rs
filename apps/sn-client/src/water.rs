@@ -38,7 +38,7 @@ use sn_unity::{WaterSettings, WaterscapeVolume};
 use crate::sky::SkyState;
 use sn_world::{BatchCoord, BiomeMap, world_to_voxel};
 
-/// Uniform of the fog pass; must match `WaterFog` in `water_fog.wgsl`.
+/// Uniform of the fog pass; must match `WaterFog` in `water_common.wgsl`.
 #[derive(Component, Clone, Copy, Debug, Default, ShaderType, ExtractComponent)]
 pub struct WaterFog {
     pub extinction: Vec4,
@@ -228,9 +228,14 @@ pub fn unit(sun_lux: f32, exposure: f32) -> f32 {
     sun_lux / std::f32::consts::PI * exposure
 }
 
+/// `--no-water-fog`: the fog stays off (the surface still uses the uniform).
+#[derive(Resource)]
+pub struct WaterFogOff;
+
 /// Every frame: the water at the camera into its fog uniform.
 pub fn update_water_fog(
     water: Res<WaterWorld>,
+    off: Option<Res<WaterFogOff>>,
     sky: Res<SkyState>,
     mut cameras: Query<(&Transform, &mut WaterFog)>,
 ) {
@@ -262,15 +267,25 @@ pub fn update_water_fog(
                 0.0,
             ),
             sky: (sky.fog_color * unit).extend(sky.fog_density),
-            misc: Vec4::new(v.above_water_start_distance, v.water_offset, 1.0, 0.0),
+            misc: Vec4::new(
+                v.above_water_start_distance,
+                v.water_offset,
+                if off.is_some() { 0.0 } else { 1.0 },
+                0.0,
+            ),
         };
     }
 }
+
+/// The fog pass, for ordering other passes after it.
+#[derive(SystemSet, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct WaterFogPass;
 
 pub struct WaterFogPlugin;
 
 impl Plugin for WaterFogPlugin {
     fn build(&self, app: &mut App) {
+        bevy::shader::load_shader_library!(app, "water_common.wgsl");
         bevy::asset::embedded_asset!(app, "water_fog.wgsl");
         app.add_plugins((
             ExtractComponentPlugin::<WaterFog>::default(),
@@ -292,6 +307,7 @@ impl Plugin for WaterFogPlugin {
                 Core3d,
                 water_fog_pass
                     .in_set(Core3dSystems::PostProcess)
+                    .in_set(WaterFogPass)
                     .before(tonemapping),
             );
     }

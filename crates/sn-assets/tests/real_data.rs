@@ -199,4 +199,72 @@ fn sky_system_values() {
         [15073, 17039, 20971, 32768, 44564, 48496, 50469]
     );
     assert!((light.light_color.keys[3][1] - 0.9686).abs() < 1e-4);
+    // The mean sky colour (read past the planet and cloud fields).
+    assert_eq!(
+        manager.mean_sky_color.color_times,
+        [14456, 17252, 19082, 20971, 44564, 47120, 48496, 51052]
+    );
+    assert_eq!(
+        (
+            manager.mean_sky_color.color_keys,
+            manager.mean_sky_color.alpha_keys
+        ),
+        (8, 2)
+    );
+    assert!((manager.mean_sky_color.keys[0][2] - 0.0902).abs() < 1e-4);
+    assert!((manager.mean_sky_color.keys[1][1] - 0.1608).abs() < 1e-4);
+}
+
+#[test]
+#[ignore = "needs SUBNAUTICA_DIR pointing at a Subnautica install"]
+fn water_surface_values() {
+    let Some(dir) = std::env::var_os("SUBNAUTICA_DIR") else {
+        eprintln!("SUBNAUTICA_DIR not set; skipping");
+        return;
+    };
+    let game = GameData::locate(Some(PathBuf::from(dir))).unwrap();
+    let assets = Assets::index(&game).unwrap();
+    let w = sn_assets::water_surface(&assets).unwrap();
+    let s = &w.surface;
+    // Values as UnityPy reads them with a layout generated from the game's
+    // assembly (see MODLOG, M8c1).
+    assert_eq!((s.patch_length, s.sequence_length), (2000.0, 5.0));
+    assert!(!s.cubic_interpolation && !s.enable_reflection);
+    assert_eq!(
+        (s.sun_reflection_gloss, s.sun_reflection_amount),
+        (400.0, 1.0)
+    );
+    assert_eq!(
+        (s.refraction_index, s.under_water_refraction_index),
+        (1.33, 1.1)
+    );
+    assert_eq!(s.under_water_refraction_depth_scale, 0.01);
+    assert_eq!((s.foam_rate, s.foam_decay, s.foam_scale), (3.0, 5.0, 6.0));
+    assert_eq!(s.displacement_texture_foam_amount_multiplier, 5.0);
+    assert_eq!(s.wave_height_thickness_scale, 0.16);
+    assert_eq!(s.under_water_brightness_curve.keys.len(), 3);
+    assert_eq!(s.under_water_brightness_curve.post_infinity, 2);
+    assert!((s.under_water_brightness_curve.evaluate(46.932_28) - 3.979_84).abs() < 1e-4);
+    assert_eq!(
+        (s.num_caustics_frames, s.caustics_frames_per_second),
+        (64, 25)
+    );
+    // 64 frames, in order, 256² RGBA32, stored linear; foam textures sRGB.
+    assert_eq!(w.frames.len(), 64);
+    for (i, f) in w.frames.iter().enumerate() {
+        assert_eq!(f.texture.name, format!("WaterFrame{i:02}"));
+        assert_eq!((f.texture.width, f.texture.height), (256, 256));
+        assert_eq!(f.texture.texture_format(), sn_unity::TextureFormat::Rgba32);
+        assert_eq!(f.texture.color_space, 0);
+    }
+    assert_eq!(w.foam.texture.name, "WaterFoam");
+    assert_eq!(w.foam_mask.texture.name, "FoamBubbles");
+    assert_eq!(
+        (w.foam.texture.width, w.foam_mask.texture.width),
+        (1024, 512)
+    );
+    assert_eq!(
+        (w.foam.texture.color_space, w.foam_mask.texture.color_space),
+        (1, 1)
+    );
 }

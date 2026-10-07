@@ -44,14 +44,18 @@ Tested on Windows 11 with game build 10 (Steam):
   plants, rocks, wrecks; about 15,000 around the lifepod) streamed in with
   it, seen through the game's own water fog model (colours and distances
   per biome) under the game's sun and sky light for a time of day
-  (`--time`; no water surface or sky dome yet). Flying from the lifepod
+  (`--time`), with the game's water surface (baked waves, foam,
+  reflection, refraction, sun glint; from above and below; no sky dome
+  yet). Flying from the lifepod
   to the crater edge
   keeps memory under 1.6 GiB, at about 220 fps on average on an RTX 3080
   (about 100 fps in the dense start area).
 
 ## What doesn't work yet
 
-Water surface, sky, caustics and underwater surface lighting; the Aurora,
+Sky dome (the water reflects the game's mean sky colour meanwhile), the
+water clip map (no water inside the lifepod and bases, shore foam),
+caustics and underwater surface lighting; the Aurora,
 Lifepod 5, terrain grass and slot-spawned vegetation; terrain specular
 colour; for world objects: specular/emission maps, animation
 (waving plants), skinned meshes, creatures; player, audio, multiplayer.

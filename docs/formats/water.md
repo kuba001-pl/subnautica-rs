@@ -1,4 +1,4 @@
-# Water: biomes and per-biome water settings
+# Water: biomes, per-biome water settings, fog and surface
 
 Described build: game build `10`, world data `SNUnmanagedData/Build18`.
 Code: `crates/sn-world/src/biomes.rs` (map, names, batch overrides),
@@ -181,3 +181,102 @@ Not done yet: `AtmosphereVolume` shapes, step 5, the game's ambient lighting
 of surfaces, and the units: one game light unit is taken as our radiance of
 a white surface under 8000 lux (`--fog-unit` scales the fog's light). These
 need screenshots of the game at the same places to check.
+
+## Water surface — confirmed from the classes and compiled shaders
+
+Read from the main scene's `WaterSurface` MonoBehaviour (reader
+`crates/sn-unity/src/water_surface.rs`, layout generated once with UnityPy's
+type-tree generator; our reading ends exactly at the object's last byte and
+matches UnityPy's values, real-data test `water_surface_values`). Behaviour
+from the class (`WaterSurface`, decompiled on the dev machine) and its four
+shaders (`Custom/WaterSurface`, `Hidden/Waterscape/InterpolateDisplacement`,
+`…/UpdateNormals`, `…/UpdateFoam`; Direct3D 11 bytecode disassembled on the
+dev machine, constant names from the binding tables, render states from the
+shaders' parsed form).
+
+**Scene values (build 10):** patch length 2000 cm (one wave tile is 20 m),
+sequence length **5 s** (class default 10), linear interpolation (cubic
+off), screen-space reflection off, refraction index 1.33, under-water
+refraction index 1.1 (+ 0.01 per metre of camera depth), reflection colour
+(0.707, 0.956, 1.0), refraction colour white, back-light tint (0.114, 1,
+0.059), sun glint gloss 400 and amount 1, foam: smoothing 5, rate 3, scale
+6, decay 5, distance 5, displacement-texture multiplier 5; caustics: 64
+frames at 25 fps. Under-water sky brightness by camera depth: an
+`AnimationCurve` (1.51 at the surface, 3.98 at 47 m, 1.0 from 112 m;
+clamped).
+
+**Water quality:** "Medium" (the default) plays baked waves; "High" runs an
+FFT (`WaterDisplacementGenerator`, compute shader) — not ported.
+
+**Wave frames:** the 64 textures labelled `WaterDisplacement` in the
+Addressables catalog (`Assets/Waterscape/Data/WaterFrame00…63.png`, one
+bundle), 256² RGBA32, stored linear. (`StreamingAssets/AssetBundles/
+waterdisplacement` holds a copy the game does not load this way.) A texel
+holds a displacement in cm: x = R, y = G + A / 255 (16 bits), z = B, each
+`v × 2 max − max` with max = (100, 300, 100). Over all frames x spans
+−65…72 cm, y −71…75 cm, z −67…68 cm.
+
+**Per frame** (`WaterSurface.DoUpdate`), with `time += Δt × timeScale`:
+1. Frames `i = floor(time × 64 / 5) mod 64` and `i + 1` blended by the
+   fraction into a 512² float displacement map (repeat).
+2. Normal map, 512², with mips and anisotropic filtering: per texel
+   `((h(u−1) − h(u+1)) / 2, (h(v−1) − h(v+1)) / 2)` of the height (y).
+3. Foam amount, 512² half float, blended `new + old × decay` ("Blend One
+   SrcAlpha") with decay `max(1 − Δt × 5, 0)` and rate `3 Δt / 0.008333`:
+   `new = (1 − smoothstep(min(11 L, 1)))¹⁰ × rate`, where `L` is the length
+   of (Δx, Δh) between neighbouring texels (metres, minus their 3.9 cm
+   spacing). The game's shader compares the **heights** along v, not the z
+   displacement (kept as is).
+
+**Surface vertex:** texture coordinates `world xz × 100 / patch length`;
+displacement × 0.01 × `fade`, with `fade = saturate((200 − d) / 192)` and
+`d` the horizontal distance to the camera (no waves beyond 200 m). Drawn
+in the transparent queue after the fog image effect, both sides (Cull
+Off), depth test LEqual.
+
+**Surface pixel, from above** (front face), with `n` = normalize(normal
+map × fade, 2 × texel length, …) and `v` towards the camera:
+- sky reflection: the sky map along `reflect(−v, n)` (a paraboloid-like
+  lookup, `xz × 2 / (1 + y) × 0.227 + 0.5`), blended to the mean sky colour
+  (`uSkyManager.meanSkyColor` over the day) by `max(1 − 1 / (0.03 d), 0)`;
+- refraction: the (already fogged) scene, offset on screen by the
+  view-space x/y of `refract(−v, n, 1 / 1.33)` × (−0.1, 0.2) / depth (less
+  near the top of the screen, mirrored at the edges); where the offset
+  lands on something in front of the water, the unshifted pixel is used;
+- Fresnel: `R0 + (1 − R0)(1 − n·v)⁵`, `R0 = ((1 − 1.33) / (1 + 1.33))²`;
+  colour = lerp(refraction × refraction colour, sky × reflection colour);
+- back light: `(saturate(slope^1.2 × c³) × 15 + max(height × 10⁻⁴, 0) × 15)
+  × tint × transmission × sun`, slope from a blurred normal (mip bias = foam
+  smoothing), `c = v·toSun` (× −0.55 when negative);
+- glint: `saturate(reflect · toSun)^400 × sun × 1`;
+- foam (both faces): amount `e^(−0.02 d) × foam map × 5`, thresholded by
+  the foam mask (`FoamBubbles`, × 12 tiling) against the foam texture
+  (`WaterFoam`, × 6), lit by sun + ambient, water-fogged, mixed at half its
+  alpha; then sky fog over the camera distance.
+
+**From below** (back face): `k = 1 − η²(1 − (n·v)²)` with η the under-water
+refraction index. Total internal reflection (`k < 0`): the deep water's own
+colour along the reflected ray (in-scattering and emission over 1000 m from
+the surface), water-fogged up to the surface. Otherwise the refracted ray:
+the scene above where it is behind the surface, else the sky map (fogged);
+× the under-water sky brightness.
+
+**Clip map:** an orthographic camera 30 m up renders only "base clip proxy"
+objects (bases, the Aurora, the lifepod) into a 1024² RG half map cleared
+to (0, 1): value `R + 10 + 1000 G`. The surface is cut out where it is
+negative; shore and sub-surface foam grow where it is below the foam
+distance. With no proxies it is 1010 everywhere: no cut-outs, no shore
+foam. **Not read yet** (our surface uses the cleared value).
+
+## How we render the surface (M8c1)
+
+`apps/sn-client/src/water_surface.rs`, `water_sim.wgsl`,
+`water_surface.wgsl`; the fog model is shared with the fog pass
+(`water_common.wgsl`). The per-frame maps are made on the GPU as above
+(half floats instead of floats). The mesh is ours: 0.25 m quads within
+±32 m, 1 m quads to ±208 m (snapped to whole metres; the fine grid's edge
+follows the coarse one, no cracks) and a flat ring to 40 km, generated in
+the vertex shader. The surface is drawn after the fog pass on a copy of the
+fogged image, with its own depth buffer; the scene's depth is tested in the
+shader. Without a sky dome yet (M8c2) the sky map is the mean sky colour;
+the clip map is not read (see above).

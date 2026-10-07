@@ -17,6 +17,7 @@ mod sky;
 mod texture;
 mod voxeland;
 mod water;
+mod water_surface;
 
 use std::fmt;
 
@@ -33,6 +34,7 @@ pub use sky::{Gradient, SkyLight, SkyManager};
 pub use texture::{StreamingInfo, Texture2D, TextureFormat};
 pub use voxeland::{Voxeland, VoxelandBlockType, VoxelandBlockTypePrefab};
 pub use water::{BiomeWater, WaterBiomeManager, WaterSettings, WaterscapeVolume};
+pub use water_surface::{AnimationCurve, Keyframe, WaterSurface};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Error {

@@ -117,8 +117,8 @@ impl SkyLight {
     }
 }
 
-/// The fields of `uSkyManager` up to the sky fog (the rest is the sky
-/// dome's look: planet, clouds, night sky).
+/// The fields of `uSkyManager` up to the mean sky colour (the rest is the
+/// sky dome's look: night sky, moon, …).
 #[derive(Clone, Debug, PartialEq)]
 pub struct SkyManager {
     /// Hours (editor value; the game drives it from its day/night cycle).
@@ -140,6 +140,9 @@ pub struct SkyManager {
     pub ground_color: [f32; 4],
     pub sky_fog_density: f32,
     pub sky_fog_color: Gradient,
+    /// Average sky colour over the day (the water surface's reflection far
+    /// away and without a sky map).
+    pub mean_sky_color: Gradient,
 }
 
 impl SkyManager {
@@ -165,6 +168,16 @@ impl SkyManager {
         PPtr::read(&mut r)?; // sun light
         let sky_fog_density = r.f32()?;
         let sky_fog_color = Gradient::read(&mut r)?;
+        // Planet: radius, texture, normal map, zenith, distance, rim colour,
+        // ambient light, orbit speed, light wrap, inner and outer corona.
+        r.f32()?;
+        PPtr::read(&mut r)?;
+        PPtr::read(&mut r)?;
+        r.bytes(2 * 4 + 2 * 16 + 2 * 4 + 2 * 16)?;
+        // Clouds: texture, then 8 floats (rotate speed … scattering exponent).
+        PPtr::read(&mut r)?;
+        r.bytes(8 * 4)?;
+        let mean_sky_color = Gradient::read(&mut r)?;
         Ok(SkyManager {
             timeline,
             use_time_of_day,
@@ -181,6 +194,7 @@ impl SkyManager {
             ground_color,
             sky_fog_density,
             sky_fog_color,
+            mean_sky_color,
         })
     }
 }

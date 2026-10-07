@@ -21,6 +21,8 @@ pub struct SkyState {
     pub top_ambient: Vec3,
     pub fog_color: Vec3,
     pub fog_density: f32,
+    /// `uSkyManager.GetMeanSkyColor()`, linear.
+    pub mean_sky: Vec3,
 }
 
 /// The game's day/night cycle maps clock time to the sky's timeline so that
@@ -118,6 +120,7 @@ pub fn state(m: &SkyManager, l: &SkyLight, timeline: f32) -> SkyState {
     let top_ambient = linear(sky) * l.ambient_light;
 
     let f = m.sky_fog_color.evaluate(t01);
+    let mean = m.mean_sky_color.evaluate(t01);
     SkyState {
         timeline,
         to_sun: Vec3::new(sun_dir.x, sun_dir.y, -sun_dir.z),
@@ -125,6 +128,7 @@ pub fn state(m: &SkyManager, l: &SkyLight, timeline: f32) -> SkyState {
         top_ambient,
         fog_color: linear(Vec3::new(f[0], f[1], f[2])),
         fog_density: m.sky_fog_density,
+        mean_sky: linear(Vec3::new(mean[0], mean[1], mean[2])),
     }
 }
 
@@ -166,7 +170,8 @@ mod tests {
             sky_tint: [0.5, 0.5, 0.5, 1.0],
             ground_color: [0.0; 4],
             sky_fog_density: 0.0002,
-            sky_fog_color: g,
+            sky_fog_color: g.clone(),
+            mean_sky_color: g,
         }
     }
 
