@@ -8,6 +8,7 @@
 mod addressables;
 mod bundle;
 mod classes;
+mod light;
 mod marmo;
 mod mesh;
 mod objects;
@@ -25,6 +26,9 @@ use std::fmt;
 pub use addressables::{Catalog, Location};
 pub use bundle::{BlockInfo, Bundle, BundleDirectory, BundleNode, Compression, write_bundle};
 pub use classes::class_name;
+pub use light::{
+    BAKE_BAKED, BAKE_MIXED, BAKE_REALTIME, DayNightLight, Light, LightKind, ShadowKind,
+};
 pub use marmo::{MarmoSkiesPrefabs, MarmoSky, SH_CONSTANTS, SKIES_AUTO, SkyApplier};
 pub use mesh::{Channel, Mesh, MeshFilter, MeshGeometry, SubMesh, channel};
 pub use objects::{Material, MonoBehaviourHeader, MonoScript, PPtr, TexEnv};

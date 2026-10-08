@@ -30,7 +30,7 @@ pub struct AnimationCurve {
 }
 
 impl AnimationCurve {
-    fn read(r: &mut Reader) -> Result<AnimationCurve> {
+    pub(crate) fn read(r: &mut Reader) -> Result<AnimationCurve> {
         let n = r.count(28)?;
         let mut keys = Vec::with_capacity(n);
         for _ in 0..n {

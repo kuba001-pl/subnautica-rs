@@ -20,7 +20,7 @@
 }
 #else
 #import bevy_pbr::forward_io::{VertexOutput, FragmentOutput}
-#import sn_client::game_light::{GameSurface, game_lighting, local_light_scalar}
+#import sn_client::game_light::{GameSurface, game_lighting, game_local_lights, local_light_scalar}
 #endif
 
 // Must match `ObjectParams` in object_look.rs.
@@ -60,6 +60,8 @@ struct ObjectParams {
 @group(#{MATERIAL_BIND_GROUP}) @binding(120) var light_params: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(121) var caustics: texture_2d_array<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(122) var caustics_sampler: sampler;
+@group(#{MATERIAL_BIND_GROUP}) @binding(123) var spot_cookie: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(124) var spot_cookie_sampler: sampler;
 
 fn rotate(q: vec4<f32>, v: vec3<f32>) -> vec3<f32> {
     let t = 2.0 * cross(q.xyz, v);
@@ -159,7 +161,8 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         // Not yet: the reflection of the sky's specular cube.
     }
 
-    var colour = emission;
+    var colour = emission
+        + game_local_lights(surface, in.position, light_params, spot_cookie, spot_cookie_sampler);
     if lit {
         colour += game_lighting(surface, in.position, light_params, caustics, caustics_sampler);
     }

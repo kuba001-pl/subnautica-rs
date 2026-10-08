@@ -22,7 +22,7 @@ use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, Face, TextureDimension, TextureFormat};
 use sn_assets::{Assets as GameAssets, MarmoSkies, ObjectRef, TerrainTexture, marmo_skies};
 use sn_install::GameData;
-use sn_unity::{Catalog, Material, SKIES_AUTO};
+use sn_unity::{Catalog, DayNightLight, LightKind, Material, SKIES_AUTO};
 use sn_world::{BatchCoord, Transform as Placement};
 
 use crate::game_light::GameLightImages;
@@ -34,6 +34,17 @@ use crate::water::WaterWorld;
 /// Cell levels in the game's data (0 = small, near objects … 3 = far).
 const LEVELS: usize = 4;
 
+/// The slot of a batch's batch-objects placements (atmosphere volumes and
+/// some lights), after the cell levels.
+const BATCH_OBJECTS: usize = LEVELS;
+
+/// Cell levels plus the batch objects.
+const SLOTS: usize = LEVELS + 1;
+
+/// Batches around the camera's whose batch objects the game loads
+/// (`LargeWorldStreamer.batchLoadRings`, `streaming-*.json`: 1).
+const BATCH_LOAD_RINGS: i32 = 1;
+
 /// Entities spawned per frame at most, so a burst of finished batches is
 /// spread over several frames.
 const SPAWN_BUDGET: usize = 20_000;
@@ -44,6 +55,28 @@ const BUNDLE_CACHE_BYTES: usize = 512 << 20;
 /// Whether cell `level` is shown for a batch at terrain level of detail `lod`.
 fn shows(level: usize, lod: u32) -> bool {
     lod as usize <= level
+}
+
+/// Whether slot `slot` (a cell level or the batch objects) of batch `coord`
+/// is shown: batch objects within the game's batch load rings of the
+/// camera's batch.
+fn shows_slot(slot: usize, lod: u32, coord: BatchCoord, camera: Option<BatchCoord>) -> bool {
+    if slot == BATCH_OBJECTS {
+        camera.is_some_and(|c| {
+            (coord.x - c.x).abs() <= BATCH_LOAD_RINGS
+                && (coord.y - c.y).abs() <= BATCH_LOAD_RINGS
+                && (coord.z - c.z).abs() <= BATCH_LOAD_RINGS
+        })
+    } else {
+        shows(slot, lod)
+    }
+}
+
+/// The batch containing a Unity world position (160 m batches from the
+/// voxel origin).
+fn batch_of(p: [f32; 3]) -> BatchCoord {
+    let b = |i: usize| ((p[i] + sn_world::VOXEL_WORLD_OFFSET[i]) / 160.0).floor() as i32;
+    BatchCoord::new(b(0), b(1), b(2))
 }
 
 type Key = (PathBuf, String, i64);
@@ -144,6 +177,39 @@ impl SkySet {
     }
 }
 
+/// A point or spot light of a prefab, placed relative to the prefab root.
+#[derive(Clone, Copy)]
+struct LocalLight {
+    spot: bool,
+    /// Unity's `_LightColor`: `linear(colour × intensity)` (the game's
+    /// `m_LightsUseLinearIntensity` is off).
+    color: [f32; 3],
+    range: f32,
+    /// Full cone angle, degrees (spots).
+    spot_angle: f32,
+    local: Placement,
+}
+
+/// A directional light of a prefab (the atmosphere volumes' "Bounce"
+/// lights), placed relative to the prefab root. It lights everything while
+/// its object is loaded (see `game_light.rs`).
+#[derive(Clone)]
+pub struct DirectionalSource {
+    /// Colour and intensity as stored (sRGB colour, gamma intensity).
+    pub color: [f32; 3],
+    pub intensity: f32,
+    /// Drives colour and intensity over the day, if present.
+    pub day_night: Option<Arc<DayNightLight>>,
+    /// The light's GameObject name.
+    name: String,
+    local: Placement,
+}
+
+/// A placed directional light: a marker entity whose transform's forward is
+/// the way the light travels (Unity's +z).
+#[derive(Component, Clone)]
+pub struct GameDirectionalLight(pub DirectionalSource);
+
 /// One mesh part of a prefab: a sub-mesh with its material, placed relative
 /// to the prefab root.
 #[derive(Clone, Copy)]
@@ -181,6 +247,8 @@ enum Update {
     Prefab {
         id: u32,
         parts: Vec<Part>,
+        lights: Vec<LocalLight>,
+        directional: Vec<DirectionalSource>,
     },
     Batch {
         coord: BatchCoord,
@@ -433,9 +501,54 @@ impl Library {
                 });
             }
         }
-        let id = (!parts.is_empty()).then(|| self.id());
+        // Realtime point and spot lights that are on when the prefab is
+        // placed (directional ones are handled elsewhere).
+        let mut lights = Vec::new();
+        let mut directional = Vec::new();
+        for node in prefab.nodes.iter().filter(|n| n.active) {
+            for l in node.lights.iter().filter(|l| l.enabled && l.is_realtime()) {
+                let spot = match l.kind {
+                    LightKind::Point => false,
+                    LightKind::Spot => true,
+                    LightKind::Directional => {
+                        // (`LargeWorldStreamer.OnBatchObjectsLoaded` destroys
+                        // some directional "bounce" lights, but only in the
+                        // batch-objects placements, which we don't stream;
+                        // see docs/formats/lighting.md.)
+                        directional.push(DirectionalSource {
+                            color: [l.color[0], l.color[1], l.color[2]],
+                            intensity: l.intensity,
+                            day_night: node.day_night_light.clone().map(Arc::new),
+                            name: node.name.clone(),
+                            local: node.in_prefab,
+                        });
+                        continue;
+                    }
+                    _ => continue,
+                };
+                if l.range <= 0.0 || l.intensity <= 0.0 {
+                    continue;
+                }
+                let gamma = [l.color[0], l.color[1], l.color[2]].map(|c| c * l.intensity);
+                let c = crate::sky::linear(Vec3::from(gamma));
+                lights.push(LocalLight {
+                    spot,
+                    color: c.to_array(),
+                    range: l.range,
+                    spot_angle: l.spot_angle,
+                    local: node.in_prefab,
+                });
+            }
+        }
+        let id =
+            (!parts.is_empty() || !lights.is_empty() || !directional.is_empty()).then(|| self.id());
         if let Some(id) = id {
-            out.push(Update::Prefab { id, parts });
+            out.push(Update::Prefab {
+                id,
+                parts,
+                lights,
+                directional,
+            });
         }
         self.prefabs.insert(path.to_string(), id);
         id
@@ -465,6 +578,36 @@ impl Library {
                                 transform,
                             });
                         }
+                    }
+                }
+            }
+            Ok(None) => {}
+            Err(e) => out.push(Update::Warning(e.0)),
+        }
+        // Batch objects: the root is moved to the batch's corner, as the
+        // game does when it loads them (`docs/formats/entities.md`).
+        match game.read_batch_objects(coord) {
+            Ok(Some(mut tree)) => {
+                let corner = [coord.x, coord.y, coord.z]
+                    .map(|c| c as f32 * 160.0)
+                    .iter()
+                    .zip(sn_world::VOXEL_WORLD_OFFSET)
+                    .map(|(c, o)| c - o)
+                    .collect::<Vec<_>>();
+                for o in tree.objects.iter_mut().filter(|o| o.parent.is_none()) {
+                    o.transform.position = [corner[0], corner[1], corner[2]];
+                }
+                let (world, _) = tree.world_transforms();
+                for (object, transform) in tree.objects.iter().zip(world) {
+                    let Some(path) = self.class_paths.get(&object.class_id).cloned() else {
+                        continue;
+                    };
+                    if let Some(prefab) = self.prefab(&path, out) {
+                        instances.push(Instance {
+                            level: BATCH_OBJECTS,
+                            prefab,
+                            transform,
+                        });
                     }
                 }
             }
@@ -552,7 +695,7 @@ struct BatchObjects {
     /// `None` until the worker has sent them.
     instances: Option<Vec<Instance>>,
     /// Spawned entities per cell level, `None` when not spawned.
-    shown: [Option<Vec<Entity>>; LEVELS],
+    shown: [Option<Vec<Entity>>; SLOTS],
     /// Whether its entities cast sun shadows (only the nearest level of
     /// detail: the game's shadows reach 50 m).
     casting: bool,
@@ -562,7 +705,8 @@ struct BatchObjects {
 pub struct ObjectStats {
     pub batches: usize,
     pub entities: usize,
-    pub per_level: [usize; LEVELS],
+    /// Cell levels 0–3, then batch objects.
+    pub per_level: [usize; SLOTS],
     pub queued: usize,
     pub prefabs: usize,
     pub meshes: usize,
@@ -589,17 +733,24 @@ pub struct ObjectStreamer {
     skies: SkySet,
     meshes: HashMap<u32, Handle<Mesh>>,
     prefabs: HashMap<u32, Vec<Part>>,
+    prefab_lights: HashMap<u32, Vec<LocalLight>>,
+    prefab_directional: HashMap<u32, Vec<DirectionalSource>>,
     batches: HashMap<BatchCoord, BatchObjects>,
     /// What was last put in the worker's queue.
     requested: Vec<BatchCoord>,
     defaults: Option<Defaults>,
+    /// Spawn the objects' point and spot lights.
+    lights: bool,
+    /// The camera's batch (for the batch objects).
+    camera_batch: Option<BatchCoord>,
     warnings: usize,
     /// Worker time per batch (ms).
     pub batch_ms: Vec<f32>,
 }
 
 impl ObjectStreamer {
-    pub fn start(game: GameData) -> ObjectStreamer {
+    /// `lights`: spawn the objects' point and spot lights.
+    pub fn start(game: GameData, lights: bool) -> ObjectStreamer {
         // The worker's asset index borrows the install for the whole run.
         let game: &'static GameData = Box::leak(Box::new(game));
         let shared = Arc::new(Shared {
@@ -620,9 +771,13 @@ impl ObjectStreamer {
             skies: SkySet::default(),
             meshes: HashMap::new(),
             prefabs: HashMap::new(),
+            prefab_lights: HashMap::new(),
+            prefab_directional: HashMap::new(),
             batches: HashMap::new(),
             requested: Vec::new(),
             defaults: None,
+            lights,
+            camera_batch: None,
             warnings: 0,
             batch_ms: Vec::new(),
         }
@@ -670,7 +825,9 @@ impl ObjectStreamer {
             && terrain.shown_lods().all(|(coord, lod)| {
                 self.batches.get(&coord).is_some_and(|b| {
                     b.instances.is_some()
-                        && (0..LEVELS).all(|l| b.shown[l].is_some() == shows(l, lod))
+                        && (0..SLOTS).all(|l| {
+                            b.shown[l].is_some() == shows_slot(l, lod, coord, self.camera_batch)
+                        })
                 })
             })
     }
@@ -691,6 +848,49 @@ fn to_bevy(t: &Placement) -> Transform {
         // Mirroring z: conjugate the rotation by the mirror.
         rotation: Quat::from_xyzw(-qx, -qy, qz, qw).normalize(),
         scale: Vec3::from(t.scale),
+    }
+}
+
+/// Bevy's light, only so that Bevy culls and clusters it: our shaders read
+/// the clustered lights and apply the game's formula (`game_light.wgsl`).
+/// Bevy stores colour × intensity ÷ 4π, so intensity 4π keeps the game's
+/// `_LightColor` unchanged. Shadows: not yet (M8e4).
+fn spawn_light(commands: &mut Commands, light: &LocalLight, transform: Transform) -> Entity {
+    let [r, g, b] = light.color;
+    let color = Color::linear_rgb(r, g, b);
+    let intensity = 4.0 * std::f32::consts::PI;
+    if light.spot {
+        // Unity's spot shines along its local +z, which `to_bevy` maps to
+        // Bevy's forward (−z).
+        commands
+            .spawn((
+                SpotLight {
+                    color,
+                    intensity,
+                    range: light.range,
+                    radius: 0.0,
+                    shadow_maps_enabled: false,
+                    outer_angle: (light.spot_angle * 0.5).to_radians(),
+                    inner_angle: 0.0,
+                    ..default()
+                },
+                transform,
+            ))
+            .id()
+    } else {
+        commands
+            .spawn((
+                PointLight {
+                    color,
+                    intensity,
+                    range: light.range,
+                    radius: 0.0,
+                    shadow_maps_enabled: false,
+                    ..default()
+                },
+                transform,
+            ))
+            .id()
     }
 }
 
@@ -815,6 +1015,7 @@ fn object_material(
             illum_map: illum.unwrap_or_else(|| defaults.white.clone()),
             light_params: light.params.clone(),
             caustics: light.caustics.clone(),
+            spot_cookie: light.spot_cookie.clone(),
         },
     }
 }
@@ -831,6 +1032,7 @@ pub fn stream_objects(
     mut images: ResMut<Assets<Image>>,
     light: Res<GameLightImages>,
     water: Option<Res<WaterWorld>>,
+    camera: Query<&Transform, With<Camera3d>>,
     mut exit: MessageWriter<AppExit>,
 ) {
     let streamer = &mut *streamer;
@@ -879,8 +1081,19 @@ pub fn stream_objects(
             Update::Mesh { id, data } => {
                 streamer.meshes.insert(id, meshes.add(build_mesh(data)));
             }
-            Update::Prefab { id, parts } => {
+            Update::Prefab {
+                id,
+                parts,
+                lights,
+                directional,
+            } => {
                 streamer.prefabs.insert(id, parts);
+                if !lights.is_empty() {
+                    streamer.prefab_lights.insert(id, lights);
+                }
+                if !directional.is_empty() {
+                    streamer.prefab_directional.insert(id, directional);
+                }
             }
             Update::Batch {
                 coord,
@@ -943,6 +1156,11 @@ pub fn stream_objects(
     // Spawn and despawn per cell level.
     let mut budget = SPAWN_BUDGET;
     let streamer = &mut *streamer;
+    if let Ok(t) = camera.single() {
+        let p = t.translation;
+        streamer.camera_batch = Some(batch_of([p.x, p.y, -p.z]));
+    }
+    let camera_batch = streamer.camera_batch;
     for (&coord, &lod) in &wanted {
         let Some(b) = streamer.batches.get_mut(&coord) else {
             continue;
@@ -965,8 +1183,8 @@ pub fn stream_objects(
             }
             b.casting = casting;
         }
-        for level in 0..LEVELS {
-            let want = shows(level, lod);
+        for level in 0..SLOTS {
+            let want = shows_slot(level, lod, coord, camera_batch);
             match (&b.shown[level], want) {
                 (Some(_), false) => {
                     for entity in b.shown[level].take().into_iter().flatten() {
@@ -1017,6 +1235,33 @@ pub fn stream_objects(
                                 entity.insert(bevy::light::NotShadowCaster);
                             }
                             entities.push(entity.id());
+                        }
+                        let lights = streamer
+                            .prefab_lights
+                            .get(&inst.prefab)
+                            .filter(|_| streamer.lights);
+                        for light in lights.into_iter().flatten() {
+                            let world = to_bevy(&inst.transform.then(&light.local));
+                            entities.push(spawn_light(&mut commands, light, world));
+                        }
+                        let directional = streamer
+                            .prefab_directional
+                            .get(&inst.prefab)
+                            .filter(|_| streamer.lights);
+                        for light in directional.into_iter().flatten() {
+                            // `LargeWorldStreamer.OnBatchObjectsLoaded` destroys
+                            // batch objects' directional lights whose name has
+                            // "bounce" after its first letter
+                            // (`IndexOf(…) > 0`, ignoring case); "Bounce" stays.
+                            let lower = light.name.to_lowercase();
+                            if inst.level == BATCH_OBJECTS
+                                && lower.find("bounce").is_some_and(|i| i > 0)
+                            {
+                                continue;
+                            }
+                            let world = to_bevy(&inst.transform.then(&light.local));
+                            let marker = GameDirectionalLight(light.clone());
+                            entities.push(commands.spawn((marker, world)).id());
                         }
                     }
                     budget = budget.saturating_sub(entities.len().max(1));

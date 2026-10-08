@@ -59,6 +59,10 @@ pub struct ObjectExtension {
     #[texture(121, dimension = "2d_array")]
     #[sampler(122)]
     pub caustics: Handle<Image>,
+    /// Unity's default spot-light cookie (`game_light.rs`).
+    #[texture(123)]
+    #[sampler(124)]
+    pub spot_cookie: Handle<Image>,
 }
 
 impl MaterialExtension for ObjectExtension {

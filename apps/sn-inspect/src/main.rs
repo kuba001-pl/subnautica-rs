@@ -58,6 +58,8 @@ Commands:
   prefab --placed [--oracle]
                          Load every prefab placed in the world and decode
                          its meshes (--oracle: out/mesh-check-rust.txt)
+  prefab --lights        The Light components of every placed prefab, and
+                         how many lights the world's placements hold
   terrain-materials      Terrain block types → materials → textures, checked
                          against the type ids used by the octrees
   terrain-materials --props
@@ -143,6 +145,7 @@ fn run(mut args: Vec<String>) -> Result<ExitCode> {
         ["entities", "--all"] => entities::all(&game),
         ["entities", x, y, z] => entities::one(&game, parse_coord(x, y, z)?),
         ["prefab", "--placed"] => prefab::placed(&game, false),
+        ["prefab", "--lights"] => prefab::lights(&game),
         ["prefab", "--placed", "--oracle"] => prefab::placed(&game, true),
         ["prefab", key] => prefab::one(&game, key),
         ["terrain-materials"] => materials::run(&game),

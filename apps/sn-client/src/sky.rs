@@ -15,6 +15,9 @@ pub const NEW_GAME_HOURS: f32 = 9.6;
 pub struct SkyState {
     /// The sky system's time (hours), derived from the clock.
     pub timeline: f32,
+    /// `DayNightCycle.GetDayScalar()`: the clock as a fraction of the day
+    /// (0 midnight, 0.5 noon). `DayNightLight` curves run on it.
+    pub day_scalar: f32,
     /// Towards the directional light (the sun by day, a moon-like light at
     /// night; `uSkyLight`'s light, which always points down).
     pub to_sun: Vec3,
@@ -22,8 +25,14 @@ pub struct SkyState {
     /// sets at night. The sky, its day/night factors, the water fog and the
     /// water surface use this one.
     pub to_sun_water: Vec3,
-    /// Sun colour × intensity.
+    /// Sun colour × intensity as the game's scripts see it
+    /// (`uSkyLight.GetLightColor`: colour made linear, × intensity): the
+    /// water fog and light shafts (`_UweFogLightColor`) use this.
     pub sun: Vec3,
+    /// The sun as Unity's light passes see it (`_LightColor`): with
+    /// `GraphicsSettings.m_LightsUseLinearIntensity` off (the game's
+    /// setting), colour × intensity in gamma space, then made linear.
+    pub sun_light: Vec3,
     pub top_ambient: Vec3,
     /// `_UweBottomAmbientColor`: the ground colour gradient, as the top.
     pub bottom_ambient: Vec3,
@@ -72,6 +81,16 @@ pub fn timeline_from_clock(hours: f32) -> f32 {
         if t > 1.0 { t - 1.0 } else { t }
     };
     t * 24.0
+}
+
+/// Unity's `Mathf.LinearToGammaSpace` (sRGB encoding).
+pub fn to_gamma(c: f32) -> f32 {
+    let c = c.max(0.0);
+    if c <= 0.003_130_8 {
+        c * 12.92
+    } else {
+        1.055 * c.powf(1.0 / 2.4) - 0.055
+    }
 }
 
 /// Unity's `Color.linear` for one channel.
@@ -172,7 +191,10 @@ fn local_light_scalar(intensity: f32, colour: Vec3) -> f32 {
     to_linear((intensity * mean * 1.2 - 0.15).clamp(0.0, 1.0))
 }
 
-pub fn state(m: &SkyManager, l: &SkyLight, timeline: f32) -> SkyState {
+/// The sky at a clock time (hours; the game's clock, see
+/// `timeline_from_clock`).
+pub fn state(m: &SkyManager, l: &SkyLight, clock_hours: f32) -> SkyState {
+    let timeline = timeline_from_clock(clock_hours);
     let forward = light_direction(m, timeline);
     let water = -water_light_direction(m, timeline);
     let light_dir = -forward;
@@ -188,6 +210,7 @@ pub fn state(m: &SkyManager, l: &SkyLight, timeline: f32) -> SkyState {
     let intensity = m.exposure * (l.sun_intensity * day + l.moon_intensity * night);
     let c = l.light_color.evaluate(t01);
     let sun = linear(Vec3::new(c[0], c[1], c[2]) * (day + night)) * intensity;
+    let sun_light = linear(Vec3::new(c[0], c[1], c[2]) * (day + night) * intensity);
 
     // `uSkyLight.CurrentSkyColor` / `CurrentGroundColor` (with exposure).
     let sky = color_offset(m, l.sky_color.evaluate(t01), 0.15, 0.7, false, day, sunset);
@@ -207,9 +230,11 @@ pub fn state(m: &SkyManager, l: &SkyLight, timeline: f32) -> SkyState {
     let mean = m.mean_sky_color.evaluate(t01);
     SkyState {
         timeline,
+        day_scalar: (clock_hours / 24.0).rem_euclid(1.0),
         to_sun: Vec3::new(light_dir.x, light_dir.y, -light_dir.z),
         to_sun_water: Vec3::new(water.x, water.y, -water.z),
         sun,
+        sun_light,
         top_ambient,
         bottom_ambient,
         unity_ambient: linear(sky),

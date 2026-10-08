@@ -28,8 +28,8 @@ pub use terrain::{
     terrain_materials,
 };
 pub use water::{
-    SkyTextures, WaterSurfaceData, resource_bytes, resource_texture, sky, sky_textures,
-    water_biomes, water_caustics, water_surface, water_volume,
+    SkyTextures, WaterSurfaceData, builtin_texture, resource_bytes, resource_texture, sky,
+    sky_textures, water_biomes, water_caustics, water_surface, water_volume,
 };
 
 pub type Result<T> = std::result::Result<T, String>;

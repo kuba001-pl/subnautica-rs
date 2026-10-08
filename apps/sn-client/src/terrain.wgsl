@@ -23,7 +23,7 @@
 }
 #else
 #import bevy_pbr::forward_io::{VertexOutput, FragmentOutput}
-#import sn_client::game_light::{GameSurface, game_lighting}
+#import sn_client::game_light::{GameSurface, game_lighting, game_local_lights}
 #endif
 
 // Must match `TriplanarParams` in terrain_look.rs. Colours are linear.
@@ -61,6 +61,8 @@ const SIDE_SIG: u32 = 16u;
 @group(#{MATERIAL_BIND_GROUP}) @binding(120) var light_params: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(121) var caustics: texture_2d_array<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(122) var caustics_sampler: sampler;
+@group(#{MATERIAL_BIND_GROUP}) @binding(123) var spot_cookie: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(124) var spot_cookie_sampler: sampler;
 @group(#{MATERIAL_BIND_GROUP}) @binding(101) var cap_albedo: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(102) var cap_albedo_sampler: sampler;
 @group(#{MATERIAL_BIND_GROUP}) @binding(103) var cap_normal: texture_2d<f32>;
@@ -215,6 +217,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     surface.gloss = gloss;
     surface.unity_ambient = 1.0;
     let lit = game_lighting(surface, in.position, light_params, caustics, caustics_sampler)
+        + game_local_lights(surface, in.position, light_params, spot_cookie, spot_cookie_sampler)
         + pbr_input.material.emissive.rgb;
     var out: FragmentOutput;
     out.color = vec4<f32>(lit, pbr_input.material.base_color.a);

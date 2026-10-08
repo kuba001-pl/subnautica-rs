@@ -118,6 +118,28 @@ pub fn water_surface(assets: &Assets) -> Result<WaterSurfaceData> {
     })
 }
 
+/// A texture of Unity's built-in resources (`Resources/unity default
+/// resources`) by name, e.g. `Soft`, Unity's default spot-light cookie.
+pub fn builtin_texture(assets: &Assets, name: &str) -> Result<TerrainTexture> {
+    let file = assets.standalone("Resources/unity default resources")?;
+    for info in file.objects().iter().filter(|o| o.class_id == TEXTURE_2D) {
+        let Some((_, data)) = file.object(info.path_id) else {
+            continue;
+        };
+        let Ok(t) = sn_unity::Texture2D::parse(data, file.file().big_endian) else {
+            continue;
+        };
+        if t.name == name {
+            let object = crate::ObjectRef {
+                file: file.clone(),
+                path_id: info.path_id,
+            };
+            return load_texture(assets, &object);
+        }
+    }
+    Err(format!("unity default resources: no texture {name:?}"))
+}
+
 /// Resource manager and text asset class ids.
 const RESOURCE_MANAGER: i32 = 147;
 const TEXT_ASSET: i32 = 49;

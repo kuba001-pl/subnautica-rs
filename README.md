@@ -49,7 +49,9 @@ Tested on Windows 11 with game build 10 (Steam):
   game's sky (scattering, sun, clouds, planet, moon; day to night), lit
   the way the game lights surfaces (caustics, sunlight dimmed under water,
   the game's ambient; objects with their specular maps, glow maps with day
-  and night strengths, and each biome's ambient settings). Flying from the lifepod
+  and night strengths, and each biome's ambient settings; the point, spot and
+directional lights placed objects carry, e.g. glowing coral, without their
+shadows). Flying from the lifepod
   to the crater edge
   keeps memory under 1.6 GiB, at about 220 fps on average on an RTX 3080
   (about 100 fps in the dense start area).

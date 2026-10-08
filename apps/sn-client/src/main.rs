@@ -30,7 +30,7 @@ use bevy::render::view::screenshot::{Screenshot, ScreenshotCaptured, save_to_dis
 use bevy::window::PresentMode;
 use sn_install::GameData;
 
-use crate::game_light::{GameLightPlugin, PendingCaustics};
+use crate::game_light::{GameLightPlugin, LightTextures, PendingLightTextures};
 use crate::object_look::ObjectLookPlugin;
 use crate::objects::ObjectStreamer;
 use crate::sky_dome::{PendingSky, PendingStars, SkyDomePlugin, SkyWorld};
@@ -53,6 +53,7 @@ Usage: sn-client [--game-dir <PATH>] [--start <X> <Y> <Z>] [--look <X> <Y> <Z>]
   --debug-colours  false colours per terrain type instead of the game's
                  terrain materials (also turns world objects off)
   --no-objects   terrain only, no world objects (coral, rocks, …)
+  --no-local-lights  the objects' point and spot lights off (for comparisons)
   --fog-unit     scale on the game's light values (calibration; default 1:
                  one game light unit = 1.0 in the image, as in Unity)
   --color-grading  off | neutral | aces: the game's option of that name
@@ -88,6 +89,7 @@ struct Args {
     speed: f32,
     debug_colours: bool,
     no_objects: bool,
+    no_local_lights: bool,
     fog_unit: f32,
     color_grading: ColorGrading,
     no_water_fog: bool,
@@ -109,6 +111,7 @@ fn parse_args() -> Result<Args, String> {
         speed: 40.0,
         debug_colours: false,
         no_objects: false,
+        no_local_lights: false,
         fog_unit: 1.0,
         color_grading: ColorGrading::Off,
         no_water_fog: false,
@@ -144,6 +147,7 @@ fn parse_args() -> Result<Args, String> {
             "--speed" => args.speed = number(it.next(), "--speed")?,
             "--debug-colours" => args.debug_colours = true,
             "--no-objects" => args.no_objects = true,
+            "--no-local-lights" => args.no_local_lights = true,
             "--no-water-fog" => args.no_water_fog = true,
             "--no-water-surface" => args.no_water_surface = true,
             "--water-quality" => {
@@ -181,7 +185,7 @@ struct GameLook {
     sky: (sn_unity::SkyManager, sn_unity::SkyLight),
     surface: sn_assets::WaterSurfaceData,
     sky_textures: sn_assets::SkyTextures,
-    caustics: Vec<sn_assets::TerrainTexture>,
+    caustics: LightTextures,
     stars: Vec<stars::GpuStar>,
 }
 
@@ -197,8 +201,14 @@ fn load_terrain_look(game_dir: Option<PathBuf>) -> Result<GameLook, String> {
     let surface = sn_assets::water_surface(&assets)?;
     let sky_textures = sn_assets::sky_textures(&assets, &sky.0)?;
     let stars = stars::parse(&sn_assets::resource_bytes(&assets, "starsdata")?)?;
-    let caustics =
-        sn_assets::water_caustics(&assets, surface.surface.num_caustics_frames.max(0) as usize)?;
+    let caustics = LightTextures {
+        caustics: sn_assets::water_caustics(
+            &assets,
+            surface.surface.num_caustics_frames.max(0) as usize,
+        )?,
+        // Unity's default spot-light cookie (`docs/formats/lighting.md`).
+        spot_cookie: sn_assets::builtin_texture(&assets, "Soft")?,
+    };
     for w in &materials.warnings {
         eprintln!("warning: {w}");
     }
@@ -362,7 +372,7 @@ fn main() -> AppExit {
         sun_shafts::SunShaftsPlugin,
     ))
     .insert_resource(PendingTerrainLook(look))
-    .insert_resource(PendingCaustics(caustics))
+    .insert_resource(PendingLightTextures(caustics))
     .insert_resource(ClearColor(WATER_COLOUR))
     .insert_resource(GlobalAmbientLight {
         color: Color::WHITE,
@@ -393,10 +403,16 @@ fn main() -> AppExit {
         app.add_plugins(bevy::render::diagnostic::RenderDiagnosticsPlugin);
     }
     if let Some((manager, light)) = &sky_data {
-        let state = sky::state(manager, light, sky::timeline_from_clock(args.time));
+        let state = sky::state(manager, light, args.time);
         info!(
-            "sky at {:.2} h (sky timeline {:.2} h): sun {:?} from {:?}, top ambient {:?}",
-            args.time, state.timeline, state.sun, state.to_sun, state.top_ambient
+            "sky at {:.2} h (sky timeline {:.2} h): sun {:?} (light passes {:?}) from {:?}, top ambient {:?}, local light {:.3}",
+            args.time,
+            state.timeline,
+            state.sun,
+            state.sun_light,
+            state.to_sun,
+            state.top_ambient,
+            state.local_light
         );
         app.insert_resource(state);
         if let Some(textures) = sky_textures {
@@ -430,7 +446,7 @@ fn main() -> AppExit {
     if !args.debug_colours && !args.no_objects {
         match GameData::locate(args.game_dir.clone()) {
             Ok(game) => {
-                app.insert_resource(ObjectStreamer::start(game));
+                app.insert_resource(ObjectStreamer::start(game, !args.no_local_lights));
             }
             Err(e) => {
                 eprintln!("error: {e}");
@@ -606,6 +622,14 @@ fn process_memory_gib(diagnostics: &DiagnosticsStore) -> f64 {
         .unwrap_or(0.0)
 }
 
+/// The objects' lights, for `log_stats`.
+#[derive(bevy::ecs::system::SystemParam)]
+struct SpawnedLights<'w, 's> {
+    point: Query<'w, 's, (), With<PointLight>>,
+    spot: Query<'w, 's, (), With<SpotLight>>,
+    directional: Query<'w, 's, &'static Transform, With<objects::GameDirectionalLight>>,
+}
+
 /// Logs frame rate, streaming state and memory every 2 seconds.
 fn log_stats(
     time: Res<Time>,
@@ -614,6 +638,7 @@ fn log_stats(
     streamer: Res<TerrainStreamer>,
     objects: Option<Res<ObjectStreamer>>,
     camera: Query<&Transform, With<Camera3d>>,
+    lights: SpawnedLights,
 ) {
     if time.elapsed() - *last < Duration::from_secs(2) {
         return;
@@ -641,7 +666,7 @@ fn log_stats(
     if let Some(objects) = objects {
         let o = objects.stats();
         info!(
-            "objects: {} entities (cell levels 0..3 {:?}) in {} batches, {} queued | {} prefabs, {} meshes, {} materials, {} textures | {} warnings",
+            "objects: {} entities (cell levels 0..3, batch objects {:?}) in {} batches, {} queued | {} prefabs, {} meshes, {} materials, {} textures | {} warnings",
             o.entities,
             o.per_level,
             o.batches,
@@ -655,6 +680,18 @@ fn log_stats(
         info!(
             "objects: {} MarmosetUBER materials ({} with specular maps, {} with glow maps); made per sky: {:?}",
             o.uber[0], o.uber[1], o.uber[2], o.per_sky
+        );
+        info!(
+            "objects: {} point lights, {} spot lights, {} directional lights (directions {:?}) spawned",
+            lights.point.iter().count(),
+            lights.spot.iter().count(),
+            lights.directional.iter().count(),
+            lights
+                .directional
+                .iter()
+                .take(4)
+                .map(|t| t.forward().as_vec3())
+                .collect::<Vec<_>>()
         );
     }
 }
@@ -744,7 +781,7 @@ fn measure(
                 if let Some(o) = &objects {
                     let s = o.stats();
                     info!(
-                        "measure: objects: {} entities (cell levels 0..3 {:?}), {} prefabs, {} meshes, {} materials, {} textures, {} warnings",
+                        "measure: objects: {} entities (cell levels 0..3, batch objects {:?}), {} prefabs, {} meshes, {} materials, {} textures, {} warnings",
                         s.entities,
                         s.per_level,
                         s.prefabs,

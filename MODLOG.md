@@ -2,6 +2,56 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-09 — M8e3: the objects' lights light the world
+
+**What:** placed objects' realtime lights spawned with them
+(`objects.rs` `spawn_light`; Bevy lights only for culling and
+clustering) and applied by `game_local_lights` in `game_light.wgsl` with
+the game's point/spot formula (falloff curve **hypothesis**, see
+`docs/formats/lighting.md` § How we render local lights); objects'
+directional lights (≤ 8) through the light parameters; `--no-local-lights`
+for comparisons. `sn-inspect prefab --lights` now also lists the densest
+50 m columns of lights (all, and glowing coral only) with the prefab
+holding most of them.
+
+**Verified (2026-10-09):** unit tests `light_falloff_at_known_distances`
+(range 10 m: 1 at 0 m, 0.5 at 2 m, 1/17 at 8 m, 0 at 10 m; continuous,
+never rising) and `shader_uses_the_same_falloff` (the shader holds the
+same constants). Night benchmarks, lights on / off: lifepod 458 point + 4
+directional lights, opaque pass 1.96 / 2.00 ms, image mean RGB 8.4 13.6
+16.7 / 8.2 13.1 16.2 (`out/m8e3-night-*.png`); Grand Reef glowing coral
+(−1325 −500 −370) 1,744 point + 7 spot lights, opaque 1.11 / 0.86 ms,
+mean 0.0 4.4 7.0 / 0.0 4.0 6.1 (`out/m8e3-reef-*.png`: the rock around
+the coral lit). **Not compared** with matched game screenshots.
+
+**Dead ends:** the densest light columns of the whole world are all
+Precursor interiors (gun, prison, lava castle); a first "dense area"
+render at (425 −55 1095) put the camera inside the mountain (black
+image). The glowing-coral-only list was added for that.
+
+## 2026-10-08 — M8e1: the game's lights read; sun intensity units fixed
+
+**What:** `sn-unity::Light` (Unity 2019.4 layout, 264 bytes) and
+`DayNightLight`; `PrefabNode::lights` / `day_night_light`;
+`sn-inspect prefab --lights` (census of every placed prefab). Decoded the
+point and spot light programs (`docs/formats/lighting.md` § Point and spot
+light passes). Found `GraphicsSettings.m_LightsUseLinearIntensity` off:
+lights are `linear(colour × intensity)` in Unity's passes; our sun in the
+surface pass was `linear(colour) × intensity` → new `SkyState::sun_light`
+(fog, shafts and water keep the script value, as the game).
+
+**Verified (2026-10-08):** synthetic tests (Light, truncation); real-data
+test `prefab_lights` (a glowing kelp prefab: 4 point lights, intensity 1.5,
+range 15, colour as UnityPy; the safe shallows "Bounce" light and its day
+curves). Census: 226 of 1,369 placed prefabs carry lights; ~9,970 lights
+in the world's placements (9,186 point, 561 spot, 123 directional, 99 with
+shadows). Sun in the light pass 0.886 → 0.780 (red) at 09:36; sunlit sand
+3.5 % darker, shadowed sand unchanged (`out/m8e-sunfix.png`). Tests pass.
+
+**Dead ends:** a first benchmark after the change saved no new screenshot
+(an earlier client was still running and held the exe); the comparison
+used the old image and showed "no change" — redone.
+
 ## 2026-10-08 — M8c7 (first pass): object specular, glow and biome skies
 
 **What:** decoded MarmosetUBER's deferred pass and the Marmoset sky

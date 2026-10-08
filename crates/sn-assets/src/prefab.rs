@@ -3,8 +3,8 @@
 //! `docs/formats/unity.md`.
 
 use sn_unity::{
-    AssetBundleManifest, Catalog, GameObject, Location, LodGroup, Mesh, MeshFilter, MeshGeometry,
-    MeshRenderer, SkyApplier, TransformNode,
+    AssetBundleManifest, Catalog, DayNightLight, GameObject, Light, Location, LodGroup, Mesh,
+    MeshFilter, MeshGeometry, MeshRenderer, SkyApplier, TransformNode,
 };
 use sn_world::Transform;
 
@@ -22,6 +22,7 @@ const ASSET_BUNDLE: i32 = 142;
 const LOD_GROUP: i32 = 205;
 const SKINNED_MESH_RENDERER: i32 = 137;
 const MONO_BEHAVIOUR: i32 = 114;
+const LIGHT: i32 = 108;
 
 /// Hierarchies deeper than this are treated as broken.
 const MAX_DEPTH: usize = 64;
@@ -50,6 +51,11 @@ pub struct PrefabNode {
     /// The `anchorSky` of a `SkyApplier` listing this node's renderer (its
     /// sky then comes from the biome at the object); `None`: the global sky.
     pub sky_applier: Option<i32>,
+    /// The node's `Light` components (any state; check `enabled`,
+    /// `is_realtime()` and the node's `active`).
+    pub lights: Vec<Light>,
+    /// A `DayNightLight` driving this node's light over the day.
+    pub day_night_light: Option<DayNightLight>,
 }
 
 pub struct Prefab {
@@ -207,6 +213,8 @@ impl Assets<'_> {
                     skinned: n.skinned,
                     lod: n.lod,
                     sky_applier: n.sky_applier,
+                    lights: n.lights,
+                    day_night_light: n.day_night_light,
                 })
                 .collect(),
         })
@@ -233,6 +241,8 @@ impl Assets<'_> {
         let mut materials = Vec::new();
         let mut renderer_enabled = false;
         let mut skinned = false;
+        let mut lights = Vec::new();
+        let mut day_night_light = None;
         for component in &go.components {
             let Some(c) = self.resolve(file, *component)? else {
                 continue;
@@ -259,11 +269,24 @@ impl Assets<'_> {
                     }
                 }
                 SKINNED_MESH_RENDERER => skinned = true,
-                MONO_BEHAVIOUR if script_class(self, &c).as_deref() == Some("SkyApplier") => {
-                    let a = SkyApplier::parse(data, big_endian)
-                        .map_err(|e| format!("SkyApplier {}: {e}", c.path_id))?;
-                    prefab.sky_appliers.push((c.file.clone(), a));
-                }
+                LIGHT => lights.push(
+                    Light::parse(data, big_endian)
+                        .map_err(|e| format!("Light {}: {e}", c.path_id))?,
+                ),
+                MONO_BEHAVIOUR => match script_class(self, &c).as_deref() {
+                    Some("SkyApplier") => {
+                        let a = SkyApplier::parse(data, big_endian)
+                            .map_err(|e| format!("SkyApplier {}: {e}", c.path_id))?;
+                        prefab.sky_appliers.push((c.file.clone(), a));
+                    }
+                    Some("DayNightLight") => {
+                        day_night_light = Some(
+                            DayNightLight::parse(data, big_endian)
+                                .map_err(|e| format!("DayNightLight {}: {e}", c.path_id))?,
+                        );
+                    }
+                    _ => {}
+                },
                 LOD_GROUP => {
                     let g = LodGroup::parse(data, big_endian)
                         .map_err(|e| format!("LODGroup {}: {e}", c.path_id))?;
@@ -301,6 +324,8 @@ impl Assets<'_> {
             skinned,
             lod: None,
             sky_applier: None,
+            lights,
+            day_night_light,
         });
         for child in &transform.children {
             let Some(t) = self.resolve(file, *child)? else {
@@ -367,6 +392,8 @@ struct BuildingNode {
     skinned: bool,
     lod: Option<usize>,
     sky_applier: Option<i32>,
+    lights: Vec<Light>,
+    day_night_light: Option<DayNightLight>,
 }
 
 struct Building {

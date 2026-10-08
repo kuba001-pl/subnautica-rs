@@ -11,8 +11,11 @@
 
 #define_import_path sn_client::game_light
 
-#import bevy_pbr::mesh_view_bindings::{view, lights, globals}
-#import bevy_pbr::mesh_view_types::DIRECTIONAL_LIGHT_FLAGS_SHADOWS_ENABLED_BIT
+#import bevy_pbr::mesh_view_bindings::{view, lights, globals, clustered_lights}
+#import bevy_pbr::mesh_view_types::{
+    DIRECTIONAL_LIGHT_FLAGS_SHADOWS_ENABLED_BIT, POINT_LIGHT_FLAGS_SPOT_LIGHT_Y_NEGATIVE,
+}
+#import bevy_pbr::clustered_forward as clustering
 #import bevy_pbr::shadows::fetch_directional_shadow
 
 // Texels of `params`; must match game_light.rs.
@@ -28,9 +31,34 @@ const P_LIGHT_X = 8;      // world → light matrix rows (Bevy world → light u
 const P_LIGHT_Y = 9;
 const P_UNITY_AMBIENT = 10; // Unity's flat ambient (our units), unused
 const P_OBJECTS = 11;     // _UweLocalLightScalar (0 night … 1 day)
+const P_DIRECTIONAL = 12; // count of directional lights of objects (≤ 8)
+// then per light: 13 + 2i direction it travels, 14 + 2i colour (our units)
 
 fn param(params: texture_2d<f32>, i: i32) -> vec4<f32> {
     return textureLoad(params, vec2<i32>(i, 0), 0);
+}
+
+// A directional light below the surface (the game's directional passes):
+// dimmed along its `path` from the surface down to `world`, with a colour
+// cast: near the camera and the surface the attenuation is grey (its
+// weakest channel), further away coloured. 1 above water, without fog, or
+// for lights pointing up.
+fn underwater_path(world: vec3<f32>, light_dir: vec3<f32>, params: texture_2d<f32>) -> vec3<f32> {
+    let ext = param(params, P_EXTINCTION);
+    let misc = param(params, P_MISC);
+    let height = world.y - misc.w;
+    if misc.z == 0.0 {
+        return vec3<f32>(1.0);
+    }
+    let path = select(0.0, height / light_dir.y, height <= 0.0 && -light_dir.y >= 0.0);
+    if path <= 0.0 {
+        return vec3<f32>(1.0);
+    }
+    let to_camera = length(world - view.world_position);
+    let sigma = ext.xyz * ext.w;
+    let grey = min(min(sigma.x, sigma.y), sigma.z);
+    let cast_factor = exp(-to_camera * misc.x - path * misc.y);
+    return exp(-(sigma + cast_factor * (grey - sigma)) * path);
 }
 
 // What the game's G-buffer holds for a surface.
@@ -82,19 +110,9 @@ fn game_lighting(
     var sun = cookie * light_scale;
     var ambient_extra = vec3<f32>(0.0);
     if fog_on {
-        // Sunlight below the surface: dimmed along its `path` from the
-        // surface, with a colour cast: near the camera and the surface the
-        // attenuation is grey (its weakest channel), further away coloured.
-        let to_camera = length(s.world - view.world_position);
-        let path = select(0.0, height / light_dir.y, height <= 0.0 && -light_dir.y >= 0.0);
-        let sigma = ext.xyz * ext.w;
-        let grey = min(min(sigma.x, sigma.y), sigma.z);
-        let cast_factor = exp(-to_camera * misc.x - path * misc.y);
-        let att = exp(-(sigma + cast_factor * (grey - sigma)) * path);
-        if path > 0.0 {
-            direct = att * light_scale;
-            sun = att * sun;
-        }
+        let att = underwater_path(s.world, light_dir, params);
+        direct = att * light_scale;
+        sun = att * sun;
         // The water's own glow as ambient light.
         ambient_extra = emissive.xyz * emissive.w / (ext.xyz + 0.0001);
     }
@@ -133,4 +151,92 @@ fn local_light_scalar(params: texture_2d<f32>) -> f32 {
 // The caustics frame of the game's clock (25 frames per second).
 fn caustics_frame(params: texture_2d<f32>) -> i32 {
     return i32(param(params, P_CAUSTICS).w);
+}
+
+// Unity's light falloff texture `_LightTextureB0` at t = distance² / range².
+// The engine makes this texture itself; its curve here is Unity's widely
+// quoted built-in one (1 / (1 + 25 t), faded linearly to 0 from t = 0.64),
+// a HYPOTHESIS until measured (docs/formats/lighting.md).
+fn unity_light_falloff(t: f32) -> f32 {
+    if t >= 1.0 {
+        return 0.0;
+    }
+    var a = 1.0 / (1.0 + 25.0 * t);
+    if t > 0.64 {
+        a *= 1.0 - (t - 0.64) / 0.36;
+    }
+    return a;
+}
+
+// The game's point and spot lights (its deferred `POINT` / `SPOT` passes)
+// on a surface: every light Bevy clustered at this pixel. Lights carry the
+// game's `_LightColor` (see objects.rs, `spawn_light`). No water
+// attenuation, no unlit check (as the game's passes).
+fn game_local_lights(
+    s: GameSurface,
+    frag_coord: vec4<f32>,
+    params: texture_2d<f32>,
+    cookie: texture_2d<f32>,
+    cookie_sampler: sampler,
+) -> vec3<f32> {
+    let unit = param(params, P_LIGHT).w;
+    let view_z = (view.view_from_world * vec4<f32>(s.world, 1.0)).z;
+    let is_orthographic = view.clip_from_view[3].w == 1.0;
+    let cluster = clustering::view_fragment_cluster_index(frag_coord.xy, view_z, is_orthographic);
+    let ranges = clustering::unpack_clusterable_object_index_ranges(cluster);
+    let n = normalize(s.normal);
+    let v = normalize(view.world_position - s.world);
+    let power = max(s.gloss * 128.0, 0.1);
+    var total = vec3<f32>(0.0);
+    for (var i = ranges.first_point_light_index_offset;
+         i < ranges.first_reflection_probe_index_offset;
+         i = i + 1u) {
+        let light = &clustered_lights.data[clustering::get_clusterable_object_id(i)];
+        let to_light = (*light).position_radius.xyz - s.world;
+        var a = unity_light_falloff(dot(to_light, to_light) * (*light).color_inverse_square_range.w);
+        if i >= ranges.first_spot_light_index_offset {
+            // The cone: Unity's default cookie projected over the spot
+            // angle, only in front of the light. The cookie is radially
+            // symmetric (checked), so the light's roll doesn't matter.
+            let d = (*light).light_custom_data.xy;
+            var y = sqrt(max(0.0, 1.0 - dot(d, d)));
+            if ((*light).flags & POINT_LIGHT_FLAGS_SPOT_LIGHT_Y_NEGATIVE) != 0u {
+                y = -y;
+            }
+            let forward = vec3<f32>(d.x, y, d.y);
+            let along = dot(-to_light, forward);
+            if along <= 0.0 {
+                continue;
+            }
+            let across = length(-to_light - forward * along);
+            let r = across / (along * (*light).spot_light_tan_angle);
+            a *= textureSampleLevel(cookie, cookie_sampler, vec2<f32>(0.5 + 0.5 * r, 0.5), 0.0).a;
+        }
+        if a <= 0.0 {
+            continue;
+        }
+        let colour = (*light).color_inverse_square_range.rgb * unit;
+        let l = normalize(to_light);
+        let h = normalize(v + l);
+        let diffuse = a * max(dot(n, l), 0.0) * colour;
+        let lum = dot(colour, vec3<f32>(0.039682, 0.458022, 0.006097));
+        let spec = clamp(pow(max(dot(n, h), 0.0), power) * saturate(a) * lum, 0.0, 100000.0);
+        total += s.albedo * diffuse + s.specular * diffuse * spec;
+    }
+    // Directional lights of objects (the game's plain `DIRECTIONAL` pass:
+    // dimmed under water only when pointing down; no caustics, no
+    // ambient, no unlit check).
+    let count = i32(param(params, P_DIRECTIONAL).x);
+    for (var i = 0; i < count; i = i + 1) {
+        let dir = param(params, P_DIRECTIONAL + 1 + 2 * i).xyz;
+        let colour = param(params, P_DIRECTIONAL + 2 + 2 * i).xyz;
+        let att = underwater_path(s.world, dir, params);
+        let l = -dir;
+        let h = normalize(v + l);
+        let diffuse = att * max(dot(n, l), 0.0) * colour;
+        let lum = dot(colour, vec3<f32>(0.039682, 0.458022, 0.006097));
+        let spec = clamp(pow(max(dot(n, h), 0.0), power) * min(att.x, 1.0) * lum, 0.0, 100000.0);
+        total += s.albedo * diffuse + s.specular * diffuse * spec;
+    }
+    return total;
 }

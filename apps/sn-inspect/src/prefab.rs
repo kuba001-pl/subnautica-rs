@@ -136,34 +136,195 @@ fn append_obj(obj: &mut String, g: &MeshGeometry, t: &sn_world::Transform, base:
 /// `BatchObjectsCache`): load it, decode every mesh, report totals.
 /// With `oracle`, also write one line per decoded mesh to
 /// `out/mesh-check-rust.txt` for comparison with UnityPy.
-pub fn placed(game: &GameData, oracle: bool) -> Result<ExitCode> {
-    let start = Instant::now();
+/// Every prefab placed in the world (baked cells and batch objects), with
+/// its number of placements.
+fn placed_prefabs(game: &GameData) -> Result<BTreeMap<String, usize>> {
+    Ok(placed_positions(game)?
+        .into_iter()
+        .map(|(k, v)| (k, v.len()))
+        .collect())
+}
+
+/// Every placed prefab with the world (Unity) positions of its placements.
+fn placed_positions(game: &GameData) -> Result<BTreeMap<String, Vec<[f32; 3]>>> {
     let prefabs = game.read_prefab_database()?;
-    let mut keys = BTreeSet::new();
+    let mut keys: BTreeMap<String, Vec<[f32; 3]>> = BTreeMap::new();
     let (batches, _) = game.cell_batches()?;
     for coord in batches {
         let Some(file) = game.read_batch_cells(coord)? else {
             continue;
         };
         for tree in file.cells.iter().filter_map(|c| c.objects.as_ref()) {
-            for o in &tree.objects {
+            let (world, _) = tree.world_transforms();
+            for (o, t) in tree.objects.iter().zip(world) {
                 if let Some(path) = prefabs.get(&o.class_id) {
-                    keys.insert(path.clone());
+                    keys.entry(path.clone()).or_default().push(t.position);
                 }
             }
         }
     }
     let (batches, _) = game.object_batches()?;
     for coord in batches {
-        let Some(tree) = game.read_batch_objects(coord)? else {
+        let Some(mut tree) = game.read_batch_objects(coord)? else {
             continue;
         };
-        for o in &tree.objects {
+        // Roots sit at the batch's corner (docs/formats/entities.md).
+        let corner = [coord.x, coord.y, coord.z]
+            .map(|c| c as f32 * 160.0)
+            .iter()
+            .zip(sn_world::VOXEL_WORLD_OFFSET)
+            .map(|(c, o)| c - o)
+            .collect::<Vec<_>>();
+        for o in tree.objects.iter_mut().filter(|o| o.parent.is_none()) {
+            o.transform.position = [corner[0], corner[1], corner[2]];
+        }
+        let (world, _) = tree.world_transforms();
+        for (o, t) in tree.objects.iter().zip(world) {
             if let Some(path) = prefabs.get(&o.class_id) {
-                keys.insert(path.clone());
+                keys.entry(path.clone()).or_default().push(t.position);
             }
         }
     }
+    Ok(keys)
+}
+
+/// `prefab --lights`: the Light components of every placed prefab, and how
+/// many lights the world's placements hold.
+pub fn lights(game: &GameData) -> Result<ExitCode> {
+    let start = Instant::now();
+    let placed = placed_positions(game)?;
+    let assets = Assets::index(game)?;
+    let catalog = assets.catalog()?;
+    let mut errors = 0;
+    let mut with_lights = 0;
+    // 50 m columns (x, z) → lit-at-start realtime lights placed there, the
+    // sum of their heights (positions of the placements, not of the lights).
+    let mut columns: BTreeMap<(i32, i32), (usize, f32)> = BTreeMap::new();
+    // 50 m column → prefab → its lights there.
+    let mut column_prefabs: BTreeMap<(i32, i32), BTreeMap<&str, usize>> = BTreeMap::new();
+    // The same for the glowing coral alone (Doodads/Coral_reef_Light).
+    let mut coral: BTreeMap<(i32, i32), (usize, f32)> = BTreeMap::new();
+    // (kind, shadows, realtime, enabled and active) → (lights, placed lights)
+    let mut kinds: BTreeMap<String, (usize, usize)> = BTreeMap::new();
+    let mut by_dir: BTreeMap<String, (usize, usize)> = BTreeMap::new();
+    let mut masks: BTreeMap<u32, usize> = BTreeMap::new();
+    let mut ranges: Vec<f32> = Vec::new();
+    for (key, positions) in &placed {
+        let count = positions.len();
+        let prefab = match assets.prefab(&catalog, key) {
+            Ok(p) => p,
+            Err(_) => {
+                errors += 1;
+                continue;
+            }
+        };
+        let lights: Vec<(&sn_unity::Light, bool)> = prefab
+            .nodes
+            .iter()
+            .flat_map(|n| n.lights.iter().map(move |l| (l, n.active)))
+            .collect();
+        if lights.is_empty() {
+            continue;
+        }
+        with_lights += 1;
+        let dir = key.split('/').take(3).collect::<Vec<_>>().join("/");
+        let d = by_dir.entry(dir).or_default();
+        d.0 += 1;
+        d.1 += count * lights.len();
+        for (l, active) in lights {
+            let on = l.enabled && active;
+            let name = format!(
+                "{:?} shadows {:?} {} {}{}",
+                l.kind,
+                l.shadows,
+                if l.is_realtime() { "realtime" } else { "baked" },
+                if on { "on" } else { "off at start" },
+                if l.cookie.is_null() {
+                    ""
+                } else {
+                    " with cookie"
+                }
+            );
+            let e = kinds.entry(name).or_default();
+            e.0 += 1;
+            e.1 += count;
+            *masks.entry(l.culling_mask).or_default() += 1;
+            if on && l.is_realtime() {
+                ranges.push(l.range);
+                if !key.starts_with("WorldEntities/Creatures/") {
+                    for p in positions {
+                        let c = ((p[0] / 50.0).floor() as i32, (p[2] / 50.0).floor() as i32);
+                        let e = columns.entry(c).or_default();
+                        e.0 += 1;
+                        e.1 += p[1];
+                        *column_prefabs.entry(c).or_default().entry(key).or_default() += 1;
+                        if key.starts_with("WorldEntities/Doodads/Coral_reef_Light/") {
+                            let e = coral.entry(c).or_default();
+                            e.0 += 1;
+                            e.1 += p[1];
+                        }
+                    }
+                }
+            }
+        }
+        assets.trim_cache(512 << 20);
+    }
+    println!(
+        "placed prefabs: {}; with lights: {with_lights}; unreadable: {errors}",
+        placed.len()
+    );
+    println!("lights (in prefabs, in the world's placements):");
+    for (k, (n, w)) in &kinds {
+        println!("  {k}: {n}, {w}");
+    }
+    println!("culling masks: {masks:?}");
+    ranges.sort_by(f32::total_cmp);
+    if let (Some(first), Some(last)) = (ranges.first(), ranges.last()) {
+        println!(
+            "range of lit-at-start realtime lights: min {first}, median {}, max {last}",
+            ranges[ranges.len() / 2]
+        );
+    }
+    println!("by folder (prefabs with lights, lights in placements):");
+    for (d, (n, w)) in &by_dir {
+        println!("  {d}: {n}, {w}");
+    }
+    let mut dense: Vec<_> = columns.into_iter().collect();
+    dense.sort_by_key(|e| std::cmp::Reverse(e.1.0));
+    println!(
+        "densest 50 m columns of lit-at-start lights, without creatures (x, z, lights, mean y):"
+    );
+    for ((x, z), (n, y)) in dense.iter().take(10) {
+        let top = column_prefabs
+            .get(&(*x, *z))
+            .and_then(|m| m.iter().max_by_key(|(_, n)| **n))
+            .map(|(k, n)| format!("{k} ({n})"))
+            .unwrap_or_default();
+        println!(
+            "  {}, {}: {n}, {:.0}; most: {top}",
+            x * 50 + 25,
+            z * 50 + 25,
+            y / *n as f32
+        );
+    }
+    let mut dense: Vec<_> = coral.into_iter().collect();
+    dense.sort_by_key(|e| std::cmp::Reverse(e.1.0));
+    println!("densest 50 m columns of glowing coral lights (x, z, lights, mean y):");
+    for ((x, z), (n, y)) in dense.iter().take(10) {
+        println!(
+            "  {}, {}: {n}, {:.0}",
+            x * 50 + 25,
+            z * 50 + 25,
+            y / *n as f32
+        );
+    }
+    println!("time: {:.1} s", start.elapsed().as_secs_f64());
+    Ok(ExitCode::SUCCESS)
+}
+
+pub fn placed(game: &GameData, oracle: bool) -> Result<ExitCode> {
+    let start = Instant::now();
+    let keys: BTreeSet<String> = placed_prefabs(game)?.into_keys().collect();
     println!("placed prefabs: {}", keys.len());
     let assets = Assets::index(game)?;
     let catalog = assets.catalog()?;

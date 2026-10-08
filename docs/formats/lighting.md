@@ -79,6 +79,11 @@ cascades over 50 m split at 6.7 %, 20 % and 46.7 % (3.3, 10, 23.3, 50 m),
 near plane offset 2. Medium: 2 cascades over 35 m; Low: none. The sun
 `Light`: soft shadows, strength 1, bias 0.45, normal bias 0.4.
 
+Terrain shadows: `clipmaps-high.json` (and `-medium`, `-low`) set
+`castShadows` per clipmap level: High levels 0–1 cast, 2–4 don't; Medium
+level 0 only; Low none (confirmed from the files; the level extents are
+read in M4b).
+
 **Ours (M8c6):** Bevy's cascaded shadow map with exactly these cascade
 bounds, 2048² per cascade, Gaussian filtering for the soft shadows (Bevy's
 bias defaults: **not** the game's values yet). Only the nearest level of
@@ -182,3 +187,144 @@ anchors other than Auto (taken as the global sky); `_UwePowerLoss` (bases);
 the non-`MARMO_SPECMAP` variant is assumed to use a white map
 (**hypothesis**); the SH rotation by the sky's frame assumes `_SkyMatrix ×
 n` (**hypothesis**, only matters for the wreck sky).
+
+## Local lights — confirmed from the data (M8e1)
+
+Unity `Light` (class 108), 2019.4 layout, 264 bytes (`sn-unity::Light`;
+equal to UnityPy's class layout field by field on the game's prefabs):
+GameObject, enabled (bool, padded to 4), type (0 spot, 1 directional, 2
+point, 3 area), shape, colour (RGBA as stored), intensity, range, spot
+angle, inner spot angle, cookie size, shadows {type 0 none/1 hard/2 soft,
+resolution, custom resolution, strength, bias, normal bias, near plane,
+culling matrix override (16 floats), use override}, cookie (PPtr), draw
+halo, baking output {probe occlusion index, occlusion mask channel,
+lightmap bake type (4 realtime, 1 mixed, 2 baked), mixed mode, is baked},
+flare (PPtr), render mode, culling mask, rendering layer mask,
+lightmapping, shadow caster mode, area size, bounce intensity, colour
+temperature, use colour temperature, bounding sphere override, use it.
+
+Census (`sn-inspect prefab --lights`, every placed prefab): 226 of 1,369
+placed prefabs carry lights. Lights in prefabs / in the world's placements:
+point, no shadows: 1,651 / 9,186; spot, no shadows: 454 / 561; point,
+soft shadows: 2 / 83; spot, hard: 7 / 15; spot, soft: 1 / 1;
+directional: 9 / 123; 2 point lights start disabled. All realtime, all
+culling masks "everything". Range of the lights on at start: median 5 m,
+up to 150 m. Biggest sources: glowing coral (`Coral_reef_Light`, 2,935
+placed lights), the per-biome `Lights/` folders (Lost River 974, Treader
+Path 365, Koosh Zone 314, …), precursor sites, membrane trees (389),
+floating stones.
+
+Scripts that change lights at run time (on the light-bearing prefabs):
+`DayNightLight` (6 prefabs), `LightAnimator` (10), `LightIntensityOnStoryGoal`
+(16), `LightShadowQuality` (11), `DisableEmissiveOnStoryGoal`,
+`ToggleLights`/`FlashLight`/`Flare`/`LEDLight` (tools), `TechLight`,
+`VFXVolumetricLight` (44), `RegistredLightSource`. To read one by one.
+
+**Directional lights in the world.** Atmosphere volumes (Safe Shallows,
+Kelp Forest, Treader Path) carry a child "Bounce" directional light with a
+`DayNightLight`; the deep grand reef's volume an "Upward Glow" (0.2, cyan,
+no script); three `Lights/…Glow` directional lights have intensity 0.
+`LargeWorldStreamer.OnBatchObjectsLoaded` destroys directional lights whose
+name contains "bounce" — but tests `IndexOf("bounce", ignore case) > 0`,
+which is false for the name "Bounce" (index 0): the bounce lights stay, so
+they are part of the game's look. A directional light lights everything,
+so every loaded atmosphere volume's bounce light adds to the whole scene
+(which volumes are loaded depends on the game's streaming distances,
+not yet known).
+
+`DayNightLight` (`sn-unity::DayNightLight`): curves R, G, B, intensity, sun
+fraction over `d = DayNightCycle.GetDayScalar()` (time ÷ 1200 s, wrapped),
+replace colour and fraction, fade. Colour = lerp((R, G, B)(d), replace,
+sunFraction(d) × replaceFraction); intensity =
+`UWE.Utils.IntensityToGamma(I(d) × fade)` = `LinearToGammaSpace(2 I(d)
+fade)` (firstpass assembly). Safe shallows bounce: I 0.01 at midnight,
+0.11 by day; colour (0.40, 0.60, 0.80) at midnight, (0.88, 0.96, 0.75) by
+day. Kelp forest: I 0.03 / 0.09. Nothing calls `Fade` on these.
+
+The sun's own `DayNightLight` (on `SunAndCaustics`, used by
+`DayNightCycle`) is **disabled** in the scene: `uSkyLight` drives the sun,
+as we do.
+
+## Light colour units — confirmed from GraphicsSettings
+
+`GraphicsSettings.m_LightsUseLinearIntensity` is **off** (globalgamemanagers,
+read with UnityPy) in a linear project (`PlayerSettings` colour space 1).
+Unity then multiplies colour × intensity in gamma space and makes the
+product linear: a light's `_LightColor` = `linear(colour × intensity)`
+(Unity's documented meaning of the setting; the exact per-channel curve is
+the sRGB one, **hypothesis** for values above 1). That is why the game's
+`IntensityToGamma` exists. Scripts that read lights themselves differ:
+`uSkyLight.GetLightColor()` = `colour.linear × intensity`, which
+`WaterscapeVolume` puts in `_UweFogLightColor` for the water fog, the light
+shafts and the water surface. So the sun is `linear(c I)` in the surface
+light pass and `linear(c) I` in fog, shafts and water (fixed in M8e1: the
+surface pass used `linear(c) I`, 12 % too bright at the 09:36 sun, I ≈
+0.90; sunlit sand at the lifepod 3.5 % darker now, shadowed sand unchanged).
+
+`QualitySettings.pixelLightCount` is 2 at Medium and High: forward-rendered
+objects (transparent ones) get at most 2 per-pixel lights; deferred
+(opaque) surfaces get every light.
+
+## Point and spot light passes — confirmed from the compiled shader (M8e2)
+
+Programs `POINT` / `SPOT` + `UNITY_HDR_ON` of the deferred shading shader,
+per pixel at world position `p` with G-buffer albedo, specular colour,
+gloss and normal:
+- falloff `a = _LightTextureB0(|p − _LightPos.xyz|² × _LightPos.w)`
+  (`w` = 1 / range²);
+- spot only: `a ×= _LightTexture0(proj.xy / proj.w).a × (proj.w < 0)`
+  with `proj = unity_WorldToLight × p` (the cone; mip bias −8). With no
+  cookie set Unity binds its default spot cookie, `Soft` (128² alpha,
+  `unity default resources`, object 10001) — **hypothesis** that it is this
+  one, and the matrix (a perspective of the spot angle) is Unity's, to be
+  checked;
+- diffuse `a × max(n·l, 0) × _LightColor`; specular `pow(max(n·h, 0),
+  max(gloss × 128, 0.1)) × saturate(a) × dot(_LightColor, (0.0397, 0.458,
+  0.0061))`, × specular colour × diffuse, clamped to 1e5; result `albedo ×
+  diffuse + specular`;
+- **no** water attenuation, caustics or unlit check: local lights light
+  every surface, also those the sun pass leaves unlit.
+
+`_LightTextureB0` is not in the game's files: Unity makes it in the
+engine. Its curve is **not known yet**; to be measured (a matched
+screenshot of a known light on flat sand, or a frame capture of the game).
+
+## How we render local lights (M8e3)
+
+Every Light of a placed object that is enabled, on an active node and
+realtime is spawned with the object's level of the streamer (so it comes
+and goes with it). Point and spot lights become Bevy `PointLight` /
+`SpotLight` entities only so that Bevy culls and clusters them; their
+colour is the game's `_LightColor` (`linear(colour × intensity)`; Bevy's
+intensity 4π cancels its ÷ 4π). `game_light.wgsl` (`game_local_lights`)
+walks the lights clustered at each pixel of terrain and objects and
+applies the formula above, with:
+- `_LightTextureB0` taken as `1 / (1 + 25 t)`, faded linearly to 0 from
+  `t = 0.64` to 1 (Unity's widely quoted built-in curve) — **hypothesis**
+  until measured; the curve is unit-tested at known distances and the
+  shader text is checked to hold the same constants;
+- the spot cone from the default cookie, sampled at the radius
+  `|p⊥| / (along × tan(angle/2))` (the cookie is radially symmetric,
+  checked, so the light's roll is ignored), nothing behind the light;
+- directional lights of objects (≤ 8, e.g. the biomes' "Bounce" lights)
+  through the parameter texture, dimmed under water only when pointing
+  down, as the game's plain `DIRECTIONAL` pass. Batch objects' directional
+  lights whose name has "bounce" after its first letter are skipped, as
+  `LargeWorldStreamer.OnBatchObjectsLoaded` destroys them.
+No local light casts shadows yet (99 in the world do in the game; M8e4).
+Only one light in the world's placements has its own cookie (a spot with
+hard shadows; `sn-inspect prefab --lights`, "with cookie"); it is drawn
+with the default cookie until M8e4.
+
+Measured (night, `--time 0`, `--benchmark 120`, RTX 3080, 2400×1350):
+
+| Place | Lights spawned | Opaque pass GPU on / off | Mean image RGB on / off |
+| --- | --- | --- | --- |
+| Lifepod (0, −10, 0) | 458 point, 4 directional | 1.96 / 2.00 ms (noise) | 8.4 13.6 16.7 / 8.2 13.1 16.2 |
+| Grand Reef glowing coral (−1325, −500, −370) | 1,744 point, 7 spot | 1.11 / 0.86 ms | 0.0 4.4 7.0 / 0.0 4.0 6.1 |
+
+The glowing-coral place is the densest 50 m column of
+`Doodads/Coral_reef_Light` lights (`sn-inspect prefab --lights` lists the
+densest columns); with the lights, the reef's rock is lit around the coral,
+without them only the glowing coral itself shows. **Not compared** with a
+matched game screenshot yet.

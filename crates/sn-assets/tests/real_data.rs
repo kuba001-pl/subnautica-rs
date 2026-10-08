@@ -391,3 +391,90 @@ fn marmo_skies_and_sky_appliers() {
     eprintln!("{key}: {anchors:?}");
     assert_eq!(anchors, vec![Some(0)]);
 }
+
+#[test]
+#[ignore = "needs SUBNAUTICA_DIR pointing at a Subnautica install"]
+fn prefab_lights() {
+    let Some(dir) = std::env::var_os("SUBNAUTICA_DIR") else {
+        eprintln!("SUBNAUTICA_DIR not set; skipping");
+        return;
+    };
+    let game = GameData::locate(Some(PathBuf::from(dir))).unwrap();
+    let assets = Assets::index(&game).unwrap();
+    let catalog = assets.catalog().unwrap();
+    // Values read with UnityPy's Light layout on the dev machine (M8e1).
+    let key = "WorldEntities/Doodads/Coral_reef_Light/Coral_reef_Kelp_blood_03_Light.prefab";
+    let prefab = assets.prefab(&catalog, key).unwrap();
+    let lights: Vec<&sn_unity::Light> = prefab.nodes.iter().flat_map(|n| &n.lights).collect();
+    assert_eq!(lights.len(), 4);
+    for l in lights {
+        assert!(l.enabled && l.is_realtime());
+        assert_eq!(l.kind, sn_unity::LightKind::Point);
+        assert_eq!((l.intensity, l.range), (1.5, 15.0));
+        assert!((l.color[0] - 0.745_098_05).abs() < 1e-6 && l.color[2] == 1.0);
+        assert_eq!(l.shadows, sn_unity::ShadowKind::None);
+        assert_eq!(l.culling_mask, u32::MAX);
+    }
+
+    // The safe shallows' atmosphere volume: a directional "Bounce" light
+    // driven by a DayNightLight (curve values read on the dev machine, M8e1).
+    let key = "WorldEntities/Atmosphere/SafeShallows/Normal.prefab";
+    let prefab = assets.prefab(&catalog, key).unwrap();
+    let node = prefab.nodes.iter().find(|n| n.name == "Bounce").unwrap();
+    assert_eq!(node.lights.len(), 1);
+    assert_eq!(node.lights[0].kind, sn_unity::LightKind::Directional);
+    let d = node.day_night_light.as_ref().unwrap();
+    assert!((d.intensity.evaluate(0.5) - 0.11).abs() < 1e-3);
+    assert!((d.intensity.evaluate(0.0) - 0.01).abs() < 1e-3);
+    assert!((d.color_g.evaluate(0.5) - 0.96).abs() < 1e-3);
+    assert_eq!((d.replace_fraction, d.fade), (0.0, 1.0));
+}
+
+#[test]
+#[ignore = "needs SUBNAUTICA_DIR pointing at a Subnautica install"]
+fn default_spot_cookie() {
+    let Some(dir) = std::env::var_os("SUBNAUTICA_DIR") else {
+        eprintln!("SUBNAUTICA_DIR not set; skipping");
+        return;
+    };
+    let game = GameData::locate(Some(PathBuf::from(dir))).unwrap();
+    let assets = Assets::index(&game).unwrap();
+    let soft = sn_assets::builtin_texture(&assets, "Soft").unwrap();
+    let t = &soft.texture;
+    let rgba = t.decode_rgba(&soft.data).unwrap();
+    let alpha = |x: usize, y: usize| rgba[(y * t.width as usize + x) * 4 + 3];
+    let row: Vec<u8> = (0..t.width as usize)
+        .step_by(8)
+        .map(|x| alpha(x, 64))
+        .collect();
+    eprintln!(
+        "Soft: {}x{} format {} wrap {:?} filter {} alpha along the middle row {row:?}, corner {}",
+        t.width,
+        t.height,
+        t.format,
+        t.wrap,
+        t.filter_mode,
+        alpha(0, 0)
+    );
+    assert_eq!((t.width, t.height, t.format), (128, 128, 1));
+    // Clamped, transparent outside the disc, opaque in the middle.
+    assert_eq!(
+        (t.wrap[0], t.wrap[1], alpha(0, 0), alpha(64, 64)),
+        (1, 1, 0, 255)
+    );
+    assert_eq!(&row[..4], &[0, 76, 216, 255]);
+    // Radially symmetric (our spot lights rely on it): the alpha at a
+    // distance from the centre is the same in every direction.
+    for r in [10, 30, 50, 60] {
+        // The disc centre is at 63.5 (texel centres): 64 + r and 63 − r are
+        // the same distance from it.
+        let a = [
+            alpha(64 + r, 64),
+            alpha(63 - r, 64),
+            alpha(64, 64 + r),
+            alpha(64, 63 - r),
+        ];
+        let (lo, hi) = (a.iter().min().unwrap(), a.iter().max().unwrap());
+        assert!(hi - lo <= 8, "r {r}: {a:?}");
+    }
+}
