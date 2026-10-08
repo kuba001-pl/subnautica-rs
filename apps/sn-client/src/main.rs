@@ -524,6 +524,8 @@ fn setup(
             },
             bevy::camera::Hdr,
             WaterFog::default(),
+            // The game's soft shadows.
+            bevy::light::ShadowFilteringMethod::Gaussian,
             grading.tonemapping(),
         ));
         if underwater.surface {
@@ -566,10 +568,35 @@ fn setup(
         DirectionalLight {
             illuminance,
             color: colour,
+            // The game's sun casts shadows ("Detail" High: soft shadows).
+            shadow_maps_enabled: true,
             ..default()
         },
+        sun_cascades(),
         Transform::default().looking_to(direction, Vec3::Y),
     ));
+}
+
+/// The game's shadow cascades at "Detail" High (`QualitySettings`, read
+/// once with UnityPy on the dev machine; `docs/formats/lighting.md`
+/// § Shadows): 4 cascades to 50 m, split at 6.7 %, 20 % and 46.7 %.
+fn sun_cascades() -> bevy::light::CascadeShadowConfig {
+    let distance = 50.0;
+    let mut config = bevy::light::CascadeShadowConfigBuilder {
+        num_cascades: 4,
+        minimum_distance: 0.1,
+        maximum_distance: distance,
+        first_cascade_far_bound: distance * 0.066_666_67,
+        overlap_proportion: 0.2,
+    }
+    .build();
+    config.bounds = vec![
+        distance * 0.066_666_67,
+        distance * 0.2,
+        distance * 0.466_666_7,
+        distance,
+    ];
+    config
 }
 
 fn process_memory_gib(diagnostics: &DiagnosticsStore) -> f64 {
@@ -624,6 +651,10 @@ fn log_stats(
             o.materials,
             o.textures,
             o.warnings
+        );
+        info!(
+            "objects: {} MarmosetUBER materials ({} with specular maps, {} with glow maps); made per sky: {:?}",
+            o.uber[0], o.uber[1], o.uber[2], o.per_sky
         );
     }
 }

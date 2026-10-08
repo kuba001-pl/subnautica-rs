@@ -643,6 +643,11 @@ pub fn stream(
                     commands.spawn((mesh, MeshMaterial3d(material))).id()
                 }
             };
+            // The game's shadows reach 50 m (`QualitySettings`, High): only
+            // the nearest level of detail's opaque layer can cast into them.
+            if job.lod > 0 || part.rank > 0 {
+                commands.entity(entity).insert(bevy::light::NotShadowCaster);
+            }
             entities.push(entity);
         }
         let latency = job.requested.elapsed().as_secs_f32() * 1000.0;

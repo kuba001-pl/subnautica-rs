@@ -2,6 +2,56 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-08 — M8c7 (first pass): object specular, glow and biome skies
+
+**What:** decoded MarmosetUBER's deferred pass and the Marmoset sky
+classes (`docs/formats/lighting.md` § Objects). New: `sn-unity::marmo`
+(`MarmoSky`, `SkyApplier`, `MarmoSkiesPrefabs`, unit tests on synthetic
+bytes), `sn-assets::marmo_skies` (biome skies + global sky),
+`PrefabNode::sky_applier`. The client's object shader now ports the UBER
+G-buffer: specular from `_SpecTex`/`_SpecColor`/`_SpecInt`/`_Fresnel`, gloss
+from `_Shininess`, glow from `_Illum` with day/night strengths
+(`_UweLocalLightScalar`, new texel 11 of the light parameters), the sky's
+camera exposure, SH ambient and unlit flag; no Unity ambient on UBER
+objects (it was added before; the shader doesn't). Materials are made per
+(material, sky); the sky is picked per placed object from its biome.
+
+**Verified (2026-10-08):** real-data test `marmo_skies_and_sky_appliers`:
+37 skies for 145 biomes, values equal to the UnityPy readout. Benchmark at
+the lifepod: 1,537 UBER materials (1,482 specular maps, 559 glow maps),
+materials made for 13 skies; `out/m8c7-start.png` vs `m8c6-start.png`:
+terrain sand unchanged (mean RGB 142/179/164 vs 141/177/162), the floating
+boulder darker (58/77/68 vs 79/95/88: no Unity ambient), glowing grass
+tips greener. Frame time 13.2–16.6 ms over three runs (11.1 ms last
+round), but runs vary a lot right now (shafts 1.9 → 2.7 ms GPU with no
+change to them); **not A/B tested**. Tests, clippy, fmt: pass. **Not
+compared** with matched game screenshots.
+
+**Dead ends:** the shader-index keywords from the program's preceding bytes
+were wrong (they belong to neighbouring programs); variants were matched by
+diffing bytecode instead.
+
+## 2026-10-08 — M8c6 (first pass): sun shadows, shadowed light shafts
+
+**What:** the game's shadow settings read (`QualitySettings` High: 4
+cascades over 50 m, soft; `docs/formats/lighting.md` § Sun shadows). The
+sun now casts Bevy shadows with these cascade bounds and Gaussian
+filtering; the game lighting already used them. Terrain and objects beyond
+the nearest level of detail don't cast (`NotShadowCaster`, updated when a
+batch changes level). The light shafts now sample the shadow map through
+Bevy's view bind group (the pattern of Bevy's volumetric fog), one
+comparison per step.
+
+**Verified (2026-10-08):** `out/m8c6-start.png` (the floating boulder's
+shadow on the sand), `out/m8c6-shafts.png` (shafts cut into beams).
+Benchmark at the lifepod: 11.1 ms mean (21 ms before limiting the
+casters; 9.5 ms without shadows). Shafts 1.9 ms GPU. Tests, clippy, fmt:
+pass.
+
+**Dead ends:** shadows from every entity cost ~11 ms of CPU (Bevy prepares
+shadow draws per entity and cascade); the soft filter in the shafts' 200
+samples per pixel cost 4.8 ms.
+
 ## 2026-10-08 — M8c5: stars
 
 **What:** decoded uSky's star field (`StarField`, the `StarsData`

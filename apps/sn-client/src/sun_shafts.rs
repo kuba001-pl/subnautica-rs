@@ -8,6 +8,9 @@ use std::collections::HashMap;
 
 use bevy::core_pipeline::tonemapping::tonemapping;
 use bevy::core_pipeline::{Core3d, Core3dSystems, FullscreenShader};
+use bevy::pbr::{
+    MeshPipelineViewLayoutKey, MeshPipelineViewLayouts, MeshViewBindGroup, ViewKeyCache,
+};
 use bevy::prelude::*;
 use bevy::render::diagnostic::RecordDiagnostics;
 use bevy::render::extract_component::{ComponentUniforms, DynamicUniformIndex};
@@ -27,9 +30,7 @@ use bevy::render::render_resource::{
 };
 use bevy::render::renderer::{RenderContext, RenderDevice, RenderQueue, ViewQuery};
 use bevy::render::texture::{CachedTexture, FallbackImage, GpuImage, TextureCache};
-use bevy::render::view::{
-    ExtractedView, Msaa, ViewDepthTexture, ViewTarget, ViewUniform, ViewUniformOffset, ViewUniforms,
-};
+use bevy::render::view::{ExtractedView, Msaa, ViewDepthTexture, ViewTarget};
 use bevy::render::{Render, RenderApp, RenderStartup, RenderSystems};
 
 use crate::game_light::GameLightImages;
@@ -153,8 +154,8 @@ struct SunShaftsPipelines {
     linear: Sampler,
     shader: Handle<Shader>,
     fullscreen: FullscreenShader,
-    /// (target format, multisampled) → (trace, combine).
-    pipelines: HashMap<(TextureFormat, bool), [CachedRenderPipelineId; 2]>,
+    /// (target format, Bevy's view layout key) → (trace, combine).
+    pipelines: HashMap<(TextureFormat, u32), [CachedRenderPipelineId; 2]>,
     uniform: UniformBuffer<SunShaftsUniform>,
 }
 
@@ -175,7 +176,6 @@ fn init_gpu(
             &BindGroupLayoutEntries::sequential(
                 ShaderStages::FRAGMENT,
                 (
-                    uniform_buffer::<ViewUniform>(true),
                     uniform_buffer::<WaterFog>(true),
                     uniform_buffer::<SunShaftsUniform>(false),
                     depth,
@@ -205,27 +205,43 @@ fn init_gpu(
 #[derive(Component)]
 struct SunShaftsPipelineIds([CachedRenderPipelineId; 2], bool);
 
+/// Group 0 is Bevy's own view bind group (lights and shadow maps), set up
+/// as Bevy's volumetric fog does it.
 fn prepare_pipelines(
     mut commands: Commands,
     cache: Res<PipelineCache>,
     mut pipelines: ResMut<SunShaftsPipelines>,
+    mesh_view_layouts: Res<MeshPipelineViewLayouts>,
+    view_key_cache: Res<ViewKeyCache>,
     views: Query<(Entity, &ExtractedView, &Msaa), With<DynamicUniformIndex<WaterFog>>>,
 ) {
     for (entity, view, msaa) in &views {
+        let Some(mesh_key) = view_key_cache.get(&view.retained_view_entity) else {
+            continue;
+        };
+        let view_key = MeshPipelineViewLayoutKey::from(*mesh_key);
         let multisampled = msaa.samples() > 1;
-        let key = (view.target_format, multisampled);
+        let key = (view.target_format, view_key.bits());
         let ids = match pipelines.pipelines.get(&key) {
             Some(ids) => *ids,
             None => {
-                let defs = if multisampled {
-                    vec!["MULTISAMPLED".into()]
-                } else {
-                    Vec::new()
-                };
+                // One hardware comparison per sample, as the game's shader
+                // (`sample_c_lz`), not the camera's soft filter.
+                let mut defs = vec!["SHADOW_FILTER_METHOD_HARDWARE_2X2".into()];
+                if view_key.contains(MeshPipelineViewLayoutKey::MULTISAMPLED) {
+                    defs.push("MULTISAMPLED".into());
+                }
+                if view_key.contains(MeshPipelineViewLayoutKey::ATMOSPHERE) {
+                    defs.push("ATMOSPHERE".into());
+                }
+                let view_layout = mesh_view_layouts.get_view_layout(view_key).main_layout;
                 let pipeline = |entry: &'static str, format, blend| {
                     cache.queue_render_pipeline(RenderPipelineDescriptor {
                         label: Some(format!("sun_shafts_{entry}_pipeline").into()),
-                        layout: vec![pipelines.layouts[usize::from(multisampled)].clone()],
+                        layout: vec![
+                            view_layout.clone(),
+                            pipelines.layouts[usize::from(multisampled)].clone(),
+                        ],
                         vertex: pipelines.fullscreen.to_vertex_state(),
                         fragment: Some(FragmentState {
                             shader: pipelines.shader.clone(),
@@ -315,7 +331,7 @@ fn sun_shafts_pass(
     view: ViewQuery<(
         &ViewTarget,
         &ViewDepthTexture,
-        &ViewUniformOffset,
+        &MeshViewBindGroup,
         &DynamicUniformIndex<WaterFog>,
         &SunShaftsPipelineIds,
         &ViewShaftsTexture,
@@ -325,20 +341,18 @@ fn sun_shafts_pass(
     images: Option<Res<GameLightImages>>,
     gpu_images: Res<RenderAssets<GpuImage>>,
     fallback: Res<FallbackImage>,
-    view_uniforms: Res<ViewUniforms>,
     fog_uniforms: Res<ComponentUniforms<WaterFog>>,
     device: Res<RenderDevice>,
     mut ctx: RenderContext,
 ) {
-    let (target, depth, view_offset, fog_index, ids, shafts) = view.into_inner();
+    let (target, depth, view_group, fog_index, ids, shafts) = view.into_inner();
     let Some(caustics) = images.and_then(|i| gpu_images.get(&i.caustics)) else {
         return;
     };
     let [Some(trace), Some(combine)] = ids.0.map(|id| cache.get_render_pipeline(id)) else {
         return;
     };
-    let (Some(view_binding), Some(fog_binding), Some(uniform)) = (
-        view_uniforms.uniforms.binding(),
+    let (Some(fog_binding), Some(uniform)) = (
         fog_uniforms.uniforms().binding(),
         pipelines.uniform.binding(),
     ) else {
@@ -351,7 +365,6 @@ fn sun_shafts_pass(
             "sun_shafts_bind_group",
             &layout,
             &BindGroupEntries::sequential((
-                view_binding.clone(),
                 fog_binding.clone(),
                 uniform.clone(),
                 depth.view(),
@@ -403,7 +416,8 @@ fn sun_shafts_pass(
                 multiview_mask: None,
             });
         pass.set_pipeline(pipeline);
-        pass.set_bind_group(0, group, &[view_offset.offset, fog_index.index()]);
+        pass.set_bind_group(0, &view_group.main, &view_group.main_offsets);
+        pass.set_bind_group(1, group, &[fog_index.index()]);
         pass.draw(0..3, 0..1);
     }
     span.end(ctx.command_encoder());

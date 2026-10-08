@@ -5,7 +5,7 @@
 
 use std::path::PathBuf;
 
-use sn_assets::{Assets, terrain_materials};
+use sn_assets::{Assets, marmo_skies, terrain_materials};
 use sn_install::GameData;
 
 #[test]
@@ -341,4 +341,53 @@ fn water_surface_values() {
         (w.foam.texture.color_space, w.foam_mask.texture.color_space),
         (1, 1)
     );
+}
+
+#[test]
+#[ignore = "needs SUBNAUTICA_DIR pointing at a Subnautica install"]
+fn marmo_skies_and_sky_appliers() {
+    let Some(dir) = std::env::var_os("SUBNAUTICA_DIR") else {
+        eprintln!("SUBNAUTICA_DIR not set; skipping");
+        return;
+    };
+    let game = GameData::locate(Some(PathBuf::from(dir))).unwrap();
+    let assets = Assets::index(&game).unwrap();
+    let skies = marmo_skies(&assets).unwrap();
+    eprintln!(
+        "{} skies, {} biomes, global {:?}",
+        skies.skies.len(),
+        skies.biomes.len(),
+        skies.global
+    );
+    for s in &skies.skies {
+        eprintln!(
+            "  {} {:?} exposure {:?}",
+            s.name,
+            s.rotation,
+            s.sky.exposure()
+        );
+    }
+    // Values read with UnityPy on the dev machine (see MODLOG, M8c7).
+    assert_eq!((skies.skies.len(), skies.biomes.len()), (37, 145));
+    let global = &skies.skies[skies.global.unwrap()];
+    assert_eq!(global.name, "SkySafeShallows");
+    assert_eq!(skies.for_biome(Some("SAFESHALLOWS")), skies.global);
+    assert_eq!(skies.for_biome(None), skies.global);
+    assert!(global.sky.affected_by_day_night && global.sky.outdoors);
+    let e = global.sky.exposure();
+    assert!(
+        (e[1] - 0.65).abs() < 1e-6 && (e[3] - 1.0).abs() < 1e-6,
+        "{e:?}"
+    );
+    let reef = &skies.skies[skies.for_biome(Some("grandReef")).unwrap()];
+    assert_eq!(reef.sky.master_intensity, 3.0);
+    let cave = &skies.skies[skies.for_biome(Some("safeShallows_Cave")).unwrap()];
+    assert!(!cave.sky.affected_by_day_night);
+
+    let catalog = assets.catalog().unwrap();
+    let key = "WorldEntities/Doodads/Coral_reef/Coral_reef_purple_mushrooms_01_04.prefab";
+    let prefab = assets.prefab(&catalog, key).unwrap();
+    let anchors: Vec<Option<i32>> = prefab.visible_nodes().map(|n| n.sky_applier).collect();
+    eprintln!("{key}: {anchors:?}");
+    assert_eq!(anchors, vec![Some(0)]);
 }

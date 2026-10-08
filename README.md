@@ -48,7 +48,8 @@ Tested on Windows 11 with game build 10 (Steam):
   reflection, refraction, sun glint; from above and below) under the
   game's sky (scattering, sun, clouds, planet, moon; day to night), lit
   the way the game lights surfaces (caustics, sunlight dimmed under water,
-  the game's ambient). Flying from the lifepod
+  the game's ambient; objects with their specular maps, glow maps with day
+  and night strengths, and each biome's ambient settings). Flying from the lifepod
   to the crater edge
   keeps memory under 1.6 GiB, at about 220 fps on average on an RTX 3080
   (about 100 fps in the dense start area).
@@ -56,9 +57,10 @@ Tested on Windows 11 with game build 10 (Steam):
 ## What doesn't work yet
 
 The water clip map (no water inside the lifepod and bases,
-shore foam); sun shadows; water settings per pixel (the
+shore foam); water settings per pixel (the
 camera's are used everywhere); the Aurora, Lifepod 5, terrain grass and
-slot-spawned vegetation; for world objects: specular/gloss/emission maps,
+slot-spawned vegetation; for world objects: reflections of the biome
+sky's cube map, cave/interior skies chosen by atmosphere volumes,
 animation (waving plants), skinned meshes, creatures; player, audio,
 multiplayer.
 Linux/macOS: not tested.

@@ -8,6 +8,7 @@
 mod addressables;
 mod bundle;
 mod classes;
+mod marmo;
 mod mesh;
 mod objects;
 mod prefab;
@@ -24,6 +25,7 @@ use std::fmt;
 pub use addressables::{Catalog, Location};
 pub use bundle::{BlockInfo, Bundle, BundleDirectory, BundleNode, Compression, write_bundle};
 pub use classes::class_name;
+pub use marmo::{MarmoSkiesPrefabs, MarmoSky, SH_CONSTANTS, SKIES_AUTO, SkyApplier};
 pub use mesh::{Channel, Mesh, MeshFilter, MeshGeometry, SubMesh, channel};
 pub use objects::{Material, MonoBehaviourHeader, MonoScript, PPtr, TexEnv};
 pub use prefab::{

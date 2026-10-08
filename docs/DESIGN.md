@@ -188,10 +188,59 @@ reach them — expect the far end of this list to change.
 | **M8c2** (first pass) | Sky: port of the game's uSky skybox and sky map (scattering, sun disc, planet and corona, night sky, moon, clouds; `docs/formats/sky.md`), drawn behind the scene before the fog; the water reflects the sky map. Not yet: stars. | Screenshots with the game above water at two times of day. |
 | **M8c3** (first pass) | Light on surfaces: the game's deferred lighting ported into our terrain/object shaders (`docs/formats/lighting.md`): caustics (64 frames, 25 fps), sunlight attenuated under water with the colour cast, top/bottom ambient, the water's glow, Blinn specular (terrain specular colours). Next: per-pixel water settings, sun shadows, object specular/gloss/emission maps, light shafts, stars. | Side-by-side screenshots with the game at the lifepod, coral spot, Kelp Forest; perf budget logged. |
 | **M8c4** (first pass) | Water "High" quality (the user's setting): port of `WaterDisplacementGenerator` (Phillips spectrum + FFT compute shaders, the scene's wind/amplitude/choppiness) replacing the baked frames; `--water-quality medium|high`. Then the water's screen-space reflections (`ENABLE_SCREEN_SPACE_REFLECTION`, if the scene enables it). | Side-by-side screenshot of the open sea with the game; GPU time logged. |
-| **M8c5** | Light shafts under water (`WaterSunShaftsOnCamera` and its shaders), sun shadows (the game's shadow settings), stars (`StarField`), object specular/gloss/emission maps (glowing plants), per-pixel water settings (the game's volume around the camera), the water clip map. | Screenshots with the game at the lifepod by day and at night. |
-| **M8c6** | Light and shadow in general exactly as the game: the sun's shadows (the game's shadow distance, cascades, bias, strength; `SHADOWS_SCREEN`), point and spot lights through the game's deferred light passes (flashlight, lifepod/base/wreck lights, glowing creatures and plants), the object shader (MarmosetUBER: specular, gloss, emission, rim/fresnel), per-pixel water settings for all of it, and a check of every light value against matched game screenshots. | Matched screenshots (same place and time) with the game by day, at night and in a dark place with the flashlight; per-light GPU time logged. |
+| **M8c5** ✅ (first pass) | Light shafts under water (`WaterSunShaftsOnCamera` and its shaders), stars (`StarField`). | Screenshots with the game at the lifepod by day and at night. |
+| **M8c6** (first pass) | Sun shadows: the game's cascades (4 over 50 m, `QualitySettings` High), soft; only the nearest level of detail casts; the light shafts read the shadow map. Remaining: the game's bias (0.45) and normal bias (0.4), Unity's soft-shadow filter instead of Bevy's Gaussian. | Matched screenshot of a shadow edge; frame time logged. |
+| **M8c7** (first pass) | The object shader, MarmosetUBER (`docs/formats/lighting.md` § Objects): specular maps, gloss, fresnel, glow with day/night strengths, each biome's Marmoset sky (exposures, SH ambient, unlit flag), `SkyApplier`. Remaining: the sky's specular cube reflections, atmosphere volumes in the biome lookup (cave skies), anchors other than Auto. | Real-data test of the 37 skies; materials with specular/glow maps counted in the log; matched screenshots. |
+| **M8e** | Local lights (point and spot), the game's light sources: see § 4.1. | See § 4.1. |
 | **M8d** | The game's camera post-processing (Unity Post Processing Stack v1 with `default_Post-FXProfile`, per the user's options): bloom + lens dirt, ambient occlusion, screen-space reflections, depth of field, motion blur, FXAA, dithering, colour grading (off/neutral/ACES exactly as the stack does it). | Matched screenshots (same place and time) with the game; GPU time per effect logged. |
 | **M9** | Player: swim controller, terrain collision, surfacing/air, first-person camera. | Can swim from the Lifepod to the Kelp Forest without clipping through terrain (logged collision checks). |
+
+### 4.1 Lighting plan (written 2026-10-08)
+
+**Why:** our scenes look flat next to the game's. The biggest missing
+pieces, from the game's data:
+1. **Local lights.** 263 world prefabs carry Unity `Light` components,
+   about 2,290 lights: 1,793 point, 486 spot, 11 directional (counted with
+   a throwaway reader on the dev machine; layout to be confirmed by a
+   test). Typical range 6 m (up to 150 m), intensity 2. A `Lights` folder
+   of placed lights per biome (e.g. Lost River 28, Precursor 22), 16 of 17
+   glowing coral prefabs (`Coral_reef_Light`), floating stones, creepvine
+   seed clusters, wrecks, alien bases, tools (flashlight, flare). This is
+   the glow the user sees on the sand around glowing plants. Only 24 of
+   them cast shadows.
+2. **Bloom** (the halo around bright things), **ambient occlusion**.
+3. **Reflections** of the sky's cube map on shiny objects.
+4. Smaller: shadow bias and filter, cave skies, per-pixel water settings.
+
+**Approach for local lights:** we light surfaces forward in our own
+shaders (`game_light.wgsl`), not with Bevy's PBR. Lights become Bevy
+`PointLight`/`SpotLight` entities only so that Bevy culls and clusters
+them; our shaders walk Bevy's cluster light lists and apply the game's
+formula. The game's deferred point-light program (`POINT`, disassembled):
+falloff = `_LightTextureB0` sampled at `distance² / range²`, × max(n·l, 0)
+× light colour; Blinn specular with the G-buffer's power, as the sun. To
+check in the HDR, `SPOT`, `POINT_COOKIE` and shadow variants: the unlit
+flag, spot cone/cookie, water attenuation (none in the `POINT` program).
+
+**Order of work** (each step ends with numbers, screenshots for the user,
+and a MODLOG entry; nothing is pushed without the user's OK):
+
+| Step | Work | Done when |
+|---|---|---|
+| **M8e1** | Read `Light` (type, colour, intensity, range, spot angle, cookie, shadows, render mode, culling mask, enabled) in `sn-unity` with tests on synthetic bytes; collect lights per prefab node in `sn-assets`. Census in `sn-inspect`. | Real-data test: light counts per type and shadow mode equal to UnityPy's on a sample of prefabs; census logged. |
+| **M8e2** | Decode the HDR `POINT`, `SPOT`, `POINT_COOKIE` light programs and the falloff texture `_LightTextureB0` (from the game's built-in resources, or the Unity version's formula if it is generated, then checked against the data); document in `lighting.md`. | Falloff curve values logged; every constant of the programs explained in the doc. |
+| **M8e3** | Spawn lights with their objects (same streaming, same levels); port the point and spot formula into `game_light.wgsl` for terrain and objects; spots with their cookies. | Lights on screen at the lifepod and in a glowing-coral area counted; light at known distances checked against the formula in a unit test; GPU time logged; screenshot at night. |
+| **M8e4** | The 24 shadowed lights (cube/spot shadow maps, the game's resolution and bias). | Screenshot of a shadowed local light; GPU time logged. |
+| **M8d1** | Bloom and lens dirt as the game's post stack does them (`default_Post-FXProfile`: intensity 0.2, threshold 0.9, soft knee 0.55, radius 5.5, dirt 5); ambient occlusion with the profile's settings. | Matched screenshots by night (glowing coral) and day; GPU time per effect. |
+| **M8c7b** | Specular cube reflections (load the skies' cube maps), atmosphere volumes in the biome lookup (cave and wreck skies), other `SkyApplier` anchors. | Cube maps loaded and counted; skies per object in a cave logged; matched screenshot of a shiny object. |
+| **M8c6b** | Shadow bias/normal bias 0.45/0.4 and Unity's soft-shadow filter. | Matched screenshot of a shadow edge. |
+| **M8f** | Per-pixel water settings (the game's volume around the camera) for fog and lighting; the water clip map. | Screenshot across a biome border; numbers logged. |
+| **M8g** | Calibration: matched screenshots (same place, time, settings) with the game at the lifepod, a glowing-coral spot at night, the Kelp Forest, a cave, a wreck; differences measured (mean colour per region) and listed. | Every listed difference explained or fixed. |
+
+**Performance budget:** the dense start area must stay under 16.7 ms
+(60 fps) on the dev machine (RTX 3080) with all of the above. Measure each
+step with `--benchmark` A/B against the step before (same build flags,
+three runs each).
 
 ### Phase D — Multiplayer
 

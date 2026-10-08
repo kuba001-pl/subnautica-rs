@@ -9,6 +9,7 @@
 //!
 //! Read-only: everything comes from the player's install via `sn-install`.
 
+mod marmo;
 mod prefab;
 mod terrain;
 mod water;
@@ -20,6 +21,7 @@ use std::sync::{Arc, Mutex};
 use sn_install::GameData;
 use sn_unity::{Bundle, BundleDirectory, ObjectInfo, PPtr, SerializedFile};
 
+pub use marmo::{BiomeSky, MarmoSkies, marmo_skies};
 pub use prefab::{Prefab, PrefabNode};
 pub use terrain::{
     BlendSettings, BlockSource, SurfaceLayer, TerrainMaterial, TerrainMaterials, TerrainTexture,

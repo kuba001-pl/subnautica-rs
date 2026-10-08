@@ -34,6 +34,10 @@ pub struct SkyState {
     pub fog_density: f32,
     /// `uSkyManager.GetMeanSkyColor()`, linear.
     pub mean_sky: Vec3,
+    /// `_UweLocalLightScalar` (`DayNightCycle.UpdateAtmosphere`): how bright
+    /// the light is, 0 (night) … 1, linear. Objects fade between their day
+    /// and night glow with it.
+    pub local_light: f32,
     /// For the sky dome (Unity coordinates, raw sRGB colours).
     pub dome: DomeInputs,
 }
@@ -161,6 +165,13 @@ fn color_offset(
     c * m.exposure
 }
 
+/// `DayNightCycle.GetLocalLightScalar` of the light's intensity and colour
+/// (as stored, sRGB), then `Mathf.GammaToLinearSpace`.
+fn local_light_scalar(intensity: f32, colour: Vec3) -> f32 {
+    let mean = (colour.x + colour.y + colour.z) / 3.0;
+    to_linear((intensity * mean * 1.2 - 0.15).clamp(0.0, 1.0))
+}
+
 pub fn state(m: &SkyManager, l: &SkyLight, timeline: f32) -> SkyState {
     let forward = light_direction(m, timeline);
     let water = -water_light_direction(m, timeline);
@@ -205,6 +216,7 @@ pub fn state(m: &SkyManager, l: &SkyLight, timeline: f32) -> SkyState {
         fog_color: linear(Vec3::new(f[0], f[1], f[2])),
         fog_density: m.sky_fog_density,
         mean_sky: linear(Vec3::new(mean[0], mean[1], mean[2])),
+        local_light: local_light_scalar(intensity, Vec3::new(c[0], c[1], c[2]) * (day + night)),
         dome: DomeInputs {
             sun_dir,
             day,

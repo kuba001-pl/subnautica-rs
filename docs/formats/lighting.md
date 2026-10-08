@@ -71,6 +71,21 @@ default (intensity 0.2, threshold 0.9, soft knee 0.55, radius 5.5, lens dirt
 light unit = 1.0) and tonemap per `--color-grading` (off by default;
 neutral/ACES use Bevy's nearest curves — **not exact**). Bloom: not yet.
 
+## Sun shadows — confirmed from the game's quality settings
+
+`QualitySettings` (globalgamemanagers, read with UnityPy), level "High" (the
+user's "Detail" option): soft shadows, resolution High, stable fit, 4
+cascades over 50 m split at 6.7 %, 20 % and 46.7 % (3.3, 10, 23.3, 50 m),
+near plane offset 2. Medium: 2 cascades over 35 m; Low: none. The sun
+`Light`: soft shadows, strength 1, bias 0.45, normal bias 0.4.
+
+**Ours (M8c6):** Bevy's cascaded shadow map with exactly these cascade
+bounds, 2048² per cascade, Gaussian filtering for the soft shadows (Bevy's
+bias defaults: **not** the game's values yet). Only the nearest level of
+detail (terrain and objects within ~100 m) casts, since the shadows end at
+50 m: this kept the frame time at 11 ms instead of 21 ms. The light shafts
+sample the same shadow map, one hardware comparison per step, as the game.
+
 ## Light shafts — confirmed from the class and compiled shader
 
 `WaterSunShaftsOnCamera` on the main camera (an image effect after the
@@ -87,15 +102,83 @@ differ: 0.05, 0.003). Per pixel, along the view ray through water only
   from the surface to the start point (with the colour cast) × intensity;
 - added to the image (bilinear from half resolution).
 
-**Ours (M8c5):** `sun_shafts.rs`/`.wgsl`, after the water surface, 0.37 ms.
-**Not yet:** the shadow map (no sun shadows yet: every sample is lit).
+**Ours (M8c5, M8c6):** `sun_shafts.rs`/`.wgsl`, after the water surface,
+with Bevy's view bindings for the shadow map (as Bevy's volumetric fog):
+1.9 ms (0.37 ms without shadows; 4.8 ms with the soft filter).
 
 ## How we render it (M8c3, first pass)
 
 Forward, in our terrain and object shaders, instead of Bevy's PBR lighting.
 The per-frame values (sun, ambient, the water at the **camera**, caustics
-frame and projection, Unity's flat ambient) are an 11-texel float texture every material binds;
+frame and projection, Unity's flat ambient) are a 12-texel float texture every material binds;
 its contents are rewritten on the GPU each frame. Shadows use Bevy's shadow
 map when the sun casts shadows (off for now). **Not done:** per-pixel water
-settings (the game's volume), shadows, object specular/gloss/emission maps
-(objects get no specular yet), point lights.
+settings (the game's volume), point lights. Objects: see § Objects.
+
+## Objects (MarmosetUBER) — confirmed from the compiled shader and classes
+
+Almost every world-object material uses the game's `MarmosetUBER` shader
+(1,537 of the 1,588 materials loaded around the lifepod; of the 2,746 UBER
+materials in the game, 2,715 have the `MARMO_SPECMAP` keyword, 1,092
+`MARMO_EMISSION`). Its deferred pass (D3D11 bytecode, disassembled once on
+the dev machine with Windows' `d3dcompiler_47.dll`; variant
+`MARMO_EMISSION MARMO_SPECMAP UNITY_HDR_ON`; constant-buffer offsets from
+the program's binding data) writes, per pixel (uv: mesh uv × each map's
+`_ST`):
+- **Albedo** = `_MainTex` × `_Color` × camera exposure (`_ExposureIBL.w`) ×
+  `g`, where `g = 1 + _EnableSimpleGlass (alpha − 1)`; then mixed towards
+  its grey by `_Gray` and offset by `_Brightness` (both only set by the
+  coral-bleaching script; 0 otherwise).
+- **Specular** = `saturate(1.25 − |n·v| _Fresnel)⁵ × _SpecInt × _SpecTex.rgb
+  × _SpecColor × exposure.w`. Gloss `a = _SpecTex.a`, `r = (1 − a)²`, mip
+  level `m = 8 − r − _Shininess (1 − r)`, power `p = 2^(8 − m)`; stored as
+  colour `× (p · 0.159155 + 0.31831) / 8` and gloss `p / 64`, which the
+  light pass turns back into the power `gloss × 128` (§ The G-buffer).
+- **Normal alpha** = `((1 − _Outdoors) + 2 (1 − _AffectedByDayNightCycle)) / 3`:
+  for skies not affected by the day/night cycle (caves, interiors) it is
+  ≥ 0.5, and the directional light pass then adds **neither sun nor
+  ambient** (confirmed in its bytecode: everything × `alpha < 0.5`).
+- **Emission** (light buffer): night factor `k = (1 −
+  _UweLocalLightScalar) × _AffectedByDayNightCycle`; glow `G =
+  lerp(_GlowStrength, _GlowStrengthNight, k)`, `E = lerp(_EmissionLM,
+  _EmissionLMNight, k)`; `_Illum.rgb × g × _GlowColor × G × exposure.w +
+  albedo × _Illum.a × g × E`, × (1 − `_UwePowerLoss`, 0 outdoors).
+  Plus the sky's specular cube along the reflected view direction (mip
+  `m`) × specular × `_ExposureIBL.y` × (1 − `min(k, _IBLreductionAtNight)`),
+  and, only when `_AffectedByDayNightCycle` is 0, the sky's 9-coefficient SH
+  at the normal (in the sky's frame, absolute value) × `_ExposureIBL.x` ×
+  (1 − that reduction) × albedo. **No** Unity ambient (unlike terrain).
+- `UWE_LIGHTMAP` (55 % of the materials) samples `_Lightmap` with the
+  second uv but only blends it with `_UniformOcclusion`, which `mset.Sky`
+  sets to 1: no visible effect. Alpha clip: discard below `_Cutoff`.
+
+`_UweLocalLightScalar` (`DayNightCycle`): `GammaToLinear(saturate(I ×
+mean(colour) × 1.2 − 0.15))` of the sun light (`uSkyLight`: intensity =
+exposure × (sun × day + moon × night) × direct fraction, 1 in the scene;
+colour as stored).
+
+**Which sky (confirmed from the classes):** the sky values (`_ExposureIBL
+= (master × diff, master × spec, master × sky × cam, cam)`, SH = stored
+coefficients × `SHEncoding.sEquationConstants`, `_AffectedByDayNightCycle`,
+`_Outdoors`, specular cube) come from an `mset.Sky`. Renderers listed by a
+`SkyApplier` (on most drawable prefabs: 1,658 of 3,201 world prefabs,
+e.g. 859 of 1,020 doodads) take, with `anchorSky` Auto, the sky of the
+biome at the object's position (`WaterBiomeManager.biomeSettings[].skyPrefab`;
+unknown biomes take the first entry's, safe shallows); others take the
+global sky, which outside the lifepod is `MarmoSkies.skySafeShallowsPrefab`.
+The biome comes from atmosphere volumes first, then the batch override and
+the biome map. 37 distinct skies for 145 biomes (read with our reader and
+UnityPy, equal): e.g. safe shallows exposure (1, 0.65, 0.17, 1), affected;
+grand reef master 3, diffuse 0, specular 0.38; safe-shallows caves master
+0.25, not affected. Only the explorable-wreck sky is rotated (−90° about y).
+
+**Ours (M8c7):** `object.wgsl` computes these G-buffer values and feeds
+them to our port of the light pass (skipped where the alpha says unlit),
+then adds the emission and SH terms. Each material is made once per sky
+it's used with; the sky is picked per placed object from our biome lookup
+(batch override, then map). **Not done:** the specular cube reflection;
+atmosphere volumes in the biome lookup (so cave skies are rarely picked);
+anchors other than Auto (taken as the global sky); `_UwePowerLoss` (bases);
+the non-`MARMO_SPECMAP` variant is assumed to use a white map
+(**hypothesis**); the SH rotation by the sky's frame assumes `_SkyMatrix ×
+n` (**hypothesis**, only matters for the wreck sky).

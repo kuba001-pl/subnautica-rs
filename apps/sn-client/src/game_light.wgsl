@@ -27,6 +27,7 @@ const P_CAUSTICS = 7;     // scale, amount.x, amount.y, frame
 const P_LIGHT_X = 8;      // world → light matrix rows (Bevy world → light uv)
 const P_LIGHT_Y = 9;
 const P_UNITY_AMBIENT = 10; // Unity's flat ambient (our units), unused
+const P_OBJECTS = 11;     // _UweLocalLightScalar (0 night … 1 day)
 
 fn param(params: texture_2d<f32>, i: i32) -> vec4<f32> {
     return textureLoad(params, vec2<i32>(i, 0), 0);
@@ -39,6 +40,9 @@ struct GameSurface {
     albedo: vec3<f32>,
     specular: vec3<f32>,
     gloss: f32,
+    // 1 where the G-buffer pass adds Unity's own ambient (terrain), 0 where
+    // it doesn't (MarmosetUBER objects, which add their sky's instead).
+    unity_ambient: f32,
 }
 
 // The lit colour (without emission) of a surface, for the first directional
@@ -117,8 +121,13 @@ fn game_lighting(
     let ambient = mix(bottom.xyz, top.xyz, hemi) * top.w * direct + ambient_extra;
     // Unity's own ambient, added by the G-buffer pass (flat colour, the same
     // everywhere, also under water).
-    let unity_ambient = param(params, P_UNITY_AMBIENT).xyz;
+    let unity_ambient = param(params, P_UNITY_AMBIENT).xyz * s.unity_ambient;
     return s.albedo * (ambient + diffuse + unity_ambient) + s.specular * diffuse * spec_amount;
+}
+
+// `_UweLocalLightScalar`: 0 at night … 1 by day.
+fn local_light_scalar(params: texture_2d<f32>) -> f32 {
+    return param(params, P_OBJECTS).x;
 }
 
 // The caustics frame of the game's clock (25 frames per second).

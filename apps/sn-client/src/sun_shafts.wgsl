@@ -6,7 +6,9 @@
 // (Bevy); the game works in view space (same result).
 
 #import bevy_core_pipeline::fullscreen_vertex_shader::FullscreenVertexOutput
-#import bevy_render::view::View
+#import bevy_pbr::mesh_view_bindings::{view, lights}
+#import bevy_pbr::mesh_view_types::DIRECTIONAL_LIGHT_FLAGS_SHADOWS_ENABLED_BIT
+#import bevy_pbr::shadows::fetch_directional_shadow
 #import sn_client::water_common::WaterFog
 
 // Must match `SunShaftsUniform` in sun_shafts.rs.
@@ -25,18 +27,18 @@ struct SunShafts {
     colour_cast: vec4<f32>,
 }
 
-@group(0) @binding(0) var<uniform> view: View;
-@group(0) @binding(1) var<uniform> fog: WaterFog;
-@group(0) @binding(2) var<uniform> shafts: SunShafts;
+// Group 0: Bevy's view bindings (view, lights, shadow maps).
+@group(1) @binding(0) var<uniform> fog: WaterFog;
+@group(1) @binding(1) var<uniform> shafts: SunShafts;
 #ifdef MULTISAMPLED
-@group(0) @binding(3) var depth: texture_depth_multisampled_2d;
+@group(1) @binding(2) var depth: texture_depth_multisampled_2d;
 #else
-@group(0) @binding(3) var depth: texture_depth_2d;
+@group(1) @binding(2) var depth: texture_depth_2d;
 #endif
-@group(0) @binding(4) var caustics: texture_2d_array<f32>;
-@group(0) @binding(5) var caustics_sampler: sampler;
-@group(0) @binding(6) var shafts_texture: texture_2d<f32>;
-@group(0) @binding(7) var shafts_sampler: sampler;
+@group(1) @binding(3) var caustics: texture_2d_array<f32>;
+@group(1) @binding(4) var caustics_sampler: sampler;
+@group(1) @binding(5) var shafts_texture: texture_2d<f32>;
+@group(1) @binding(6) var shafts_sampler: sampler;
 
 fn light_space(p: vec4<f32>) -> vec3<f32> {
     return vec3<f32>(dot(shafts.light_x, p), dot(shafts.light_y, p), dot(shafts.light_z, p));
@@ -87,11 +89,19 @@ fn trace(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
     let dir = light_space(vec4<f32>(v, 0.0));
     let duv = dir.xy * step * scale;
     var sum = vec3<f32>(0.0);
-    // (The game also multiplies each sample by the sun's shadow map; no
-    // sun shadows here yet.)
+    // Each sample is lit only where the sun's shadow map sees it.
+    let shadows = lights.n_directional_lights > 0u
+        && (lights.directional_lights[0].flags & DIRECTIONAL_LIGHT_FLAGS_SHADOWS_ENABLED_BIT) != 0u;
+    let to_sun = normalize(fog.sun.xyz);
     for (var t = t_start; t < t_end; t += step) {
+        var lit = 1.0;
+        if shadows {
+            let p = vec4<f32>(camera + v * t, 1.0);
+            let view_z = (view.view_from_world * p).z;
+            lit = fetch_directional_shadow(0u, p, to_sun, view_z, in.position.xy);
+        }
         let c = textureSampleLevel(caustics, caustics_sampler, uv, frame, 0.0).rgb;
-        sum += c * exp(-sigma_t * t);
+        sum += c * lit * exp(-sigma_t * t);
         uv += duv;
     }
 

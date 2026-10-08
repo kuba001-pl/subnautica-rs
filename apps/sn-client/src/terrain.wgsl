@@ -213,6 +213,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     surface.albedo = pbr_input.material.base_color.rgb;
     surface.specular = spec;
     surface.gloss = gloss;
+    surface.unity_ambient = 1.0;
     let lit = game_lighting(surface, in.position, light_params, caustics, caustics_sampler)
         + pbr_input.material.emissive.rgb;
     var out: FragmentOutput;

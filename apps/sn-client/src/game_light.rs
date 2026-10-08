@@ -25,7 +25,7 @@ use crate::water::{WaterFog, WaterWorld};
 use crate::water_surface::WaterSurfaceWorld;
 
 /// Texels in the parameter texture; must match `game_light.wgsl`.
-const PARAMS: usize = 11;
+const PARAMS: usize = 12;
 
 /// The scene's sun `Light`: cookie size 10 m (read once with UnityPy on the
 /// dev machine; `docs/formats/lighting.md`).
@@ -214,6 +214,7 @@ fn update_params(
         row(Vec3::X),
         row(Vec3::Y),
         (sky.unity_ambient * unit).extend(0.0).to_array(),
+        [sky.local_light, 0.0, 0.0, 0.0],
     ];
 }
 

@@ -4,11 +4,12 @@
 
 use sn_unity::{
     AssetBundleManifest, Catalog, GameObject, Location, LodGroup, Mesh, MeshFilter, MeshGeometry,
-    MeshRenderer, TransformNode,
+    MeshRenderer, SkyApplier, TransformNode,
 };
 use sn_world::Transform;
 
-use crate::{Assets, ObjectRef, Result};
+use crate::terrain::script_class;
+use crate::{Assets, FileRef, ObjectRef, Result};
 
 const GAME_OBJECT: i32 = 1;
 const TRANSFORM: i32 = 4;
@@ -20,6 +21,7 @@ const MESH: i32 = 43;
 const ASSET_BUNDLE: i32 = 142;
 const LOD_GROUP: i32 = 205;
 const SKINNED_MESH_RENDERER: i32 = 137;
+const MONO_BEHAVIOUR: i32 = 114;
 
 /// Hierarchies deeper than this are treated as broken.
 const MAX_DEPTH: usize = 64;
@@ -45,6 +47,9 @@ pub struct PrefabNode {
     pub skinned: bool,
     /// Level in its LOD group (0 = most detailed); `None` if not in one.
     pub lod: Option<usize>,
+    /// The `anchorSky` of a `SkyApplier` listing this node's renderer (its
+    /// sky then comes from the biome at the object); `None`: the global sky.
+    pub sky_applier: Option<i32>,
 }
 
 pub struct Prefab {
@@ -166,6 +171,24 @@ impl Assets<'_> {
                 }
             }
         }
+        // Sky appliers: mark the nodes of the renderers they list.
+        for (file_of, applier) in std::mem::take(&mut prefab.sky_appliers) {
+            for renderer in &applier.renderers {
+                let Some(r) = self.resolve(&file_of, *renderer)? else {
+                    continue;
+                };
+                let (_, data) = r.data()?;
+                let Ok(mr) = MeshRenderer::parse(data, r.file.file().big_endian) else {
+                    continue;
+                };
+                let Some(go) = self.resolve(&r.file, mr.game_object)? else {
+                    continue;
+                };
+                if let Some(node) = prefab.nodes.iter_mut().find(|n| n.key == go.key()) {
+                    node.sky_applier = Some(applier.anchor_sky);
+                }
+            }
+        }
         Ok(Prefab {
             key: prefab.key,
             nodes: prefab
@@ -183,6 +206,7 @@ impl Assets<'_> {
                     renderer_enabled: n.renderer_enabled,
                     skinned: n.skinned,
                     lod: n.lod,
+                    sky_applier: n.sky_applier,
                 })
                 .collect(),
         })
@@ -235,6 +259,11 @@ impl Assets<'_> {
                     }
                 }
                 SKINNED_MESH_RENDERER => skinned = true,
+                MONO_BEHAVIOUR if script_class(self, &c).as_deref() == Some("SkyApplier") => {
+                    let a = SkyApplier::parse(data, big_endian)
+                        .map_err(|e| format!("SkyApplier {}: {e}", c.path_id))?;
+                    prefab.sky_appliers.push((c.file.clone(), a));
+                }
                 LOD_GROUP => {
                     let g = LodGroup::parse(data, big_endian)
                         .map_err(|e| format!("LODGroup {}: {e}", c.path_id))?;
@@ -271,6 +300,7 @@ impl Assets<'_> {
             renderer_enabled,
             skinned,
             lod: None,
+            sky_applier: None,
         });
         for child in &transform.children {
             let Some(t) = self.resolve(file, *child)? else {
@@ -336,11 +366,14 @@ struct BuildingNode {
     renderer_enabled: bool,
     skinned: bool,
     lod: Option<usize>,
+    sky_applier: Option<i32>,
 }
 
 struct Building {
     key: String,
     nodes: Vec<BuildingNode>,
+    /// `SkyApplier`s found, with the file their references are relative to.
+    sky_appliers: Vec<(FileRef, SkyApplier)>,
 }
 
 impl Building {
@@ -348,6 +381,7 @@ impl Building {
         Building {
             key: key.to_string(),
             nodes: Vec::new(),
+            sky_appliers: Vec::new(),
         }
     }
 }
