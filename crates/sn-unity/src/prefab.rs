@@ -155,6 +155,20 @@ impl LodGroup {
     }
 }
 
+/// `ResourceManager` (class 147, in `globalgamemanagers`): the paths
+/// `Resources.Load` accepts (lower case, e.g. `data/watercaustics00`) and
+/// their objects. A path can appear more than once (sub-assets).
+pub fn parse_resource_container(data: &[u8], big_endian: bool) -> Result<Vec<(String, PPtr)>> {
+    let mut r = Reader::new(data, big_endian);
+    let n = r.count(16)?;
+    let mut container = Vec::with_capacity(n);
+    for _ in 0..n {
+        let path = r.aligned_string()?;
+        container.push((path, PPtr::read(&mut r)?));
+    }
+    Ok(container)
+}
+
 /// `AssetBundle` (class 142): which objects each asset path names.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AssetBundleManifest {

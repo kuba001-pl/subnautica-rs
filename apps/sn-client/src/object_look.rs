@@ -1,5 +1,6 @@
 //! Materials for world objects: Bevy's standard material with the game's
-//! albedo, tint and alpha, plus its normal maps through `object.wgsl`.
+//! albedo, tint and alpha, plus its normal maps and lighting through
+//! `object.wgsl`.
 
 use bevy::pbr::{ExtendedMaterial, MaterialExtension};
 use bevy::prelude::*;
@@ -23,6 +24,12 @@ pub struct ObjectExtension {
     #[texture(101)]
     #[sampler(102)]
     pub normal_map: Handle<Image>,
+    /// The game's lighting values and caustics (`game_light.rs`).
+    #[texture(120, sample_type = "float", filterable = false)]
+    pub light_params: Handle<Image>,
+    #[texture(121, dimension = "2d_array")]
+    #[sampler(122)]
+    pub caustics: Handle<Image>,
 }
 
 impl MaterialExtension for ObjectExtension {

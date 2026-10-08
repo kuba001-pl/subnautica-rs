@@ -2,6 +2,7 @@
 //! camera from the player's install (with levels of detail) and lets you fly
 //! around it.
 
+mod game_light;
 mod object_look;
 mod objects;
 mod sky;
@@ -10,6 +11,7 @@ mod terrain;
 mod terrain_look;
 mod textures;
 mod water;
+mod water_fft;
 mod water_surface;
 
 use std::path::PathBuf;
@@ -26,13 +28,16 @@ use bevy::render::view::screenshot::{Screenshot, ScreenshotCaptured, save_to_dis
 use bevy::window::PresentMode;
 use sn_install::GameData;
 
+use crate::game_light::{GameLightPlugin, PendingCaustics};
 use crate::object_look::ObjectLookPlugin;
 use crate::objects::ObjectStreamer;
 use crate::sky_dome::{PendingSky, SkyDomePlugin, SkyWorld};
 use crate::terrain::{BlockSettings, LodRanges, TerrainStreamer};
 use crate::terrain_look::{PendingTerrainLook, SUN_ILLUMINANCE, TerrainLookPlugin};
 use crate::water::{WaterData, WaterFog, WaterFogOff, WaterFogPlugin, WaterWorld};
-use crate::water_surface::{PendingWaterSurface, WaterSurfacePlugin, WaterSurfaceUniform};
+use crate::water_surface::{
+    PendingWaterSurface, WaterQuality, WaterSurfacePlugin, WaterSurfaceUniform,
+};
 
 const USAGE: &str = "\
 Usage: sn-client [--game-dir <PATH>] [--start <X> <Y> <Z>] [--look <X> <Y> <Z>]
@@ -46,9 +51,15 @@ Usage: sn-client [--game-dir <PATH>] [--start <X> <Y> <Z>] [--look <X> <Y> <Z>]
   --debug-colours  false colours per terrain type instead of the game's
                  terrain materials (also turns world objects off)
   --no-objects   terrain only, no world objects (coral, rocks, …)
-  --fog-unit     scale on the water fog's light (calibration; default 1)
+  --fog-unit     scale on the game's light values (calibration; default 1:
+                 one game light unit = 1.0 in the image, as in Unity)
+  --color-grading  off | neutral | aces: the game's option of that name
+                 (default off, the game's default; neutral and aces use
+                 Bevy's nearest tonemappers for now)
   --no-water-fog HDR camera without the water fog (for comparisons)
   --no-water-surface  no water surface (for comparisons)
+  --water-quality  medium | high: the game's option of that name (default
+                 high: simulated waves; medium: the 64 baked frames)
   --gpu-timings  with --benchmark/--flythrough: log GPU time per render pass
   --time         game clock in hours for the sun and sky (default 9.6, i.e.
                  09:36, when a new game starts)
@@ -76,8 +87,10 @@ struct Args {
     debug_colours: bool,
     no_objects: bool,
     fog_unit: f32,
+    color_grading: ColorGrading,
     no_water_fog: bool,
     no_water_surface: bool,
+    water_quality: WaterQuality,
     gpu_timings: bool,
     /// Game clock, hours.
     time: f32,
@@ -95,8 +108,10 @@ fn parse_args() -> Result<Args, String> {
         debug_colours: false,
         no_objects: false,
         fog_unit: 1.0,
+        color_grading: ColorGrading::Off,
         no_water_fog: false,
         no_water_surface: false,
+        water_quality: WaterQuality::High,
         gpu_timings: false,
         time: sky::NEW_GAME_HOURS,
     };
@@ -129,9 +144,24 @@ fn parse_args() -> Result<Args, String> {
             "--no-objects" => args.no_objects = true,
             "--no-water-fog" => args.no_water_fog = true,
             "--no-water-surface" => args.no_water_surface = true,
+            "--water-quality" => {
+                args.water_quality = match it.next().map(String::as_str) {
+                    Some("medium") => WaterQuality::Medium,
+                    Some("high") => WaterQuality::High,
+                    _ => return Err("--water-quality takes medium or high".into()),
+                }
+            }
             "--gpu-timings" => args.gpu_timings = true,
             "--time" => args.time = number(it.next(), "--time")?,
             "--fog-unit" => args.fog_unit = number(it.next(), "--fog-unit")?,
+            "--color-grading" => {
+                args.color_grading = match it.next().map(String::as_str) {
+                    Some("off") => ColorGrading::Off,
+                    Some("neutral") => ColorGrading::Neutral,
+                    Some("aces") => ColorGrading::Aces,
+                    _ => return Err("--color-grading takes off, neutral or aces".into()),
+                }
+            }
             "-h" | "--help" => return Err(USAGE.into()),
             other => return Err(format!("unknown argument {other:?}\n\n{USAGE}")),
         }
@@ -149,6 +179,7 @@ struct GameLook {
     sky: (sn_unity::SkyManager, sn_unity::SkyLight),
     surface: sn_assets::WaterSurfaceData,
     sky_textures: sn_assets::SkyTextures,
+    caustics: Vec<sn_assets::TerrainTexture>,
 }
 
 /// Reads the game's terrain materials and textures, water and sky (about a
@@ -162,6 +193,8 @@ fn load_terrain_look(game_dir: Option<PathBuf>) -> Result<GameLook, String> {
     let sky = sn_assets::sky(&assets)?;
     let surface = sn_assets::water_surface(&assets)?;
     let sky_textures = sn_assets::sky_textures(&assets, &sky.0)?;
+    let caustics =
+        sn_assets::water_caustics(&assets, surface.surface.num_caustics_frames.max(0) as usize)?;
     for w in &materials.warnings {
         eprintln!("warning: {w}");
     }
@@ -177,6 +210,7 @@ fn load_terrain_look(game_dir: Option<PathBuf>) -> Result<GameLook, String> {
         sky,
         surface,
         sky_textures,
+        caustics,
     })
 }
 
@@ -244,8 +278,8 @@ fn main() -> AppExit {
         }
     };
     let ranges = lod_ranges(args.view);
-    let (look, blocks, water, sky_data, surface, sky_textures) = if args.debug_colours {
-        (None, None, None, None, None, None)
+    let (look, blocks, water, sky_data, surface, sky_textures, caustics) = if args.debug_colours {
+        (None, None, None, None, None, None, None)
     } else {
         match load_terrain_look(args.game_dir.clone()) {
             Ok(GameLook {
@@ -254,6 +288,7 @@ fn main() -> AppExit {
                 sky: sky_data,
                 surface,
                 sky_textures,
+                caustics,
             }) => {
                 let mut blocks = BlockSettings {
                     layer: [0; 256],
@@ -270,6 +305,7 @@ fn main() -> AppExit {
                     Some(sky_data),
                     Some(surface),
                     Some(sky_textures),
+                    Some(caustics),
                 )
             }
             Err(message) => {
@@ -314,8 +350,10 @@ fn main() -> AppExit {
         WaterFogPlugin,
         WaterSurfacePlugin,
         SkyDomePlugin,
+        GameLightPlugin,
     ))
     .insert_resource(PendingTerrainLook(look))
+    .insert_resource(PendingCaustics(caustics))
     .insert_resource(ClearColor(WATER_COLOUR))
     .insert_resource(GlobalAmbientLight {
         color: Color::WHITE,
@@ -364,13 +402,12 @@ fn main() -> AppExit {
     }
     let underwater = water.is_some();
     if let Some(water) = water {
-        let exposure = bevy::camera::Exposure::default().exposure();
-        app.insert_resource(WaterWorld::new(
-            water,
-            water::unit(SUN_ILLUMINANCE, exposure) * args.fog_unit,
-        ));
+        // Our image holds the game's values: one game light unit is 1.0,
+        // as in Unity's HDR buffer.
+        app.insert_resource(WaterWorld::new(water, args.fog_unit));
     }
     let surface = surface.filter(|_| !args.no_water_surface);
+    app.insert_resource(args.color_grading);
     app.insert_resource(Underwater {
         on: underwater,
         surface: surface.is_some(),
@@ -379,6 +416,7 @@ fn main() -> AppExit {
         app.insert_resource(WaterFogOff);
     }
     app.insert_resource(PendingWaterSurface(surface));
+    app.insert_resource(args.water_quality);
     if !args.debug_colours && !args.no_objects {
         match GameData::locate(args.game_dir.clone()) {
             Ok(game) => {
@@ -405,6 +443,28 @@ fn main() -> AppExit {
     app.run()
 }
 
+/// The game's "Color grading" option (Unity's Post Processing Stack v1,
+/// `UwePostProcessingManager`): off (the default) writes the HDR values
+/// clamped to 0…1; neutral and ACES tonemap (here: Bevy's nearest
+/// tonemappers, **not** the game's exact curves yet).
+#[derive(Resource, Clone, Copy, Debug, PartialEq, Eq)]
+enum ColorGrading {
+    Off,
+    Neutral,
+    Aces,
+}
+
+impl ColorGrading {
+    fn tonemapping(self) -> bevy::core_pipeline::tonemapping::Tonemapping {
+        use bevy::core_pipeline::tonemapping::Tonemapping;
+        match self {
+            ColorGrading::Off => Tonemapping::None,
+            ColorGrading::Neutral => Tonemapping::Reinhard,
+            ColorGrading::Aces => Tonemapping::AcesFitted,
+        }
+    }
+}
+
 const WATER_COLOUR: Color = Color::srgb(0.05, 0.25, 0.35);
 
 #[derive(Resource)]
@@ -428,6 +488,7 @@ fn setup(
     underwater: Res<Underwater>,
     sky: Option<Res<sky::SkyState>>,
     measuring: Option<Res<Measurement>>,
+    grading: Res<ColorGrading>,
 ) {
     let mut camera = commands.spawn((
         Camera3d::default(),
@@ -453,6 +514,7 @@ fn setup(
             },
             bevy::camera::Hdr,
             WaterFog::default(),
+            grading.tonemapping(),
         ));
         if underwater.surface {
             // The surface pass starts from a copy of the fogged image.

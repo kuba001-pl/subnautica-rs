@@ -270,6 +270,28 @@ negative; shore and sub-surface foam grow where it is below the foam
 distance. With no proxies it is 1010 everywhere: no cut-outs, no shore
 foam. **Not read yet** (our surface uses the cleared value).
 
+## High quality waves — confirmed from the class and compiled shaders
+
+With "Water quality" High the waves are simulated (`WaterDisplacementGenerator`,
+the user's setting): the same design as NVIDIA's DirectX 11 ocean sample.
+Scene values: patch 2000 cm, choppy scale 1.3, minimum wave size 0.01 cm,
+Phillips amplitude 0.35 (× 10⁻⁷), wind 600 cm/s at 45°, wind dependency
+0.07; gravity 981 cm/s².
+- Once: for a 513 × 513 grid of wave vectors `k = (j − 256, i − 256) × 2π /
+  patch`, `h0 = √Phillips(k) × (gauss, gauss) / √2` (zero where `k.x` or
+  `k.y` is 0), `ω = √(g |k|)`; rows of 516. `Phillips = A e^(−1/(L² k²))
+  (k·w)² / k⁶`, `L = v² / g`, × (1 − dependency) against the wind, ×
+  `e^(−k² min²)`. The random numbers come from Unity's unseeded generator:
+  the game's waves differ on every run.
+- Every frame (`UpdateSpectrumCS`, 16 × 16 threads): `Ht = (h0(k) +
+  h0(−k))·(cos ωt …)` (i.e. `h0 e^(iωt) + conj(h0(−k)) e^(−iωt)`), and
+  `Dx = (k̂.x Ht.y, −k̂.x Ht.x)`, `Dy` likewise with `k̂.y`.
+- A 512² FFT of the three (`FFT512x512`: six radix-8 passes, twiddle phase
+  −2π / 512², no scaling).
+- The displacement map (cm): `(Dx × choppy, Ht, Dy × choppy)`, real parts,
+  × `(−1)^(x+y)`. Normals and foam as for Medium; the foam multiplier (5) is
+  for the baked frames only.
+
 ## How we render the surface (M8c1)
 
 `apps/sn-client/src/water_surface.rs`, `water_sim.wgsl`,
@@ -281,4 +303,7 @@ follows the coarse one, no cracks) and a flat ring to 40 km, generated in
 the vertex shader. The surface is drawn after the fog pass on a copy of the
 fogged image, with its own depth buffer; the scene's depth is tested in the
 shader. Without a sky dome yet (M8c2) the sky map is the mean sky colour;
-the clip map is not read (see above).
+the clip map is not read (see above). High quality (the default,
+`--water-quality`): `water_fft.rs` builds the initial spectrum (fixed seed),
+`water_fft.wgsl` updates it, runs our own radix-2 FFT (rows, then columns)
+and packs the displacement map, 0.12 ms on an RTX 3080.

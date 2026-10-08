@@ -90,6 +90,21 @@ impl AnimationCurve {
     }
 }
 
+/// `WaterDisplacementGenerator`'s wave settings (centimetres, seconds).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct FftWaves {
+    pub choppy_scale: f32,
+    /// Waves shorter than this (cm) are damped.
+    pub min_wave_size: f32,
+    pub phillips_amplitude: f32,
+    /// Degrees.
+    pub wind_angle: f32,
+    /// cm/s.
+    pub wind_speed: f32,
+    /// How much waves against the wind are kept (0 … 1).
+    pub wind_dependency: f32,
+}
+
 /// The fields of `WaterSurface` that shape the surface's look. Colours are
 /// as stored (sRGB); lengths in centimetres where the game uses them.
 #[derive(Clone, Debug, PartialEq)]
@@ -103,12 +118,16 @@ pub struct WaterSurface {
     pub use_under_water_brightness_curve: bool,
     /// Size of one wave tile (cm).
     pub patch_length: f32,
+    /// The "High" quality waves (`WaterDisplacementGenerator`).
+    pub waves: FftWaves,
     pub refraction_index: f32,
     pub under_water_refraction_index: f32,
     pub under_water_refraction_depth_scale: f32,
     pub water_offset: f32,
     /// Seconds for the 64 baked wave frames.
     pub sequence_length: f32,
+    /// World size of one caustics tile (`WaterCausticsGenerator`).
+    pub caustics_size: f32,
     pub num_caustics_frames: i32,
     pub caustics_frames_per_second: i32,
     pub cubic_interpolation: bool,
@@ -160,12 +179,20 @@ impl WaterSurface {
         PPtr::read(&mut r)?;
         PPtr::read(&mut r)?;
         let patch_length = r.f32()?;
-        r.bytes(6 * 4)?;
+        let waves = FftWaves {
+            choppy_scale: r.f32()?,
+            min_wave_size: r.f32()?,
+            phillips_amplitude: r.f32()?,
+            wind_angle: r.f32()?,
+            wind_speed: r.f32()?,
+            wind_dependency: r.f32()?,
+        };
         // WaterCausticsGenerator: two shaders, size, texture size, floor
         // depth, refraction index, colour dispersion, texture.
         PPtr::read(&mut r)?;
         PPtr::read(&mut r)?;
-        r.bytes(5 * 4)?;
+        let caustics_size = r.f32()?;
+        r.bytes(4 * 4)?;
         PPtr::read(&mut r)?;
         let _rebuild = r.bool_aligned()?;
         let refraction_index = r.f32()?;
@@ -225,11 +252,13 @@ impl WaterSurface {
             under_water_brightness_curve,
             use_under_water_brightness_curve,
             patch_length,
+            waves,
             refraction_index,
             under_water_refraction_index,
             under_water_refraction_depth_scale,
             water_offset,
             sequence_length,
+            caustics_size,
             num_caustics_frames,
             caustics_frames_per_second,
             cubic_interpolation,

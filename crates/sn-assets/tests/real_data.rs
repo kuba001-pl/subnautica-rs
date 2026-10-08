@@ -289,6 +289,20 @@ fn water_surface_values() {
         (s.num_caustics_frames, s.caustics_frames_per_second),
         (64, 25)
     );
+    assert_eq!(s.caustics_size, 2.5);
+    let waves = &s.waves;
+    assert_eq!(
+        (waves.wind_angle, waves.wind_speed, waves.wind_dependency),
+        (45.0, 600.0, 0.07)
+    );
+    assert_eq!(
+        (
+            waves.choppy_scale,
+            waves.phillips_amplitude,
+            waves.min_wave_size
+        ),
+        (1.3, 0.35, 0.01)
+    );
     // 64 frames, in order, 256² RGBA32, stored linear; foam textures sRGB.
     assert_eq!(w.frames.len(), 64);
     for (i, f) in w.frames.iter().enumerate() {
@@ -299,6 +313,23 @@ fn water_surface_values() {
     }
     assert_eq!(w.foam.texture.name, "WaterFoam");
     assert_eq!(w.foam_mask.texture.name, "FoamBubbles");
+    let caustics = sn_assets::water_caustics(&assets, s.num_caustics_frames as usize).unwrap();
+    let c = &caustics[0].texture;
+    eprintln!(
+        "caustics: {} frames, {} {}x{} {:?} mips {} wrap {:?} colour space {}",
+        caustics.len(),
+        c.name,
+        c.width,
+        c.height,
+        c.texture_format(),
+        c.mip_count,
+        c.wrap,
+        c.color_space
+    );
+    for (i, f) in caustics.iter().enumerate() {
+        assert_eq!(f.texture.name, format!("WaterCaustics{i:02}"));
+        assert_eq!((f.texture.width, f.texture.height), (c.width, c.height));
+    }
     assert_eq!(
         (w.foam.texture.width, w.foam_mask.texture.width),
         (1024, 512)

@@ -25,6 +25,11 @@ pub struct SkyState {
     /// Sun colour × intensity.
     pub sun: Vec3,
     pub top_ambient: Vec3,
+    /// `_UweBottomAmbientColor`: the ground colour gradient, as the top.
+    pub bottom_ambient: Vec3,
+    /// Unity's own ambient (`RenderSettings.ambientSkyColor`, flat mode):
+    /// `uSkyLight.CurrentSkyColor`, linear, without the ambient factor.
+    pub unity_ambient: Vec3,
     pub fog_color: Vec3,
     pub fog_density: f32,
     /// `uSkyManager.GetMeanSkyColor()`, linear.
@@ -44,8 +49,8 @@ pub struct DomeInputs {
     pub night: f32,
     /// `uSkyLight.CurrentLightColor` (sun colour gradient), sRGB.
     pub light_colour: Vec3,
-    /// `uSkyLight.CurrentSkyColor` (sky gradient with its colour offset),
-    /// sRGB, before exposure.
+    /// `uSkyLight.CurrentSkyColor` (sky gradient with its colour offset and
+    /// the exposure), sRGB.
     pub sky_colour: Vec3,
 }
 
@@ -79,8 +84,9 @@ pub fn linear(c: Vec3) -> Vec3 {
     Vec3::new(to_linear(c.x), to_linear(c.y), to_linear(c.z))
 }
 
-/// The direction the sun's light travels, in Unity coordinates.
-fn light_direction(m: &SkyManager, timeline: f32) -> Vec3 {
+/// The directional light's rotation (uSkyManager.InitSunAndMoon), Unity
+/// coordinates.
+pub fn light_rotation(m: &SkyManager, timeline: f32) -> Quat {
     let t = timeline / 24.0;
     let angle = if timeline < 6.0 {
         let f = (t * 4.0).clamp(0.0, 1.0);
@@ -93,10 +99,14 @@ fn light_direction(m: &SkyManager, timeline: f32) -> Vec3 {
         -m.sun_max_angle + 2.0 * m.sun_max_angle * f
     };
     // Unity's Quaternion.Euler(x, y, z) = Ry · Rx · Rz.
-    let q = Quat::from_rotation_y(m.sun_direction.to_radians())
+    Quat::from_rotation_y(m.sun_direction.to_radians())
         * Quat::from_rotation_z(m.north_pole_offset.to_radians())
-        * Quat::from_rotation_x((angle + 90.0).to_radians());
-    q * Vec3::Z
+        * Quat::from_rotation_x((angle + 90.0).to_radians())
+}
+
+/// The direction the directional light travels, in Unity coordinates.
+fn light_direction(m: &SkyManager, timeline: f32) -> Vec3 {
+    light_rotation(m, timeline) * Vec3::Z
 }
 
 /// `uSkyManager.GetLightDirection()`: the direction of `sunEuler`, which
@@ -120,6 +130,37 @@ pub fn beta_r(m: &SkyManager) -> Vec3 {
     Vec3::from(w.map(|l| 1000.0 * num / (7.635e25 * l.powi(4) * 5.755))) * 1000.0
 }
 
+/// `uSkyLight.colorOffset`: a gradient colour shifted by the Rayleigh
+/// colour (towards its complement at sunset for the sky), the Rayleigh
+/// slider, then × exposure. Raw (sRGB) values.
+fn color_offset(
+    m: &SkyManager,
+    colour: [f32; 4],
+    offset: f32,
+    rayleigh_offset: f32,
+    ground: bool,
+    day: f32,
+    sunset: f32,
+) -> Vec3 {
+    let beta = beta_r(m);
+    let mut v = Vec3::new(beta.x / 5.81, beta.y / 13.57, beta.z / 33.13) * 0.5;
+    if !ground {
+        let flipped = (Vec3::ONE - v).abs();
+        v = flipped + (v - flipped) * sunset;
+    }
+    v = Vec3::splat(0.5) + (v - Vec3::splat(0.5)) * day;
+    let base = Vec3::new(colour[0], colour[1], colour[2]);
+    let mut c = base - Vec3::splat(offset) + (2.0 * offset) * v;
+    let slider = m.rayleigh_scattering;
+    if slider < 1.0 {
+        c *= slider;
+    } else {
+        let b = c / beta * 4.0;
+        c += (b - c) * ((slider - 1.0).max(0.0) / 4.0 * rayleigh_offset);
+    }
+    c * m.exposure
+}
+
 pub fn state(m: &SkyManager, l: &SkyLight, timeline: f32) -> SkyState {
     let forward = light_direction(m, timeline);
     let water = -water_light_direction(m, timeline);
@@ -137,26 +178,19 @@ pub fn state(m: &SkyManager, l: &SkyLight, timeline: f32) -> SkyState {
     let c = l.light_color.evaluate(t01);
     let sun = linear(Vec3::new(c[0], c[1], c[2]) * (day + night)) * intensity;
 
-    // `uSkyLight.colorOffset` (sky colour, not ground).
-    let beta = beta_r(m);
-    let mut v = Vec3::new(beta.x / 5.81, beta.y / 13.57, beta.z / 33.13) * 0.5;
-    let flipped = (Vec3::ONE - v).abs();
-    v = flipped + (v - flipped) * sunset;
-    v = Vec3::splat(0.5) + (v - Vec3::splat(0.5)) * day;
-    let s = l.sky_color.evaluate(t01);
-    let (offset, rayleigh_offset) = (0.15, 0.7);
-    let base = Vec3::new(s[0], s[1], s[2]);
-    let mut sky = base - Vec3::splat(offset) + (2.0 * offset) * v;
-    let slider = m.rayleigh_scattering;
-    if slider < 1.0 {
-        sky *= slider;
-    } else {
-        let b = sky / beta * 4.0;
-        sky += (b - sky) * ((slider - 1.0).max(0.0) / 4.0 * rayleigh_offset);
-    }
-    let sky_colour = sky;
-    let sky = sky * m.exposure;
+    // `uSkyLight.CurrentSkyColor` / `CurrentGroundColor` (with exposure).
+    let sky = color_offset(m, l.sky_color.evaluate(t01), 0.15, 0.7, false, day, sunset);
+    let ground = color_offset(
+        m,
+        l.ground_color.evaluate(t01),
+        0.25,
+        0.85,
+        true,
+        day,
+        sunset,
+    );
     let top_ambient = linear(sky) * l.ambient_light;
+    let bottom_ambient = linear(ground) * l.ambient_light;
 
     let f = m.sky_fog_color.evaluate(t01);
     let mean = m.mean_sky_color.evaluate(t01);
@@ -166,6 +200,8 @@ pub fn state(m: &SkyManager, l: &SkyLight, timeline: f32) -> SkyState {
         to_sun_water: Vec3::new(water.x, water.y, -water.z),
         sun,
         top_ambient,
+        bottom_ambient,
+        unity_ambient: linear(sky),
         fog_color: linear(Vec3::new(f[0], f[1], f[2])),
         fog_density: m.sky_fog_density,
         mean_sky: linear(Vec3::new(mean[0], mean[1], mean[2])),
@@ -175,7 +211,7 @@ pub fn state(m: &SkyManager, l: &SkyLight, timeline: f32) -> SkyState {
             sunset,
             night,
             light_colour: Vec3::new(c[0], c[1], c[2]),
-            sky_colour,
+            sky_colour: sky,
         },
     }
 }

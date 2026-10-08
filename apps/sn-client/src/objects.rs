@@ -25,6 +25,7 @@ use sn_install::GameData;
 use sn_unity::{Catalog, Material};
 use sn_world::{BatchCoord, Transform as Placement};
 
+use crate::game_light::GameLightImages;
 use crate::object_look::{ObjectExtension, ObjectMaterial, ObjectParams};
 use crate::terrain::TerrainStreamer;
 use crate::textures::{linear, to_image};
@@ -576,6 +577,7 @@ pub fn stream_objects(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ObjectMaterial>>,
     mut images: ResMut<Assets<Image>>,
+    light: Res<GameLightImages>,
     mut exit: MessageWriter<AppExit>,
 ) {
     let streamer = &mut *streamer;
@@ -641,6 +643,8 @@ pub fn stream_objects(
                             has_normal: u32::from(normal.is_some()),
                         },
                         normal_map: normal.unwrap_or_else(|| flat.clone()),
+                        light_params: light.params.clone(),
+                        caustics: light.caustics.clone(),
                     },
                 });
                 streamer.materials.insert(id, handle);

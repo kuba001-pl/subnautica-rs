@@ -1,7 +1,8 @@
-// World-object shader: Bevy's standard PBR material (albedo, tint, alpha),
-// plus the game's normal maps, which keep X in alpha and Y in green
-// ("DXT5nm") and so can't use Bevy's own normal mapping. Written for
-// subnautica-rs.
+// World-object shader: Bevy's standard material inputs (albedo, tint,
+// alpha), the game's normal maps, which keep X in alpha and Y in green
+// ("DXT5nm") and so can't use Bevy's own normal mapping, and the game's
+// lighting (game_light.wgsl; specular, gloss and emission maps not yet).
+// Written for subnautica-rs.
 
 #import bevy_pbr::{
     pbr_fragment::pbr_input_from_standard_material,
@@ -15,10 +16,8 @@
     pbr_deferred_functions::deferred_output,
 }
 #else
-#import bevy_pbr::{
-    forward_io::{VertexOutput, FragmentOutput},
-    pbr_functions::{apply_pbr_lighting, main_pass_post_lighting_processing},
-}
+#import bevy_pbr::forward_io::{VertexOutput, FragmentOutput}
+#import sn_client::game_light::{GameSurface, game_lighting}
 #endif
 
 // Must match `ObjectParams` in object_look.rs.
@@ -32,6 +31,9 @@ struct ObjectParams {
 @group(#{MATERIAL_BIND_GROUP}) @binding(100) var<uniform> object: ObjectParams;
 @group(#{MATERIAL_BIND_GROUP}) @binding(101) var normal_map: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(102) var normal_sampler: sampler;
+@group(#{MATERIAL_BIND_GROUP}) @binding(120) var light_params: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(121) var caustics: texture_2d_array<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(122) var caustics_sampler: sampler;
 
 @fragment
 fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> FragmentOutput {
@@ -54,9 +56,17 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
 #ifdef PREPASS_PIPELINE
     let out = deferred_output(in, pbr_input);
 #else
+    var surface: GameSurface;
+    surface.world = in.world_position.xyz;
+    surface.normal = pbr_input.N;
+    surface.albedo = pbr_input.material.base_color.rgb;
+    surface.specular = vec3<f32>(0.0);
+    surface.gloss = 0.0;
     var out: FragmentOutput;
-    out.color = apply_pbr_lighting(pbr_input);
-    out.color = main_pass_post_lighting_processing(pbr_input, out.color);
+    out.color = vec4<f32>(
+        game_lighting(surface, in.position, light_params, caustics, caustics_sampler),
+        pbr_input.material.base_color.a,
+    );
 #endif
     return out;
 }

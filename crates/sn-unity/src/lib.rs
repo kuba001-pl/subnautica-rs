@@ -26,7 +26,10 @@ pub use bundle::{BlockInfo, Bundle, BundleDirectory, BundleNode, Compression, wr
 pub use classes::class_name;
 pub use mesh::{Channel, Mesh, MeshFilter, MeshGeometry, SubMesh, channel};
 pub use objects::{Material, MonoBehaviourHeader, MonoScript, PPtr, TexEnv};
-pub use prefab::{AssetBundleManifest, GameObject, Lod, LodGroup, MeshRenderer, TransformNode};
+pub use prefab::{
+    AssetBundleManifest, GameObject, Lod, LodGroup, MeshRenderer, TransformNode,
+    parse_resource_container,
+};
 pub use serialized::{
     External, ObjectInfo, SUPPORTED_VERSIONS, SerializedFile, SerializedType, TypeTreeNode,
 };
@@ -34,7 +37,7 @@ pub use sky::{Gradient, SkyDome, SkyLight, SkyManager};
 pub use texture::{StreamingInfo, Texture2D, TextureFormat};
 pub use voxeland::{Voxeland, VoxelandBlockType, VoxelandBlockTypePrefab};
 pub use water::{BiomeWater, WaterBiomeManager, WaterSettings, WaterscapeVolume};
-pub use water_surface::{AnimationCurve, Keyframe, WaterSurface};
+pub use water_surface::{AnimationCurve, FftWaves, Keyframe, WaterSurface};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Error {

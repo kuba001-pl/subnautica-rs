@@ -13,6 +13,7 @@ use bevy::render::render_resource::{
 use bevy::shader::ShaderRef;
 use sn_assets::{TerrainMaterials, TerrainTexture};
 
+use crate::game_light::GameLightImages;
 use crate::textures::{linear, to_image};
 
 pub type TerrainMaterial = ExtendedMaterial<StandardMaterial, TriplanarExtension>;
@@ -46,8 +47,9 @@ pub struct TriplanarParams {
     pub cap_angle: f32,
     pub cap_emission: f32,
     pub side_emission: f32,
-    pub emission_unit: f32,
     pub flags: u32,
+    pub cap_spec: Vec4,
+    pub side_spec: Vec4,
 }
 
 #[derive(Asset, AsBindGroup, Reflect, Debug, Clone)]
@@ -72,6 +74,12 @@ pub struct TriplanarExtension {
     #[texture(111)]
     #[sampler(112)]
     pub side_sig: Handle<Image>,
+    /// The game's lighting values and caustics (`game_light.rs`).
+    #[texture(120, sample_type = "float", filterable = false)]
+    pub light_params: Handle<Image>,
+    #[texture(121, dimension = "2d_array")]
+    #[sampler(122)]
+    pub caustics: Handle<Image>,
 }
 
 impl MaterialExtension for TriplanarExtension {
@@ -146,6 +154,7 @@ fn build_look(
     mut commands: Commands,
     mut pending: ResMut<PendingTerrainLook>,
     mut images: ResMut<Assets<Image>>,
+    light: Res<GameLightImages>,
 ) {
     let Some(source) = pending.0.take() else {
         commands.insert_resource(TerrainLook::default());
@@ -208,12 +217,13 @@ fn build_look(
                 cap_angle: b.cap_angle,
                 cap_emission: m.cap.emission,
                 side_emission: m.side.emission,
-                emission_unit: SUN_ILLUMINANCE / std::f32::consts::PI,
                 flags: flag(m.cap_side, CAP_SIDE)
                     | flag(cap_normal.is_some(), CAP_NORMAL)
                     | flag(side_normal.is_some(), SIDE_NORMAL)
                     | flag(cap_sig.is_some(), CAP_SIG)
                     | flag(side_sig.is_some(), SIDE_SIG),
+                cap_spec: linear(m.cap.specular),
+                side_spec: linear(m.side.specular),
             },
             cap_albedo,
             side_albedo,
@@ -221,6 +231,8 @@ fn build_look(
             side_normal: side_normal.unwrap_or_else(|| white.clone()),
             cap_sig: cap_sig.unwrap_or_else(|| white.clone()),
             side_sig: side_sig.unwrap_or_else(|| white.clone()),
+            light_params: light.params.clone(),
+            caustics: light.caustics.clone(),
         }));
     }
     info!(

@@ -221,13 +221,6 @@ impl WaterWorld {
     }
 }
 
-/// Our HDR value of a white Lambert surface lit by our sun (Unity's
-/// lighting has no 1/π, so this is one unit of the game's light, assuming
-/// the game's sun is one unit). Calibration: **hypothesis**.
-pub fn unit(sun_lux: f32, exposure: f32) -> f32 {
-    sun_lux / std::f32::consts::PI * exposure
-}
-
 /// `--no-water-fog`: the fog stays off (the surface still uses the uniform).
 #[derive(Resource)]
 pub struct WaterFogOff;

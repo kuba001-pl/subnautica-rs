@@ -2,6 +2,81 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-08 — M8c4 (first pass): High quality waves (FFT)
+
+**What:** the user plays with Water quality High (also bloom + lens dirt,
+DoF, motion blur, AO, SSR, FXAA, dithering), so the waves are simulated, not
+baked. Decoded `WaterDisplacementGenerator` (Phillips spectrum, the spectrum
+update compute shader, the displacement packing; `docs/formats/water.md`
+§ High quality waves). `sn-unity`: `FftWaves` (the generator's settings).
+`sn-client`: `water_fft.rs` (initial spectrum, 2 unit tests), `water_fft.wgsl`
+(spectrum update, our own FFT, packing), `--water-quality medium|high`
+(default high). Plan for the remaining effects added to DESIGN (M8c5, M8d).
+
+**Verified (2026-10-08):** scene values equal UnityPy's (wind 600 cm/s at
+45°, choppy 1.3, amplitude 0.35, min wave 0.01; real-data test). Screenshot
+`out/m8c4-high.png` next to the user's open-sea shot: finer, textured waves,
+sparse foam. GPU: FFT 0.12 ms, surface 0.42 ms. Tests, clippy, fmt: pass.
+**Hypothesis:** the FFT's sign (from the game's twiddle phase) and the
+row/column orientation; a mirror would mirror the wind direction.
+
+## 2026-10-08 — M8c3: game units, colour grading, Unity's ambient
+
+**What:** after the user's screenshots (their game: High water quality)
+showed our night far too bright:
+- The game's post-processing found (`docs/formats/lighting.md` § Units):
+  colour grading off by default (clamp, no tonemapping), bloom on. Our
+  image now holds the game's values (one light unit = 1.0, was 2.55 from
+  Bevy's sun lux and exposure) and `--color-grading off|neutral|aces`
+  (default off) picks the tonemapper (neutral/aces: Bevy's nearest, not
+  exact).
+- Unity's own flat ambient (`CurrentSkyColor`, added by the G-buffer pass)
+  now lit: it was missing, so surfaces were too dark.
+
+**Verified (2026-10-08):** mean colours, ours vs the user's screenshots
+(not the same places or times): night horizon (15, 21, 28) vs (5, 8, 16)
+(was (31, 39, 51)); day sky (95, 142, 198) vs (111, 160, 222); underwater
+fog (58, 115, 180) vs (63, 153, 221); sand (58, 113, 123) vs (108, 147, 120).
+Tests, clippy, fmt: pass. **Needs matched screenshots** (same place and
+time) to go further.
+
+## 2026-10-08 — M8c3 (first pass): the game's lighting, caustics
+
+**What:**
+- Compared with the user's game screenshots (day, dusk and night, above and
+  below; different places than ours). Sky and underwater fog are close;
+  missing were caustics, the game's ambient and sunlight model, stars,
+  object emission.
+- Decoded the game's deferred lighting shader
+  (`Hidden/Internal-DeferredShadingCustom`, directional cookie variant):
+  `docs/formats/lighting.md`.
+- `sn-unity`: `parse_resource_container` (`ResourceManager`);
+  `WaterSurface.caustics_size`. `sn-assets`: `resource_texture`,
+  `water_caustics` (64 frames). Real-data test extended.
+- `sn-client`: `game_light.rs` + `game_light.wgsl`: the game's lighting
+  (caustics, sunlight attenuated under water with the colour cast, top and
+  bottom ambient, water glow as ambient, Blinn specular) replaces Bevy's PBR
+  lighting in the terrain and object shaders. Terrain specular colour now
+  used (SIG red or albedo red × spec colour). Per-frame values go through a
+  small float texture rewritten on the GPU (no material updates).
+- Sky fixes: bottom ambient (`colorOffset`'s ground branch); the cloud shade
+  colour now includes the exposure (`colorOffset` applies it).
+
+**Verified (2026-10-08, RTX 3080, 2400×1350):**
+1. Caustics: 64 frames `WaterCaustics00…63`, 256² DXT1, 9 mips.
+2. Screenshots `out/m8c3-start.png` (caustics on the sand, turquoise),
+   `out/m8c3-below.png`, `out/m8c3-dusk-under.png` (green, orange glints, as
+   the user's dusk shot), `out/m8c3-night-under.png` (dark navy).
+3. `--benchmark 120 --gpu-timings` at the lifepod: mean 8.7 ms (was 11.0
+   with Bevy's lighting), opaque pass 1.3 ms.
+4. Workspace tests, real-data tests (5), clippy, fmt: pass.
+
+**Not done:** per-pixel water settings (camera's used), sun shadows, object
+specular/gloss/emission maps, light shafts, stars.
+
+**Dead end:** `cast` is a reserved word in WGSL (shader failed to compile on
+the first run).
+
 ## 2026-10-07 — M8c2: the game's sky (dome and sky map); sun direction fix
 
 **What:**

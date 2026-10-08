@@ -15,6 +15,7 @@
 //! vertex shader.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use bevy::asset::RenderAssetUsages;
@@ -29,8 +30,8 @@ use bevy::render::extract_component::{
 use bevy::render::extract_resource::{ExtractResource, ExtractResourcePlugin};
 use bevy::render::render_asset::RenderAssets;
 use bevy::render::render_resource::binding_types::{
-    sampler, texture_2d, texture_2d_array, texture_depth_2d, texture_depth_2d_multisampled,
-    uniform_buffer,
+    sampler, storage_buffer_read_only_sized, storage_buffer_sized, texture_2d, texture_2d_array,
+    texture_depth_2d, texture_depth_2d_multisampled, texture_storage_2d, uniform_buffer,
 };
 use bevy::render::render_resource::{
     AddressMode, BindGroupEntries, BindGroupLayoutDescriptor, BindGroupLayoutEntries,
@@ -42,6 +43,10 @@ use bevy::render::render_resource::{
     ShaderType, StoreOp, Texture, TextureDescriptor, TextureDimension, TextureFormat,
     TextureSampleType, TextureUsages, TextureView, TextureViewDescriptor, TextureViewDimension,
     UniformBuffer, VertexState,
+};
+use bevy::render::render_resource::{
+    Buffer, BufferDescriptor, BufferInitDescriptor, BufferUsages, CachedComputePipelineId,
+    ComputePassDescriptor, ComputePipelineDescriptor, StorageTextureAccess,
 };
 use bevy::render::renderer::{RenderContext, RenderDevice, RenderQueue, ViewQuery};
 use bevy::render::texture::{CachedTexture, GpuImage, TextureCache};
@@ -74,6 +79,21 @@ const FAR_VERTICES: u32 = 9 * 6;
 #[derive(Resource)]
 pub struct PendingWaterSurface(pub Option<WaterSurfaceData>);
 
+/// The game's "Water quality" option: Medium plays the 64 baked frames,
+/// High simulates the waves (`water_fft.rs`).
+#[derive(Resource, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WaterQuality {
+    Medium,
+    High,
+}
+
+/// The High quality's initial wave spectrum, for the GPU.
+#[derive(Resource, Clone, ExtractResource)]
+struct WaterFftSpectrum {
+    h0: Arc<Vec<[f32; 2]>>,
+    omega: Arc<Vec<f32>>,
+}
+
 /// The scene's surface settings and the images made from the game's
 /// textures.
 #[derive(Resource)]
@@ -95,6 +115,8 @@ struct WaterSurfaceImages {
 struct WaterSim {
     frames: Vec4,
     foam: Vec4,
+    /// High quality: time (s), choppy scale, 1 if on, unused.
+    fft: Vec4,
 }
 
 /// The game's surface clock (`WaterSurface.time`).
@@ -122,10 +144,25 @@ fn create_images(
     mut commands: Commands,
     mut pending: ResMut<PendingWaterSurface>,
     mut images: ResMut<Assets<Image>>,
+    quality: Option<Res<WaterQuality>>,
 ) {
     let Some(data) = pending.0.take() else {
         return;
     };
+    if quality.as_deref() == Some(&WaterQuality::High) {
+        let (h0, omega) =
+            crate::water_fft::initial_spectrum(&data.surface.waves, data.surface.patch_length, 1);
+        info!(
+            "water: High quality waves (FFT {0}×{0}, wind {1} cm/s at {2}°)",
+            crate::water_fft::N,
+            data.surface.waves.wind_speed,
+            data.surface.waves.wind_angle
+        );
+        commands.insert_resource(WaterFftSpectrum {
+            h0: Arc::new(h0),
+            omega: Arc::new(omega),
+        });
+    }
     let first = &data.frames[0].texture;
     let (w, h) = (first.width as u32, first.height as u32);
     let mut bytes = Vec::with_capacity((w * h * 4) as usize * data.frames.len());
@@ -190,9 +227,11 @@ fn create_images(
 fn update_water_sim(
     time: Res<Time>,
     world: Res<WaterSurfaceWorld>,
+    quality: Option<Res<WaterQuality>>,
     mut clock: ResMut<SurfaceClock>,
     mut sim: ResMut<WaterSim>,
 ) {
+    let high = quality.as_deref() == Some(&WaterQuality::High);
     let s = &world.surface;
     let dt = time.delta_secs() * s.time_scale;
     clock.0 += f64::from(dt);
@@ -209,6 +248,12 @@ fn update_water_sim(
             (1.0 - dt * s.foam_decay).max(0.0),
             s.foam_rate * dt / 0.008333,
         ),
+        fft: Vec4::new(
+            clock.0 as f32,
+            s.waves.choppy_scale,
+            if high { 1.0 } else { 0.0 },
+            0.0,
+        ),
     };
 }
 
@@ -219,8 +264,15 @@ fn update_water_surface(
     water: Res<WaterWorld>,
     sky: Res<SkyState>,
     sky_world: Option<Res<SkyWorld>>,
+    quality: Option<Res<WaterQuality>>,
     mut cameras: Query<(&Transform, &mut WaterSurfaceUniform)>,
 ) {
+    // The foam multiplier only applies to the baked frames (Medium).
+    let foam_multiplier = if quality.as_deref() == Some(&WaterQuality::High) {
+        1.0
+    } else {
+        world.surface.displacement_texture_foam_amount_multiplier
+    };
     // The sky map is in game units; 0 = no sky map (mean sky colour).
     let sky_map_unit = if sky_world.is_some() {
         water.light_unit
@@ -260,7 +312,7 @@ fn update_water_surface(
                 s.foam_scale,
                 s.foam_distance,
                 s.sub_surface_foam_scale,
-                s.displacement_texture_foam_amount_multiplier,
+                foam_multiplier,
             ),
         };
     }
@@ -271,12 +323,14 @@ pub struct WaterSurfacePlugin;
 impl Plugin for WaterSurfacePlugin {
     fn build(&self, app: &mut App) {
         bevy::asset::embedded_asset!(app, "water_sim.wgsl");
+        bevy::asset::embedded_asset!(app, "water_fft.wgsl");
         bevy::asset::embedded_asset!(app, "water_surface.wgsl");
         app.add_plugins((
             ExtractComponentPlugin::<WaterSurfaceUniform>::default(),
             UniformComponentPlugin::<WaterSurfaceUniform>::default(),
             ExtractResourcePlugin::<WaterSurfaceImages>::default(),
             ExtractResourcePlugin::<WaterSim>::default(),
+            ExtractResourcePlugin::<WaterFftSpectrum>::default(),
         ))
         .init_resource::<SurfaceClock>()
         .init_resource::<WaterSim>()
@@ -304,6 +358,7 @@ impl Plugin for WaterSurfacePlugin {
                 (
                     prepare_pipelines.in_set(RenderSystems::Prepare),
                     prepare_sim_uniform.in_set(RenderSystems::PrepareResources),
+                    prepare_fft.in_set(RenderSystems::PrepareResources),
                     prepare_water_depth.in_set(RenderSystems::PrepareResources),
                 ),
             )
@@ -331,6 +386,10 @@ struct WaterMaps {
 
 #[derive(Resource)]
 struct WaterSurfacePipelines {
+    fft_layout: BindGroupLayoutDescriptor,
+    fft_shader: Handle<Shader>,
+    /// update spectrum, FFT rows, FFT columns, pack.
+    fft: Option<[CachedComputePipelineId; 4]>,
     sim_layout: BindGroupLayoutDescriptor,
     surface_layouts: [BindGroupLayoutDescriptor; 2],
     repeat_sampler: Sampler,
@@ -344,7 +403,13 @@ struct WaterSurfacePipelines {
     surface: HashMap<(TextureFormat, bool), CachedRenderPipelineId>,
 }
 
-fn map(device: &RenderDevice, label: &'static str, format: TextureFormat, mips: u32) -> Texture {
+fn map(
+    device: &RenderDevice,
+    label: &'static str,
+    format: TextureFormat,
+    mips: u32,
+    extra: TextureUsages,
+) -> Texture {
     device.create_texture(&TextureDescriptor {
         label: Some(label),
         size: Extent3d {
@@ -356,7 +421,7 @@ fn map(device: &RenderDevice, label: &'static str, format: TextureFormat, mips: 
         sample_count: 1,
         dimension: TextureDimension::D2,
         format,
-        usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING,
+        usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING | extra,
         view_formats: &[],
     })
 }
@@ -368,9 +433,28 @@ fn init_gpu(
     fullscreen: Res<FullscreenShader>,
 ) {
     let mips = MAP_SIZE.ilog2() + 1;
-    let displacement = map(&device, "water_displacement", DISPLACEMENT_FORMAT, 1);
-    let normals = map(&device, "water_normals", NORMALS_FORMAT, mips);
-    let foam = map(&device, "water_foam", FOAM_FORMAT, 1);
+    // The High quality writes the displacement from a compute shader.
+    let displacement = map(
+        &device,
+        "water_displacement",
+        DISPLACEMENT_FORMAT,
+        1,
+        TextureUsages::STORAGE_BINDING,
+    );
+    let normals = map(
+        &device,
+        "water_normals",
+        NORMALS_FORMAT,
+        mips,
+        TextureUsages::empty(),
+    );
+    let foam = map(
+        &device,
+        "water_foam",
+        FOAM_FORMAT,
+        1,
+        TextureUsages::empty(),
+    );
     commands.insert_resource(WaterMaps {
         displacement: displacement.create_view(&TextureViewDescriptor::default()),
         normals: normals.create_view(&TextureViewDescriptor::default()),
@@ -449,7 +533,24 @@ fn init_gpu(
         min_filter: FilterMode::Linear,
         ..default()
     });
+    let fft_layout = BindGroupLayoutDescriptor::new(
+        "water_fft_layout",
+        &BindGroupLayoutEntries::sequential(
+            ShaderStages::COMPUTE,
+            (
+                storage_buffer_read_only_sized(false, None),
+                storage_buffer_read_only_sized(false, None),
+                storage_buffer_sized(false, None),
+                storage_buffer_sized(false, None),
+                uniform_buffer::<WaterSim>(false),
+                texture_storage_2d(DISPLACEMENT_FORMAT, StorageTextureAccess::WriteOnly),
+            ),
+        ),
+    );
     commands.insert_resource(WaterSurfacePipelines {
+        fft_layout,
+        fft_shader: asset_server.load("embedded://sn_client/water_fft.wgsl"),
+        fft: None,
         sim_layout,
         surface_layouts: [surface_layout(false), surface_layout(true)],
         repeat_sampler,
@@ -471,6 +572,23 @@ fn prepare_pipelines(
     mut pipelines: ResMut<WaterSurfacePipelines>,
     views: Query<(Entity, &ExtractedView, &Msaa), With<WaterSurfaceUniform>>,
 ) {
+    if pipelines.fft.is_none() {
+        let compute = |entry: &'static str| {
+            pipeline_cache.queue_compute_pipeline(ComputePipelineDescriptor {
+                label: Some(format!("water_fft_{entry}_pipeline").into()),
+                layout: vec![pipelines.fft_layout.clone()],
+                shader: pipelines.fft_shader.clone(),
+                entry_point: Some(entry.into()),
+                ..default()
+            })
+        };
+        pipelines.fft = Some([
+            compute("update_spectrum"),
+            compute("fft_rows"),
+            compute("fft_columns"),
+            compute("pack"),
+        ]);
+    }
     if pipelines.sim.is_none() {
         let sim = |entry: &'static str, format: TextureFormat, blend: Option<BlendState>| {
             pipeline_cache.queue_render_pipeline(RenderPipelineDescriptor {
@@ -580,6 +698,59 @@ fn prepare_sim_uniform(
     maps.sim_uniform.write_buffer(&device, &queue);
 }
 
+/// The High quality's GPU buffers (made once the spectrum arrives).
+#[derive(Resource)]
+struct WaterFftBuffers {
+    h0: Buffer,
+    omega: Buffer,
+    ht: Buffer,
+    tmp: Buffer,
+}
+
+fn prepare_fft(
+    mut commands: Commands,
+    spectrum: Option<Res<WaterFftSpectrum>>,
+    buffers: Option<Res<WaterFftBuffers>>,
+    device: Res<RenderDevice>,
+) {
+    let (Some(spectrum), None) = (spectrum, buffers) else {
+        return;
+    };
+    let init = |label: &'static str, bytes: &[u8]| {
+        device.create_buffer_with_data(&BufferInitDescriptor {
+            label: Some(label),
+            contents: bytes,
+            usage: BufferUsages::STORAGE,
+        })
+    };
+    let h0: Vec<u8> = spectrum
+        .h0
+        .iter()
+        .flatten()
+        .flat_map(|f| f.to_le_bytes())
+        .collect();
+    let omega: Vec<u8> = spectrum
+        .omega
+        .iter()
+        .flat_map(|f| f.to_le_bytes())
+        .collect();
+    let n = crate::water_fft::N as u64;
+    let slices = |label: &'static str| {
+        device.create_buffer(&BufferDescriptor {
+            label: Some(label),
+            size: 3 * n * n * 8,
+            usage: BufferUsages::STORAGE,
+            mapped_at_creation: false,
+        })
+    };
+    commands.insert_resource(WaterFftBuffers {
+        h0: init("water_fft_h0", &h0),
+        omega: init("water_fft_omega", &omega),
+        ht: slices("water_fft_ht"),
+        tmp: slices("water_fft_tmp"),
+    });
+}
+
 #[derive(Component)]
 struct ViewWaterDepth(CachedTexture);
 
@@ -625,6 +796,7 @@ fn water_surface_pass(
     pipeline_cache: Res<PipelineCache>,
     pipelines: Res<WaterSurfacePipelines>,
     maps: Res<WaterMaps>,
+    fft: Option<Res<WaterFftBuffers>>,
     sky_map: Res<SkyMap>,
     images: Option<Res<WaterSurfaceImages>>,
     gpu_images: Res<RenderAssets<GpuImage>>,
@@ -695,23 +867,67 @@ fn water_surface_pass(
     } else {
         clear
     };
+    // High quality: the waves from the spectrum (compute), else the baked
+    // frames (the interpolate pass).
+    let fft_pipelines = pipelines
+        .fft
+        .map(|ids| ids.map(|id| pipeline_cache.get_compute_pipeline(id)));
+    let simulated = match (&fft, fft_pipelines) {
+        (Some(b), Some([Some(update), Some(rows), Some(columns), Some(pack)])) => {
+            let group = device.create_bind_group(
+                "water_fft_bind_group",
+                &pipeline_cache.get_bind_group_layout(&pipelines.fft_layout),
+                &BindGroupEntries::sequential((
+                    b.h0.as_entire_binding(),
+                    b.omega.as_entire_binding(),
+                    b.ht.as_entire_binding(),
+                    b.tmp.as_entire_binding(),
+                    sim_binding.clone(),
+                    &maps.displacement,
+                )),
+            );
+            let n = crate::water_fft::N as u32;
+            let span = diagnostics.time_span(ctx.command_encoder(), "water_fft");
+            {
+                let mut pass = ctx
+                    .command_encoder()
+                    .begin_compute_pass(&ComputePassDescriptor {
+                        label: Some("water_fft"),
+                        timestamp_writes: None,
+                    });
+                pass.set_bind_group(0, &group, &[]);
+                pass.set_pipeline(update);
+                pass.dispatch_workgroups(n / 16, n / 16, 1);
+                pass.set_pipeline(rows);
+                pass.dispatch_workgroups(n, 3, 1);
+                pass.set_pipeline(columns);
+                pass.dispatch_workgroups(n, 3, 1);
+                pass.set_pipeline(pack);
+                pass.dispatch_workgroups(n / 16, n / 16, 1);
+            }
+            span.end(ctx.command_encoder());
+            true
+        }
+        _ => false,
+    };
     // (label, target, load, pipeline, bind group), in order.
-    let mut passes = vec![
-        (
+    let mut passes = Vec::new();
+    if !simulated {
+        passes.push((
             "water_interpolate",
             &maps.displacement,
             clear,
             interpolate,
             sim_group(&maps.foam),
-        ),
-        (
-            "water_normals",
-            &maps.normal_mips[0],
-            clear,
-            normals,
-            sim_group(&maps.displacement),
-        ),
-    ];
+        ));
+    }
+    passes.push((
+        "water_normals",
+        &maps.normal_mips[0],
+        clear,
+        normals,
+        sim_group(&maps.displacement),
+    ));
     for level in 1..maps.normal_mips.len() {
         passes.push((
             "water_normals_mip",

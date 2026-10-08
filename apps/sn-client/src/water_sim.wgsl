@@ -11,6 +11,8 @@ struct WaterSim {
     frames: vec4<f32>,
     // patch length (cm), displacement texel (uv), foam decay, foam rate
     foam: vec4<f32>,
+    // High quality: time, choppy scale, on, unused (water_fft.wgsl)
+    fft: vec4<f32>,
 }
 
 @group(0) @binding(0) var frames: texture_2d_array<f32>;

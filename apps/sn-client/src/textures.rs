@@ -14,7 +14,8 @@ pub fn linear(c: [f32; 4]) -> Vec4 {
     Vec4::new(l.red, l.green, l.blue, l.alpha)
 }
 
-fn sampler() -> ImageSampler {
+/// Linear, repeating, trilinear, anisotropic ×8.
+pub fn repeat_sampler() -> ImageSampler {
     let mut descriptor = ImageSamplerDescriptor::linear();
     descriptor.set_address_mode(ImageAddressMode::Repeat);
     descriptor.mipmap_filter = ImageFilterMode::Linear;
@@ -88,6 +89,6 @@ pub fn to_image(t: &TerrainTexture, srgb: bool) -> Option<Image> {
             )
         }
     };
-    image.sampler = sampler();
+    image.sampler = repeat_sampler();
     Some(image)
 }

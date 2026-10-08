@@ -1,5 +1,5 @@
-// Terrain shader: Bevy's standard PBR lighting fed with the surface the
-// game's terrain shaders compute. Written for subnautica-rs from the
+// Terrain shader: the surface the game's terrain shaders compute, lit by
+// the game's lighting (game_light.wgsl). Written for subnautica-rs from the
 // behaviour described in docs/formats/terrain-materials.md:
 //
 // - Textures are projected along the three world axes ("triplanar"), in
@@ -22,10 +22,8 @@
     pbr_deferred_functions::deferred_output,
 }
 #else
-#import bevy_pbr::{
-    forward_io::{VertexOutput, FragmentOutput},
-    pbr_functions::{apply_pbr_lighting, main_pass_post_lighting_processing},
-}
+#import bevy_pbr::forward_io::{VertexOutput, FragmentOutput}
+#import sn_client::game_light::{GameSurface, game_lighting}
 #endif
 
 // Must match `TriplanarParams` in terrain_look.rs. Colours are linear.
@@ -47,9 +45,10 @@ struct TerrainParams {
     cap_angle: f32,
     cap_emission: f32,
     side_emission: f32,
-    // Emission 1.0 in the game → this many nits here.
-    emission_unit: f32,
     flags: u32,
+    // Specular colours (linear): _CapSpecColor, _SpecColor.
+    cap_spec: vec4<f32>,
+    side_spec: vec4<f32>,
 }
 
 const CAP_SIDE: u32 = 1u;
@@ -59,6 +58,9 @@ const CAP_SIG: u32 = 8u;
 const SIDE_SIG: u32 = 16u;
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(100) var<uniform> terrain: TerrainParams;
+@group(#{MATERIAL_BIND_GROUP}) @binding(120) var light_params: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(121) var caustics: texture_2d_array<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(122) var caustics_sampler: sampler;
 @group(#{MATERIAL_BIND_GROUP}) @binding(101) var cap_albedo: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(102) var cap_albedo_sampler: sampler;
 @group(#{MATERIAL_BIND_GROUP}) @binding(103) var cap_normal: texture_2d<f32>;
@@ -119,6 +121,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     var colour: vec4<f32>;
     var normal: vec3<f32>;
     var sig = vec2<f32>(0.0);
+    var spec = vec3<f32>(0.0);
     if (terrain.flags & CAP_SIDE) != 0u {
         let uv_cap = p.xz * terrain.cap_scale;
         let cap = textureSample(cap_albedo, cap_albedo_sampler, uv_cap);
@@ -126,8 +129,11 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         if (terrain.flags & CAP_NORMAL) != 0u {
             cap_n = normalize(from_y(unpack_normal(textureSample(cap_normal, cap_normal_sampler, uv_cap)), n));
         }
+        // Specular: the SIG map's red, else the albedo's red.
+        var cap_spec_r = cap.r;
         if (terrain.flags & CAP_SIG) != 0u {
             sig = textureSample(cap_sig, cap_sig_sampler, uv_cap).rg * vec2<f32>(1.0, terrain.cap_emission);
+            cap_spec_r = sig.x;
         }
         // 0 = cap, 1 = side.
         let edge = clamp(1.0 - (n.y + terrain.cap_offset) * terrain.cap_angle - cap.a, -1.0, 1.0);
@@ -146,15 +152,18 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
             );
         }
         var side_sig_value = vec2<f32>(0.0);
+        var side_spec_r = side_colour.r;
         if (terrain.flags & SIDE_SIG) != 0u {
             side_sig_value = (textureSample(side_sig, side_sig_sampler, s.yz).rg * w.x
                 + textureSample(side_sig, side_sig_sampler, s.xz).rg * w.y
                 + textureSample(side_sig, side_sig_sampler, s.yx).rg * w.z)
                 * vec2<f32>(1.0, terrain.side_emission);
+            side_spec_r = side_sig_value.x;
         }
         colour = mix(cap * terrain.cap_tint, side_colour * terrain.side_tint, side);
         normal = normalize(mix(cap_n, side_n, side));
         sig = mix(sig, side_sig_value, side);
+        spec = mix(cap_spec_r * terrain.cap_spec.rgb, side_spec_r * terrain.side_spec.rgb, side);
     } else {
         let s = p * terrain.cap_scale;
         let albedo = textureSample(cap_albedo, cap_albedo_sampler, s.yz) * w.x
@@ -169,12 +178,15 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
                 + from_z(unpack_normal(textureSample(cap_normal, cap_normal_sampler, s.yx)), n) * w.z
             );
         }
+        var spec_r = albedo.r;
         if (terrain.flags & CAP_SIG) != 0u {
             sig = (textureSample(cap_sig, cap_sig_sampler, s.yz).rg * w.x
                 + textureSample(cap_sig, cap_sig_sampler, s.xz).rg * w.y
                 + textureSample(cap_sig, cap_sig_sampler, s.yx).rg * w.z)
                 * vec2<f32>(1.0, terrain.cap_emission);
+            spec_r = sig.x;
         }
+        spec = spec_r * terrain.cap_spec.rgb;
     }
 
     // Towards the edge of a patch the colour turns to the border tint, and
@@ -185,16 +197,26 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
 
     pbr_input.material.base_color = vec4<f32>(rgb, alpha);
     pbr_input.material.perceptual_roughness = clamp(1.0 - gloss, 0.089, 1.0);
-    pbr_input.material.emissive = vec4<f32>(rgb * sig.y * terrain.emission_unit, 1.0);
+    // Emission in our units (the light unit is in the lighting parameters).
+    let emission_unit = textureLoad(light_params, vec2<i32>(1, 0), 0).w;
+    pbr_input.material.emissive = vec4<f32>(rgb * sig.y * emission_unit, 1.0);
     pbr_input.N = normal * flip;
     pbr_input.material.base_color = alpha_discard(pbr_input.material, pbr_input.material.base_color);
 
 #ifdef PREPASS_PIPELINE
     let out = deferred_output(in, pbr_input);
 #else
+    // The game's lighting (game_light.wgsl) instead of Bevy's.
+    var surface: GameSurface;
+    surface.world = in.world_position.xyz;
+    surface.normal = pbr_input.N;
+    surface.albedo = pbr_input.material.base_color.rgb;
+    surface.specular = spec;
+    surface.gloss = gloss;
+    let lit = game_lighting(surface, in.position, light_params, caustics, caustics_sampler)
+        + pbr_input.material.emissive.rgb;
     var out: FragmentOutput;
-    out.color = apply_pbr_lighting(pbr_input);
-    out.color = main_pass_post_lighting_processing(pbr_input, out.color);
+    out.color = vec4<f32>(lit, pbr_input.material.base_color.a);
 #endif
     return out;
 }

@@ -118,6 +118,44 @@ pub fn water_surface(assets: &Assets) -> Result<WaterSurfaceData> {
     })
 }
 
+/// Resource manager class id.
+const RESOURCE_MANAGER: i32 = 147;
+
+/// Every texture `Resources.Load` finds under `path` (lower case), e.g. the
+/// water caustics `data/watercaustics00`.
+pub fn resource_texture(assets: &Assets, path: &str) -> Result<TerrainTexture> {
+    let ggm = assets.standalone("globalgamemanagers")?;
+    let info = ggm
+        .objects()
+        .iter()
+        .find(|o| o.class_id == RESOURCE_MANAGER)
+        .ok_or("globalgamemanagers: no ResourceManager")?;
+    let (_, data) = ggm
+        .object(info.path_id)
+        .ok_or("globalgamemanagers: ResourceManager unreadable")?;
+    let container = sn_unity::parse_resource_container(data, ggm.file().big_endian)
+        .map_err(|e| format!("ResourceManager: {e}"))?;
+    for (_, pptr) in container
+        .iter()
+        .filter(|(p, _)| p.eq_ignore_ascii_case(path))
+    {
+        if let Some(object) = assets.resolve(&ggm, *pptr)?
+            && object.data()?.0.class_id == TEXTURE_2D
+        {
+            return load_texture(assets, &object);
+        }
+    }
+    Err(format!("no texture resource {path}"))
+}
+
+/// The water caustics frames (`Data/WaterCaustics00…`, `count` of them; the
+/// scene's `WaterSurface` says 64).
+pub fn water_caustics(assets: &Assets, count: usize) -> Result<Vec<TerrainTexture>> {
+    (0..count)
+        .map(|i| resource_texture(assets, &format!("data/watercaustics{i:02}")))
+        .collect()
+}
+
 /// The sky dome's textures, referenced by the main scene's `uSkyManager`.
 pub struct SkyTextures {
     pub planet: TerrainTexture,
