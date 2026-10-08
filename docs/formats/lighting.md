@@ -71,6 +71,25 @@ default (intensity 0.2, threshold 0.9, soft knee 0.55, radius 5.5, lens dirt
 light unit = 1.0) and tonemap per `--color-grading` (off by default;
 neutral/ACES use Bevy's nearest curves — **not exact**). Bloom: not yet.
 
+## Light shafts — confirmed from the class and compiled shader
+
+`WaterSunShaftsOnCamera` on the main camera (an image effect after the
+transparent geometry, so it also lights the water surface seen from below;
+off when shadows are off). Scene values: start 5 m, max 15 m, shafts scale
+−0.16, intensity 3.93, trace step 0.05 m, half resolution (class defaults
+differ: 0.05, 0.003). Per pixel, along the view ray through water only
+(from max(start, the surface) to min(scene, 15 m, the surface)):
+- every 0.05 m: the caustics texture (current frame) at the point's light-
+  space x/y × −0.16, × the sun's shadow map, × `exp(−σt t)`;
+- × light colour × step × σs × light scale × 6 (caustics stored ÷ 6) ×
+  `smoothstep(saturate(0.8 (1 − z)))` (`z`: the view direction along the
+  light; strongest looking towards the sun) × the sunlight's attenuation
+  from the surface to the start point (with the colour cast) × intensity;
+- added to the image (bilinear from half resolution).
+
+**Ours (M8c5):** `sun_shafts.rs`/`.wgsl`, after the water surface, 0.37 ms.
+**Not yet:** the shadow map (no sun shadows yet: every sample is lit).
+
 ## How we render it (M8c3, first pass)
 
 Forward, in our terrain and object shaders, instead of Bevy's PBR lighting.

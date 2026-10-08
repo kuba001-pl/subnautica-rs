@@ -55,8 +55,8 @@ Tested on Windows 11 with game build 10 (Steam):
 
 ## What doesn't work yet
 
-Stars at night; the water clip map (no water inside the lifepod and bases,
-shore foam); sun shadows, light shafts; water settings per pixel (the
+The water clip map (no water inside the lifepod and bases,
+shore foam); sun shadows; water settings per pixel (the
 camera's are used everywhere); the Aurora, Lifepod 5, terrain grass and
 slot-spawned vegetation; for world objects: specular/gloss/emission maps,
 animation (waving plants), skinned meshes, creatures; player, audio,

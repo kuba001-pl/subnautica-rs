@@ -7,6 +7,8 @@ mod object_look;
 mod objects;
 mod sky;
 mod sky_dome;
+mod stars;
+mod sun_shafts;
 mod terrain;
 mod terrain_look;
 mod textures;
@@ -31,7 +33,7 @@ use sn_install::GameData;
 use crate::game_light::{GameLightPlugin, PendingCaustics};
 use crate::object_look::ObjectLookPlugin;
 use crate::objects::ObjectStreamer;
-use crate::sky_dome::{PendingSky, SkyDomePlugin, SkyWorld};
+use crate::sky_dome::{PendingSky, PendingStars, SkyDomePlugin, SkyWorld};
 use crate::terrain::{BlockSettings, LodRanges, TerrainStreamer};
 use crate::terrain_look::{PendingTerrainLook, SUN_ILLUMINANCE, TerrainLookPlugin};
 use crate::water::{WaterData, WaterFog, WaterFogOff, WaterFogPlugin, WaterWorld};
@@ -180,6 +182,7 @@ struct GameLook {
     surface: sn_assets::WaterSurfaceData,
     sky_textures: sn_assets::SkyTextures,
     caustics: Vec<sn_assets::TerrainTexture>,
+    stars: Vec<stars::GpuStar>,
 }
 
 /// Reads the game's terrain materials and textures, water and sky (about a
@@ -193,6 +196,7 @@ fn load_terrain_look(game_dir: Option<PathBuf>) -> Result<GameLook, String> {
     let sky = sn_assets::sky(&assets)?;
     let surface = sn_assets::water_surface(&assets)?;
     let sky_textures = sn_assets::sky_textures(&assets, &sky.0)?;
+    let stars = stars::parse(&sn_assets::resource_bytes(&assets, "starsdata")?)?;
     let caustics =
         sn_assets::water_caustics(&assets, surface.surface.num_caustics_frames.max(0) as usize)?;
     for w in &materials.warnings {
@@ -211,6 +215,7 @@ fn load_terrain_look(game_dir: Option<PathBuf>) -> Result<GameLook, String> {
         surface,
         sky_textures,
         caustics,
+        stars,
     })
 }
 
@@ -278,42 +283,45 @@ fn main() -> AppExit {
         }
     };
     let ranges = lod_ranges(args.view);
-    let (look, blocks, water, sky_data, surface, sky_textures, caustics) = if args.debug_colours {
-        (None, None, None, None, None, None, None)
-    } else {
-        match load_terrain_look(args.game_dir.clone()) {
-            Ok(GameLook {
-                materials,
-                water,
-                sky: sky_data,
-                surface,
-                sky_textures,
-                caustics,
-            }) => {
-                let mut blocks = BlockSettings {
-                    layer: [0; 256],
-                    gloss: [0.0; 256],
-                };
-                for m in materials.types.iter().flatten() {
-                    blocks.layer[m.type_id] = m.layer;
-                    blocks.gloss[m.type_id] = m.blend.gloss;
+    let (look, blocks, water, sky_data, surface, sky_textures, caustics, stars) =
+        if args.debug_colours {
+            (None, None, None, None, None, None, None, None)
+        } else {
+            match load_terrain_look(args.game_dir.clone()) {
+                Ok(GameLook {
+                    materials,
+                    water,
+                    sky: sky_data,
+                    surface,
+                    sky_textures,
+                    caustics,
+                    stars,
+                }) => {
+                    let mut blocks = BlockSettings {
+                        layer: [0; 256],
+                        gloss: [0.0; 256],
+                    };
+                    for m in materials.types.iter().flatten() {
+                        blocks.layer[m.type_id] = m.layer;
+                        blocks.gloss[m.type_id] = m.blend.gloss;
+                    }
+                    (
+                        Some(materials),
+                        Some(blocks),
+                        Some(water),
+                        Some(sky_data),
+                        Some(surface),
+                        Some(sky_textures),
+                        Some(caustics),
+                        Some(stars),
+                    )
                 }
-                (
-                    Some(materials),
-                    Some(blocks),
-                    Some(water),
-                    Some(sky_data),
-                    Some(surface),
-                    Some(sky_textures),
-                    Some(caustics),
-                )
+                Err(message) => {
+                    eprintln!("error: {message}");
+                    return AppExit::error();
+                }
             }
-            Err(message) => {
-                eprintln!("error: {message}");
-                return AppExit::error();
-            }
-        }
-    };
+        };
     let streamer = match GameData::locate(args.game_dir.clone())
         .map_err(String::from)
         .and_then(|game| TerrainStreamer::start(game, ranges, blocks))
@@ -351,6 +359,7 @@ fn main() -> AppExit {
         WaterSurfacePlugin,
         SkyDomePlugin,
         GameLightPlugin,
+        sun_shafts::SunShaftsPlugin,
     ))
     .insert_resource(PendingTerrainLook(look))
     .insert_resource(PendingCaustics(caustics))
@@ -394,6 +403,7 @@ fn main() -> AppExit {
             // A new game's first day: the clock's fraction of it (the
             // planet's orbit depends on the day).
             app.insert_resource(PendingSky(Some(textures)))
+                .insert_resource(PendingStars(stars))
                 .insert_resource(SkyWorld {
                     manager: manager.clone(),
                     day: f64::from(args.time) / 24.0,

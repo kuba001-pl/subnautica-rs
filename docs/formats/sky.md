@@ -77,12 +77,27 @@ sky map (`uSkymapRenderer`, 256² ARGB32 with mips, redrawn every frame) is
 the same function on the upper hemisphere, `p = (uv − 0.5) × 2.2`,
 `d = (2p.x, 1 − |p|², 2p.y) / (1 + |p|²)`; the water reflects it.
 
+## Stars — confirmed from the class and compiled shader
+
+`StarField`: the text asset `StarsData` (Unity resources) holds 9110 stars
+of six floats (x, z, y, r, g, b); positions are scaled by (−1, 1, −1); stars
+with luminance `0.22 r + 0.707 g + 0.071 b` outside 0.0162 … 2.2 are dropped
+(2460 remain), the rest become 9.9-unit billboards on a 990-unit sphere.
+Shader `Hidden/uSky/Stars` (Blend One OneMinusSrcAlpha with alpha 0: added;
+ZTest LEqual; queue Geometry+502, after the skybox and the fog effect):
+centred on the camera; twinkle from an 8-entry table indexed by
+`frac((frac(256 y) + 1)(time/10 + Δt) + frac(256 x))`; brightness
+`2^((3.94 lum − 7.94) × 0.929)` × star intensity × night factor; nothing
+below the camera's horizon; hidden behind the planet and the moon disc,
+dimmed by clouds (`1 − saturate(5 × cloud × horizon fade)`); a soft disc
+`colour e^(−r²) + 5 lum e^(−10 r²)`. Drawn while the sun is below 0.2.
+
 ## How we render it (M8c2)
 
 `sky_dome.rs` builds the uniform from the scene values every frame (cloud
 rotation from the time since start-up, the planet from `--time` on day 0).
 One pass draws the sky map and its mips, another the dome where the depth
 buffer is empty, before the fog pass. Our sky value 1 = one game light
-unit (see `docs/formats/water.md`). **Not done:** stars (`StarField`, a
-mesh drawn at night), the eclipse/end-sequence and rocket effects; the
+unit (see `docs/formats/water.md`). Stars: `stars.rs`/`stars.wgsl`, after the fog, before the water (M8c5).
+**Not done:** the eclipse/end-sequence and rocket effects; the
 planet's texture detail is chosen from its size on screen.

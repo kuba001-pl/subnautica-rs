@@ -118,12 +118,12 @@ pub fn water_surface(assets: &Assets) -> Result<WaterSurfaceData> {
     })
 }
 
-/// Resource manager class id.
+/// Resource manager and text asset class ids.
 const RESOURCE_MANAGER: i32 = 147;
+const TEXT_ASSET: i32 = 49;
 
-/// Every texture `Resources.Load` finds under `path` (lower case), e.g. the
-/// water caustics `data/watercaustics00`.
-pub fn resource_texture(assets: &Assets, path: &str) -> Result<TerrainTexture> {
+/// The objects `Resources.Load` finds under `path` (lower case).
+fn resources(assets: &Assets, path: &str) -> Result<(crate::FileRef, Vec<sn_unity::PPtr>)> {
     let ggm = assets.standalone("globalgamemanagers")?;
     let info = ggm
         .objects()
@@ -135,17 +135,43 @@ pub fn resource_texture(assets: &Assets, path: &str) -> Result<TerrainTexture> {
         .ok_or("globalgamemanagers: ResourceManager unreadable")?;
     let container = sn_unity::parse_resource_container(data, ggm.file().big_endian)
         .map_err(|e| format!("ResourceManager: {e}"))?;
-    for (_, pptr) in container
+    let found = container
         .iter()
         .filter(|(p, _)| p.eq_ignore_ascii_case(path))
-    {
-        if let Some(object) = assets.resolve(&ggm, *pptr)?
+        .map(|(_, pptr)| *pptr)
+        .collect();
+    Ok((ggm, found))
+}
+
+/// The texture `Resources.Load` finds under `path` (lower case), e.g. the
+/// water caustics `data/watercaustics00`.
+pub fn resource_texture(assets: &Assets, path: &str) -> Result<TerrainTexture> {
+    let (file, found) = resources(assets, path)?;
+    for pptr in found {
+        if let Some(object) = assets.resolve(&file, pptr)?
             && object.data()?.0.class_id == TEXTURE_2D
         {
             return load_texture(assets, &object);
         }
     }
     Err(format!("no texture resource {path}"))
+}
+
+/// The bytes of the text asset `Resources.Load` finds under `path` (lower
+/// case), e.g. uSky's star catalogue `starsdata`.
+pub fn resource_bytes(assets: &Assets, path: &str) -> Result<Vec<u8>> {
+    let (file, found) = resources(assets, path)?;
+    for pptr in found {
+        if let Some(object) = assets.resolve(&file, pptr)? {
+            let (info, data) = object.data()?;
+            if info.class_id == TEXT_ASSET {
+                let (_, bytes) = sn_unity::parse_text_asset(data, object.file.file().big_endian)
+                    .map_err(|e| format!("{path}: {e}"))?;
+                return Ok(bytes);
+            }
+        }
+    }
+    Err(format!("no text resource {path}"))
 }
 
 /// The water caustics frames (`Data/WaterCaustics00…`, `count` of them; the

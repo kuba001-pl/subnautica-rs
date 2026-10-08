@@ -169,6 +169,14 @@ pub fn parse_resource_container(data: &[u8], big_endian: bool) -> Result<Vec<(St
     Ok(container)
 }
 
+/// `TextAsset` (class 49): its name and bytes.
+pub fn parse_text_asset(data: &[u8], big_endian: bool) -> Result<(String, Vec<u8>)> {
+    let mut r = Reader::new(data, big_endian);
+    let name = r.aligned_string()?;
+    let n = r.count(1)?;
+    Ok((name, r.bytes(n)?.to_vec()))
+}
+
 /// `AssetBundle` (class 142): which objects each asset path names.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AssetBundleManifest {

@@ -233,6 +233,9 @@ fn sky_system_values() {
     assert!(d.linear_space && !d.skybox_hdr);
     assert!(!d.clouds_texture.is_null() && !d.planet_texture.is_null());
     assert!(!d.sun_burst_texture.is_null() && !d.moon_texture.is_null());
+    // uSky's star catalogue: 9110 stars × 6 floats.
+    let stars = sn_assets::resource_bytes(&assets, "starsdata").unwrap();
+    assert_eq!(stars.len(), 9110 * 6 * 4);
     let t = sn_assets::sky_textures(&assets, &manager).unwrap();
     for (what, tex) in [
         ("planet", &t.planet),

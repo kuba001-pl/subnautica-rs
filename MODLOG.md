@@ -2,6 +2,33 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-08 — M8c5: stars
+
+**What:** decoded uSky's star field (`StarField`, the `StarsData`
+catalogue in the game's resources, shader `Hidden/uSky/Stars`;
+`docs/formats/sky.md` § Stars) and ported it: `sn-unity::parse_text_asset`,
+`sn-assets::resource_bytes`, `stars.rs` (catalogue, unit test),
+`stars.wgsl` + a pass in `sky_dome.rs` (after the fog, before the water).
+
+**Verified (2026-10-08):** catalogue 218,640 bytes (9110 × 6 floats;
+real-data test); 2460 stars kept; `out/m8c5-stars.png` (midnight: stars,
+the planet). Tests, clippy, fmt: pass. **Not compared** with matched game
+shots; ours look fainter than the user's (the game's bloom is not ported).
+
+## 2026-10-08 — M8c5 (first pass): light shafts under water
+
+**What:** decoded the game's `WaterSunShaftsOnCamera` (class, the scene's
+values, both shader passes; `docs/formats/lighting.md` § Light shafts) and
+ported it: `sun_shafts.rs` + `sun_shafts.wgsl` (half-resolution ray march
+through the caustics projected along the sun, added after the water
+surface). Also: `cast` is reserved in WGSL (again).
+
+**Verified (2026-10-08):** `out/m8c5-shafts-sun.png`: faint vertical
+shafts in the middle distance looking towards the sun; GPU 0.37 ms. Tests,
+clippy, fmt: pass. **Not compared** with matched game screenshots; weaker
+than the user's kelp shot, likely because the game's shafts are cut by the
+sun's shadows (not ported yet, M8c6).
+
 ## 2026-10-08 — M8c4 (first pass): High quality waves (FFT)
 
 **What:** the user plays with Water quality High (also bloom + lens dirt,

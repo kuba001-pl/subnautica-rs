@@ -318,6 +318,10 @@ fn update_water_surface(
     }
 }
 
+/// The water surface pass, for ordering other passes after it.
+#[derive(SystemSet, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct WaterSurfacePass;
+
 pub struct WaterSurfacePlugin;
 
 impl Plugin for WaterSurfacePlugin {
@@ -366,6 +370,7 @@ impl Plugin for WaterSurfacePlugin {
                 Core3d,
                 water_surface_pass
                     .in_set(Core3dSystems::PostProcess)
+                    .in_set(WaterSurfacePass)
                     .after(WaterFogPass)
                     .before(tonemapping),
             );

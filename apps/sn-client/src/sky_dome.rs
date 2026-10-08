@@ -4,6 +4,7 @@
 //! rendered each frame into the 256² sky map the water surface reflects.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use bevy::core_pipeline::{Core3d, Core3dSystems, FullscreenShader};
 use bevy::prelude::*;
@@ -11,7 +12,8 @@ use bevy::render::diagnostic::RecordDiagnostics;
 use bevy::render::extract_resource::{ExtractResource, ExtractResourcePlugin};
 use bevy::render::render_asset::RenderAssets;
 use bevy::render::render_resource::binding_types::{
-    sampler, texture_2d, texture_depth_2d, texture_depth_2d_multisampled, uniform_buffer,
+    sampler, storage_buffer_read_only_sized, texture_2d, texture_depth_2d,
+    texture_depth_2d_multisampled, uniform_buffer,
 };
 use bevy::render::render_resource::{
     AddressMode, BindGroupEntries, BindGroupLayoutDescriptor, BindGroupLayoutEntries,
@@ -20,6 +22,10 @@ use bevy::render::render_resource::{
     RenderPassDescriptor, RenderPipelineDescriptor, Sampler, SamplerBindingType, SamplerDescriptor,
     ShaderStages, ShaderType, StoreOp, TextureDescriptor, TextureDimension, TextureFormat,
     TextureSampleType, TextureUsages, TextureView, TextureViewDescriptor, UniformBuffer,
+};
+use bevy::render::render_resource::{
+    BlendComponent, BlendFactor, BlendOperation, BlendState, Buffer, BufferInitDescriptor,
+    BufferUsages, PrimitiveState, VertexState,
 };
 use bevy::render::renderer::{RenderContext, RenderDevice, RenderQueue, ViewQuery};
 use bevy::render::texture::GpuImage;
@@ -31,8 +37,10 @@ use sn_assets::SkyTextures;
 use sn_unity::SkyManager;
 
 use crate::sky::{SkyState, beta_r, linear};
+use crate::stars::GpuStar;
 use crate::textures::to_image;
 use crate::water::{WaterFogPass, WaterWorld};
+use crate::water_surface::WaterSurfacePass;
 
 /// Size of the game's sky map.
 const SKYMAP_SIZE: u32 = 256;
@@ -225,6 +233,26 @@ pub struct SkyWorld {
     pub day: f64,
 }
 
+/// uSky's star catalogue, read at start-up (`stars.rs`).
+#[derive(Resource)]
+pub struct PendingStars(pub Option<Vec<GpuStar>>);
+
+#[derive(Resource, Clone, ExtractResource)]
+struct StarCatalogue(Arc<Vec<GpuStar>>);
+
+/// Uniform of the stars; must match `Stars` in `stars.wgsl`.
+#[derive(Resource, Clone, Copy, Debug, Default, ShaderType, ExtractResource)]
+pub struct StarsUniform {
+    params: Vec4,
+}
+
+fn create_stars(mut commands: Commands, mut pending: ResMut<PendingStars>) {
+    if let Some(stars) = pending.0.take() {
+        info!("sky: {} stars", stars.len());
+        commands.insert_resource(StarCatalogue(Arc::new(stars)));
+    }
+}
+
 #[derive(Resource, Clone, ExtractResource)]
 struct SkyImages {
     planet: Handle<Image>,
@@ -266,7 +294,22 @@ fn update_sky(
     state: Res<SkyState>,
     water: Res<WaterWorld>,
     mut uniform: ResMut<SkyDomeUniform>,
+    mut stars: ResMut<StarsUniform>,
 ) {
+    // `uSkyManager`: stars are drawn while the sun is below 0.2, at
+    // `StarIntensity × NightTime` (linear colour space).
+    let d = &world.manager.dome;
+    let brightness = if state.dome.sun_dir.y < 0.2 {
+        d.star_intensity * state.dome.night
+    } else {
+        0.0
+    };
+    stars.params = Vec4::new(
+        brightness,
+        time.elapsed_secs() / 20.0,
+        time.delta_secs(),
+        crate::stars::QUAD_SIZE,
+    );
     *uniform = dome_uniform(
         &world.manager,
         &state,
@@ -282,12 +325,20 @@ impl Plugin for SkyDomePlugin {
     fn build(&self, app: &mut App) {
         bevy::shader::load_shader_library!(app, "sky_common.wgsl");
         bevy::asset::embedded_asset!(app, "sky_dome.wgsl");
+        bevy::asset::embedded_asset!(app, "stars.wgsl");
         app.add_plugins((
             ExtractResourcePlugin::<SkyDomeUniform>::default(),
             ExtractResourcePlugin::<SkyImages>::default(),
+            ExtractResourcePlugin::<StarCatalogue>::default(),
+            ExtractResourcePlugin::<StarsUniform>::default(),
         ))
         .init_resource::<SkyDomeUniform>()
+        .init_resource::<StarsUniform>()
         .add_systems(Startup, create_images.run_if(resource_exists::<PendingSky>))
+        .add_systems(
+            Startup,
+            create_stars.run_if(resource_exists::<PendingStars>),
+        )
         .add_systems(
             Update,
             update_sky
@@ -299,6 +350,7 @@ impl Plugin for SkyDomePlugin {
             return;
         };
         render_app
+            .init_resource::<StarsGpu>()
             .add_systems(RenderStartup, init_gpu)
             .add_systems(
                 Render,
@@ -309,12 +361,241 @@ impl Plugin for SkyDomePlugin {
             )
             .add_systems(
                 Core3d,
-                sky_pass
-                    .in_set(Core3dSystems::PostProcess)
-                    .in_set(SkyPass)
-                    .before(WaterFogPass),
+                (
+                    sky_pass
+                        .in_set(Core3dSystems::PostProcess)
+                        .in_set(SkyPass)
+                        .before(WaterFogPass),
+                    // The game draws its stars in the transparent queue:
+                    // after the fog, before the water.
+                    stars_pass
+                        .in_set(Core3dSystems::PostProcess)
+                        .after(WaterFogPass)
+                        .before(WaterSurfacePass),
+                ),
+            )
+            .add_systems(
+                Render,
+                (
+                    prepare_stars.in_set(RenderSystems::PrepareResources),
+                    prepare_star_pipelines.in_set(RenderSystems::Prepare),
+                ),
             );
     }
+}
+
+/// The stars' GPU state: pipelines, uniform, catalogue buffer.
+#[derive(Resource, Default)]
+struct StarsGpu {
+    layouts: Option<[BindGroupLayoutDescriptor; 2]>,
+    shader: Handle<Shader>,
+    pipelines: HashMap<(TextureFormat, bool), CachedRenderPipelineId>,
+    uniform: UniformBuffer<StarsUniform>,
+    catalogue: Option<(Buffer, u32)>,
+}
+
+fn prepare_stars(
+    mut gpu: ResMut<StarsGpu>,
+    uniform: Option<Res<StarsUniform>>,
+    catalogue: Option<Res<StarCatalogue>>,
+    device: Res<RenderDevice>,
+    queue: Res<RenderQueue>,
+) {
+    if let Some(u) = uniform {
+        gpu.uniform.set(*u);
+        gpu.uniform.write_buffer(&device, &queue);
+    }
+    if gpu.catalogue.is_none()
+        && let Some(c) = catalogue
+    {
+        let bytes: Vec<u8> = c.0.iter().flatten().flat_map(|f| f.to_le_bytes()).collect();
+        let buffer = device.create_buffer_with_data(&BufferInitDescriptor {
+            label: Some("star_catalogue"),
+            contents: &bytes,
+            usage: BufferUsages::STORAGE,
+        });
+        gpu.catalogue = Some((buffer, c.0.len() as u32));
+    }
+}
+
+fn prepare_star_pipelines(
+    mut commands: Commands,
+    cache: Res<PipelineCache>,
+    asset_server: Res<AssetServer>,
+    mut gpu: ResMut<StarsGpu>,
+    views: Query<(Entity, &ExtractedView, &Msaa), With<ViewTarget>>,
+) {
+    if gpu.layouts.is_none() {
+        let layout = |multisampled: bool| {
+            let depth = if multisampled {
+                texture_depth_2d_multisampled()
+            } else {
+                texture_depth_2d()
+            };
+            let float = || texture_2d(TextureSampleType::Float { filterable: true });
+            BindGroupLayoutDescriptor::new(
+                "stars_layout",
+                &BindGroupLayoutEntries::sequential(
+                    ShaderStages::VERTEX_FRAGMENT,
+                    (
+                        uniform_buffer::<SkyDomeUniform>(false),
+                        uniform_buffer::<ViewUniform>(true),
+                        uniform_buffer::<StarsUniform>(false),
+                        storage_buffer_read_only_sized(false, None),
+                        float(),
+                        float(),
+                        sampler(SamplerBindingType::Filtering),
+                        sampler(SamplerBindingType::Filtering),
+                        depth,
+                    ),
+                ),
+            )
+        };
+        gpu.layouts = Some([layout(false), layout(true)]);
+        gpu.shader = asset_server.load("embedded://sn_client/stars.wgsl");
+    }
+    let Some(layouts) = gpu.layouts.clone() else {
+        return;
+    };
+    for (entity, view, msaa) in &views {
+        let multisampled = msaa.samples() > 1;
+        let key = (view.target_format, multisampled);
+        let id = match gpu.pipelines.get(&key) {
+            Some(id) => *id,
+            None => {
+                let defs: Vec<_> = if multisampled {
+                    vec!["MULTISAMPLED".into()]
+                } else {
+                    Vec::new()
+                };
+                // The game's state: Blend One OneMinusSrcAlpha with alpha 0,
+                // i.e. added.
+                let add = BlendComponent {
+                    src_factor: BlendFactor::One,
+                    dst_factor: BlendFactor::One,
+                    operation: BlendOperation::Add,
+                };
+                let id = cache.queue_render_pipeline(RenderPipelineDescriptor {
+                    label: Some("stars_pipeline".into()),
+                    layout: vec![layouts[usize::from(multisampled)].clone()],
+                    vertex: VertexState {
+                        shader: gpu.shader.clone(),
+                        shader_defs: defs.clone(),
+                        entry_point: Some("vertex".into()),
+                        buffers: Vec::new(),
+                    },
+                    primitive: PrimitiveState {
+                        cull_mode: None,
+                        ..default()
+                    },
+                    fragment: Some(FragmentState {
+                        shader: gpu.shader.clone(),
+                        shader_defs: defs,
+                        entry_point: Some("fragment".into()),
+                        targets: vec![Some(ColorTargetState {
+                            format: view.target_format,
+                            blend: Some(BlendState {
+                                color: add,
+                                alpha: add,
+                            }),
+                            write_mask: ColorWrites::ALL,
+                        })],
+                    }),
+                    ..default()
+                });
+                gpu.pipelines.insert(key, id);
+                id
+            }
+        };
+        commands
+            .entity(entity)
+            .insert(StarsPipelineId(id, multisampled));
+    }
+}
+
+#[derive(Component)]
+struct StarsPipelineId(CachedRenderPipelineId, bool);
+
+#[allow(clippy::too_many_arguments, clippy::type_complexity)] // a render system
+fn stars_pass(
+    view: ViewQuery<(
+        &ViewTarget,
+        &ViewDepthTexture,
+        &ViewUniformOffset,
+        &StarsPipelineId,
+    )>,
+    cache: Res<PipelineCache>,
+    gpu: Res<StarsGpu>,
+    sky: Res<SkyPipelines>,
+    map: Res<SkyMap>,
+    images: Option<Res<SkyImages>>,
+    gpu_images: Res<RenderAssets<GpuImage>>,
+    view_uniforms: Res<ViewUniforms>,
+    device: Res<RenderDevice>,
+    mut ctx: RenderContext,
+) {
+    let (target, depth, view_offset, id) = view.into_inner();
+    let (Some(images), Some((catalogue, count)), Some(layouts)) =
+        (images, gpu.catalogue.as_ref(), gpu.layouts.as_ref())
+    else {
+        return;
+    };
+    let (Some(moon), Some(clouds)) = (gpu_images.get(&images.moon), gpu_images.get(&images.clouds))
+    else {
+        return;
+    };
+    let Some(pipeline) = cache.get_render_pipeline(id.0) else {
+        return;
+    };
+    let (Some(dome), Some(view_binding), Some(stars)) = (
+        map.uniform.binding(),
+        view_uniforms.uniforms.binding(),
+        gpu.uniform.binding(),
+    ) else {
+        return;
+    };
+    let group = device.create_bind_group(
+        "stars_bind_group",
+        &cache.get_bind_group_layout(&layouts[usize::from(id.1)]),
+        &BindGroupEntries::sequential((
+            dome,
+            view_binding,
+            stars,
+            catalogue.as_entire_binding(),
+            &moon.texture_view,
+            &clouds.texture_view,
+            &sky.repeat,
+            &sky.clamp,
+            depth.view(),
+        )),
+    );
+    let diagnostics = ctx.diagnostic_recorder();
+    let diagnostics = diagnostics.as_deref();
+    let span = diagnostics.time_span(ctx.command_encoder(), "stars");
+    {
+        let mut pass = ctx
+            .command_encoder()
+            .begin_render_pass(&RenderPassDescriptor {
+                label: Some("stars"),
+                color_attachments: &[Some(RenderPassColorAttachment {
+                    view: target.main_texture_view(),
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: Operations {
+                        load: LoadOp::Load,
+                        store: StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+        pass.set_pipeline(pipeline);
+        pass.set_bind_group(0, &group, &[view_offset.offset]);
+        pass.draw(0..6, 0..*count);
+    }
+    span.end(ctx.command_encoder());
 }
 
 /// The sky pass (dome and sky map), for ordering other passes after it.

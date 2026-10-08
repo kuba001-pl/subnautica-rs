@@ -28,7 +28,7 @@ pub use mesh::{Channel, Mesh, MeshFilter, MeshGeometry, SubMesh, channel};
 pub use objects::{Material, MonoBehaviourHeader, MonoScript, PPtr, TexEnv};
 pub use prefab::{
     AssetBundleManifest, GameObject, Lod, LodGroup, MeshRenderer, TransformNode,
-    parse_resource_container,
+    parse_resource_container, parse_text_asset,
 };
 pub use serialized::{
     External, ObjectInfo, SUPPORTED_VERSIONS, SerializedFile, SerializedType, TypeTreeNode,
