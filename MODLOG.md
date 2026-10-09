@@ -2,6 +2,119 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-09 — M7e2 follow-up: Noisey Wave's sway, UBER grass sky
+
+**What:** after the user's review of M7e (closing two of its open
+points; the rest saved as M7e3 and M4b in `docs/DESIGN.md`):
+1. Noisey Wave's sway (type 243): read its vertex program again and the
+   game's chunk placement (`WorldStreaming/MeshBuilder`: grass vertices
+   are in the chunk's space, origin `cellId × 16` at level 0). `sn_terrain::
+   build_grass` now keeps each vertex's position in its chunk
+   (`chunk_local`); the client puts its part along the material's
+   `_ObjectUp` in the second uv set; `grass.wgsl` adds the sway along
+   `_WorldWaveDir` with the program's 2D simplex noise.
+2. MarmosetUBER grass (4 types) got **no** sky before (Marmoset defaults:
+   no ambient), not the global one as written in the M7e2 entry. Checked
+   the game: the pooled grass piece (`TerrainPoolManager.chunkGrassPrefab`)
+   has no `SkyApplier`, so the global sky is right. `objects.rs`
+   `apply_sky` (pulled out of `object_material`, unchanged);
+   `TerrainLook::set_global_sky` is called when the objects' worker has
+   read the skies and updates the grass materials made and still to make.
+
+**Verified (2026-10-09):**
+1. Unit tests: chunk-local positions (corner a multiple of 16, bases at
+   the ground); the noise within ±1, smooth and varied; the sway at most
+   `_WaveAmount` × height, along the wave direction only; the shader's
+   constants; Noisey Wave material values. Workspace tests, clippy, fmt:
+   pass.
+2. Client at the lifepod: log "4 MarmosetUBER grass materials lit with
+   the global sky (found)", 0 warnings or errors, 300 frames mean
+   12.27 ms (11.72 ms in the M7e2 entry's run: not compared A/B in
+   the same session).
+3. Type 243 found with a throwaway probe of the octrees: 4 top voxels in
+   batches y 14–19, all in 9-18-12; `sn-inspect grass 9 18 12`: 8 tufts.
+   Close-up run there: the shader compiles, no errors. **Not checked by
+   eye**: the red grass is hidden in dense seaweed that also sways.
+
+**Dead end:** a first noise test divided by 130 twice and failed; the
+noise itself was right (checked by printing values).
+
+## 2026-10-09 — M7e2: the game's grass shaders
+
+**What:** decoded the deferred programs of `UWE/SIG Terrain Grass`,
+`UWE/SIG` and `UWE/SIG AlphaCutout + Noisey Wave`
+(`docs/formats/terrain-materials.md` § Grass shaders) and ported them:
+`grass_look.rs` + `grass.wgsl` (vertex waving from the vertex colours,
+world-space mask, top/bottom tints with the height gradient, cutoff, SIG
+specular/gloss/glow, the game's light pass). `sn-assets::GrassLook` now
+knows its shader (`GrassShader`, by properties), the SIG, mask, specular
+and glow maps and the parsed material. MarmosetUBER grass (4 types) is
+drawn with our object shader: `objects.rs` `material_desc` (pulled out of
+the worker's material loading, unchanged) and `object_material` shared.
+Not ported: Noisey Wave's sway (type 243; ≤ 8 cm, needs the game's chunk
+origin), biome skies for UBER grass (global sky).
+
+**Verified (2026-10-09):**
+1. Real-data test `terrain_materials_resolve_and_decode`: shader per
+   grass type as UnityPy names them (48 Terrain Grass, 6 + 1 `UWE/SIG`,
+   1 Noisey Wave, 4 MarmosetUBER); textures 287 = 211 terrain + 76 grass.
+   All 11 real-data tests of the touched crates, unit tests (3 new: wave
+   formula and shader constants, material values), clippy, fmt: pass.
+2. The objects are unchanged by the refactor: lifepod census before and
+   after equal (1,531/1,567 UBER materials, 16,216 entities, 1,619
+   materials, 0 warnings).
+3. Benchmarks with / without grass: lifepod 11.72 / 11.48 ms; Grassy
+   Plateaus 9.25 / 8.97 ms; lifepod at midnight 11.84 / 11.44 ms. Log:
+   60 grass materials, 56 with the grass shader, 4 with the object shader.
+4. Waving: two runs of the same view at different times differ in 9.5 %
+   of the seaweed region's pixels with grass, 2.9 % without (sand: 13.1 /
+   14.4 %, the caustics). Seaweed region mean RGB 87.7/85.5/83.1 (first
+   pass) → 85.4/85.9/84.3 (darker bases). Screenshots
+   `out/m7e2-start.png`, `out/m7e2-plateaus.png`, `out/m7e2-night.png`.
+   **Not compared** with the game.
+
+**Dead ends:** the keyword lists our disassembly script prints next to
+each program can belong to a neighbour (as noted in M8c7); the `UWE/SIG`
+variant with the SIG map was found by its constant table instead. A
+first script edit of `objects.rs` stopped half-way (an anchor changed by
+rustfmt) and was finished by hand; the census above checks the result.
+
+## 2026-10-09 — M7e1: terrain grass
+
+**What:** the 60 block types with grass now grow it, placed by the game's
+rules (`docs/formats/terrain-materials.md` § Grass): 4 spots per face,
+tilt range, density or Perlin noise, jitter, spin, Z-up turn, scale,
+the per-chunk budget of 10,000 vertices/triangles with the raised
+reduction, vertex colour/height. New: `sn-unity::GrassSettings` (all of
+`VoxelandBlockType`'s grass fields), `sn-assets::TerrainGrass` /
+`GrassLook` (mesh geometry, textures, material values) and
+`TerrainMaterials::grass_types`, `sn-terrain::build_grass` (pure, 7 unit
+tests), `sn-inspect grass X Y Z` and a grass census in `terrain-materials`.
+The client builds one merged mesh per (batch, type) in the terrain worker
+at level of detail 0 and draws it with a first-pass object material, no
+shadow casting; `--no-grass`. Dependency: `sn-assets` now depends on
+`sn-terrain` (ours; for `grass_types`).
+
+**Verified (2026-10-09):**
+1. `sn-inspect grass 12 18 12` twice: 7,826 tufts, 608,726 vertices,
+   752,923 triangles, same hash `73e29a516d24d7e8`.
+2. Real-data test `terrain_materials_resolve_and_decode` (updated): 60
+   grass types; textures 261 = 211 terrain + 50 grass-only; mesh sizes of
+   `coral_reef_grass_03` (18/18) and `Coral_reef_small_deco_07` (125/516)
+   equal UnityPy's. All 11 real-data tests of the touched crates, unit
+   tests, clippy, fmt: pass.
+3. Benchmarks (two runs with grass, one without): lifepod 34,469 tufts,
+   2,891,017 triangles in 8 batches; 11.62 / 11.68 ms vs 11.46 ms
+   without. Grassy Plateaus (−700 −94 −300): 41,007 tufts, 1,015,413
+   triangles; 9.09 / 9.04 ms vs 8.80 ms. Counts equal on both runs.
+   Screenshots `out/m7e-start.png` (green coral grass on the plateau tops
+   and the sand), `out/m7e-plateaus.png` vs `m7e-plateaus-nograss.png`
+   (the red seaweed fields). **Not compared** with the game; the grass
+   stops ~100 m out (the game also draws its level 1 with reduction 0.5).
+
+**Found:** four grass types (52, 76, 83, 251) use coral materials with
+MarmosetUBER keywords (`_Cutoff` 0), not the grass shader; noted for M7e2.
+
 ## 2026-10-09 — M7d: spawn slots filled
 
 **What:** the cells' 90,289 `EntitySlotsPlaceholder`s are filled the way

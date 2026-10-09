@@ -6,6 +6,10 @@
 //! join without gaps (see the chunking rule in `sn-mesh`). Different levels
 //! leave small cracks; hide them with `sn_mesh::add_skirts`.
 
+mod grass;
+
+pub use grass::{GrassBudget, GrassMesh, GrassRule, GrassTemplate, GrassType, build_grass};
+
 use sn_mesh::{Field, Mesh, surface_nets};
 use sn_octree::{Batch, OCTREE_SIZE, Voxel};
 use sn_world::{BatchCoord, WorldIndex};

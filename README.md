@@ -44,7 +44,9 @@ Tested on Windows 11 with game build 10 (Steam):
   plants, rocks, wrecks; about 15,000 around the lifepod) streamed in with
   it, plus what the game's spawn slots fill with when a new world starts
   (resource outcrops, eggs, fragments; picked with a fixed seed,
-  `--slot-seed`), seen through the game's own water fog model (colours and distances
+  `--slot-seed`), and the grass the terrain grows within ~100 m (sea grass,
+  the Grassy Plateaus' red seaweed, small corals; the game's placement
+  rules and grass shader: tints, height gradient, waving), seen through the game's own water fog model (colours and distances
   per biome) under the game's sun and sky light for a time of day
   (`--time`), with the game's water surface (simulated or baked waves, foam,
   reflection, refraction, sun glint; from above and below) under the
@@ -62,8 +64,9 @@ shadows). Flying from the lifepod
 
 The water clip map (no water inside the lifepod and bases,
 shore foam); water settings per pixel (the
-camera's are used everywhere); the Aurora, Lifepod 5, terrain grass; for
-world objects: reflections of the biome
+camera's are used everywhere); the Aurora, Lifepod 5; terrain grass
+beyond ~100 m, and grass tufts in the game's exact spots (the amount and
+spread follow its rules; our own random numbers); for world objects: reflections of the biome
 sky's cube map, cave/interior skies chosen by atmosphere volumes,
 animation (waving plants), skinned meshes, creatures (including the
 ~100,000 the spawn slots would add); player, audio,

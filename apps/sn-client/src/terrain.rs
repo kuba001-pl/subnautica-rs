@@ -13,10 +13,15 @@ use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
 use sn_install::GameData;
 use sn_mesh::{LayerSettings, add_skirts, build_layers};
-use sn_terrain::{MAX_LOD, Neighbourhood, TerrainBatch, batch_mesh, batch_voxels, debug_colour};
+use sn_terrain::{
+    GrassBudget, GrassMesh, GrassType, MAX_LOD, Neighbourhood, TerrainBatch, batch_mesh,
+    batch_voxels, build_grass, debug_colour,
+};
 use sn_world::{BatchCoord, WorldIndex, voxel_to_world, world_to_voxel};
 
-use crate::terrain_look::{TerrainLook, TerrainMaterial};
+use crate::grass_look::GrassMaterial;
+use crate::object_look::ObjectMaterial;
+use crate::terrain_look::{GrassHandle, TerrainLook, TerrainMaterial};
 
 /// Distances (metres from the camera to the nearest point of a batch) up to
 /// which each level of detail is used. Beyond the last, batches unload.
@@ -55,9 +60,59 @@ struct Job {
     requested: Instant,
 }
 
+/// The grass of one grass type in one batch, in Bevy coordinates.
+pub struct GrassPart {
+    pub ty: u8,
+    pub tufts: usize,
+    pub positions: Vec<[f32; 3]>,
+    pub normals: Vec<[f32; 3]>,
+    pub tangents: Vec<[f32; 4]>,
+    pub uvs: Vec<[f32; 2]>,
+    pub colors: Vec<[f32; 4]>,
+    /// In the game's grass object (its chunk), Unity axes.
+    pub chunk_local: Vec<[f32; 3]>,
+    pub indices: Vec<u32>,
+}
+
+impl GrassPart {
+    fn from_mesh(g: GrassMesh) -> GrassPart {
+        GrassPart {
+            ty: g.ty,
+            tufts: g.tufts,
+            positions: g
+                .positions
+                .iter()
+                .map(|&p| unity_to_bevy(voxel_to_world(p)))
+                .collect(),
+            normals: g.normals.iter().map(|&n| unity_to_bevy(n)).collect(),
+            // Mirroring flips the bitangent: negate w too.
+            tangents: g
+                .tangents
+                .iter()
+                .map(|t| [t[0], t[1], -t[2], -t[3]])
+                .collect(),
+            uvs: g.uvs,
+            colors: g.colors,
+            chunk_local: g.chunk_local,
+            // Mirroring z flips the winding.
+            indices: g
+                .indices
+                .chunks_exact(3)
+                .flat_map(|t| [t[0], t[2], t[1]])
+                .collect(),
+        }
+    }
+}
+
+/// Seed of the grass scatter (the game's own draws differ per chunk load
+/// anyway; ours are fixed).
+const GRASS_SEED: u64 = 1;
+
 struct Finished {
     job: Job,
     parts: Vec<TerrainPart>,
+    /// Only at the finest level of detail.
+    grass: Vec<GrassPart>,
     mesh_ms: f32,
 }
 
@@ -125,7 +180,7 @@ impl Shared {
         Ok(batch)
     }
 
-    fn mesh(&self, job: Job) -> Result<Vec<TerrainPart>, String> {
+    fn mesh(&self, job: Job) -> Result<(Vec<TerrainPart>, Vec<GrassPart>), String> {
         let mut around = Vec::with_capacity(27);
         for dz in -1..=1 {
             for dy in -1..=1 {
@@ -143,14 +198,26 @@ impl Shared {
         };
         let neighbourhood = Neighbourhood::new(job.coord, batch_voxels(&self.index), lookup);
         let Some(mut mesh) = batch_mesh(&neighbourhood, job.lod) else {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), Vec::new()));
+        };
+        // Grass grows on the full-resolution surface (the game's finest
+        // clipmap level, no reduction), before the skirts are added.
+        let grass = match &self.blocks {
+            Some(blocks) if job.lod == 0 && !blocks.grass.is_empty() => {
+                build_grass(&mesh, &blocks.grass, &GrassBudget::default(), GRASS_SEED)
+                    .into_iter()
+                    .map(GrassPart::from_mesh)
+                    .collect()
+            }
+            _ => Vec::new(),
         };
         // Skirts hide cracks next to batches at another level of detail.
         add_skirts(&mut mesh, 2.0 * (1u32 << job.lod) as f32);
-        Ok(match &self.blocks {
+        let parts = match &self.blocks {
             Some(blocks) => layered_parts(&mesh, blocks, job.lod),
             None => split_by_material(&mesh),
-        })
+        };
+        Ok((parts, grass))
     }
 }
 
@@ -170,9 +237,10 @@ fn worker(shared: Arc<Shared>, tx: Sender<WorkerMessage>) {
         };
         let start = Instant::now();
         let message = match shared.mesh(job) {
-            Ok(parts) => WorkerMessage::Finished(Finished {
+            Ok((parts, grass)) => WorkerMessage::Finished(Finished {
                 job,
                 parts,
+                grass,
                 mesh_ms: start.elapsed().as_secs_f32() * 1000.0,
             }),
             Err(e) => WorkerMessage::Error(e),
@@ -188,6 +256,8 @@ struct Shown {
     lod: u32,
     entities: Vec<Entity>,
     triangles: usize,
+    grass_tufts: usize,
+    grass_triangles: usize,
 }
 
 #[derive(Default, Clone, Copy)]
@@ -200,6 +270,9 @@ pub struct StreamStats {
     pub queued: usize,
     pub in_flight: usize,
     pub cached_batches: usize,
+    /// Terrain grass on screen (not in `shown_triangles`).
+    pub grass_tufts: usize,
+    pub grass_triangles: usize,
 }
 
 #[derive(Resource)]
@@ -276,6 +349,8 @@ impl TerrainStreamer {
         for shown in self.shown.values() {
             stats.shown_triangles += shown.triangles;
             stats.shown_meshes += shown.entities.len();
+            stats.grass_tufts += shown.grass_tufts;
+            stats.grass_triangles += shown.grass_triangles;
             stats.per_lod[shown.lod as usize] += 1;
         }
         stats
@@ -417,6 +492,8 @@ pub struct BlockSettings {
     pub layer: [i32; 256],
     /// The material's `_Gloss`.
     pub gloss: [f32; 256],
+    /// Grass per type id (`sn_terrain::build_grass`); empty: no grass.
+    pub grass: Arc<Vec<Option<GrassType>>>,
 }
 
 /// The game's chunk size in voxels (`Voxeland.chunkSize` in the main scene);
@@ -545,6 +622,8 @@ pub fn stream(
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut terrain_materials: ResMut<Assets<TerrainMaterial>>,
     mut look: Option<ResMut<TerrainLook>>,
+    mut object_materials: ResMut<Assets<ObjectMaterial>>,
+    mut grass_materials: ResMut<Assets<GrassMaterial>>,
     camera: Query<&Transform, With<Camera3d>>,
     mut exit: MessageWriter<AppExit>,
 ) {
@@ -650,6 +729,67 @@ pub fn stream(
             }
             entities.push(entity);
         }
+        // Grass: no shadows (the game's grass renderers cast none).
+        let (mut grass_tufts, mut grass_triangles) = (0, 0);
+        for part in done.grass {
+            let Some(look) = look.as_mut() else {
+                continue;
+            };
+            let Some(material) =
+                look.grass_material(part.ty, &mut grass_materials, &mut object_materials)
+            else {
+                continue;
+            };
+            grass_tufts += part.tufts;
+            grass_triangles += part.indices.len() / 3;
+            uploaded += part.indices.len() / 3;
+            let mut mesh = Mesh::new(
+                PrimitiveTopology::TriangleList,
+                RenderAssetUsages::RENDER_WORLD,
+            );
+            mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, part.positions);
+            mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, part.normals);
+            mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, part.uvs);
+            if !part.tangents.is_empty() {
+                mesh.insert_attribute(Mesh::ATTRIBUTE_TANGENT, part.tangents);
+            }
+            let entity = match material {
+                GrassHandle::Grass(material) => {
+                    // grass.wgsl: wave direction, amount and height in the
+                    // colours; in the second uv set the position along
+                    // `_ObjectUp` in the game's grass object (Noisey Wave
+                    // sways by it; the shader puts the world mask there).
+                    let up = look.grass_object_up(part.ty);
+                    let along: Vec<[f32; 2]> = part
+                        .chunk_local
+                        .iter()
+                        .map(|l| [l[0] * up[0] + l[1] * up[1] + l[2] * up[2], 0.0])
+                        .collect();
+                    mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, part.colors);
+                    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_1, along);
+                    mesh.insert_indices(Indices::U32(part.indices));
+                    commands
+                        .spawn((
+                            Mesh3d(meshes.add(mesh)),
+                            MeshMaterial3d(material),
+                            bevy::light::NotShadowCaster,
+                        ))
+                        .id()
+                }
+                GrassHandle::Object(material) => {
+                    // The standard material would multiply vertex colours in.
+                    mesh.insert_indices(Indices::U32(part.indices));
+                    commands
+                        .spawn((
+                            Mesh3d(meshes.add(mesh)),
+                            MeshMaterial3d(material),
+                            bevy::light::NotShadowCaster,
+                        ))
+                        .id()
+                }
+            };
+            entities.push(entity);
+        }
         let latency = job.requested.elapsed().as_secs_f32() * 1000.0;
         streamer.latencies.push((job.lod, latency, done.mesh_ms));
         streamer.shown.insert(
@@ -658,6 +798,8 @@ pub fn stream(
                 lod: job.lod,
                 entities,
                 triangles,
+                grass_tufts,
+                grass_triangles,
             },
         );
     }
@@ -688,6 +830,7 @@ mod tests {
         BlockSettings {
             layer: [0; 256],
             gloss: [0.25; 256],
+            grass: Arc::new(Vec::new()),
         }
     }
 

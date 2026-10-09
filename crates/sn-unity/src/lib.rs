@@ -43,7 +43,7 @@ pub use serialized::{
 };
 pub use sky::{Gradient, SkyDome, SkyLight, SkyManager};
 pub use texture::{StreamingInfo, Texture2D, TextureFormat};
-pub use voxeland::{Voxeland, VoxelandBlockType, VoxelandBlockTypePrefab};
+pub use voxeland::{GrassSettings, Voxeland, VoxelandBlockType, VoxelandBlockTypePrefab};
 pub use water::{BiomeWater, WaterBiomeManager, WaterSettings, WaterscapeVolume};
 pub use water_surface::{AnimationCurve, FftWaves, Keyframe, WaterSurface};
 pub use world_entity::{WorldEntityInfo, parse_world_entity_data};

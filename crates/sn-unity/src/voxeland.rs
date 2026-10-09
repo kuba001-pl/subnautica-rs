@@ -10,10 +10,30 @@ use crate::Result;
 use crate::objects::{MonoBehaviourHeader, PPtr};
 use crate::reader::Reader;
 
+/// How a block type scatters grass over its faces (`VoxelandTypeBase`).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct GrassSettings {
+    /// Share of candidate spots that get grass (or the Perlin threshold).
+    pub density: f32,
+    /// The grass mesh is modelled Z-up (turned −90° about x).
+    pub z_up: bool,
+    /// Random offset within a spot, as a share of its size (at most 0.5).
+    pub jitter: f32,
+    pub min_scale: f32,
+    pub max_scale: f32,
+    /// Allowed slope of the face, in degrees from up.
+    pub min_tilt: i32,
+    pub max_tilt: i32,
+    pub random_spin: bool,
+    /// Placement by Perlin noise over world x/z instead of random draws.
+    pub perlin: bool,
+    pub perlin_period: f32,
+}
+
 /// One entry of `Voxeland.types`, indexed by the octree node type id.
 #[derive(Clone, Debug, PartialEq)]
 pub struct VoxelandBlockType {
-    pub grass_density: f32,
+    pub grass: GrassSettings,
     pub layer: i32,
     /// False for type 0 (empty space) and unused slots.
     pub filled: bool,
@@ -45,16 +65,18 @@ impl Reader<'_> {
 
 impl VoxelandBlockType {
     fn read(r: &mut Reader) -> Result<VoxelandBlockType> {
-        let grass_density = r.f32()?;
-        let _grass_z_up = r.bool_aligned()?;
-        let _grass_jitter = r.f32()?;
-        let _grass_min_scale = r.f32()?;
-        let _grass_max_scale = r.f32()?;
-        let _grass_min_tilt = r.i32()?;
-        let _grass_max_tilt = r.i32()?;
-        let _grass_random_spin = r.bool_aligned()?;
-        let _perlin_grass = r.bool_aligned()?;
-        let _perlin_period = r.f32()?;
+        let grass = GrassSettings {
+            density: r.f32()?,
+            z_up: r.bool_aligned()?,
+            jitter: r.f32()?,
+            min_scale: r.f32()?,
+            max_scale: r.f32()?,
+            min_tilt: r.i32()?,
+            max_tilt: r.i32()?,
+            random_spin: r.bool_aligned()?,
+            perlin: r.bool_aligned()?,
+            perlin_period: r.f32()?,
+        };
         let layer = r.i32()?;
         let filled = r.bool_aligned()?;
         let material = PPtr::read(r)?;
@@ -63,7 +85,7 @@ impl VoxelandBlockType {
         let grass_mesh = PPtr::read(r)?;
         let grass_material = PPtr::read(r)?;
         Ok(VoxelandBlockType {
-            grass_density,
+            grass,
             layer,
             filled,
             material,

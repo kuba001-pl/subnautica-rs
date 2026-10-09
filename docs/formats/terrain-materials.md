@@ -203,3 +203,159 @@ white surface under our sun.
 and we have not checked how it reads the specular target; Bevy's default
 reflectance is used), the lava flow shader, and the game's lighting, fog and
 caustics (M8). DXT1 textures have alpha 1, which reads as full splotch.
+
+## Grass
+
+Code: `crates/sn-terrain/src/grass.rs` (placement, unit tests),
+`crates/sn-assets/src/terrain.rs` (`TerrainGrass`, `grass_types`), client
+`terrain.rs`/`terrain_look.rs`. Inspector: `sn-inspect grass <X> <Y> <Z>`,
+and the grass census at the end of `sn-inspect terrain-materials`.
+
+### Data — confirmed
+
+`VoxelandBlockType` starts with the grass settings (layout above):
+density, Z-up, jitter, min/max scale, min/max tilt (degrees, `i32`),
+random spin, Perlin placement, Perlin period; later `hasGrassAbove`,
+`grassMesh`, `grassMaterial`. **60** of the 233 block types have
+`hasGrassAbove` with a mesh (census; real-data test
+`terrain_materials_resolve_and_decode`): sea grass, red seaweed (the
+Grassy Plateaus), land grass on the islands, small coral decos. Densities
+0.05–1, tilt ranges mostly 0–45°, 5 types use Perlin placement. Grass
+meshes are small (18–852 vertices); sizes equal UnityPy's for
+`coral_reef_grass_03` (18 vertices, 18 indices) and
+`Coral_reef_small_deco_07` (125, 516). Their materials bring 50 textures
+the terrain doesn't use.
+
+Materials — confirmed (shader names of all 36 grass materials read with
+UnityPy; we tell them apart by their properties, real-data test): 29
+materials (48 types) use `UWE/SIG Terrain Grass`; 4 (7 types: 7, 32, 33,
+50, 51, 100, 252) `UWE/SIG`, all but `Coral_reef_small_deco_08` (type 32)
+with the `UWE_SIG` keyword; 1 (type 243) `UWE/SIG AlphaCutout + Noisey
+Wave`; 2 (types 52, 76, 83, 251) MarmosetUBER. 76 textures belong to grass
+materials only.
+
+`clipmaps-high.json`: grass on levels 0 and 1, `grassSettings` reduction
+0 and 0.5, `maxVerts` and `maxTris` 10,000 per chunk.
+
+### How the game places grass
+
+From the game's behaviour (our reading of `VoxelandGrassBuilder` and
+`VoxelandChunk.EnumerateGrass`/`GrassPos`, re-implemented): per chunk of
+16³ voxels, per grass type used in it, each visible face of that type
+whose (smoothed) normal has `cos(maxTilt) ≤ y ≤ cos(minTilt)` is cut into 4
+sub-quads (a corner, the two neighbouring edge midpoints, the centre).
+Each sub-quad is dropped with probability `reduction`, then kept if a
+uniform draw is ≤ density (or, with Perlin placement,
+`PerlinNoise(x / period, z / period) ≤ density` at its centre in voxel
+coordinates). A kept spot gets a tuft at the sub-quad centre plus jitter
+(`min(jitter, 0.5) × (r − ½)` along the two sub-quad edges from its corner),
+rotation `FromToRotation(up, normal) × AngleAxis(random 0–360°, up)` (if
+spin) `× AngleAxis(−90°, right)` (if Z-up), scale uniform in
+[min, max]. Budget: per type, room = min((maxTris·3 − indices used) /
+mesh indices, (min(maxVerts − vertices used, 65,535)) / mesh vertices) ×
+0.8 tufts; if more spots pass, the reduction is raised to `lerp(reduction,
+1, 1 − room / spots)` and the list cut at room. Vertex colour: random RGB
+per vertex, alpha = clamp01(height above the face along its normal ÷ 5).
+One mesh per (chunk, type), no shadow casting.
+
+### How we do it
+
+Same rules on our surface-nets quads (a quad ≈ a Voxeland face: one per
+crossing voxel edge, 1 voxel in size); per batch at our level of detail 0
+only, with reduction 0 (the game's level 1 with reduction 0.5 is not
+drawn; see M4b). Our own random numbers (seed 1) and our own gradient
+noise in place of `Mathf.PerlinNoise` (**hypothesis**: about the same
+range; the pattern differs). Look: see § Grass shaders.
+
+The game's random numbers — confirmed (read from `VoxelandGrassBuilder`
+and `VoxelandChunk`): `Unity.Mathematics.Random` from
+`VoxelandMisc.CreateRandom`. Placement draws come from a generator seeded
+`offsetX·9999 + offsetY·999 + offsetZ·99 + randSeed·9`, the reduction from
+one seeded `randSeed`, and the tuft transforms and colours from one seeded
+`offsetX·9999 + offsetY·999 + offsetZ·99` (`offset*`: the chunk's corner
+in voxels, `randSeed`: the block type id). Per tuft: `NextDouble` for the
+spin (if any), two `NextDouble` for the jitter, `NextFloat` for the scale,
+then three `NextByte` per vertex for the colour. Not ported yet (M7e3).
+
+The grass object — confirmed (`WorldStreaming/MeshBuilder`,
+`ClipmapStreamer`, `clipmaps-high.json`): a level's cells are
+`chunkMeshRes << level` voxels (16 at level 0); a chunk's transform is at
+`offset = cellId × cellSize − (meshOverlap << downsamples)` (level 0:
+`meshOverlap` 0) with scale `1 << downsamples`; its grass mesh is a child
+at the local origin, and tuft vertices are `csOrigin + rotation × (scale ×
+vertex)` in that space. The pooled grass piece (`TerrainPoolManager.
+chunkGrassPrefab`, "ChunkGrass": Transform, MeshFilter, MeshRenderer,
+`TerrainChunkPieceGrass`; read with our probe of the main scene) has no
+`SkyApplier`.
+
+Numbers (seed 1, `sn-inspect grass 12 18 12`): the lifepod batch has 70,658
+faces, 7,826 tufts of 6 types, 608,726 vertices, 752,923 triangles (most
+from `Coral_reef_small_deco_07`, 172 triangles each); built in ~30 ms.
+
+### Grass shaders — confirmed from the compiled shaders
+
+Read from the D3D11 programs of the shaders (disassembled once on the dev
+machine with the system's `d3dcompiler_47.dll`, not copied; constant names
+and offsets from the programs' own tables). The game draws grass in its
+deferred pass (variant `UNITY_HDR_ON`, `LIGHTPROBE_SH`).
+
+**`UWE/SIG Terrain Grass`.** Vertex program, with the vertex colour
+(r, b, a), h = 5·a (height in metres) and θ = 0.783185·r + 5.5: in object
+space (the chunk, aligned with the world) the position moves by
+`sin(2π (_Time.y + 0.1·_TimeOffset − h) / (5 − 5·_WaveSpeed)) ·
+_WaveAmount · b · h · (cos θ, 0, sin θ)`; the green channel is unused.
+The normal is `lerp(normal, up, _ForceNormals)`. The mask
+`saturate(_Mask(world x, z / _MaskScale · _Mask_ST).r · _MaskStr)` is
+sampled per vertex at the unmoved position. Pixel program: albedo =
+`_MainTex` × `lerp(lerp(_BotColor, _BotColor2, mask), lerp(_Color,
+_Color2, mask), saturate((v + _GradientParams.x) · _GradientParams.y))`
+(v: the raw texture coordinate); discard where `_MainTex.a < _Cutoff`;
+normal from `_BumpMap` (DXT5nm); SIG map: specular colour = R ·
+`_SIGstr.x` · `_SpecColor`, gloss = max(B · `_SIGstr.z`, 0.01), glow =
+G · lerp(`_SIGstr.y`, `_SIGstr.w`, 1 − `_UweLocalLightScalar`) × albedo
+into the light buffer, plus Unity's ambient (SH) × albedo; the normal's
+G-buffer alpha is 0 (lit). Constant offsets (`$Globals`, bytes):
+`_Mask_ST` 64, `_WaveAmount` 192, `_WaveSpeed` 196, `_TimeOffset` 200,
+`_MaskScale` 208, `_MaskStr` 212, `_ForceNormals` 240, `_MainTex_ST` 544,
+`_BumpMap_ST` 560, `_SIGMap_ST` 576 (vertex); `_SpecColor` 48, `_Color` 80,
+`_Color2` 96, `_BotColor` 112, `_BotColor2` 128, `_SIGstr` 144,
+`_GradientParams` 224, `_UweLocalLightScalar` 244, `_Cutoff` 608 (pixel).
+
+**`UWE/SIG`** (with `UWE_SIG`): albedo = `_MainTex` × `_Color`; SIG map:
+specular R · `_SpecColor`, gloss max(B, 0.01), glow G × albedo ×
+`_EmissionScale`; no cutoff, no waves. Without the keyword the program
+takes the specular (R) and gloss (B) from `_MainTex` itself and has no
+glow.
+
+**`UWE/SIG AlphaCutout + Noisey Wave`**: the pixel side is the grass
+shader's with one colour (`_Color`; discard where `_MainTex.a · _Color.a
+< _Cutoff`). Its vertex program sways the position along `_WorldWaveDir`
+by `_WaveAmount` × (object position · `_ObjectUp`), phase
+`sin(2π (_Time.y + _TimeOffset − 130 · noise(world x, z)) / (5 −
+5·_WaveSpeed))` with a 2D simplex noise.
+
+### How we draw them
+
+`grass.wgsl` (`apps/sn-client`) ports `UWE/SIG Terrain Grass` (vertex
+waving, mask, tints and gradient, cutoff, SIG specular/gloss/glow, lit by
+our port of the game's light pass with Unity's ambient). The same shader
+draws `UWE/SIG` (one colour, no waves, mask or cutoff; glow
+`_EmissionScale`, or the keyword-less variant) and Noisey Wave (one
+colour, cutoff) with its sway: `sn_terrain::build_grass` keeps each
+vertex's position in the game's grass object (`chunk_local`: our voxel
+position + ½ − the 16-voxel chunk's corner, the chunk being the one our
+budget groups the face into — **hypothesis** that it is the game's for
+faces near chunk borders); the client puts its component along
+`_ObjectUp` in the second uv set, and the shader adds `_WorldWaveDir ×
+_WaveAmount × sin(2π (t + _TimeOffset − simplex(x, z)) / (5 − 5
+_WaveSpeed)) × that`, with the program's simplex noise (×130) at the
+unmoved world x, z. Type 243 (`Coral_reef_grass_01_red`: `_ObjectUp` (0,
+0, 1), `_WorldWaveDir` (1, 0, 0), `_WaveAmount` 0.005, `_WaveSpeed` 0.5)
+therefore sways along world x by up to 0.005 × its height in z within the
+chunk (≤ ≈ 9 cm); it is rare (8 tufts, all in batch 9-18-12 at about
+(−544, −109, −103), in batches y 14–19). MarmosetUBER grass uses our
+object shader (`objects.rs` `material_desc`/`object_material`) with the
+global Marmoset sky as the game's grass pieces have no `SkyApplier`
+(placed objects with one get their biome's sky). Unit tests: both wave
+formulas and that `grass.wgsl` holds their constants; the noise's range
+and smoothness; the material values per shader; chunk-local positions.

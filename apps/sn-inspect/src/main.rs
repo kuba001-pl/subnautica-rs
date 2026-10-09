@@ -5,6 +5,7 @@ mod biomes;
 mod density;
 mod entities;
 mod game;
+mod grass;
 mod materials;
 mod mesh;
 mod octree;
@@ -54,6 +55,9 @@ Commands:
   entities <X> <Y> <Z>   A batch's saved objects (batch objects, baked cells)
                          with prefab paths and world positions
   entities --all         Parse every object cache file; totals and checks
+  grass <X> <Y> <Z> [--seed <N>]
+                         The terrain grass of a batch at full resolution:
+                         tufts, vertices, triangles per grass type
   slots [<X> <Y> <Z>] [--seed <N>]
                          Spawn slots of every batch (or one) and what they
                          fill with for world seed N (default 1): counts per
@@ -158,6 +162,7 @@ fn run(mut args: Vec<String>) -> Result<ExitCode> {
         ["entities", "--all"] => entities::all(&game),
         ["entities", x, y, z] => entities::one(&game, parse_coord(x, y, z)?),
         ["slots"] => slots::run(&game, None, seed),
+        ["grass", x, y, z] => grass::run(&game, parse_coord(x, y, z)?, seed),
         ["slots", x, y, z] => slots::run(&game, Some(parse_coord(x, y, z)?), seed),
         ["prefab", "--placed"] => prefab::placed(&game, false),
         ["prefab", "--lights"] => prefab::lights(&game),

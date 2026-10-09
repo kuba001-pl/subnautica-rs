@@ -3,6 +3,7 @@
 //! around it.
 
 mod game_light;
+mod grass_look;
 mod object_look;
 mod objects;
 mod sky;
@@ -17,6 +18,7 @@ mod water_fft;
 mod water_surface;
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use bevy::camera_controller::free_camera::{FreeCamera, FreeCameraPlugin};
@@ -57,6 +59,7 @@ Usage: sn-client [--game-dir <PATH>] [--start <X> <Y> <Z>] [--look <X> <Y> <Z>]
   --slot-seed    world seed for filling the spawn slots (default 1; the game
                  picks anew in every save)
   --no-slots     leave the spawn slots empty (for comparisons)
+  --no-grass     no terrain grass (for comparisons)
   --fog-unit     scale on the game's light values (calibration; default 1:
                  one game light unit = 1.0 in the image, as in Unity)
   --color-grading  off | neutral | aces: the game's option of that name
@@ -95,6 +98,7 @@ struct Args {
     no_local_lights: bool,
     /// `None`: spawn slots stay empty.
     slot_seed: Option<u64>,
+    no_grass: bool,
     fog_unit: f32,
     color_grading: ColorGrading,
     no_water_fog: bool,
@@ -118,6 +122,7 @@ fn parse_args() -> Result<Args, String> {
         no_objects: false,
         no_local_lights: false,
         slot_seed: Some(1),
+        no_grass: false,
         fog_unit: 1.0,
         color_grading: ColorGrading::Off,
         no_water_fog: false,
@@ -159,6 +164,7 @@ fn parse_args() -> Result<Args, String> {
                 args.slot_seed = Some(seed.ok_or("--slot-seed needs a whole number")?);
             }
             "--no-slots" => args.slot_seed = None,
+            "--no-grass" => args.no_grass = true,
             "--no-water-fog" => args.no_water_fog = true,
             "--no-water-surface" => args.no_water_surface = true,
             "--water-quality" => {
@@ -321,6 +327,11 @@ fn main() -> AppExit {
                     let mut blocks = BlockSettings {
                         layer: [0; 256],
                         gloss: [0.0; 256],
+                        grass: Arc::new(if args.no_grass {
+                            Vec::new()
+                        } else {
+                            materials.grass_types()
+                        }),
                     };
                     for m in materials.types.iter().flatten() {
                         blocks.layer[m.type_id] = m.layer;
@@ -376,6 +387,7 @@ fn main() -> AppExit {
         FreeCameraPlugin,
         TerrainLookPlugin,
         ObjectLookPlugin,
+        grass_look::GrassLookPlugin,
         WaterFogPlugin,
         WaterSurfacePlugin,
         SkyDomePlugin,
@@ -678,6 +690,10 @@ fn log_stats(
         position.y,
         -position.z,
     );
+    info!(
+        "grass: {} tufts, {} triangles",
+        s.grass_tufts, s.grass_triangles
+    );
     if let Some(objects) = objects {
         let o = objects.stats();
         info!(
@@ -882,6 +898,10 @@ fn measure(
     info!(
         "measure: peak {} triangles shown, peak {} batches cached, peak process memory {:.2} GiB; now {} batches shown",
         m.max_triangles, m.max_cached, m.max_memory_gib, stats.shown_batches,
+    );
+    info!(
+        "measure: grass {} tufts, {} triangles in {} batches at level of detail 0",
+        stats.grass_tufts, stats.grass_triangles, stats.per_lod[0],
     );
     for lod in 0..=sn_terrain::MAX_LOD {
         let latency: Vec<f32> = streamer

@@ -1,19 +1,23 @@
 //! Real terrain materials: the game's textures (uploaded to the GPU in their
 //! compressed form) and a triplanar shader (`terrain.wgsl`).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use bevy::asset::RenderAssetUsages;
+use bevy::math::Affine2;
 use bevy::pbr::{ExtendedMaterial, MaterialExtension};
 use bevy::prelude::*;
 use bevy::render::render_resource::{
-    AsBindGroup, Extent3d, ShaderType, TextureDimension, TextureFormat,
+    AsBindGroup, Extent3d, Face, ShaderType, TextureDimension, TextureFormat,
 };
 use bevy::shader::ShaderRef;
-use sn_assets::{TerrainMaterials, TerrainTexture};
+use sn_assets::{GrassLook, GrassShader, TerrainMaterials, TerrainTexture};
 
 use crate::game_light::GameLightImages;
+use crate::grass_look::{GrassImages, GrassMaterial, grass_material};
+use crate::object_look::{ObjectExtension, ObjectMaterial, ObjectParams};
+use crate::objects::{Defaults, SkyLook, apply_sky, material_desc, object_material};
 use crate::textures::{linear, to_image};
 
 pub type TerrainMaterial = ExtendedMaterial<StandardMaterial, TriplanarExtension>;
@@ -117,6 +121,14 @@ pub struct TerrainLook {
     by_type: Vec<Option<TriplanarExtension>>,
     /// Per (type id, rank in the chunk's draw order).
     materials: HashMap<(u8, u8), Handle<TerrainMaterial>>,
+    /// Per type id: the grass material, added to the assets on first use.
+    grass: HashMap<u8, GrassLookMaterial>,
+    grass_handles: HashMap<u8, GrassHandle>,
+    /// Grass types drawn with our MarmosetUBER port: they take the global
+    /// Marmoset sky once the objects' worker has read it.
+    uber_grass: HashSet<u8>,
+    /// Noisey Wave grass: `_ObjectUp` (Unity axes).
+    grass_object_up: HashMap<u8, [f32; 3]>,
     pub textures: usize,
     pub texture_bytes: usize,
 }
@@ -152,6 +164,118 @@ impl TerrainLook {
         });
         Some(handle.clone())
     }
+
+    /// The grass material of `type_id`, if it has grass.
+    pub fn grass_material(
+        &mut self,
+        type_id: u8,
+        grass_assets: &mut Assets<GrassMaterial>,
+        object_assets: &mut Assets<ObjectMaterial>,
+    ) -> Option<GrassHandle> {
+        if let Some(h) = self.grass_handles.get(&type_id) {
+            return Some(h.clone());
+        }
+        let handle = match self.grass.get(&type_id)?.clone() {
+            GrassLookMaterial::Grass(m) => GrassHandle::Grass(grass_assets.add(m)),
+            GrassLookMaterial::Object(m) => GrassHandle::Object(object_assets.add(m)),
+        };
+        self.grass_handles.insert(type_id, handle.clone());
+        Some(handle)
+    }
+
+    /// `_ObjectUp` of a Noisey Wave grass type; zero for the others (they
+    /// don't sway by the position in the chunk).
+    pub fn grass_object_up(&self, type_id: u8) -> [f32; 3] {
+        self.grass_object_up
+            .get(&type_id)
+            .copied()
+            .unwrap_or_default()
+    }
+
+    /// Lights the MarmosetUBER grass with the global sky. The game's grass
+    /// pieces (`TerrainPoolManager.chunkGrassPrefab`) carry no `SkyApplier`,
+    /// so they use the global sky, not their biome's.
+    pub fn set_global_sky(&mut self, sky: Option<&SkyLook>, assets: &mut Assets<ObjectMaterial>) {
+        for ty in &self.uber_grass {
+            if let Some(GrassLookMaterial::Object(m)) = self.grass.get_mut(ty) {
+                apply_sky(&mut m.extension.params, sky);
+            }
+            if let Some(GrassHandle::Object(h)) = self.grass_handles.get(ty)
+                && let Some(mut m) = assets.get_mut(h)
+            {
+                apply_sky(&mut m.extension.params, sky);
+            }
+        }
+        info!(
+            "terrain look: {} MarmosetUBER grass materials lit with the global sky ({})",
+            self.uber_grass.len(),
+            if sky.is_some() { "found" } else { "missing" }
+        );
+    }
+}
+
+/// A grass type's material: the ported grass shader, or (for shaders not
+/// ported yet) our object material.
+#[derive(Clone)]
+enum GrassLookMaterial {
+    Grass(GrassMaterial),
+    Object(ObjectMaterial),
+}
+
+#[derive(Clone)]
+pub enum GrassHandle {
+    Grass(Handle<GrassMaterial>),
+    Object(Handle<ObjectMaterial>),
+}
+
+/// The first-pass look (M7e1) for grass shaders not ported yet: our object
+/// material with the albedo, tint, cutoff and normal map.
+fn first_pass_material(
+    l: &GrassLook,
+    albedo: Option<Handle<Image>>,
+    normal: Option<Handle<Image>>,
+    white: &Handle<Image>,
+    flat: &Handle<Image>,
+    light: &GameLightImages,
+) -> ObjectMaterial {
+    let c = linear(l.color);
+    let [sx, sy, ox, oy] = l.albedo_st;
+    let identity = Vec4::new(1.0, 1.0, 0.0, 0.0);
+    ExtendedMaterial {
+        base: StandardMaterial {
+            base_color: Color::linear_rgba(c.x, c.y, c.z, c.w),
+            base_color_texture: albedo,
+            uv_transform: Affine2::from_scale_angle_translation(
+                Vec2::new(sx, sy),
+                0.0,
+                Vec2::new(ox, oy),
+            ),
+            perceptual_roughness: 0.8,
+            alpha_mode: AlphaMode::Mask(l.cutoff),
+            double_sided: l.double_sided,
+            cull_mode: if l.double_sided {
+                None
+            } else {
+                Some(Face::Back)
+            },
+            ..default()
+        },
+        extension: ObjectExtension {
+            params: ObjectParams {
+                normal_st: Vec4::from(l.albedo_st),
+                spec_st: identity,
+                illum_st: identity,
+                has_normal: u32::from(normal.is_some()),
+                ..default()
+            },
+            normal_map: normal.unwrap_or_else(|| flat.clone()),
+            spec_map: white.clone(),
+            illum_map: white.clone(),
+            light_params: light.params.clone(),
+            caustics: light.caustics.clone(),
+            spot_cookie: light.spot_cookie.clone(),
+        },
+    }
 }
 
 fn build_look(
@@ -169,6 +293,14 @@ fn build_look(
         TextureDimension::D2,
         vec![255; 4],
         TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::RENDER_WORLD,
+    ));
+    // A flat normal in the game's packing (DXT5nm: x in alpha, y in green).
+    let flat = images.add(Image::new(
+        Extent3d::default(),
+        TextureDimension::D2,
+        vec![255, 128, 255, 128],
+        TextureFormat::Rgba8Unorm,
         RenderAssetUsages::RENDER_WORLD,
     ));
     let mut uploaded: Vec<(*const TerrainTexture, bool, Handle<Image>)> = Vec::new();
@@ -191,6 +323,67 @@ fn build_look(
             look.by_type.push(None);
             continue;
         };
+        if let Some(g) = &m.grass {
+            let l = &g.look;
+            let albedo = upload(&l.albedo, true, &mut look);
+            let normal = upload(&l.normal, false, &mut look);
+            let material = match l.shader {
+                GrassShader::TerrainGrass | GrassShader::Sig { .. } | GrassShader::NoiseyWave => {
+                    if l.shader == GrassShader::NoiseyWave {
+                        let [x, y, z, _] = l.color("_ObjectUp", [0.0, 1.0, 0.0, 0.0]);
+                        look.grass_object_up.insert(m.type_id as u8, [x, y, z]);
+                    }
+                    let images = GrassImages {
+                        albedo,
+                        normal,
+                        // Data, not colours.
+                        sig: upload(&l.sig, false, &mut look),
+                        mask: upload(&l.mask, false, &mut look),
+                        white: white.clone(),
+                        flat: flat.clone(),
+                    };
+                    GrassLookMaterial::Grass(grass_material(l, &images, &light))
+                }
+                // MarmosetUBER: our port of the object shader; the global
+                // sky arrives later (`set_global_sky`).
+                GrassShader::Marmoset if let Some(material) = &l.material => {
+                    let mut images_by_id = HashMap::new();
+                    let mut texture = |name: &str, srgb: Option<bool>| {
+                        let t = match name {
+                            "_MainTex" => &l.albedo,
+                            "_BumpMap" => &l.normal,
+                            "_SpecTex" => &l.spec,
+                            "_Illum" => &l.illum,
+                            _ => return None,
+                        };
+                        let own = t.as_ref()?.texture.color_space == 1;
+                        let handle = upload(t, srgb.unwrap_or(own), &mut look)?;
+                        let id = images_by_id.len() as u32;
+                        images_by_id.insert(id, handle);
+                        Some((id, l.st(name)))
+                    };
+                    let desc = material_desc(material, &mut texture);
+                    if desc.uber.is_some() {
+                        look.uber_grass.insert(m.type_id as u8);
+                    }
+                    let defaults = Defaults {
+                        flat: flat.clone(),
+                        white: white.clone(),
+                    };
+                    GrassLookMaterial::Object(object_material(
+                        &desc,
+                        None,
+                        &images_by_id,
+                        &defaults,
+                        &light,
+                    ))
+                }
+                GrassShader::Marmoset | GrassShader::Unknown => GrassLookMaterial::Object(
+                    first_pass_material(l, albedo, normal, &white, &flat, &light),
+                ),
+            };
+            look.grass.insert(m.type_id as u8, material);
+        }
         let cap_albedo = upload(&m.cap.albedo, true, &mut look);
         let side_albedo = upload(&m.side.albedo, true, &mut look);
         let cap_normal = upload(&m.cap.normal, false, &mut look);
@@ -241,8 +434,17 @@ fn build_look(
         }));
     }
     info!(
-        "terrain look: {} materials, {} textures ({:.0} MiB on the GPU)",
+        "terrain look: {} materials, {} grass materials ({} with the grass shader, {} with the object shader), {} textures ({:.0} MiB on the GPU)",
         look.by_type.iter().flatten().count(),
+        look.grass.len(),
+        look.grass
+            .values()
+            .filter(|m| matches!(m, GrassLookMaterial::Grass(_)))
+            .count(),
+        look.grass
+            .values()
+            .filter(|m| matches!(m, GrassLookMaterial::Object(_)))
+            .count(),
         look.textures,
         look.texture_bytes as f64 / 1048576.0
     );

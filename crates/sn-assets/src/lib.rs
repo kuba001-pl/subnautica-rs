@@ -26,8 +26,8 @@ pub use marmo::{BiomeSky, MarmoSkies, marmo_skies};
 pub use prefab::{Prefab, PrefabNode};
 pub use slots::{LootTable, entity_infos, loot_table, parse_loot_table};
 pub use terrain::{
-    BlendSettings, BlockSource, SurfaceLayer, TerrainMaterial, TerrainMaterials, TerrainTexture,
-    terrain_materials,
+    BlendSettings, BlockSource, GrassLook, GrassShader, SurfaceLayer, TerrainGrass,
+    TerrainMaterial, TerrainMaterials, TerrainTexture, terrain_materials,
 };
 pub use water::{
     SkyTextures, WaterSurfaceData, builtin_texture, resource_bytes, resource_texture, sky,

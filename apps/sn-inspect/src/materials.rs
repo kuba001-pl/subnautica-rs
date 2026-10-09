@@ -107,6 +107,7 @@ pub fn run(game: &GameData) -> Result<ExitCode> {
         .map(|m| m.type_id)
         .collect();
     println!("materials missing a cap or side texture: {without_texture:?}");
+    grass_census(&assets, &materials);
     let ok = missing.is_empty() && materials.warnings.is_empty() && without_texture.is_empty();
     println!("result: {}", if ok { "OK" } else { "PROBLEMS (see above)" });
     Ok(if ok {
@@ -114,6 +115,65 @@ pub fn run(game: &GameData) -> Result<ExitCode> {
     } else {
         ExitCode::FAILURE
     })
+}
+
+/// The block types that scatter grass: settings, mesh size, material.
+fn grass_census(assets: &Assets, materials: &sn_assets::TerrainMaterials) {
+    println!();
+    let grassy: Vec<_> = materials
+        .types
+        .iter()
+        .flatten()
+        .filter_map(|m| m.grass.as_ref().map(|g| (m, g)))
+        .collect();
+    println!("block types with grass: {}", grassy.len());
+    for (m, g) in grassy {
+        let s = &g.settings;
+        let mesh = match assets.mesh(&g.mesh) {
+            Ok((mesh, geometry)) => format!(
+                "mesh {} ({} vertices, {} indices)",
+                mesh.name,
+                geometry.positions.len(),
+                mesh.sub_meshes.iter().map(|s| s.index_count).sum::<u32>()
+            ),
+            Err(e) => format!("mesh unreadable: {e}"),
+        };
+        let material = match &g.material {
+            Some(object) => object
+                .data()
+                .ok()
+                .and_then(|(_, d)| sn_unity::Material::parse(d, object.file.file().big_endian).ok())
+                .map_or("(unreadable)".into(), |m| {
+                    let textures: Vec<&str> = m
+                        .textures
+                        .iter()
+                        .filter(|t| !t.texture.is_null())
+                        .map(|t| t.name.as_str())
+                        .collect();
+                    format!("{} [{}] textures {textures:?}", m.name, m.keywords)
+                }),
+            None => "(none)".into(),
+        };
+        println!(
+            "{:>4} {:<28} density {:.3} tilt {}..{} scale {:.2}..{:.2} jitter {:.2} spin {} z-up {} perlin {} (period {})",
+            m.type_id,
+            m.name,
+            s.density,
+            s.min_tilt,
+            s.max_tilt,
+            s.min_scale,
+            s.max_scale,
+            s.jitter,
+            s.random_spin,
+            s.z_up,
+            s.perlin,
+            s.perlin_period
+        );
+        println!(
+            "       {mesh}; material {material}; shader {:?}",
+            g.look.shader
+        );
+    }
 }
 
 /// Every material property (textures, floats, colours, keywords) of every

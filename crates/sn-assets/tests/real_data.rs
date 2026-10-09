@@ -24,8 +24,81 @@ fn terrain_materials_resolve_and_decode() {
     assert_eq!(materials.prefabs_without_id, 10);
     assert_eq!(materials.conflicts, vec![53, 54, 101, 102]);
     assert_eq!(materials.types.iter().flatten().count(), 233);
-    // 183 colour and normal maps + 28 specular/illumination (SIG) maps.
-    assert_eq!(materials.texture_count, 211);
+    // 183 colour and normal maps + 28 specular/illumination (SIG) maps of
+    // the terrain, + the grass materials' own textures (below).
+    let mut terrain_textures = std::collections::HashSet::new();
+    for m in materials.types.iter().flatten() {
+        for layer in [&m.cap, &m.side] {
+            for t in [&layer.albedo, &layer.normal, &layer.sig]
+                .into_iter()
+                .flatten()
+            {
+                terrain_textures.insert(std::sync::Arc::as_ptr(t));
+            }
+        }
+    }
+    assert_eq!(terrain_textures.len(), 211);
+
+    // Grass: 60 types, each with a mesh, a colour map and a cutoff.
+    let grass: Vec<_> = materials
+        .types
+        .iter()
+        .flatten()
+        .filter_map(|m| m.grass.as_ref().map(|g| (m.type_id, g)))
+        .collect();
+    assert_eq!(grass.len(), 60);
+    let mut grass_textures = std::collections::HashSet::new();
+    for (id, g) in &grass {
+        assert!(g.look.albedo.is_some(), "type {id}");
+        assert!(
+            !g.positions.is_empty() && g.indices.len() % 3 == 0,
+            "type {id}"
+        );
+        // 0 for the few coral decos drawn with object materials (opaque).
+        assert!((0.0..1.0).contains(&g.look.cutoff), "type {id}");
+        let l = &g.look;
+        for t in [&l.albedo, &l.normal, &l.sig, &l.mask, &l.spec, &l.illum]
+            .into_iter()
+            .flatten()
+        {
+            if !terrain_textures.contains(&std::sync::Arc::as_ptr(t)) {
+                grass_textures.insert(std::sync::Arc::as_ptr(t));
+            }
+        }
+    }
+    assert_eq!(grass_textures.len(), 76);
+    assert_eq!(materials.texture_count, 211 + 76);
+    // Mesh sizes as UnityPy reads them.
+    let size = |id: usize| {
+        let g = materials.types[id]
+            .as_ref()
+            .unwrap()
+            .grass
+            .as_ref()
+            .unwrap();
+        (g.mesh_name.as_str(), g.positions.len(), g.indices.len())
+    };
+    assert_eq!(size(43), ("coral_reef_grass_03", 18, 18));
+    assert_eq!(size(100), ("Coral_reef_small_deco_07", 125, 516));
+    assert_eq!(materials.grass_types().iter().flatten().count(), 60);
+    // Shaders, told apart by properties (names checked with UnityPy).
+    use sn_assets::GrassShader;
+    let of = |shader: GrassShader| {
+        grass
+            .iter()
+            .filter(|(_, g)| g.look.shader == shader)
+            .map(|(id, _)| *id)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(of(GrassShader::Marmoset), vec![52, 76, 83, 251]);
+    assert_eq!(of(GrassShader::NoiseyWave), vec![243]);
+    assert_eq!(of(GrassShader::Sig { sig: false }), vec![32]);
+    assert_eq!(
+        of(GrassShader::Sig { sig: true }),
+        vec![7, 33, 50, 51, 100, 252]
+    );
+    assert_eq!(of(GrassShader::TerrainGrass).len(), 48);
+    assert!(of(GrassShader::Unknown).is_empty());
     let cap_side = materials
         .types
         .iter()

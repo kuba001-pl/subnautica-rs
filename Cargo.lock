@@ -4766,6 +4766,7 @@ name = "sn-assets"
 version = "0.0.0"
 dependencies = [
  "sn-install",
+ "sn-terrain",
  "sn-unity",
  "sn-world",
 ]

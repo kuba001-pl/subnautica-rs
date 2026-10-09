@@ -34,6 +34,7 @@ use sn_world::{BatchCoord, EntityInfo, SLOTS_COMPONENT, Transform as Placement};
 use crate::game_light::GameLightImages;
 use crate::object_look::{ObjectExtension, ObjectMaterial, ObjectParams};
 use crate::terrain::TerrainStreamer;
+use crate::terrain_look::TerrainLook;
 use crate::textures::{linear, to_image};
 use crate::water::WaterWorld;
 
@@ -97,14 +98,14 @@ pub struct MeshData {
 }
 
 #[derive(Clone, Copy)]
-enum Alpha {
+pub(crate) enum Alpha {
     Opaque,
     Mask(f32),
     Blend,
 }
 
 #[derive(Clone)]
-struct MaterialDesc {
+pub(crate) struct MaterialDesc {
     albedo: Option<u32>,
     normal: Option<u32>,
     spec: Option<u32>,
@@ -119,13 +120,13 @@ struct MaterialDesc {
     alpha: Alpha,
     double_sided: bool,
     /// MarmosetUBER's values; `None` for materials of other shaders.
-    uber: Option<UberValues>,
+    pub(crate) uber: Option<UberValues>,
 }
 
 /// A MarmosetUBER material's values (the shader's defaults where the
 /// material has none). Colours as stored (sRGB).
 #[derive(Clone, Copy)]
-struct UberValues {
+pub(crate) struct UberValues {
     spec_color: [f32; 4],
     spec_int: f32,
     shininess: f32,
@@ -141,7 +142,7 @@ struct UberValues {
 
 /// What a material needs from its Marmoset sky.
 #[derive(Clone, Copy)]
-struct SkyLook {
+pub(crate) struct SkyLook {
     exposure: [f32; 4],
     rotation: [f32; 4],
     affected: bool,
@@ -343,66 +344,12 @@ impl Library {
                 )
             })
         };
-        let mut texture = |name: &str, srgb: Option<bool>, out: &mut Vec<Update>| {
+        let texture = |name: &str, srgb: Option<bool>| {
             let (pptr, st) = slot(name)?;
             let target = self.assets.resolve(&object.file, pptr).ok()??;
             Some((self.texture(&target, srgb, out)?, st))
         };
-        let keywords: Vec<&str> = material.keywords.split_whitespace().collect();
-        let has = |k: &str| keywords.contains(&k);
-        // MarmosetUBER (the game's object shader) has these two properties;
-        // its specular and glow maps are used with these keywords only.
-        let is_uber = material.float("_Shininess").is_some()
-            && material.float("_GlowStrengthNight").is_some();
-        let albedo = texture("_MainTex", Some(true), out);
-        let normal = texture("_BumpMap", Some(false), out);
-        let spec = (is_uber && has("MARMO_SPECMAP"))
-            .then(|| texture("_SpecTex", None, out))
-            .flatten();
-        let illum = (is_uber && has("MARMO_EMISSION"))
-            .then(|| texture("_Illum", None, out))
-            .flatten();
-        let value = |name: &str, default: f32| material.float(name).unwrap_or(default);
-        let uber = is_uber.then(|| UberValues {
-            spec_color: material.color("_SpecColor").unwrap_or([1.0; 4]),
-            spec_int: value("_SpecInt", 1.0),
-            shininess: value("_Shininess", 4.0),
-            fresnel: value("_Fresnel", 0.0),
-            glow_color: material.color("_GlowColor").unwrap_or([1.0; 4]),
-            glow_strength: value("_GlowStrength", 1.0),
-            glow_strength_night: value("_GlowStrengthNight", 1.0),
-            emission_lm: value("_EmissionLM", 0.0),
-            emission_lm_night: value("_EmissionLMNight", 0.0),
-            ibl_reduction_at_night: value("_IBLreductionAtNight", 0.99),
-            simple_glass: value("_EnableSimpleGlass", 0.0),
-        });
-        let alpha = if has("MARMO_ALPHA_CLIP") {
-            Alpha::Mask(material.float("_Cutoff").unwrap_or(0.5))
-        } else if material.custom_render_queue >= 2500
-            || has("MARMO_ALPHA")
-            || has("_ALPHAPREMULTIPLY_ON")
-            || has("WBOIT")
-        {
-            Alpha::Blend
-        } else {
-            Alpha::Opaque
-        };
-        let st = |t: Option<(u32, [f32; 4])>| t.map_or([1.0, 1.0, 0.0, 0.0], |(_, st)| st);
-        let desc = MaterialDesc {
-            albedo: albedo.map(|(id, _)| id),
-            normal: normal.map(|(id, _)| id),
-            spec: spec.map(|(id, _)| id),
-            illum: illum.map(|(id, _)| id),
-            color: material.color("_Color").unwrap_or([1.0; 4]),
-            albedo_st: st(albedo),
-            normal_st: st(normal),
-            spec_st: st(spec),
-            illum_st: st(illum),
-            uber,
-            alpha,
-            // `_MyCullVariable`: 0 = two-sided, 2 = back faces culled.
-            double_sided: material.float("_MyCullVariable") == Some(0.0),
-        };
+        let desc = material_desc(&material, texture);
         let id = self.id();
         out.push(Update::Material { id, desc });
         self.materials.insert(object.key(), id);
@@ -703,6 +650,70 @@ impl Library {
             instances,
             ms: start.elapsed().as_secs_f32() * 1000.0,
         });
+    }
+}
+
+/// A material as our object shader takes it (`object_material`), from the
+/// game's `Material`; `texture(slot, srgb)` gives a texture id (`None`
+/// colour space: the texture's own) and the slot's scale/offset.
+pub(crate) fn material_desc(
+    material: &Material,
+    mut texture: impl FnMut(&str, Option<bool>) -> Option<(u32, [f32; 4])>,
+) -> MaterialDesc {
+    let keywords: Vec<&str> = material.keywords.split_whitespace().collect();
+    let has = |k: &str| keywords.contains(&k);
+    // MarmosetUBER (the game's object shader) has these two properties;
+    // its specular and glow maps are used with these keywords only.
+    let is_uber =
+        material.float("_Shininess").is_some() && material.float("_GlowStrengthNight").is_some();
+    let albedo = texture("_MainTex", Some(true));
+    let normal = texture("_BumpMap", Some(false));
+    let spec = (is_uber && has("MARMO_SPECMAP"))
+        .then(|| texture("_SpecTex", None))
+        .flatten();
+    let illum = (is_uber && has("MARMO_EMISSION"))
+        .then(|| texture("_Illum", None))
+        .flatten();
+    let value = |name: &str, default: f32| material.float(name).unwrap_or(default);
+    let uber = is_uber.then(|| UberValues {
+        spec_color: material.color("_SpecColor").unwrap_or([1.0; 4]),
+        spec_int: value("_SpecInt", 1.0),
+        shininess: value("_Shininess", 4.0),
+        fresnel: value("_Fresnel", 0.0),
+        glow_color: material.color("_GlowColor").unwrap_or([1.0; 4]),
+        glow_strength: value("_GlowStrength", 1.0),
+        glow_strength_night: value("_GlowStrengthNight", 1.0),
+        emission_lm: value("_EmissionLM", 0.0),
+        emission_lm_night: value("_EmissionLMNight", 0.0),
+        ibl_reduction_at_night: value("_IBLreductionAtNight", 0.99),
+        simple_glass: value("_EnableSimpleGlass", 0.0),
+    });
+    let alpha = if has("MARMO_ALPHA_CLIP") {
+        Alpha::Mask(material.float("_Cutoff").unwrap_or(0.5))
+    } else if material.custom_render_queue >= 2500
+        || has("MARMO_ALPHA")
+        || has("_ALPHAPREMULTIPLY_ON")
+        || has("WBOIT")
+    {
+        Alpha::Blend
+    } else {
+        Alpha::Opaque
+    };
+    let st = |t: Option<(u32, [f32; 4])>| t.map_or([1.0, 1.0, 0.0, 0.0], |(_, st)| st);
+    MaterialDesc {
+        albedo: albedo.map(|(id, _)| id),
+        normal: normal.map(|(id, _)| id),
+        spec: spec.map(|(id, _)| id),
+        illum: illum.map(|(id, _)| id),
+        color: material.color("_Color").unwrap_or([1.0; 4]),
+        albedo_st: st(albedo),
+        normal_st: st(normal),
+        spec_st: st(spec),
+        illum_st: st(illum),
+        uber,
+        alpha,
+        // `_MyCullVariable`: 0 = two-sided, 2 = back faces culled.
+        double_sided: material.float("_MyCullVariable") == Some(0.0),
     }
 }
 
@@ -1039,15 +1050,15 @@ fn build_mesh(data: MeshData) -> Mesh {
 }
 
 /// Default textures of the object material.
-struct Defaults {
+pub(crate) struct Defaults {
     /// A flat normal in the game's packing.
-    flat: Handle<Image>,
+    pub flat: Handle<Image>,
     /// White: the shader default of the specular and glow maps.
-    white: Handle<Image>,
+    pub white: Handle<Image>,
 }
 
 /// A material as the game draws it with the given Marmoset sky.
-fn object_material(
+pub(crate) fn object_material(
     desc: &MaterialDesc,
     sky: Option<&SkyLook>,
     textures: &HashMap<u32, Handle<Image>>,
@@ -1107,24 +1118,7 @@ fn object_material(
             u.emission_lm,
             u.emission_lm_night,
         );
-        // Without a known sky: Marmoset's defaults (exposures 1, no
-        // ambient, outdoors and affected by the day).
-        let sky = sky.copied().unwrap_or(SkyLook {
-            exposure: [1.0; 4],
-            rotation: [0.0, 0.0, 0.0, 1.0],
-            affected: true,
-            outdoors: true,
-            sh: [[0.0; 3]; 9],
-        });
-        params.exposure = Vec4::from(sky.exposure);
-        params.sky_rotation = Vec4::from(sky.rotation);
-        params.sky_flags = Vec4::new(
-            f32::from(u8::from(sky.affected)),
-            f32::from(u8::from(sky.outdoors)),
-            1.0,
-            0.0,
-        );
-        params.sh = sky.sh.map(|c| Vec3::from(c).extend(0.0));
+        apply_sky(&mut params, sky);
     }
     ObjectMaterial {
         base,
@@ -1140,6 +1134,28 @@ fn object_material(
     }
 }
 
+/// Lights a MarmosetUBER material with `sky`. Without a known sky:
+/// Marmoset's defaults (exposures 1, no ambient, outdoors and affected by
+/// the day).
+pub(crate) fn apply_sky(params: &mut ObjectParams, sky: Option<&SkyLook>) {
+    let sky = sky.copied().unwrap_or(SkyLook {
+        exposure: [1.0; 4],
+        rotation: [0.0, 0.0, 0.0, 1.0],
+        affected: true,
+        outdoors: true,
+        sh: [[0.0; 3]; 9],
+    });
+    params.exposure = Vec4::from(sky.exposure);
+    params.sky_rotation = Vec4::from(sky.rotation);
+    params.sky_flags = Vec4::new(
+        f32::from(u8::from(sky.affected)),
+        f32::from(u8::from(sky.outdoors)),
+        1.0,
+        0.0,
+    );
+    params.sh = sky.sh.map(|c| Vec3::from(c).extend(0.0));
+}
+
 /// Every frame: take what the worker sent, follow the terrain's batches,
 /// spawn and despawn objects.
 #[allow(clippy::too_many_arguments)] // a Bevy system: one parameter per resource
@@ -1153,6 +1169,7 @@ pub fn stream_objects(
     light: Res<GameLightImages>,
     water: Option<Res<WaterWorld>>,
     camera: Query<&Transform, With<Camera3d>>,
+    mut terrain_look: Option<ResMut<TerrainLook>>,
     mut exit: MessageWriter<AppExit>,
 ) {
     let streamer = &mut *streamer;
@@ -1193,6 +1210,11 @@ pub fn stream_objects(
                     skies.looks.len(),
                     skies.skies.biomes.len()
                 );
+                // Terrain grass has no `SkyApplier`: the global sky.
+                if let Some(look) = terrain_look.as_mut() {
+                    let global = skies.skies.global.and_then(|i| skies.looks.get(i));
+                    look.set_global_sky(global, &mut materials);
+                }
                 streamer.skies = skies;
             }
             Update::Material { id, desc } => {

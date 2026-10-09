@@ -11,8 +11,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use sn_unity::{
-    Material, MonoBehaviourHeader, MonoScript, Texture2D, Voxeland, VoxelandBlockType,
-    VoxelandBlockTypePrefab,
+    GrassSettings, Material, MonoBehaviourHeader, MonoScript, Texture2D, Voxeland,
+    VoxelandBlockType, VoxelandBlockTypePrefab,
 };
 
 use crate::{Assets, FileRef, ObjectRef, Result};
@@ -99,6 +99,123 @@ pub struct TerrainMaterial {
     pub colors: Vec<(String, [f32; 4])>,
     /// Texture slots that reference a texture.
     pub texture_slots: Vec<String>,
+    /// Grass scattered over the type's faces (`hasGrassAbove` with a mesh).
+    pub grass: Option<TerrainGrass>,
+}
+
+/// A block type's grass: the settings, the mesh each tuft is (all its
+/// sub-meshes as one triangle list, Unity coordinates) and its material.
+#[derive(Clone)]
+pub struct TerrainGrass {
+    pub settings: GrassSettings,
+    pub mesh: ObjectRef,
+    pub mesh_name: String,
+    pub positions: Vec<[f32; 3]>,
+    pub normals: Vec<[f32; 3]>,
+    pub tangents: Vec<[f32; 4]>,
+    pub uvs: Vec<[f32; 2]>,
+    pub indices: Vec<u32>,
+    /// `None` when the block type names no grass material.
+    pub material: Option<ObjectRef>,
+    pub look: GrassLook,
+}
+
+/// Which shader a grass material uses, told apart by its properties (the
+/// shader names were checked with UnityPy; `docs/formats/terrain-materials.md`
+/// § Grass).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum GrassShader {
+    /// `UWE/SIG Terrain Grass` (`_GradientParams`).
+    #[default]
+    TerrainGrass,
+    /// `UWE/SIG` (`_EnableSIG`); `sig`: the `UWE_SIG` keyword is set.
+    Sig {
+        sig: bool,
+    },
+    /// `UWE/SIG AlphaCutout + Noisey Wave` (`_RepulseAmplitude`).
+    NoiseyWave,
+    /// MarmosetUBER (`MARMO_…` keywords).
+    Marmoset,
+    Unknown,
+}
+
+/// A grass material: its shader, textures and values.
+#[derive(Clone, Default)]
+pub struct GrassLook {
+    pub material_name: String,
+    pub shader: GrassShader,
+    pub albedo: Option<Arc<TerrainTexture>>,
+    pub normal: Option<Arc<TerrainTexture>>,
+    /// `_SIGMap`: specular (R), glow (G), gloss (B).
+    pub sig: Option<Arc<TerrainTexture>>,
+    /// `_Mask`, sampled in world space.
+    pub mask: Option<Arc<TerrainTexture>>,
+    /// MarmosetUBER's specular (`_SpecTex`) and glow (`_Illum`) maps.
+    pub spec: Option<Arc<TerrainTexture>>,
+    pub illum: Option<Arc<TerrainTexture>>,
+    /// The material as stored (for shaders drawn with the object shader).
+    pub material: Option<Material>,
+    /// `_MainTex` scale and offset: uv × (x, y) + (z, w).
+    pub albedo_st: [f32; 4],
+    /// `_Color` as stored (sRGB).
+    pub color: [f32; 4],
+    /// `_Cutoff`.
+    pub cutoff: f32,
+    /// `_MyCullVariable` 0: both sides drawn.
+    pub double_sided: bool,
+    pub keywords: String,
+    pub floats: Vec<(String, f32)>,
+    pub colors: Vec<(String, [f32; 4])>,
+    /// Every texture slot's scale and offset (x, y, z, w as above).
+    pub st: Vec<(String, [f32; 4])>,
+}
+
+impl GrassLook {
+    pub fn float(&self, name: &str, default: f32) -> f32 {
+        self.floats
+            .iter()
+            .find(|(n, _)| n == name)
+            .map_or(default, |(_, v)| *v)
+    }
+
+    /// As stored (sRGB for colours).
+    pub fn color(&self, name: &str, default: [f32; 4]) -> [f32; 4] {
+        self.colors
+            .iter()
+            .find(|(n, _)| n == name)
+            .map_or(default, |(_, v)| *v)
+    }
+
+    pub fn st(&self, name: &str) -> [f32; 4] {
+        self.st
+            .iter()
+            .find(|(n, _)| n == name)
+            .map_or([1.0, 1.0, 0.0, 0.0], |(_, v)| *v)
+    }
+}
+
+/// Tells the grass material's shader from its properties and keywords.
+fn grass_shader(m: &Material) -> GrassShader {
+    let has = |name: &str| {
+        m.floats.iter().any(|(n, _)| n == name) || m.colors.iter().any(|(n, _)| n == name)
+    };
+    let keyword = |k: &str| m.keywords.split_whitespace().any(|w| w == k);
+    if m.keywords
+        .split_whitespace()
+        .any(|w| w.starts_with("MARMO_"))
+    {
+        GrassShader::Marmoset
+    } else if has("_GradientParams") {
+        GrassShader::TerrainGrass
+    } else if has("_RepulseAmplitude") {
+        GrassShader::NoiseyWave
+    } else if has("_EnableSIG") || has("_EmissionScale") {
+        GrassShader::Sig {
+            sig: keyword("UWE_SIG"),
+        }
+    } else {
+        GrassShader::Unknown
+    }
 }
 
 pub struct TerrainMaterials {
@@ -294,6 +411,7 @@ fn load_material(
     };
     Ok(TerrainMaterial {
         type_id,
+        grass: None,
         source,
         cap_side,
         cap,
@@ -311,6 +429,141 @@ fn load_material(
         colors: material.colors,
         name: material.name,
     })
+}
+
+impl TerrainMaterials {
+    /// The grass of every block type as `sn_terrain::build_grass` takes it
+    /// (indexed by type id, 256 entries).
+    pub fn grass_types(&self) -> Vec<Option<sn_terrain::GrassType>> {
+        self.types
+            .iter()
+            .map(|m| {
+                let g = m.as_ref()?.grass.as_ref()?;
+                let s = &g.settings;
+                Some(sn_terrain::GrassType {
+                    rule: sn_terrain::GrassRule {
+                        density: s.density,
+                        z_up: s.z_up,
+                        jitter: s.jitter,
+                        min_scale: s.min_scale,
+                        max_scale: s.max_scale,
+                        min_tilt: s.min_tilt as f32,
+                        max_tilt: s.max_tilt as f32,
+                        random_spin: s.random_spin,
+                        perlin: s.perlin,
+                        perlin_period: s.perlin_period,
+                    },
+                    template: sn_terrain::GrassTemplate {
+                        positions: g.positions.clone(),
+                        normals: g.normals.clone(),
+                        tangents: g.tangents.clone(),
+                        uvs: g.uvs.clone(),
+                        indices: g.indices.clone(),
+                    },
+                })
+            })
+            .collect()
+    }
+}
+
+/// A block type's grass with its mesh and material loaded; `None` without
+/// `hasGrassAbove` or a grass mesh.
+fn load_grass(
+    assets: &Assets,
+    textures: &mut TextureCache,
+    from: &FileRef,
+    block: &VoxelandBlockType,
+) -> Result<Option<TerrainGrass>> {
+    if !block.has_grass_above {
+        return Ok(None);
+    }
+    let Some(mesh) = assets.resolve(from, block.grass_mesh)? else {
+        return Ok(None);
+    };
+    let (unity_mesh, geometry) = assets.mesh(&mesh)?;
+    let material = assets.resolve(from, block.grass_material)?;
+    let mut look = GrassLook {
+        albedo_st: [1.0, 1.0, 0.0, 0.0],
+        color: [1.0; 4],
+        ..GrassLook::default()
+    };
+    if let Some(object) = &material {
+        let data = expect_class(object, MATERIAL)?;
+        let m = Material::parse(data, object.file.file().big_endian).map_err(|e| e.to_string())?;
+        let mut texture = |slot: &str| -> Result<Option<Arc<TerrainTexture>>> {
+            let Some(env) = m.texture(slot) else {
+                return Ok(None);
+            };
+            let Some(target) = assets.resolve(&object.file, env.texture)? else {
+                return Ok(None);
+            };
+            if let Some(t) = textures.get(&target.key()) {
+                return Ok(Some(t.clone()));
+            }
+            let loaded = Arc::new(load_texture(assets, &target)?);
+            textures.insert(target.key(), loaded.clone());
+            Ok(Some(loaded))
+        };
+        look.albedo = texture("_MainTex")?;
+        look.normal = texture("_BumpMap")?;
+        look.sig = texture("_SIGMap")?;
+        look.mask = texture("_Mask")?;
+        look.spec = texture("_SpecTex")?;
+        look.illum = texture("_Illum")?;
+        if let Some(env) = m.texture("_MainTex") {
+            look.albedo_st = [env.scale[0], env.scale[1], env.offset[0], env.offset[1]];
+        }
+        look.st = m
+            .textures
+            .iter()
+            .map(|t| {
+                (
+                    t.name.clone(),
+                    [t.scale[0], t.scale[1], t.offset[0], t.offset[1]],
+                )
+            })
+            .collect();
+        look.shader = grass_shader(&m);
+        look.keywords = m.keywords.clone();
+        look.color = m.color("_Color").unwrap_or([1.0; 4]);
+        look.cutoff = m.float("_Cutoff").unwrap_or(0.5);
+        look.double_sided = m.float("_MyCullVariable") == Some(0.0);
+        look.material_name = m.name.clone();
+        look.floats = m.floats.clone();
+        look.colors = m.colors.clone();
+        look.material = Some(m);
+    }
+    let n = geometry.positions.len();
+    let fit = |len: usize| len == n;
+    Ok(Some(TerrainGrass {
+        settings: block.grass,
+        mesh,
+        mesh_name: unity_mesh.name,
+        normals: if fit(geometry.normals.len()) {
+            geometry.normals
+        } else {
+            Vec::new()
+        },
+        tangents: if fit(geometry.tangents.len()) {
+            geometry.tangents
+        } else {
+            Vec::new()
+        },
+        uvs: if fit(geometry.uv0.len()) {
+            geometry.uv0
+        } else {
+            Vec::new()
+        },
+        indices: geometry
+            .sub_meshes
+            .into_iter()
+            .flatten()
+            .filter(|&i| (i as usize) < n)
+            .collect(),
+        positions: geometry.positions,
+        material,
+        look,
+    }))
 }
 
 /// The main scene's serialized file (`main.unity_….bundle`).
@@ -395,7 +648,13 @@ pub fn terrain_materials(assets: &Assets) -> Result<TerrainMaterials> {
             continue;
         };
         match load_material(assets, &mut textures, from, id, *source, block) {
-            Ok(material) => types.push(Some(material)),
+            Ok(mut material) => {
+                match load_grass(assets, &mut textures, from, block) {
+                    Ok(grass) => material.grass = grass,
+                    Err(e) => warnings.push(format!("type {id} grass: {e}")),
+                }
+                types.push(Some(material));
+            }
             Err(e) => {
                 warnings.push(format!("type {id}: {e}"));
                 types.push(None);
