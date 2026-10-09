@@ -2,6 +2,7 @@
 //! camera from the player's install (with levels of detail) and lets you fly
 //! around it.
 
+mod effects;
 mod game_light;
 mod grass_look;
 mod object_look;
@@ -59,6 +60,8 @@ Usage: sn-client [--game-dir <PATH>] [--start <X> <Y> <Z>] [--look <X> <Y> <Z>]
   --slot-seed    world seed for filling the spawn slots (default 1; the game
                  picks anew in every save)
   --no-slots     leave the spawn slots empty (for comparisons)
+  --no-placeholders  don't spawn what the objects' placeholders hold (the
+                 cache doors, key terminals, ion crystals; for comparisons)
   --no-grass     no terrain grass (for comparisons)
   --no-scenes    without the scenes the game spawns at start (the Aurora,
                  the Precursor bases it holds)
@@ -110,6 +113,7 @@ struct Args {
     no_local_lights: bool,
     /// `None`: spawn slots stay empty.
     slot_seed: Option<u64>,
+    no_placeholders: bool,
     no_grass: bool,
     /// `None`: no scenes.
     scenes: Option<SceneOptions>,
@@ -139,6 +143,7 @@ fn parse_args() -> Result<Args, String> {
         no_objects: false,
         no_local_lights: false,
         slot_seed: Some(1),
+        no_placeholders: false,
         no_grass: false,
         scenes: Some(SceneOptions {
             aurora_exploded: false,
@@ -197,6 +202,7 @@ fn parse_args() -> Result<Args, String> {
                 args.slot_seed = Some(seed.ok_or("--slot-seed needs a whole number")?);
             }
             "--no-slots" => args.slot_seed = None,
+            "--no-placeholders" => args.no_placeholders = true,
             "--no-grass" => args.no_grass = true,
             "--no-scenes" => args.scenes = None,
             "--aurora" => {
@@ -488,6 +494,7 @@ fn main() -> AppExit {
         SkyDomePlugin,
         GameLightPlugin,
         sun_shafts::SunShaftsPlugin,
+        effects::EffectsPlugin,
     ))
     .insert_resource(PendingTerrainLook(look))
     .insert_resource(PendingLightTextures(caustics))
@@ -568,6 +575,7 @@ fn main() -> AppExit {
                     game,
                     !args.no_local_lights,
                     args.slot_seed,
+                    !args.no_placeholders,
                     args.scenes,
                 ));
             }

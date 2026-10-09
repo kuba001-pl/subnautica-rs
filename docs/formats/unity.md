@@ -399,6 +399,17 @@ then the dependencies and the program blobs (not read).
   vector and matrix members, i32 size), buffer bindings (8), UAVs (12),
   samplers (8), i32 requirements`.
 
+**Program blobs** (after the parsed form; read with UnityPy for M7g3, not
+by our code): per platform (`platforms`; 4 = D3D11) one or more LZ4 block
+segments (`offsets`, `compressedLengths`, `decompressedLengths`). A
+decompressed segment starts with `u32 count`, then `count` × `(u32 offset,
+u32 length, u32 segment)`; a sub-program's `blob index` picks an entry,
+which holds Unity's header followed by the `DXBC` container. Each stage
+lists two sub-programs per variant with the same blob: the first has the
+D3D11 constant buffers and their bind slots (matching the program's
+`dcl_constantbuffer`s), the second one flattened `$Globals` and no
+bindings (**hypothesis**: for another graphics API).
+
 Checked: all 363 shader objects of the game parse (`sn-inspect unity
 --all`); the 17 that drawn materials use give the same name, sub-shader
 and pass counts, and first-pass blend, colour mask, z write, z test and

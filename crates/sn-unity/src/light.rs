@@ -183,9 +183,118 @@ impl DayNightLight {
     }
 }
 
+/// The game's `VFXVolumetricLight` (a MonoBehaviour next to a `Light`):
+/// on `Awake` it gives its glow renderer (`volumGO`) a property block with
+/// `_Intensity` = `intensity`, `_Offset` = `startOffset`, `_Fallof` =
+/// `startFallof`, `_InvFade` = `softEdges`, `_ClipFade` = `nearClip` and
+/// `_Color` = the light's colour with alpha × light intensity / 8; every
+/// `LateUpdate` the renderer is enabled as the light is. Field order
+/// confirmed on the game's scenes (176 bytes; docs/formats/materials.md).
+#[derive(Clone, Debug, PartialEq)]
+pub struct VfxVolumetricLight {
+    pub game_object: PPtr,
+    pub enabled: bool,
+    pub sync_mesh_with_light: bool,
+    pub angle: i32,
+    pub range: f32,
+    pub intensity: f32,
+    pub start_offset: f32,
+    pub start_fallof: f32,
+    pub near_clip: f32,
+    pub soft_edges: f32,
+    pub segments: i32,
+    /// A `Light`; null: the `Light` on the script's own GameObject.
+    pub light_source: PPtr,
+    pub light_type: i32,
+    /// Cached by the script; the light's own colour is what it uses.
+    pub color: [f32; 4],
+    pub light_intensity: f32,
+    /// The GameObject whose renderer draws the glow.
+    pub volum_go: PPtr,
+    pub volum_renderer: PPtr,
+    /// Both must be set for the script to touch the glow.
+    pub cone_mat: PPtr,
+    pub sphere_mat: PPtr,
+}
+
+impl VfxVolumetricLight {
+    pub fn parse(data: &[u8], big_endian: bool) -> Result<VfxVolumetricLight> {
+        let header = MonoBehaviourHeader::parse(data, big_endian)?;
+        let mut r = Reader::new(data, big_endian);
+        r.seek(header.fields_offset)?;
+        let sync_mesh_with_light = r.u8()? != 0;
+        r.align(4)?;
+        Ok(VfxVolumetricLight {
+            game_object: header.game_object,
+            enabled: header.enabled,
+            sync_mesh_with_light,
+            angle: r.i32()?,
+            range: r.f32()?,
+            intensity: r.f32()?,
+            start_offset: r.f32()?,
+            start_fallof: r.f32()?,
+            near_clip: r.f32()?,
+            soft_edges: r.f32()?,
+            segments: r.i32()?,
+            light_source: PPtr::read(&mut r)?,
+            light_type: r.i32()?,
+            color: [r.f32()?, r.f32()?, r.f32()?, r.f32()?],
+            light_intensity: r.f32()?,
+            volum_go: PPtr::read(&mut r)?,
+            volum_renderer: PPtr::read(&mut r)?,
+            cone_mat: PPtr::read(&mut r)?,
+            sphere_mat: PPtr::read(&mut r)?,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reads_a_volumetric_light() {
+        let mut b = Vec::new();
+        let i = |b: &mut Vec<u8>, v: i32| b.extend_from_slice(&v.to_le_bytes());
+        let f = |b: &mut Vec<u8>, v: f32| b.extend_from_slice(&v.to_le_bytes());
+        let p = |b: &mut Vec<u8>, id: i64| {
+            b.extend_from_slice(&0i32.to_le_bytes());
+            b.extend_from_slice(&id.to_le_bytes());
+        };
+        // Header: GameObject, enabled, script, empty name.
+        p(&mut b, 7);
+        b.extend_from_slice(&[1, 0, 0, 0]);
+        p(&mut b, 9);
+        i(&mut b, 0);
+        b.extend_from_slice(&[1, 0, 0, 0]);
+        i(&mut b, 90);
+        for v in [3.0, 0.3, 0.25, 0.4, 1.0, 3.0] {
+            f(&mut b, v);
+        }
+        i(&mut b, 24);
+        p(&mut b, 11);
+        i(&mut b, 0);
+        for v in [1.0, 0.9, 0.6, 1.0, 3.0] {
+            f(&mut b, v);
+        }
+        p(&mut b, 12);
+        p(&mut b, 13);
+        // coneMat, sphereMat, volumMeshFilter, volumMesh (not read).
+        for id in [14, 15, 16, 17] {
+            p(&mut b, id);
+        }
+        assert_eq!(b.len(), 176);
+        let v = VfxVolumetricLight::parse(&b, false).unwrap();
+        assert_eq!(v.game_object.path_id, 7);
+        assert!(v.enabled && v.sync_mesh_with_light);
+        assert_eq!((v.angle, v.range, v.intensity), (90, 3.0, 0.3));
+        assert_eq!((v.start_offset, v.start_fallof), (0.25, 0.4));
+        assert_eq!((v.near_clip, v.soft_edges, v.segments), (1.0, 3.0, 24));
+        assert_eq!(v.light_source.path_id, 11);
+        assert_eq!((v.color, v.light_intensity), ([1.0, 0.9, 0.6, 1.0], 3.0));
+        assert_eq!((v.volum_go.path_id, v.volum_renderer.path_id), (12, 13));
+        assert_eq!((v.cone_mat.path_id, v.sphere_mat.path_id), (14, 15));
+    }
 
     /// A point light as Unity 2019.4 stores it (264 bytes).
     fn light_bytes(kind: i32, bake: i32) -> Vec<u8> {

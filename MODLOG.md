@@ -2,6 +2,183 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-09 — M7g4 (part): the door force fields; extra materials as extra passes
+
+**What:** the user reported the Blood Kelp cache (camera −620 −556 1488) and
+its "holographic door" as wrong. The door's force field (`x_Forcefield`)
+uses two `UWE/Particles/UBER` materials: `FX_ADDFOG FX_DEFORM FX_MULMAP
+FX_SCROLL FX_SOFTEDGES WBOIT` with and without `FX_REFRACTMAP`. Both are
+decoded from the compiled programs (`docs/formats/materials.md`
+§ `UWE/Particles/UBER` meshes) and drawn by `effects_uber.wgsl`:
+- soft edges against the scene depth;
+- a scrolling deform map that shifts every texture's uv by
+  (map − 1) × `_DeformStrength`;
+- a refraction map whose offset goes to the WBOIT target B.yz, which the
+  composite already applies.
+
+The variant table and checks are in `objects.rs` (`PARTICLES_VARIANTS`);
+draws take four textures (`_MainTex`, `_MainTex2`, `_DeformMap`,
+`_RefractMap`). Trap found: both materials hold a float and a vector named
+`_RefractStrength`; the program reads the float.
+
+The node has one sub-mesh and two materials. Unity draws extra materials
+over the last sub-mesh again; we dropped them. They now draw, and each one
+is logged. Others found this way: abandoned base corridors, Precursor
+columns, a coral plant's opaque pass, the thermal reactor halo, the Gun's
+elevator tube and terminal screen. Nearly all are `MarmosetUBER` or decoded
+UBER.
+
+`Update::Material` now boxes its description (clippy: large enum variant).
+
+**Verified:**
+- `cargo test --workspace`: 157 pass, including new
+  `force_fields_follow_the_decoded_terms` and
+  `door_force_field_variants_are_drawn_by_the_effect_pass`.
+- `cargo test --workspace -- --ignored`: 19 pass. Clippy and fmt are clean.
+- Client at the door (`--start -622 -558 1482 --look -608 -561 1483`):
+  - no shader warnings; both portal materials are logged as effect
+    materials;
+  - effects GPU 0.22 ms;
+  - the flat green sheet is now scrolling horizontal streaks with
+    refraction and a soft second layer (`out/m7g4/door2.png`, `door3.png`).
+- **Not compared with the game on screen.**
+- The refraction's y sign is not checked.
+
+**Open concerns** (user review 2026-10-09; the values are the game's, so
+they stay as they are; listed in `docs/DESIGN.md` "M7g open"):
+1. The spotlight cones are dimmer than in the game screenshot.
+2. The Precursor pillars are nearly black; this may be the missing
+   atmosphere volume ambient (not checked).
+3. The other UBER variants keep the stand-in look.
+4. The refraction's y sign is unverified.
+
+## 2026-10-09 — M7h: what the prefabs' placeholders spawn (doors, key terminals, crystals)
+
+**What:** the cache's door, key terminal and the ion crystals on the
+pedestals were missing. The game spawns them at run time from
+`PrefabPlaceholder`s (`PrefabPlaceholdersGroup.Start`), so they never appear
+in the world's cells.
+- `sn-unity` `placeholder.rs` reads both scripts. The parsers require the
+  data to end at the last field, which checks the layout.
+- `sn-assets` attaches the placeholders to their nodes.
+- The client spawns each active placeholder's prefab (by its class id's
+  world entity info) under the placeholder's parent, nested, creatures
+  left out. Every skip is logged with its reason. `--no-placeholders` turns
+  this off for comparisons.
+- `sn-inspect`: `entities --find TEXT` searches every placement (the
+  per-batch listing shows only the first cells), and `prefab KEY --props`
+  prints a prefab's material properties.
+
+**Verified:**
+- Reader unit tests.
+- Real-data test `prefab_placeholders`: the pedestal spawns
+  `PrecursorIonCrystal`; the cache root spawns `Precursor_Gun_Terminal2Door`
+  and `Precursor_PurpleKeyTerminal`.
+- Client at the cache: "placeholders spawned so far: 2091 (189 distinct
+  prefabs)"; the door stands in its frame (`out/m7g4/door.png`).
+- Frame times are within noise: 8.66 ms with vs 8.24 ms without in one pair
+  of runs, 16.92 vs 16.95 ms in a pair under load.
+- Not compared with the game on screen.
+
+## 2026-10-09 — M7g4 (part): the Precursor consoles' holograms
+
+**What:** the hologram over the cache console was a solid textured green
+funnel; in the game it is a faint funnel with a floating symbol. Its six
+materials (`x_Precursor_ComputerTerminal_*`) use three `UWE/Particles/UBER`
+variants: `FX_ADDFOG FX_SCROLL WBOIT`, plus `FX_MULMAP` and/or
+`FX_FRESNELCLIP`. They are decoded from the compiled programs
+(`docs/formats/materials.md`). The colour is 2 × `_Color` × vertex colour ×
+the scrolling textures × the day/night strength (by
+`_UweLocalLightScalar`). Alpha is the colour's mean brightness × its alpha,
+so dark texels are transparent; an optional Fresnel clip applies. Fog and
+WBOIT output work as for the glows.
+- New `effects_uber.wgsl`, drawn in the same accumulation pass as the
+  glows.
+- The client draws a UBER material this way only if its keyword set was
+  decoded and its blend, depth test and cull match what the pass does.
+  Every other material is logged with the reason and keeps the stand-in
+  look.
+
+**Dead end (cones):** the cache's spotlight cones looked missing. Six
+`Precursor_Cache_Spotlight_Generic_Bright` cones are placed, and debug
+renders showed all of them, pointing down from the pillars. Each term of
+the glow formula behaves correctly in isolation. They are faint by their
+values: `_Color.a` × intensity ≈ 0.08. Measured against the user's game
+screenshot, our cones add about +11 to the green channel and the game's
+about +28. Our cave is also brighter and bluer than the game's (2, 24, 14),
+probably the cache's atmosphere volume ambient, which is not ported. The
+rest of the gap is **unexplained**.
+
+**Verified:** client tests of the decoded formula and the variant checks.
+The console shows the floating "G" symbol (`out/m7g4/cache-placeholders.png`).
+Not compared side by side with the game.
+
+## 2026-10-09 — M7g3 fix: the glows take their light's colour (`VFXVolumetricLight`)
+
+**What:** the first M7g3 build drew the cones as flat grey solids (user
+report; `out/m7g3/cone.png`). The shader decode was right (re-checked
+against the compiled program term by term); its inputs were not. The
+game's `VFXVolumetricLight` script (next to each glow's `Light`) overrides
+the material on `Awake`: `_Color` = the light's colour with alpha × light
+intensity / 8, plus its own intensity, start offset/falloff, soft edges and
+near clip; each `LateUpdate` the glow's renderer is on as the light is. We
+used the bare material (white, alpha 1, intensity 0.5).
+- `sn-unity` `VfxVolumetricLight` (parser; field layout confirmed on a scene
+  copy, 176 bytes), `sn-assets` `VolumetricGlow` on the glow's node (script,
+  resolved light, whether `Awake` sets the block; the renderer's enabled
+  flag follows the light), the client's `glow_material` (a material per
+  distinct set of values).
+- Docs: `docs/formats/materials.md` § Fake volumetric lights.
+
+**Verified:** unit test `reads_a_volumetric_light`; real-data test
+`volumetric_light_glow` (the ion crystal pedestal: green light (0.42, 1,
+0.69) at intensity 3, script intensity 0.35, so `_Color.a` 0.375). Client
+at the cone (`--start -1110 -680 -600 --look -1110 -680 -585`): 10
+distinct glow values logged (green/teal colours, alpha 0.125–0.75,
+intensity 0.175–0.5); the cone is a translucent green beam fading along its
+length (`out/m7g3/cone2.png`); at the pedestal the white sphere and cones
+are now a faint green haze (`out/m7g3/pedestal3.png`), effects GPU 0.28 ms.
+**Not compared with the game on screen.** Not followed: later changes of a
+light (day/night or scripts) while playing.
+
+## 2026-10-09 — M7g3: the fake light glows with the game's shader and WBOIT
+
+**What:** `UWE/Particles/WBOIT-FakeVolumetricLight` (the white spheres and
+cones: ion crystal pedestals, Precursor spotlights) drawn the way the game
+draws it (`docs/DESIGN.md` § 4.2, decided with the user: our own pass after
+the fog). Decoded from the compiled D3D11 programs
+(`docs/formats/materials.md` § Fake volumetric lights).
+- `apps/sn-client/src/effects.rs` (new): the worker sends these parts'
+  meshes with vertex colours; the main world spawns `EffectPart`s; the
+  render world uploads the meshes once, accumulates the glows into two
+  half-float WBOIT targets with the game's blend and weights, then
+  composites like `Hidden/WBOIT Composite`, after the sun shafts and
+  before tonemapping. `effects.wgsl` (soft edges from the scene's depth,
+  Fresnel, near fade, vertex-alpha falloff, water fog at the glow's own
+  distance and the fade over its fogged path); `effects_composite.wgsl`.
+- `water_common.wgsl`: `water_fog_length` (the in-water fog path, same
+  rules as `apply_water_fog`). `sun_shafts.rs`: a `SunShaftsPass` set to
+  order after. `objects.rs`: effect materials and meshes, a log line per
+  effect material with its values. No new dependencies.
+- Decode corrected on re-reading: the fog fade uses the path through
+  fogged water past the start distance, not the whole distance; the
+  composite's alpha is `(1 − A.a)² + A.a × scene.a`.
+
+**Verified (2026-10-09):** workspace tests 148 pass (4 new formula tests:
+the glow's terms, the fog fade's 112.5–125 m, one glow composites as plain
+alpha blending, overlapping glows averaged by weight; they check the
+formulas in Rust, not the WGSL itself), real-data 17 pass, clippy and fmt
+clean. Client at a pedestal (`--start -1121 -686 -712 --look -1125 -688
+-705 --benchmark 120 --gpu-timings`): `effects: 21 parts, 3 meshes`, the
+effects pass 0.21 ms of GPU time, mean frame 6.99 ms, 0 warnings, and the
+glow shader is no longer in the unported list. Screenshots
+`out/m7g3/pedestal-final.png` (a soft glow over the pedestal) and
+`out/m7g3/cone.png` (a spotlight cone, evenly lit near its apex with hard
+sides). Looked into with a debug render of the Fresnel term (≈ 0.9 across
+the cone) and logged mesh data: the cone's apex normal is its axis and
+its side normals are for a narrower cone, so that look follows from the
+game's data under the decoded formula. **Not compared with the game.**
+
 ## 2026-10-09 — M7g2: shader names and render state; unported shaders logged
 
 **What:** every material's shader is known by name (`docs/DESIGN.md`

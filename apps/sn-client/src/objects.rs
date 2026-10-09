@@ -31,6 +31,9 @@ use sn_install::GameData;
 use sn_unity::{Catalog, DayNightLight, LightKind, Material, SKIES_AUTO, Shader};
 use sn_world::{BatchCoord, EntityInfo, SLOTS_COMPONENT, Transform as Placement};
 
+use crate::effects::{
+    EffectLook, EffectMeshes, EffectPart, EffectValues, PARTICLES_TEXTURES, ParticlesValues,
+};
 use crate::game_light::GameLightImages;
 use crate::object_look::{ObjectExtension, ObjectMaterial, ObjectParams};
 use crate::terrain::TerrainStreamer;
@@ -90,11 +93,14 @@ type Key = (PathBuf, String, i64);
 
 /// Mesh data already in Bevy's coordinates (z flipped, winding reversed).
 pub struct MeshData {
-    positions: Vec<[f32; 3]>,
-    normals: Vec<[f32; 3]>,
-    tangents: Vec<[f32; 4]>,
-    uvs: Vec<[f32; 2]>,
-    indices: Vec<u32>,
+    pub(crate) positions: Vec<[f32; 3]>,
+    pub(crate) normals: Vec<[f32; 3]>,
+    pub(crate) tangents: Vec<[f32; 4]>,
+    /// Vertex colours (empty if the mesh has none); only the effect meshes
+    /// use them (`effects.rs`).
+    pub(crate) colors: Vec<[f32; 4]>,
+    pub(crate) uvs: Vec<[f32; 2]>,
+    pub(crate) indices: Vec<u32>,
 }
 
 #[derive(Clone, Copy)]
@@ -121,6 +127,8 @@ pub(crate) struct MaterialDesc {
     double_sided: bool,
     /// MarmosetUBER's values; `None` for materials of other shaders.
     pub(crate) uber: Option<UberValues>,
+    /// Values of a shader drawn by our effect pass (`effects.rs`).
+    pub(crate) effect: Option<EffectLook>,
 }
 
 /// A MarmosetUBER material's values (the shader's defaults where the
@@ -227,6 +235,9 @@ struct Part {
     /// Lit with the sky of the biome it stands in (a `SkyApplier` lists
     /// it); else with the global sky.
     biome_sky: bool,
+    /// Drawn by our effect pass (`effects.rs`): `mesh` is an effect mesh id
+    /// (`Update::EffectMesh`) and the material has `effect` values.
+    effect: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -248,6 +259,47 @@ pub struct SceneOptions {
 }
 
 /// What the worker fills spawn slots with.
+/// A saved tree's objects by parent id.
+fn saved_children(tree: &sn_world::ObjectTree) -> HashMap<&str, Vec<usize>> {
+    let mut children: HashMap<&str, Vec<usize>> = HashMap::new();
+    for (i, o) in tree.objects.iter().enumerate() {
+        if let Some(p) = &o.parent {
+            children.entry(p.as_str()).or_default().push(i);
+        }
+    }
+    children
+}
+
+/// The class ids of every saved object below the object `id`.
+fn saved_below<'t>(
+    tree: &'t sn_world::ObjectTree,
+    children: &HashMap<&str, Vec<usize>>,
+    id: &str,
+) -> Vec<&'t str> {
+    let mut below = Vec::new();
+    let mut todo = vec![id.to_string()];
+    while let Some(id) = todo.pop() {
+        for &c in children.get(id.as_str()).into_iter().flatten() {
+            below.push(tree.objects[c].class_id.as_str());
+            todo.push(tree.objects[c].id.clone());
+        }
+    }
+    below
+}
+
+/// What a prefab draws and lights, relative to its root.
+struct PrefabContent {
+    parts: Vec<Part>,
+    lights: Vec<LocalLight>,
+    directional: Vec<DirectionalSource>,
+}
+
+/// Prefabs spawned by placeholders inside prefabs spawned by placeholders
+/// … deeper than this are taken as a loop.
+const MAX_PLACEHOLDER_DEPTH: usize = 8;
+/// `prefab_content` depth meaning: don't spawn the placeholders.
+const NO_SPAWN: usize = usize::MAX;
+
 struct SlotTables {
     seed: u64,
     loot: LootTable,
@@ -263,9 +315,14 @@ enum Update {
     },
     Material {
         id: u32,
-        desc: MaterialDesc,
+        desc: Box<MaterialDesc>,
     },
     Mesh {
+        id: u32,
+        data: MeshData,
+    },
+    /// A sub-mesh drawn by the effect pass (kept as data, not a Bevy mesh).
+    EffectMesh {
         id: u32,
         data: MeshData,
     },
@@ -299,8 +356,12 @@ struct Library {
     catalog: Catalog,
     /// ClassId → prefab path (`prefabs.db`).
     class_paths: HashMap<String, String>,
-    /// Prefab path → id (`None`: nothing to draw, or failed to load).
-    prefabs: HashMap<String, Option<u32>>,
+    /// (prefab path, its placeholders spawn) → id (`None`: nothing to draw,
+    /// or failed to load).
+    prefabs: HashMap<(String, bool), Option<u32>>,
+    /// Prefab path → the class ids its placeholders spawn (recorded when it
+    /// loads).
+    placeholder_ids: HashMap<String, Vec<String>>,
     meshes: HashMap<(Key, usize), Option<u32>>,
     materials: HashMap<Key, u32>,
     /// `None`: the texture's own colour space.
@@ -313,8 +374,15 @@ struct Library {
     /// never reach the picture (e.g. the occluder shells on layer 27,
     /// `docs/formats/materials.md`).
     culling_mask: u32,
-    /// Shader object → its name (`m_ParsedForm.m_Name`).
-    shader_names: HashMap<Key, String>,
+    /// Shader object → its name and property defaults.
+    shader_infos: HashMap<Key, Arc<ShaderInfo>>,
+    /// Materials drawn by the effect pass, with their description.
+    effect_materials: HashMap<u32, MaterialDesc>,
+    /// (effect material, its values as bits) → the material with those
+    /// values, as a `VFXVolumetricLight`'s property block sets them.
+    glow_materials: HashMap<(u32, [u32; 9]), u32>,
+    /// (mesh, sub-mesh) → effect mesh id, as `meshes`.
+    effect_meshes: HashMap<(Key, usize), Option<u32>>,
     /// Material id → its shader's name.
     material_shaders: HashMap<u32, String>,
     /// Shaders we draw with a stand-in look (not ported): parts drawn in
@@ -323,6 +391,17 @@ struct Library {
     unported: BTreeMap<String, usize>,
     /// `unported` changed since it was last logged.
     unported_changed: bool,
+    /// `WorldEntities/WorldEntityData`: a placeholder spawns only a prefab
+    /// with an info (`PrefabPlaceholder.Spawn`).
+    entity_infos: HashMap<String, EntityInfo>,
+    /// Prefabs spawned by placeholders, by path.
+    spawned_contents: HashMap<String, Option<Arc<PrefabContent>>>,
+    /// Spawn what placeholders hold (off with `--no-placeholders`).
+    spawn_placeholders: bool,
+    /// Placeholders spawned so far (each time a prefab holding one loads).
+    placeholders_spawned: usize,
+    /// `placeholders_spawned` when it was last logged.
+    placeholders_logged: usize,
 }
 
 /// How far a shader is ported (`docs/formats/materials.md`).
@@ -332,14 +411,177 @@ pub(crate) enum ShaderPort {
     Ported,
     /// A MarmosetUBER variant: drawn as UBER, its own properties not read.
     AsUber,
+    /// Ported in our effect pass (`effects.rs`).
+    Effect,
     /// Drawn as UBER-less `_MainTex` × `_Color` in our object shader.
     NotPorted,
+}
+
+/// What the client keeps of a material's shader.
+pub(crate) struct ShaderInfo {
+    pub name: String,
+    /// Property name → its declared default (colours and vectors as is,
+    /// floats in `x`).
+    pub defaults: HashMap<String, [f32; 4]>,
+}
+
+/// An effect material's values: the material's own, else the shader's
+/// declared defaults (as Unity does).
+fn effect_values(material: &Material, shader: &ShaderInfo) -> EffectValues {
+    let float = |name: &str| {
+        material
+            .float(name)
+            .or_else(|| shader.defaults.get(name).map(|d| d[0]))
+            .unwrap_or(0.0)
+    };
+    EffectValues {
+        color: material
+            .color("_Color")
+            .or_else(|| shader.defaults.get("_Color").copied())
+            .unwrap_or([1.0; 4]),
+        intensity: float("_Intensity"),
+        fresnel_fade: float("_FresnelFade"),
+        fresnel_pow: float("_FresnelPow"),
+        clip_offset: float("_ClipOffset"),
+        clip_fade: float("_ClipFade"),
+        offset: float("_Offset"),
+        fallof: float("_Fallof"),
+        inv_fade: float("_InvFade"),
+    }
+}
+
+/// What a decoded `UWE/Particles/UBER` keyword set switches on.
+#[derive(Clone, Copy)]
+struct ParticlesVariant {
+    fresnel_clip: bool,
+    mul_map: bool,
+    soft_edges: bool,
+    deform: bool,
+    refract: bool,
+}
+
+/// The `UWE/Particles/UBER` keyword sets our effect pass draws, decoded
+/// from the game's compiled programs (`docs/formats/materials.md`
+/// § `UWE/Particles/UBER` meshes): the consoles' holograms and the doors'
+/// force fields.
+const PARTICLES_VARIANTS: [(&str, ParticlesVariant); 5] = {
+    const fn v(fresnel_clip: bool, mul_map: bool, rest: bool, refract: bool) -> ParticlesVariant {
+        ParticlesVariant {
+            fresnel_clip,
+            mul_map,
+            soft_edges: rest,
+            deform: rest,
+            refract,
+        }
+    }
+    [
+        (
+            "FX_ADDFOG FX_FRESNELCLIP FX_MULMAP FX_SCROLL WBOIT",
+            v(true, true, false, false),
+        ),
+        (
+            "FX_ADDFOG FX_MULMAP FX_SCROLL WBOIT",
+            v(false, true, false, false),
+        ),
+        ("FX_ADDFOG FX_SCROLL WBOIT", v(false, false, false, false)),
+        (
+            "FX_ADDFOG FX_DEFORM FX_MULMAP FX_REFRACTMAP FX_SCROLL FX_SOFTEDGES WBOIT",
+            v(false, true, true, true),
+        ),
+        (
+            "FX_ADDFOG FX_DEFORM FX_MULMAP FX_SCROLL FX_SOFTEDGES WBOIT",
+            v(false, true, true, false),
+        ),
+    ]
+};
+
+/// The game's mesh-effect shader; ported per material (`particles_values`).
+const PARTICLES_UBER: &str = "UWE/Particles/UBER";
+
+/// A `UWE/Particles/UBER` material's values if our effect pass draws it as
+/// the game does: one of the decoded keyword sets, and the render state the
+/// pass implements (blend `_SrcBlend` 1 `_DstBlend` 1 `_SrcBlend2` 0
+/// `_DstBlend2` 10, `_Ztest` 2 = Less, `_MyCullVariable` 0 = both sides).
+/// Else why not. `textures`: the ids of `_MainTex`, `_MainTex2`,
+/// `_DeformMap`, `_RefractMap` with their scale/offset.
+fn particles_values(
+    material: &Material,
+    shader: &ShaderInfo,
+    textures: [Option<(u32, [f32; 4])>; PARTICLES_TEXTURES],
+) -> Result<ParticlesValues, String> {
+    let mut keywords: Vec<&str> = material.keywords.split_whitespace().collect();
+    keywords.sort_unstable();
+    let keywords = keywords.join(" ");
+    let Some(&(_, variant)) = PARTICLES_VARIANTS.iter().find(|(k, _)| *k == keywords) else {
+        return Err(format!("keywords [{keywords}] not decoded"));
+    };
+    let float = |name: &str| {
+        material
+            .float(name)
+            .or_else(|| shader.defaults.get(name).map(|d| d[0]))
+            .unwrap_or(0.0)
+    };
+    let state = [
+        ("_SrcBlend", 1.0),
+        ("_DstBlend", 1.0),
+        ("_SrcBlend2", 0.0),
+        ("_DstBlend2", 10.0),
+        ("_Ztest", 2.0),
+        ("_MyCullVariable", 0.0),
+    ];
+    for (name, wanted) in state {
+        let v = float(name);
+        if v != wanted {
+            return Err(format!("{name} {v} (the pass draws {wanted})"));
+        }
+    }
+    let vector = |name: &str, default: [f32; 4]| {
+        material
+            .color(name)
+            .or_else(|| shader.defaults.get(name).copied())
+            .unwrap_or(default)
+    };
+    let st = |t: Option<(u32, [f32; 4])>| t.map_or([1.0, 1.0, 0.0, 0.0], |(_, st)| st);
+    let [main, main2, deform, refract] = textures;
+    let speed = vector("_MainTex_Speed", [0.0; 4]);
+    let speed2 = vector("_MainTex2_Speed", [0.0; 4]);
+    let deform_speed = vector("_DeformMap_Speed", [0.0; 4]);
+    let refract_speed = vector("_RefractMap_Speed", [0.0; 4]);
+    Ok(ParticlesValues {
+        color: vector("_Color", [1.0; 4]),
+        strength: vector("_ColorStrength", [1.0; 4]),
+        strength_night: vector("_ColorStrengthAtNight", [1.0; 4]),
+        main_st: st(main),
+        main2_st: st(main2),
+        speed: [speed[0], speed[1], speed2[0], speed2[1]],
+        fresnel_fade: float("_FresnelFade"),
+        fresnel_pow: float("_FresnelPow"),
+        cutoff: float("_Cutoff"),
+        fresnel_clip: variant.fresnel_clip,
+        mul_map: variant.mul_map,
+        soft_edges: variant.soft_edges,
+        deform: variant.deform,
+        refract: variant.refract,
+        inv_fade: float("_InvFade"),
+        deform_strength: float("_DeformStrength"),
+        refract_strength: float("_RefractStrength"),
+        deform_st: st(deform),
+        refract_st: st(refract),
+        speed2: [
+            deform_speed[0],
+            deform_speed[1],
+            refract_speed[0],
+            refract_speed[1],
+        ],
+        textures: textures.map(|t| t.map(|(id, _)| id)),
+    })
 }
 
 pub(crate) fn shader_port(name: &str) -> ShaderPort {
     match name {
         "MarmosetUBER" => ShaderPort::Ported,
         "UWE/Marmoset/IonCrystal" | "UWE/Marmoset/Mesmer" => ShaderPort::AsUber,
+        "UWE/Particles/WBOIT-FakeVolumetricLight" => ShaderPort::Effect,
         _ => ShaderPort::NotPorted,
     }
 }
@@ -397,47 +639,191 @@ impl Library {
             let target = self.assets.resolve(&object.file, pptr).ok()??;
             Some((self.texture(&target, srgb, out)?, st))
         };
-        let desc = material_desc(&material, texture);
+        let mut desc = material_desc(&material, texture);
+        let shader = self.shader_info(object, &material, out);
+        if shader_port(&shader.name) == ShaderPort::Effect {
+            let values = effect_values(&material, &shader);
+            info!(
+                "objects: effect material {:?} ({}): {values:?}",
+                material.name, shader.name
+            );
+            desc.effect = Some(EffectLook::Glow(values));
+        } else if shader.name == PARTICLES_UBER {
+            // Each texture in its own colour space, as Unity samples it.
+            let mut texture = |name: &str| {
+                let t = material.texture(name).filter(|t| !t.texture.is_null())?;
+                let target = self.assets.resolve(&object.file, t.texture).ok()??;
+                let id = self.texture(&target, None, out)?;
+                Some((id, [t.scale[0], t.scale[1], t.offset[0], t.offset[1]]))
+            };
+            let textures = [
+                texture("_MainTex"),
+                texture("_MainTex2"),
+                texture("_DeformMap"),
+                texture("_RefractMap"),
+            ];
+            match particles_values(&material, &shader, textures) {
+                Ok(values) => {
+                    info!(
+                        "objects: effect material {:?} ({}): {values:?}",
+                        material.name, shader.name
+                    );
+                    desc.effect = Some(EffectLook::Particles(values));
+                }
+                Err(why) => info!(
+                    "objects: {:?} ({}) stays on the stand-in look: {why}",
+                    material.name, shader.name
+                ),
+            }
+        }
+        let effect = desc.effect.is_some();
         let id = self.id();
-        out.push(Update::Material { id, desc });
+        if effect {
+            self.effect_materials.insert(id, desc.clone());
+        }
+        out.push(Update::Material {
+            id,
+            desc: Box::new(desc),
+        });
         self.materials.insert(object.key(), id);
-        let shader = self.shader_name(object, &material, out);
-        self.material_shaders.insert(id, shader);
+        self.material_shaders.insert(id, shader.name.clone());
         Some(id)
     }
 
-    /// The name of a material's shader, read once per shader object.
-    fn shader_name(
+    /// A material's shader: its name and property defaults, read once per
+    /// shader object.
+    fn shader_info(
         &mut self,
         material_object: &ObjectRef,
         material: &Material,
         out: &mut Vec<Update>,
-    ) -> String {
+    ) -> Arc<ShaderInfo> {
+        let named = |name: &str| {
+            Arc::new(ShaderInfo {
+                name: name.into(),
+                defaults: HashMap::new(),
+            })
+        };
         let shader = match self.assets.resolve(&material_object.file, material.shader) {
             Ok(Some(s)) => s,
-            Ok(None) => return "(no shader)".into(),
+            Ok(None) => return named("(no shader)"),
             Err(e) => {
                 out.push(Update::Warning(format!("shader of {}: {e}", material.name)));
-                return "(unresolved shader)".into();
+                return named("(unresolved shader)");
             }
         };
-        if let Some(name) = self.shader_names.get(&shader.key()) {
-            return name.clone();
+        if let Some(info) = self.shader_infos.get(&shader.key()) {
+            return info.clone();
         }
-        let name = shader
-            .data()
-            .and_then(|(_, d)| {
-                Shader::parse(d, shader.file.file().big_endian).map_err(|e| e.to_string())
-            })
-            .map_or_else(
-                |e| {
-                    out.push(Update::Warning(format!("shader of {}: {e}", material.name)));
-                    "(unreadable shader)".to_string()
-                },
-                |s| s.name,
+        let parsed = shader.data().and_then(|(_, d)| {
+            Shader::parse(d, shader.file.file().big_endian).map_err(|e| e.to_string())
+        });
+        let info = match parsed {
+            Ok(s) => Arc::new(ShaderInfo {
+                defaults: s
+                    .properties
+                    .iter()
+                    .map(|p| (p.name.clone(), p.default))
+                    .collect(),
+                name: s.name,
+            }),
+            Err(e) => {
+                out.push(Update::Warning(format!("shader of {}: {e}", material.name)));
+                named("(unreadable shader)")
+            }
+        };
+        self.shader_infos.insert(shader.key(), info.clone());
+        info
+    }
+
+    /// The effect material `base` with the values a `VFXVolumetricLight`
+    /// puts in its glow's property block (`docs/formats/materials.md`
+    /// § Fake volumetric lights): `_Color` = the light's colour with alpha
+    /// × light intensity / 8, and the script's intensity, start offset,
+    /// start falloff, soft edges and near clip.
+    fn glow_material(
+        &mut self,
+        base: u32,
+        glow: &sn_assets::VolumetricGlow,
+        out: &mut Vec<Update>,
+    ) -> u32 {
+        let (Some(light), Some(mut desc)) =
+            (&glow.light, self.effect_materials.get(&base).cloned())
+        else {
+            return base;
+        };
+        let Some(EffectLook::Glow(v)) = desc.effect.as_mut() else {
+            return base;
+        };
+        let s = &glow.script;
+        let c = light.color;
+        v.color = [c[0], c[1], c[2], c[3] * light.intensity / 8.0];
+        v.intensity = s.intensity;
+        v.offset = s.start_offset;
+        v.fallof = s.start_fallof;
+        v.inv_fade = s.soft_edges;
+        v.clip_fade = s.near_clip;
+        let values = *v;
+        let bits = [
+            values.color[0],
+            values.color[1],
+            values.color[2],
+            values.color[3],
+            values.intensity,
+            values.offset,
+            values.fallof,
+            values.inv_fade,
+            values.clip_fade,
+        ]
+        .map(f32::to_bits);
+        if let Some(id) = self.glow_materials.get(&(base, bits)) {
+            return *id;
+        }
+        info!("objects: volumetric light glow: {values:?}");
+        let id = self.id();
+        self.effect_materials.insert(id, desc.clone());
+        if let Some(shader) = self.material_shaders.get(&base).cloned() {
+            self.material_shaders.insert(id, shader);
+        }
+        out.push(Update::Material {
+            id,
+            desc: Box::new(desc),
+        });
+        self.glow_materials.insert((base, bits), id);
+        id
+    }
+
+    /// The sub-meshes of an effect mesh (with vertex colours), sent as
+    /// `Update::EffectMesh`; cached like `mesh`.
+    fn effect_mesh(&mut self, object: &ObjectRef, out: &mut Vec<Update>) -> Vec<Option<u32>> {
+        let key = object.key();
+        if self.effect_meshes.contains_key(&(key.clone(), 0)) {
+            return (0..)
+                .map_while(|i| self.effect_meshes.get(&(key.clone(), i)).copied())
+                .collect();
+        }
+        let geometry = match self.assets.mesh(object) {
+            Ok((_, g)) => g,
+            Err(e) => {
+                out.push(Update::Warning(format!("effect mesh: {e}")));
+                self.effect_meshes.insert((key, 0), None);
+                return vec![None];
+            }
+        };
+        if geometry.colors.len() != geometry.positions.len() {
+            info!(
+                "objects: effect mesh {} has no vertex colours; drawn with white",
+                object.path_id
             );
-        self.shader_names.insert(shader.key(), name.clone());
-        name
+        }
+        let mut ids = Vec::new();
+        for (i, data) in split_geometry(&geometry).into_iter().enumerate() {
+            let id = self.id();
+            out.push(Update::EffectMesh { id, data });
+            self.effect_meshes.insert((key.clone(), i), Some(id));
+            ids.push(Some(id));
+        }
+        ids
     }
 
     /// Counts a drawn part whose shader is not ported; logs a shader the
@@ -446,7 +832,11 @@ impl Library {
         let Some(shader) = self.material_shaders.get(&material) else {
             return;
         };
-        if shader_port(shader) == ShaderPort::Ported {
+        // Effect materials are ported (some `UWE/Particles/UBER` materials
+        // are, others not: decided per material).
+        if self.effect_materials.contains_key(&material)
+            || matches!(shader_port(shader), ShaderPort::Ported | ShaderPort::Effect)
+        {
             return;
         }
         let n = self.unported.entry(shader.clone()).or_default();
@@ -462,6 +852,17 @@ impl Library {
     /// Logs the not-ported totals if they changed (called when the worker
     /// has loaded everything asked for).
     fn log_unported(&mut self) {
+        if self.placeholders_spawned != self.placeholders_logged {
+            self.placeholders_logged = self.placeholders_spawned;
+            info!(
+                "objects: placeholders spawned so far: {} ({} distinct prefabs)",
+                self.placeholders_spawned,
+                self.spawned_contents
+                    .values()
+                    .filter(|c| c.is_some())
+                    .count()
+            );
+        }
         if std::mem::take(&mut self.unported_changed) {
             info!(
                 "objects: shaders not ported (drawn parts in the prefabs and scenes loaded so far): {:?}",
@@ -526,85 +927,125 @@ impl Library {
         geometry: &sn_unity::MeshGeometry,
         out: &mut Vec<Update>,
     ) -> Vec<Option<u32>> {
-        let flip = |p: [f32; 3]| [p[0], p[1], -p[2]];
-        let positions: Vec<[f32; 3]> = geometry.positions.iter().map(|&p| flip(p)).collect();
-        let normals: Vec<[f32; 3]> = geometry.normals.iter().map(|&n| flip(n)).collect();
-        // Mirroring flips the bitangent: negate w too.
-        let tangents: Vec<[f32; 4]> = geometry
-            .tangents
-            .iter()
-            .map(|t| [t[0], t[1], -t[2], -t[3]])
-            .collect();
         let mut ids = Vec::new();
-        for (i, indices) in geometry.sub_meshes.iter().enumerate() {
-            // Each sub-mesh becomes its own mesh with only the vertices it
-            // uses.
-            let mut remap = vec![u32::MAX; positions.len()];
-            let mut used = Vec::new();
-            let mut local = Vec::with_capacity(indices.len());
-            for &v in indices {
-                let slot = &mut remap[v as usize];
-                if *slot == u32::MAX {
-                    *slot = used.len() as u32;
-                    used.push(v as usize);
-                }
-                local.push(*slot);
-            }
-            let pick = |attr: &[[f32; 3]]| -> Vec<[f32; 3]> {
-                if attr.len() == positions.len() {
-                    used.iter().map(|&v| attr[v]).collect()
-                } else {
-                    Vec::new()
-                }
-            };
+        for (i, data) in split_geometry(geometry).into_iter().enumerate() {
             let id = self.id();
-            out.push(Update::Mesh {
-                id,
-                data: MeshData {
-                    positions: pick(&positions),
-                    normals: pick(&normals),
-                    tangents: if tangents.len() == positions.len() {
-                        used.iter().map(|&v| tangents[v]).collect()
-                    } else {
-                        Vec::new()
-                    },
-                    uvs: if geometry.uv0.len() == positions.len() {
-                        used.iter().map(|&v| geometry.uv0[v]).collect()
-                    } else {
-                        Vec::new()
-                    },
-                    indices: local
-                        .chunks_exact(3)
-                        .flat_map(|t| [t[0], t[2], t[1]])
-                        .collect(),
-                },
-            });
+            out.push(Update::Mesh { id, data });
             self.meshes.insert((key.clone(), i), Some(id));
             ids.push(Some(id));
         }
         ids
     }
 
-    fn prefab(&mut self, path: &str, out: &mut Vec<Update>) -> Option<u32> {
-        if let Some(id) = self.prefabs.get(path) {
+    /// A prefab's id; `spawn`: with what its placeholders spawn (false for a
+    /// placement whose saved objects already hold it, `placeholders_saved`).
+    fn prefab_as(&mut self, path: &str, spawn: bool, out: &mut Vec<Update>) -> Option<u32> {
+        let key = (path.to_string(), spawn);
+        if let Some(id) = self.prefabs.get(&key) {
             return *id;
         }
         let prefab = match self.assets.prefab(&self.catalog, path) {
             Ok(p) => p,
             Err(e) => {
                 out.push(Update::Warning(format!("prefab: {e}")));
-                self.prefabs.insert(path.to_string(), None);
+                self.prefabs.insert(key, None);
+                self.placeholder_ids.insert(path.to_string(), Vec::new());
                 return None;
             }
         };
-        let id = self.prefab_parts(&prefab, out);
-        self.prefabs.insert(path.to_string(), id);
+        let ids = prefab
+            .placeholder_groups
+            .iter()
+            .flat_map(|g| &g.placeholders)
+            .filter_map(|&n| prefab.nodes[n].placeholder.clone())
+            .collect();
+        self.placeholder_ids.insert(path.to_string(), ids);
+        let id = self.prefab_parts_as(&prefab, spawn, out);
+        self.prefabs.insert(key, id);
         id
     }
 
-    /// Sends a loaded hierarchy's drawn parts and lights; its id, `None`
-    /// if it has nothing to draw.
+    /// Whether the world's saved objects below `object` already hold what
+    /// its prefab's placeholders spawn, so the game takes the group as
+    /// initialized and spawns nothing
+    /// (`PrefabPlaceholdersGroup.OnProtoDeserializeObjectTree`: more of its
+    /// placeholders' prefabs found than missing, those of "Slots" prefabs
+    /// not counted). The game wants each found object under the
+    /// placeholder's own parent; the saved tree is matched as "below the
+    /// object" (4 placements in the world, all found that way: `sn-inspect
+    /// prefab --placeholders`). `below`: the class ids of the saved objects
+    /// below it.
+    fn placeholders_saved(&mut self, path: &str, below: &[&str], out: &mut Vec<Update>) -> bool {
+        if below.is_empty() || path.starts_with("WorldEntities/Creatures/") {
+            return false;
+        }
+        if !self.placeholder_ids.contains_key(path) {
+            self.prefab_as(path, true, out);
+        }
+        let Some(ids) = self.placeholder_ids.get(path) else {
+            return false;
+        };
+        let (mut found, mut missing) = (0, 0);
+        for id in ids {
+            let slots = self
+                .class_paths
+                .get(id)
+                .is_some_and(|p| p.to_ascii_lowercase().contains("slots"));
+            if slots {
+                continue;
+            }
+            if below.contains(&id.as_str()) {
+                found += 1;
+            } else {
+                missing += 1;
+            }
+        }
+        if found > missing {
+            info!("objects: placeholders of {path} already spawned in the saved world");
+        }
+        found > missing
+    }
+
+    /// Sends a loaded hierarchy's drawn parts and lights, with what its
+    /// placeholders spawn; its id, `None` if it has nothing to draw.
     fn prefab_parts(&mut self, prefab: &Prefab, out: &mut Vec<Update>) -> Option<u32> {
+        self.prefab_parts_as(prefab, true, out)
+    }
+
+    /// `prefab_parts`; `spawn`: with what its placeholders spawn.
+    fn prefab_parts_as(
+        &mut self,
+        prefab: &Prefab,
+        spawn: bool,
+        out: &mut Vec<Update>,
+    ) -> Option<u32> {
+        let PrefabContent {
+            parts,
+            lights,
+            directional,
+        } = self.prefab_content(prefab, out, if spawn { 0 } else { NO_SPAWN });
+        let id =
+            (!parts.is_empty() || !lights.is_empty() || !directional.is_empty()).then(|| self.id());
+        if let Some(id) = id {
+            out.push(Update::Prefab {
+                id,
+                parts,
+                lights,
+                directional,
+            });
+        }
+        id
+    }
+
+    /// A hierarchy's drawn parts and lights relative to its root, with the
+    /// prefabs its placeholders spawn (`depth`: how deep in spawned prefabs
+    /// this one is).
+    fn prefab_content(
+        &mut self,
+        prefab: &Prefab,
+        out: &mut Vec<Update>,
+        depth: usize,
+    ) -> PrefabContent {
         let mut parts = Vec::new();
         for (index, node) in prefab.visible() {
             if node.layer >= 32 || self.culling_mask & (1 << node.layer) == 0 {
@@ -632,21 +1073,53 @@ impl Library {
                 Some(ids) => ids,
                 None => self.mesh(mesh, out),
             };
-            // One material per sub-mesh; extra materials (multi-pass) are
-            // not drawn, sub-meshes without a material neither.
-            for (sub, material) in sub_meshes.iter().zip(&node.materials) {
-                let (Some(mesh), Some(material)) = (sub, material) else {
+            // Effect sub-meshes come from their own copy (with vertex
+            // colours), made when the first one is met.
+            let mut effect_meshes: Option<Vec<Option<u32>>> = None;
+            // One material per sub-mesh; as Unity does, materials beyond
+            // the sub-mesh count draw the last sub-mesh again (an extra
+            // pass, e.g. the door force fields' second layer). Sub-meshes
+            // without a material are not drawn.
+            for (m, material) in node.materials.iter().enumerate() {
+                let Some(last) = sub_meshes.len().checked_sub(1) else {
+                    break;
+                };
+                let i = m.min(last);
+                let (Some(sub_mesh), Some(material)) = (&sub_meshes[i], material) else {
                     continue;
                 };
+                if m > last {
+                    info!(
+                        "objects: {:?} in {}: material {m} draws sub-mesh {i} again (an extra pass)",
+                        node.name, prefab.key
+                    );
+                }
                 let Some(material) = self.material(material, out) else {
                     continue;
                 };
                 self.count_unported(material, &node.name, &prefab.key);
+                let effect = self.effect_materials.contains_key(&material) && !node.skinned;
+                let material = match &node.volumetric_light {
+                    Some(glow) if effect && glow.sets_block => {
+                        self.glow_material(material, glow, out)
+                    }
+                    _ => material,
+                };
+                let mesh_id = if effect {
+                    let ids = effect_meshes.get_or_insert_with(|| self.effect_mesh(mesh, out));
+                    match ids.get(i).copied().flatten() {
+                        Some(id) => id,
+                        None => continue,
+                    }
+                } else {
+                    *sub_mesh
+                };
                 parts.push(Part {
-                    mesh: *mesh,
+                    mesh: mesh_id,
                     material,
                     local,
                     biome_sky,
+                    effect,
                 });
             }
         }
@@ -689,17 +1162,126 @@ impl Library {
                 });
             }
         }
-        let id =
-            (!parts.is_empty() || !lights.is_empty() || !directional.is_empty()).then(|| self.id());
-        if let Some(id) = id {
-            out.push(Update::Prefab {
-                id,
-                parts,
-                lights,
-                directional,
-            });
+        let mut content = PrefabContent {
+            parts,
+            lights,
+            directional,
+        };
+        if depth != NO_SPAWN && self.spawn_placeholders {
+            self.add_placeholders(prefab, &mut content, out, depth);
         }
-        id
+        content
+    }
+
+    /// What `PrefabPlaceholdersGroup.Start` spawns into `prefab` in a new
+    /// game (`docs/DESIGN.md` M7h), added to `content`: for an enabled group
+    /// on an active node, each listed placeholder whose GameObject is active
+    /// (`activeSelf`) and whose `prefabClassId` has a world entity info
+    /// spawns that prefab under the placeholder's parent, at the
+    /// placeholder's local transform. Spawned prefabs start too, so their
+    /// own placeholders spawn. Creatures are left out, as for placed
+    /// objects; a spawned prefab under an inactive parent is not drawn.
+    fn add_placeholders(
+        &mut self,
+        prefab: &Prefab,
+        content: &mut PrefabContent,
+        out: &mut Vec<Update>,
+        depth: usize,
+    ) {
+        for group in &prefab.placeholder_groups {
+            let group_active = prefab.nodes.get(group.node).is_some_and(|n| n.active);
+            if !group.enabled || !group_active {
+                continue;
+            }
+            for &n in &group.placeholders {
+                let Some(node) = prefab.nodes.get(n) else {
+                    continue;
+                };
+                let Some(class_id) = node.placeholder.as_deref().filter(|c| !c.is_empty()) else {
+                    continue;
+                };
+                if !node.active_self {
+                    continue;
+                }
+                let skip = |why: &str| {
+                    info!(
+                        "objects: placeholder {:?} in {} not spawned: {why}",
+                        node.name, prefab.key
+                    );
+                };
+                if !self.entity_infos.contains_key(class_id) {
+                    // `PrefabPlaceholder.Spawn` logs an error and returns.
+                    skip(&format!("no world entity info for {class_id}"));
+                    continue;
+                }
+                let Some(path) = self.class_paths.get(class_id).cloned() else {
+                    skip(&format!("{class_id} is not in the prefab database"));
+                    continue;
+                };
+                if path.starts_with("WorldEntities/Creatures/") {
+                    continue;
+                }
+                if node.parent.is_some_and(|p| !prefab.nodes[p].active) {
+                    continue;
+                }
+                if depth >= MAX_PLACEHOLDER_DEPTH {
+                    out.push(Update::Warning(format!(
+                        "placeholder {:?} in {}: spawned prefabs nested deeper than {MAX_PLACEHOLDER_DEPTH}",
+                        node.name, prefab.key
+                    )));
+                    continue;
+                }
+                let Some(child) = self.placeholder_content(&path, out, depth + 1) else {
+                    continue;
+                };
+                // The spawned root takes the placeholder's place.
+                let at = node.in_prefab;
+                content.parts.extend(child.parts.iter().map(|p| Part {
+                    local: at.then(&p.local),
+                    ..*p
+                }));
+                content
+                    .lights
+                    .extend(child.lights.iter().map(|l| LocalLight {
+                        local: at.then(&l.local),
+                        ..*l
+                    }));
+                content
+                    .directional
+                    .extend(child.directional.iter().map(|d| {
+                        let mut d = d.clone();
+                        d.local = at.then(&d.local);
+                        d
+                    }));
+                self.placeholders_spawned += 1;
+            }
+        }
+    }
+
+    /// The content of a prefab spawned by a placeholder, cached by path
+    /// (`None`: it failed to load, or it is being built further up, i.e. it
+    /// would spawn itself).
+    fn placeholder_content(
+        &mut self,
+        path: &str,
+        out: &mut Vec<Update>,
+        depth: usize,
+    ) -> Option<Arc<PrefabContent>> {
+        if let Some(c) = self.spawned_contents.get(path) {
+            return c.clone();
+        }
+        self.spawned_contents.insert(path.to_string(), None);
+        let prefab = match self.assets.prefab(&self.catalog, path) {
+            Ok(p) => p,
+            Err(e) => {
+                out.push(Update::Warning(format!("placeholder prefab: {e}")));
+                return None;
+            }
+        };
+        let content = Arc::new(self.prefab_content(&prefab, out, depth));
+        self.spawned_contents
+            .insert(path.to_string(), Some(content.clone()));
+        Some(content)
     }
 
     /// `EscapePod.ChooseRandomStart` at `point`, the objects following
@@ -830,10 +1412,15 @@ impl Library {
     /// A prefab drawn as a still object: creatures move and animate, so
     /// they are left out (a later milestone).
     fn still_prefab(&mut self, path: &str, out: &mut Vec<Update>) -> Option<u32> {
+        self.still_prefab_as(path, true, out)
+    }
+
+    /// `still_prefab`; `spawn`: with what its placeholders spawn.
+    fn still_prefab_as(&mut self, path: &str, spawn: bool, out: &mut Vec<Update>) -> Option<u32> {
         if path.starts_with("WorldEntities/Creatures/") {
             return None;
         }
-        self.prefab(path, out)
+        self.prefab_as(path, spawn, out)
     }
 
     /// Fills the slots of a placeholder (component `data`, placed at
@@ -891,6 +1478,7 @@ impl Library {
                 for cell in &file.cells {
                     let Some(tree) = &cell.objects else { continue };
                     let (world, _) = tree.world_transforms();
+                    let children = saved_children(tree);
                     for (object, transform) in tree.objects.iter().zip(world) {
                         for c in &object.components {
                             if c.type_name == SLOTS_COMPONENT {
@@ -906,7 +1494,9 @@ impl Library {
                         let Some(path) = self.class_paths.get(&object.class_id).cloned() else {
                             continue;
                         };
-                        if let Some(prefab) = self.still_prefab(&path, out) {
+                        let below = saved_below(tree, &children, &object.id);
+                        let spawn = !self.placeholders_saved(&path, &below, out);
+                        if let Some(prefab) = self.still_prefab_as(&path, spawn, out) {
                             instances.push(Instance {
                                 level: (cell.level as usize).min(LEVELS - 1),
                                 prefab,
@@ -934,11 +1524,14 @@ impl Library {
                     o.transform.position = [corner[0], corner[1], corner[2]];
                 }
                 let (world, _) = tree.world_transforms();
+                let children = saved_children(&tree);
                 for (object, transform) in tree.objects.iter().zip(world) {
                     let Some(path) = self.class_paths.get(&object.class_id).cloned() else {
                         continue;
                     };
-                    if let Some(prefab) = self.prefab(&path, out) {
+                    let below = saved_below(&tree, &children, &object.id);
+                    let spawn = !self.placeholders_saved(&path, &below, out);
+                    if let Some(prefab) = self.prefab_as(&path, spawn, out) {
                         instances.push(Instance {
                             level: BATCH_OBJECTS,
                             prefab,
@@ -1019,6 +1612,7 @@ pub(crate) fn material_desc(
         spec_st: st(spec),
         illum_st: st(illum),
         uber,
+        effect: None,
         alpha,
         // `_MyCullVariable`: 0 = two-sided, 2 = back faces culled.
         double_sided: material.float("_MyCullVariable") == Some(0.0),
@@ -1037,6 +1631,7 @@ fn worker(
     shared: Arc<Shared>,
     tx: Sender<Update>,
     slot_seed: Option<u64>,
+    placeholders: bool,
     scenes: Option<SceneOptions>,
 ) {
     let start = Instant::now();
@@ -1044,21 +1639,31 @@ fn worker(
         let assets = GameAssets::index(game)?;
         let catalog = assets.catalog()?;
         let class_paths = game.read_prefab_database().map_err(|e| e.0)?;
+        let entity_infos = sn_assets::entity_infos(&assets)?;
         Ok(Library {
             assets,
             catalog,
             class_paths,
             prefabs: HashMap::new(),
+            placeholder_ids: HashMap::new(),
             meshes: HashMap::new(),
             materials: HashMap::new(),
             textures: HashMap::new(),
             next_id: 0,
             slots: None,
             culling_mask: u32::MAX,
-            shader_names: HashMap::new(),
+            shader_infos: HashMap::new(),
+            effect_materials: HashMap::new(),
+            glow_materials: HashMap::new(),
+            effect_meshes: HashMap::new(),
             material_shaders: HashMap::new(),
             unported: BTreeMap::new(),
             unported_changed: false,
+            entity_infos,
+            spawned_contents: HashMap::new(),
+            spawn_placeholders: placeholders,
+            placeholders_spawned: 0,
+            placeholders_logged: 0,
         })
     };
     let mut library = match setup() {
@@ -1225,11 +1830,13 @@ pub struct ObjectStreamer {
 impl ObjectStreamer {
     /// `lights`: spawn the objects' point and spot lights. `slot_seed`: fill
     /// the spawn slots with this world seed (`None`: leave them empty).
+    /// `placeholders`: spawn what the objects' placeholders hold.
     /// `scenes`: load the scenes the game spawns at start (`None`: none).
     pub fn start(
         game: GameData,
         lights: bool,
         slot_seed: Option<u64>,
+        placeholders: bool,
         scenes: Option<SceneOptions>,
     ) -> ObjectStreamer {
         // The worker's asset index borrows the install for the whole run.
@@ -1241,7 +1848,9 @@ impl ObjectStreamer {
         });
         let (tx, rx) = channel();
         let worker_shared = shared.clone();
-        std::thread::spawn(move || worker(game, worker_shared, tx, slot_seed, scenes));
+        std::thread::spawn(move || {
+            worker(game, worker_shared, tx, slot_seed, placeholders, scenes)
+        });
         ObjectStreamer {
             shared,
             rx: Mutex::new(rx),
@@ -1386,6 +1995,54 @@ fn spawn_light(commands: &mut Commands, light: &LocalLight, transform: Transform
             ))
             .id()
     }
+}
+
+/// A mesh's sub-meshes in Bevy's coordinates (z flipped, winding reversed),
+/// each with only the vertices it uses.
+fn split_geometry(geometry: &sn_unity::MeshGeometry) -> Vec<MeshData> {
+    fn pick<T: Copy>(attr: &[T], n: usize, used: &[usize]) -> Vec<T> {
+        if attr.len() == n {
+            used.iter().map(|&v| attr[v]).collect()
+        } else {
+            Vec::new()
+        }
+    }
+    let flip = |p: [f32; 3]| [p[0], p[1], -p[2]];
+    let positions: Vec<[f32; 3]> = geometry.positions.iter().map(|&p| flip(p)).collect();
+    let normals: Vec<[f32; 3]> = geometry.normals.iter().map(|&n| flip(n)).collect();
+    // Mirroring flips the bitangent: negate w too.
+    let tangents: Vec<[f32; 4]> = geometry
+        .tangents
+        .iter()
+        .map(|t| [t[0], t[1], -t[2], -t[3]])
+        .collect();
+    let n = positions.len();
+    let mut meshes = Vec::new();
+    for indices in &geometry.sub_meshes {
+        let mut remap = vec![u32::MAX; n];
+        let mut used = Vec::new();
+        let mut local = Vec::with_capacity(indices.len());
+        for &v in indices {
+            let slot = &mut remap[v as usize];
+            if *slot == u32::MAX {
+                *slot = used.len() as u32;
+                used.push(v as usize);
+            }
+            local.push(*slot);
+        }
+        meshes.push(MeshData {
+            positions: pick(&positions, n, &used),
+            normals: pick(&normals, n, &used),
+            tangents: pick(&tangents, n, &used),
+            colors: pick(&geometry.colors, n, &used),
+            uvs: pick(&geometry.uv0, n, &used),
+            indices: local
+                .chunks_exact(3)
+                .flat_map(|t| [t[0], t[2], t[1]])
+                .collect(),
+        });
+    }
+    meshes
 }
 
 fn build_mesh(data: MeshData) -> Mesh {
@@ -1533,6 +2190,7 @@ pub fn stream_objects(
     water: Option<Res<WaterWorld>>,
     camera: Query<&Transform, With<Camera3d>>,
     mut terrain_look: Option<ResMut<TerrainLook>>,
+    mut effect_meshes: ResMut<EffectMeshes>,
     mut exit: MessageWriter<AppExit>,
 ) {
     let streamer = &mut *streamer;
@@ -1581,10 +2239,13 @@ pub fn stream_objects(
                 streamer.skies = skies;
             }
             Update::Material { id, desc } => {
-                streamer.material_descs.insert(id, desc);
+                streamer.material_descs.insert(id, *desc);
             }
             Update::Mesh { id, data } => {
                 streamer.meshes.insert(id, meshes.add(build_mesh(data)));
+            }
+            Update::EffectMesh { id, data } => {
+                effect_meshes.0.insert(id, Arc::new(data));
             }
             Update::Prefab {
                 id,
@@ -1785,6 +2446,33 @@ impl ObjectStreamer {
         // `SkyApplier`: the biome at the object's root.
         let biome = s.water.and_then(|w| w.biome_at(inst.transform.position));
         for part in parts {
+            if part.effect {
+                let Some(look) = self
+                    .material_descs
+                    .get(&part.material)
+                    .and_then(|d| d.effect)
+                else {
+                    continue;
+                };
+                // A texture slot without a texture: the shader's default,
+                // white.
+                let texture = |id: Option<u32>| {
+                    id.and_then(|id| self.textures.get(&id).cloned())
+                        .unwrap_or_else(|| s.defaults.white.clone())
+                };
+                let textures = match look {
+                    EffectLook::Particles(v) => v.textures.map(&texture),
+                    EffectLook::Glow(_) => std::array::from_fn(|_| s.defaults.white.clone()),
+                };
+                let world = inst.transform.then(&part.local);
+                let marker = EffectPart {
+                    mesh: part.mesh,
+                    look,
+                    textures,
+                };
+                entities.push(s.commands.spawn((marker, to_bevy(&world))).id());
+                continue;
+            }
             let sky = self.skies.pick(part.biome_sky, biome);
             let Some(mesh) = self.meshes.get(&part.mesh) else {
                 continue;
@@ -1845,6 +2533,138 @@ impl ObjectStreamer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A `UWE/Particles/UBER` material as stored: `keywords`, floats and
+    /// colours (vectors live with the colours in Unity's material).
+    fn particles_material(keywords: &str, floats: &[(&str, f32)]) -> Material {
+        let mut all = vec![
+            ("_SrcBlend", 1.0),
+            ("_DstBlend", 1.0),
+            ("_SrcBlend2", 0.0),
+            ("_DstBlend2", 10.0),
+            ("_Ztest", 2.0),
+            ("_MyCullVariable", 0.0),
+            ("_FresnelFade", 3.0),
+            ("_FresnelPow", 1.0),
+        ];
+        for &(name, v) in floats {
+            all.retain(|(n, _)| *n != name);
+            all.push((name, v));
+        }
+        Material {
+            name: "test".into(),
+            shader: sn_unity::PPtr {
+                file_id: 0,
+                path_id: 0,
+            },
+            keywords: keywords.into(),
+            custom_render_queue: 3101,
+            tags: Vec::new(),
+            textures: Vec::new(),
+            floats: all.into_iter().map(|(n, v)| (n.to_string(), v)).collect(),
+            colors: vec![
+                ("_Color".into(), [0.2, 0.9, 0.3, 1.0]),
+                ("_ColorStrength".into(), [1.0, 1.0, 1.0, 0.25]),
+                ("_MainTex_Speed".into(), [0.1, -0.2, 0.0, 0.0]),
+                ("_MainTex2_Speed".into(), [0.3, 0.4, 0.0, 0.0]),
+            ],
+        }
+    }
+
+    fn uber_shader() -> ShaderInfo {
+        ShaderInfo {
+            name: PARTICLES_UBER.into(),
+            defaults: [("_ColorStrengthAtNight".to_string(), [2.0, 2.0, 2.0, 1.0])].into(),
+        }
+    }
+
+    #[test]
+    fn decoded_particles_variants_are_drawn_by_the_effect_pass() {
+        // The halo's set, in any keyword order.
+        let m = particles_material("WBOIT FX_SCROLL FX_MULMAP FX_FRESNELCLIP FX_ADDFOG", &[]);
+        let tex = [Some((7, [20.0, 2.0, 0.0, 0.0])), None, None, None];
+        let v = particles_values(&m, &uber_shader(), tex).unwrap();
+        assert!(v.fresnel_clip && v.mul_map);
+        assert_eq!(v.color, [0.2, 0.9, 0.3, 1.0]);
+        // Vectors as stored, the shader's default where the material has
+        // none.
+        assert_eq!(v.strength, [1.0, 1.0, 1.0, 0.25]);
+        assert_eq!(v.strength_night, [2.0, 2.0, 2.0, 1.0]);
+        assert_eq!(v.speed, [0.1, -0.2, 0.3, 0.4]);
+        assert_eq!(v.main_st, [20.0, 2.0, 0.0, 0.0]);
+        assert_eq!(v.main2_st, [1.0, 1.0, 0.0, 0.0]);
+        assert_eq!(v.textures, [Some(7), None, None, None]);
+        assert!(!v.soft_edges && !v.deform && !v.refract);
+        assert_eq!((v.fresnel_fade, v.fresnel_pow), (3.0, 1.0));
+        let m = particles_material("FX_ADDFOG FX_MULMAP FX_SCROLL WBOIT", &[]);
+        let v = particles_values(&m, &uber_shader(), [None; 4]).unwrap();
+        assert!(!v.fresnel_clip && v.mul_map);
+        let m = particles_material("FX_ADDFOG FX_SCROLL WBOIT", &[]);
+        let v = particles_values(&m, &uber_shader(), [None; 4]).unwrap();
+        assert!(!v.fresnel_clip && !v.mul_map);
+    }
+
+    #[test]
+    fn door_force_field_variants_are_drawn_by_the_effect_pass() {
+        let floats = [
+            ("_InvFade", 1.6),
+            ("_DeformStrength", 0.005),
+            ("_RefractStrength", 0.02),
+        ];
+        let mut m = particles_material(
+            "FX_ADDFOG FX_DEFORM FX_MULMAP FX_REFRACTMAP FX_SCROLL FX_SOFTEDGES WBOIT",
+            &floats,
+        );
+        // The materials also hold a vector named `_RefractStrength`; the
+        // programs read the float.
+        m.colors
+            .push(("_RefractStrength".into(), [0.01, 0.01, 0.01, 0.005]));
+        m.colors
+            .push(("_DeformMap_Speed".into(), [0.0, 0.5, 0.0, 0.0]));
+        m.colors
+            .push(("_RefractMap_Speed".into(), [0.0, 0.25, 0.0, 0.0]));
+        let tex = [
+            None,
+            None,
+            Some((3, [0.2, 30.0, 0.0, 0.0])),
+            Some((4, [0.1, 60.0, 0.0, 0.0])),
+        ];
+        let v = particles_values(&m, &uber_shader(), tex).unwrap();
+        assert!(v.mul_map && v.soft_edges && v.deform && v.refract && !v.fresnel_clip);
+        assert_eq!(
+            (v.inv_fade, v.deform_strength, v.refract_strength),
+            (1.6, 0.005, 0.02)
+        );
+        assert_eq!(v.deform_st, [0.2, 30.0, 0.0, 0.0]);
+        assert_eq!(v.refract_st, [0.1, 60.0, 0.0, 0.0]);
+        assert_eq!(v.speed2, [0.0, 0.5, 0.0, 0.25]);
+        assert_eq!(v.textures, [None, None, Some(3), Some(4)]);
+        // The second layer: the same without FX_REFRACTMAP.
+        let m = particles_material(
+            "FX_ADDFOG FX_DEFORM FX_MULMAP FX_SCROLL FX_SOFTEDGES WBOIT",
+            &floats,
+        );
+        let v = particles_values(&m, &uber_shader(), [None; 4]).unwrap();
+        assert!(v.soft_edges && v.deform && !v.refract);
+    }
+
+    #[test]
+    fn other_particles_materials_keep_the_stand_in_look() {
+        // A keyword set not decoded (here: no FX_MULMAP but FX_FRESNELCLIP).
+        let m = particles_material("FX_ADDFOG FX_FRESNELCLIP FX_SCROLL WBOIT", &[]);
+        assert!(particles_values(&m, &uber_shader(), [None; 4]).is_err());
+        // Render state the pass does not implement.
+        for (name, v) in [
+            ("_MyCullVariable", 2.0),
+            ("_Ztest", 4.0),
+            ("_DstBlend", 10.0),
+            ("_SrcBlend2", 1.0),
+        ] {
+            let m = particles_material("FX_ADDFOG FX_SCROLL WBOIT", &[(name, v)]);
+            let why = particles_values(&m, &uber_shader(), [None; 4]).unwrap_err();
+            assert!(why.starts_with(name), "{why}");
+        }
+    }
 
     #[test]
     fn mirrored_transforms_match_mirrored_points() {

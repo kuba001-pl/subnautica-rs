@@ -4,7 +4,8 @@
 
 use sn_unity::{
     AssetBundleManifest, Catalog, DayNightLight, GameObject, Light, Location, LodGroup, Mesh,
-    MeshFilter, MeshGeometry, MeshRenderer, SkinnedMeshRenderer, SkyApplier, TransformNode,
+    MeshFilter, MeshGeometry, MeshRenderer, PrefabPlaceholder, PrefabPlaceholdersGroup,
+    SkinnedMeshRenderer, SkyApplier, TransformNode, VfxVolumetricLight,
 };
 use sn_world::Transform;
 
@@ -64,6 +65,42 @@ pub struct PrefabNode {
     pub lights: Vec<Light>,
     /// A `DayNightLight` driving this node's light over the day.
     pub day_night_light: Option<DayNightLight>,
+    /// The `VFXVolumetricLight` whose glow this node's renderer draws.
+    pub volumetric_light: Option<VolumetricGlow>,
+    /// The `prefabClassId` of a `PrefabPlaceholder` on this node: the game
+    /// spawns that prefab here (`PlaceholderGroup`).
+    pub placeholder: Option<String>,
+}
+
+/// A `PrefabPlaceholdersGroup`: on `Start` (the first time the prefab is
+/// active) it spawns its placeholders' prefabs, each under the
+/// placeholder's parent with the placeholder's local transform, when the
+/// placeholder's GameObject is active (`activeSelf`) and its class id has a
+/// world entity info (`docs/DESIGN.md` M7h).
+#[derive(Clone, Debug)]
+pub struct PlaceholderGroup {
+    /// The node holding the group (`Start` needs it active).
+    pub node: usize,
+    pub enabled: bool,
+    /// The placeholder nodes it lists, in order (references that don't
+    /// resolve to a node of this hierarchy are left out).
+    pub placeholders: Vec<usize>,
+}
+
+/// A `VFXVolumetricLight` as seen from the node drawing its glow.
+#[derive(Clone, Debug)]
+pub struct VolumetricGlow {
+    pub script: VfxVolumetricLight,
+    /// Its `lightSource` (else the `Light` on the script's node); `None`
+    /// if neither resolves.
+    pub light: Option<Light>,
+    /// `Awake` sets the glow's property block: the script's node is
+    /// active, the light resolves and both materials are set.
+    pub sets_block: bool,
+    /// And the script is enabled, so `LateUpdate` keeps the glow's
+    /// renderer enabled as the light is (applied to the node's
+    /// `renderer_enabled`).
+    pub updates: bool,
 }
 
 pub struct Prefab {
@@ -71,6 +108,7 @@ pub struct Prefab {
     pub key: String,
     /// Node 0 is the root.
     pub nodes: Vec<PrefabNode>,
+    pub placeholder_groups: Vec<PlaceholderGroup>,
 }
 
 impl Prefab {
@@ -273,6 +311,61 @@ impl Assets<'_> {
                 }
             }
         }
+        // Volumetric light scripts: their glow node and light.
+        for (file_of, script, at) in std::mem::take(&mut prefab.volumetric_lights) {
+            let Some(go) = self.resolve(&file_of, script.volum_go)? else {
+                continue;
+            };
+            let Some(glow) = prefab.nodes.iter().position(|n| n.key == go.key()) else {
+                continue;
+            };
+            let light = match self.resolve(&file_of, script.light_source)? {
+                Some(l) if l.data()?.0.class_id == LIGHT => {
+                    let (_, data) = l.data()?;
+                    Some(
+                        Light::parse(data, l.file.file().big_endian)
+                            .map_err(|e| format!("Light {}: {e}", l.path_id))?,
+                    )
+                }
+                Some(_) => None,
+                None => prefab.nodes[at].lights.first().cloned(),
+            };
+            let awake = prefab.nodes[at].active;
+            // `LateUpdate`: the glow's renderer is on as the light is.
+            if awake
+                && script.enabled
+                && let Some(l) = &light
+            {
+                prefab.nodes[glow].renderer_enabled = l.enabled;
+            }
+            prefab.nodes[glow].volumetric_light = Some(VolumetricGlow {
+                updates: awake && script.enabled,
+                sets_block: awake
+                    && light.is_some()
+                    && !script.cone_mat.is_null()
+                    && !script.sphere_mat.is_null(),
+                script,
+                light,
+            });
+        }
+        // Placeholder groups: their listed placeholder components → nodes.
+        let mut placeholder_groups = Vec::new();
+        for (file_of, group, at) in std::mem::take(&mut prefab.placeholder_groups) {
+            let mut placeholders = Vec::new();
+            for p in &group.placeholders {
+                let Some(c) = self.resolve(&file_of, *p)? else {
+                    continue;
+                };
+                if let Some(&node) = prefab.placeholder_components.get(&c.key()) {
+                    placeholders.push(node);
+                }
+            }
+            placeholder_groups.push(PlaceholderGroup {
+                node: at,
+                enabled: group.enabled,
+                placeholders,
+            });
+        }
         let index: std::collections::HashMap<_, usize> = prefab
             .nodes
             .iter()
@@ -281,6 +374,7 @@ impl Assets<'_> {
             .collect();
         Ok(Prefab {
             key: prefab.key,
+            placeholder_groups,
             nodes: prefab
                 .nodes
                 .into_iter()
@@ -306,6 +400,8 @@ impl Assets<'_> {
                     sky_applier: n.sky_applier,
                     lights: n.lights,
                     day_night_light: n.day_night_light,
+                    volumetric_light: n.volumetric_light,
+                    placeholder: n.placeholder,
                 })
                 .collect(),
         })
@@ -334,7 +430,9 @@ impl Assets<'_> {
         let mut skinned = false;
         let mut lights = Vec::new();
         let mut day_night_light = None;
+        let mut placeholder = None;
         let mut bone_keys = Vec::new();
+        let index = prefab.nodes.len();
         for component in &go.components {
             let Some(c) = self.resolve(file, *component)? else {
                 continue;
@@ -400,6 +498,22 @@ impl Assets<'_> {
                                 .map_err(|e| format!("DayNightLight {}: {e}", c.path_id))?,
                         );
                     }
+                    Some("VFXVolumetricLight") => {
+                        let v = VfxVolumetricLight::parse(data, big_endian)
+                            .map_err(|e| format!("VFXVolumetricLight {}: {e}", c.path_id))?;
+                        prefab.volumetric_lights.push((c.file.clone(), v, index));
+                    }
+                    Some("PrefabPlaceholder") => {
+                        let p = PrefabPlaceholder::parse(data, big_endian)
+                            .map_err(|e| format!("PrefabPlaceholder {}: {e}", c.path_id))?;
+                        prefab.placeholder_components.insert(c.key(), index);
+                        placeholder = Some(p.prefab_class_id);
+                    }
+                    Some("PrefabPlaceholdersGroup") => {
+                        let g = PrefabPlaceholdersGroup::parse(data, big_endian)
+                            .map_err(|e| format!("PrefabPlaceholdersGroup {}: {e}", c.path_id))?;
+                        prefab.placeholder_groups.push((c.file.clone(), g, index));
+                    }
                     _ => {}
                 },
                 LOD_GROUP => {
@@ -424,7 +538,6 @@ impl Assets<'_> {
             Some(p) => prefab.nodes[p].in_prefab.then(&local),
         };
         let active = parent_active && go.active;
-        let index = prefab.nodes.len();
         prefab.nodes.push(BuildingNode {
             key: game_object.key(),
             name: go.name,
@@ -443,6 +556,8 @@ impl Assets<'_> {
             sky_applier: None,
             lights,
             day_night_light,
+            volumetric_light: None,
+            placeholder,
         });
         for child in &transform.children {
             let Some(t) = self.resolve(file, *child)? else {
@@ -513,6 +628,8 @@ struct BuildingNode {
     sky_applier: Option<i32>,
     lights: Vec<Light>,
     day_night_light: Option<DayNightLight>,
+    volumetric_light: Option<VolumetricGlow>,
+    placeholder: Option<String>,
 }
 
 struct Building {
@@ -520,6 +637,12 @@ struct Building {
     nodes: Vec<BuildingNode>,
     /// `SkyApplier`s found, with the file their references are relative to.
     sky_appliers: Vec<(FileRef, SkyApplier)>,
+    /// `VFXVolumetricLight`s found: their file, the script, its node.
+    volumetric_lights: Vec<(FileRef, VfxVolumetricLight, usize)>,
+    /// `PrefabPlaceholder` components → their node.
+    placeholder_components: std::collections::HashMap<(std::path::PathBuf, String, i64), usize>,
+    /// `PrefabPlaceholdersGroup`s found: their file, the group, its node.
+    placeholder_groups: Vec<(FileRef, PrefabPlaceholdersGroup, usize)>,
 }
 
 impl Building {
@@ -528,6 +651,9 @@ impl Building {
             key: key.to_string(),
             nodes: Vec::new(),
             sky_appliers: Vec::new(),
+            volumetric_lights: Vec::new(),
+            placeholder_components: std::collections::HashMap::new(),
+            placeholder_groups: Vec::new(),
         }
     }
 }

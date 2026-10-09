@@ -29,6 +29,40 @@ fn material_name(object: &Option<sn_assets::ObjectRef>) -> String {
         .map_or("(unreadable)".into(), |m| m.name)
 }
 
+/// `prefab <KEY> --props`: every property of each drawn node's materials.
+pub fn props(game: &GameData, key: &str) -> Result<ExitCode> {
+    let assets = Assets::index(game)?;
+    let catalog = assets.catalog()?;
+    let prefab = assets.prefab(&catalog, key)?;
+    for node in prefab.visible_nodes() {
+        for material in node.materials.iter().flatten() {
+            let Ok((_, data)) = material.data() else {
+                continue;
+            };
+            let Ok(m) = Material::parse(data, material.file.file().big_endian) else {
+                continue;
+            };
+            println!("{} on {:?}: keywords [{}]", m.name, node.name, m.keywords);
+            for (name, v) in &m.floats {
+                println!("  {name} = {v}");
+            }
+            for (name, c) in &m.colors {
+                println!("  {name} = {c:?}");
+            }
+            for t in &m.textures {
+                println!(
+                    "  {} = {} scale {:?} offset {:?}",
+                    t.name,
+                    if t.texture.is_null() { "(none)" } else { "set" },
+                    t.scale,
+                    t.offset
+                );
+            }
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
 /// One prefab: its hierarchy, meshes and materials, and an OBJ export of
 /// what the game draws at full detail.
 pub fn one(game: &GameData, key: &str) -> Result<ExitCode> {
@@ -654,6 +688,117 @@ pub fn materials(game: &GameData) -> Result<ExitCode> {
     println!("shaders used: {}", shaders.len());
     for line in &shaders {
         println!("shader	{line}");
+    }
+    println!("time: {:.1} s", start.elapsed().as_secs_f64());
+    Ok(ExitCode::SUCCESS)
+}
+
+/// `prefab --placeholders`: the placed prefabs with `PrefabPlaceholder`s,
+/// and whether the world's saved objects already hold what they spawn (the
+/// game then marks the group initialized and spawns nothing:
+/// `PrefabPlaceholdersGroup.OnProtoDeserializeObjectTree`, docs/DESIGN.md
+/// M7h).
+pub fn placeholders(game: &GameData) -> Result<ExitCode> {
+    let start = Instant::now();
+    let paths = game.read_prefab_database()?;
+    let assets = Assets::index(game)?;
+    let catalog = assets.catalog()?;
+    // Prefab path → the class ids its groups' placeholders spawn.
+    let mut spawns: BTreeMap<String, Option<Vec<String>>> = BTreeMap::new();
+    let mut placements = 0;
+    let mut with_children = 0;
+    let mut initialized = 0;
+    let mut matched_examples: BTreeSet<String> = BTreeSet::new();
+    let mut per_prefab: BTreeMap<String, usize> = BTreeMap::new();
+    let mut visit = |tree: &sn_world::ObjectTree| -> Result<()> {
+        // Saved objects by parent id.
+        let mut children: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
+        for (i, o) in tree.objects.iter().enumerate() {
+            if let Some(p) = &o.parent {
+                children.entry(p.as_str()).or_default().push(i);
+            }
+        }
+        for o in &tree.objects {
+            let Some(path) = paths.get(&o.class_id) else {
+                continue;
+            };
+            let ids = spawns.entry(path.clone()).or_insert_with(|| {
+                let prefab = assets.prefab(&catalog, path).ok()?;
+                let ids: Vec<String> = prefab
+                    .placeholder_groups
+                    .iter()
+                    .flat_map(|g| &g.placeholders)
+                    .filter_map(|&n| prefab.nodes[n].placeholder.clone())
+                    .collect();
+                (!ids.is_empty()).then_some(ids)
+            });
+            let Some(ids) = ids else { continue };
+            placements += 1;
+            *per_prefab.entry(path.clone()).or_default() += 1;
+            // Every saved object below this one.
+            let mut below = Vec::new();
+            let mut todo = vec![o.id.as_str()];
+            while let Some(id) = todo.pop() {
+                for &c in children.get(id).into_iter().flatten() {
+                    below.push(tree.objects[c].class_id.as_str());
+                    todo.push(tree.objects[c].id.as_str());
+                }
+            }
+            if below.is_empty() {
+                continue;
+            }
+            with_children += 1;
+            // The game's count (it also skips placeholders of "Slots"
+            // prefabs, and wants the same parent, which a saved tree gives
+            // only as "below").
+            let (mut found, mut missing) = (0, 0);
+            for id in ids.iter() {
+                let slots = paths
+                    .get(id)
+                    .is_some_and(|p| p.to_ascii_lowercase().contains("slots"));
+                if slots {
+                    continue;
+                }
+                if below.contains(&id.as_str()) {
+                    found += 1;
+                } else {
+                    missing += 1;
+                }
+            }
+            if found > missing {
+                initialized += 1;
+                matched_examples.insert(path.clone());
+            }
+        }
+        Ok(())
+    };
+    let (batches, _) = game.cell_batches()?;
+    for coord in batches {
+        let Some(file) = game.read_batch_cells(coord)? else {
+            continue;
+        };
+        for tree in file.cells.iter().filter_map(|c| c.objects.as_ref()) {
+            visit(tree)?;
+        }
+    }
+    let (batches, _) = game.object_batches()?;
+    for coord in batches {
+        if let Some(tree) = game.read_batch_objects(coord)? {
+            visit(&tree)?;
+        }
+    }
+    let with_groups = spawns.values().filter(|s| s.is_some()).count();
+    println!("placed prefabs with placeholders: {with_groups}; their placements: {placements}");
+    println!("placements with saved objects below them: {with_children}");
+    println!("placements the game takes as already spawned: {initialized}");
+    for p in matched_examples.iter().take(10) {
+        println!("  e.g. {p}");
+    }
+    let mut most: Vec<_> = per_prefab.into_iter().collect();
+    most.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
+    println!("most placed:");
+    for (p, n) in most.iter().take(12) {
+        println!("  {n:6} {p}");
     }
     println!("time: {:.1} s", start.elapsed().as_secs_f64());
     Ok(ExitCode::SUCCESS)

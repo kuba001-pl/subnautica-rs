@@ -62,7 +62,14 @@ Tested on Windows 11 with game build 10 (Steam):
   and night strengths, and each biome's ambient settings; renderers on layers the game's camera
 skips, e.g. the alien bases' occluder shells, left out; the point, spot and
 directional lights placed objects carry, e.g. glowing coral, without their
-shadows). Flying from the lifepod
+shadows; the fake light glows on ion crystal pedestals and under Precursor
+lights with the game's decoded shader and its transparency compositing,
+coloured by their lights as the game's script does; the Precursor consoles'
+holograms and the cache doors' force fields with the game's decoded effect
+shader (scrolling textures, soft edges, deformation, refraction); the
+objects the game spawns from prefabs' placeholders, e.g. the cache doors,
+key terminals and pedestal crystals; none of these compared with the game
+on screen yet). Flying from the lifepod
   to the crater edge
   keeps memory under 1.6 GiB, at about 220 fps on average on an RTX 3080
   (about 100 fps in the dense start area).
@@ -80,8 +87,8 @@ spread follow its rules; our own random numbers); for world objects: reflections
 sky's cube map, cave/interior skies chosen by atmosphere volumes,
 animation (waving plants; skinned meshes are drawn in their stored pose,
 blend shapes not applied), objects on shaders other than the game's main
-object shader (light glows drawn as white spheres and cones, Lost River
-brine and other effect meshes flat, Safe Shallows triplanar rocks white;
+object shader (Lost River brine, sand and lava falls and other effect
+meshes not yet decoded are flat, Safe Shallows triplanar rocks white;
 `docs/formats/materials.md`), creatures (including the
 ~100,000 the spawn slots would add); player, audio,
 multiplayer.

@@ -57,6 +57,7 @@ Commands:
   entities <X> <Y> <Z>   A batch's saved objects (batch objects, baked cells)
                          with prefab paths and world positions
   entities --all         Parse every object cache file; totals and checks
+  entities --find <TEXT> Every placed object whose prefab path contains TEXT
   grass <X> <Y> <Z> [--seed <N>]
                          The terrain grass of a batch at full resolution:
                          tufts, vertices, triangles per grass type
@@ -66,6 +67,7 @@ Commands:
                          biome, spawned prefabs, a hash of the result
   prefab <KEY>           A prefab (e.g. WorldEntities/…/X.prefab): hierarchy,
                          meshes, materials; writes out/prefabs/<name>.obj
+  prefab <KEY> --props   Every property of the prefab's drawn materials
   prefab --placed [--oracle]
                          Load every prefab placed in the world and decode
                          its meshes (--oracle: out/mesh-check-rust.txt)
@@ -74,6 +76,8 @@ Commands:
                          the static LOD 1
   prefab --lights        The Light components of every placed prefab, and
                          how many lights the world's placements hold
+  prefab --placeholders  Placed prefabs with PrefabPlaceholders and whether
+                         the world's saved objects already hold what they spawn
   prefab --materials     Every material drawn by the placed prefabs and the
                          startup scenes: uses, what our object shader takes
                          from it, its shader and the shader's first pass
@@ -178,6 +182,7 @@ fn run(mut args: Vec<String>) -> Result<ExitCode> {
             biomes::run(&game, Some([n(x)?, n(y)?, n(z)?]))
         }
         ["entities", "--all"] => entities::all(&game),
+        ["entities", "--find", text] => entities::find(&game, text),
         ["entities", x, y, z] => entities::one(&game, parse_coord(x, y, z)?),
         ["slots"] => slots::run(&game, None, seed),
         ["grass", x, y, z] => grass::run(&game, parse_coord(x, y, z)?, seed),
@@ -185,8 +190,10 @@ fn run(mut args: Vec<String>) -> Result<ExitCode> {
         ["prefab", "--placed"] => prefab::placed(&game, false),
         ["prefab", "--lights"] => prefab::lights(&game),
         ["prefab", "--materials"] => prefab::materials(&game),
+        ["prefab", "--placeholders"] => prefab::placeholders(&game),
         ["prefab", "--skinned"] => skinned::run(&game),
         ["prefab", "--placed", "--oracle"] => prefab::placed(&game, true),
+        ["prefab", key, "--props"] => prefab::props(&game, key),
         ["prefab", key] => prefab::one(&game, key),
         ["scene", "--startup"] => scene::startup(&game),
         ["scene", "--lifepod"] => scene::lifepod(&game, seed),

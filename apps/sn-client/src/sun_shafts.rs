@@ -112,6 +112,10 @@ fn update_shafts(
     };
 }
 
+/// The sun shafts pass, for ordering other passes after it.
+#[derive(SystemSet, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct SunShaftsPass;
+
 pub struct SunShaftsPlugin;
 
 impl Plugin for SunShaftsPlugin {
@@ -142,6 +146,7 @@ impl Plugin for SunShaftsPlugin {
                 Core3d,
                 sun_shafts_pass
                     .in_set(Core3dSystems::PostProcess)
+                    .in_set(SunShaftsPass)
                     .after(WaterSurfacePass)
                     .before(tonemapping),
             );

@@ -14,6 +14,7 @@ mod light;
 mod marmo;
 mod mesh;
 mod objects;
+mod placeholder;
 mod prefab;
 mod reader;
 mod scene_scripts;
@@ -34,10 +35,12 @@ pub use camera::{Camera, TAG_MAIN_CAMERA};
 pub use classes::class_name;
 pub use light::{
     BAKE_BAKED, BAKE_MIXED, BAKE_REALTIME, DayNightLight, Light, LightKind, ShadowKind,
+    VfxVolumetricLight,
 };
 pub use marmo::{MarmoSkiesPrefabs, MarmoSky, SH_CONSTANTS, SKIES_AUTO, SkyApplier};
 pub use mesh::{Channel, Mesh, MeshFilter, MeshGeometry, SubMesh, channel};
 pub use objects::{Material, MonoBehaviourHeader, MonoScript, PPtr, TexEnv};
+pub use placeholder::{PrefabPlaceholder, PrefabPlaceholdersGroup};
 pub use prefab::{
     AssetBundleManifest, GameObject, Lod, LodGroup, MeshRenderer, SkinnedMeshRenderer,
     TransformNode, parse_resource_container, parse_text_asset,

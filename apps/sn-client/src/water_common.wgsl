@@ -141,3 +141,28 @@ fn water_transmittance(fog: WaterFog, c: vec3<f32>, camera: vec3<f32>, v: vec3<f
     }
     return c;
 }
+
+// How far the unit ray `v` from `camera` travels through fogged water
+// before `dist` (past the fog's start distance; 0 when the water fog does
+// not apply to it), as `apply_water_fog` decides it for a surface (not the
+// sky). The game's effect shaders fade with it.
+fn water_fog_length(fog: WaterFog, camera: vec3<f32>, v: vec3<f32>, dist: f32) -> f32 {
+    if fog.misc.z == 0.0 {
+        return 0.0;
+    }
+    let height = camera.y - fog.misc.y;
+    var start = fog.extinction.w;
+    var water_dist = dist;
+    if height > 0.0 {
+        if v.y >= -0.01 {
+            return 0.0;
+        }
+        start = height / -v.y + fog.misc.x;
+    } else {
+        let to_surface = -height / v.y;
+        if to_surface > 0.0 {
+            water_dist = min(dist, to_surface);
+        }
+    }
+    return max(water_dist - start, 0.0);
+}

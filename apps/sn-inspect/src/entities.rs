@@ -205,6 +205,49 @@ pub fn one(game: &GameData, coord: BatchCoord) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
+/// Every placed object (batch objects and baked cells) whose prefab path
+/// contains `text` (ignoring case), with its world position.
+pub fn find(game: &GameData, text: &str) -> Result<ExitCode> {
+    let prefabs = game.read_prefab_database()?;
+    let text = text.to_lowercase();
+    let mut found = 0;
+    let show = |tree: &ObjectTree, coord: BatchCoord, found: &mut usize| {
+        let (world, _) = tree.world_transforms();
+        for (object, t) in tree.objects.iter().zip(&world) {
+            let name = prefab_name(&prefabs, &object.class_id);
+            if name.to_lowercase().contains(&text) {
+                *found += 1;
+                let p = t.position;
+                println!(
+                    "{coord}  ({:8.2} {:8.2} {:8.2}) rot {:?} scale {:.2}  {name}",
+                    p[0], p[1], p[2], t.rotation, t.scale[0]
+                );
+                // The saved components with their data (protobuf bytes).
+                for c in &object.components {
+                    let hex: String = c.data.iter().take(48).map(|b| format!("{b:02x}")).collect();
+                    println!("      {} ({} bytes) {hex}", c.type_name, c.data.len());
+                }
+            }
+        }
+    };
+    let (batches, _) = game.object_batches()?;
+    for &coord in &batches {
+        if let Ok(Some(tree)) = game.read_batch_objects(coord) {
+            show(&tree, coord, &mut found);
+        }
+    }
+    let (batches, _) = game.cell_batches()?;
+    for &coord in &batches {
+        if let Ok(Some(file)) = game.read_batch_cells(coord) {
+            for tree in file.cells.iter().filter_map(|c| c.objects.as_ref()) {
+                show(tree, coord, &mut found);
+            }
+        }
+    }
+    println!("{found} placed objects");
+    Ok(ExitCode::SUCCESS)
+}
+
 /// Smallest positive gap between sorted distinct values (the grid spacing).
 fn spacing(values: &mut [f32]) -> Option<f32> {
     values.sort_by(f32::total_cmp);

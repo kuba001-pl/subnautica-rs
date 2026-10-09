@@ -505,6 +505,38 @@ fn prefab_lights() {
 
 #[test]
 #[ignore = "needs SUBNAUTICA_DIR pointing at a Subnautica install"]
+fn volumetric_light_glow() {
+    let Some(dir) = std::env::var_os("SUBNAUTICA_DIR") else {
+        eprintln!("SUBNAUTICA_DIR not set; skipping");
+        return;
+    };
+    let game = GameData::locate(Some(PathBuf::from(dir))).unwrap();
+    let assets = Assets::index(&game).unwrap();
+    let catalog = assets.catalog().unwrap();
+    let key = "WorldEntities/Doodads/Precursor/Cache/IonCrystalPedestal_Cache 1.prefab";
+    let prefab = assets.prefab(&catalog, key).unwrap();
+    let glows: Vec<_> = prefab
+        .nodes
+        .iter()
+        .filter_map(|n| n.volumetric_light.as_ref().map(|g| (n, g)))
+        .collect();
+    // Values read on the dev machine (2026-10-09): a green point light.
+    assert_eq!(glows.len(), 1);
+    let (node, glow) = glows[0];
+    assert!(node.renderer_enabled && glow.sets_block && glow.updates);
+    let s = &glow.script;
+    assert_eq!(
+        (s.intensity, s.start_offset, s.start_fallof),
+        (0.35, 0.0, 0.0)
+    );
+    assert_eq!((s.near_clip, s.soft_edges, s.light_type), (1.0, 2.0, 2));
+    let l = glow.light.as_ref().unwrap();
+    assert!(l.enabled && l.intensity == 3.0);
+    assert!((l.color[0] - 0.419_117_6).abs() < 1e-6 && l.color[1] == 1.0);
+}
+
+#[test]
+#[ignore = "needs SUBNAUTICA_DIR pointing at a Subnautica install"]
 fn default_spot_cookie() {
     let Some(dir) = std::env::var_os("SUBNAUTICA_DIR") else {
         eprintln!("SUBNAUTICA_DIR not set; skipping");
@@ -838,4 +870,50 @@ fn shaders_of_the_fake_volumetric_light() {
             .any(|n| n == "UWE/Particles/WBOIT-FakeVolumetricLight")
     );
     assert!(names.iter().any(|n| n == "MarmosetUBER"));
+}
+
+/// M7h: the placeholders the game spawns into the Blood Kelp cache's
+/// pedestals (an ion crystal) and its door root (the door and the key
+/// terminal); every placeholder's layout read to its last byte.
+#[test]
+#[ignore = "needs SUBNAUTICA_DIR pointing at a Subnautica install"]
+fn prefab_placeholders() {
+    let Some(dir) = std::env::var_os("SUBNAUTICA_DIR") else {
+        eprintln!("SUBNAUTICA_DIR not set; skipping");
+        return;
+    };
+    let game = GameData::locate(Some(PathBuf::from(dir))).unwrap();
+    let assets = Assets::index(&game).unwrap();
+    let catalog = assets.catalog().unwrap();
+    let paths = game.read_prefab_database().unwrap();
+    let spawned = |key: &str| -> Vec<String> {
+        let prefab = assets.prefab(&catalog, key).unwrap();
+        assert_eq!(prefab.placeholder_groups.len(), 1, "{key}");
+        let group = &prefab.placeholder_groups[0];
+        assert!(group.enabled);
+        assert_eq!(group.node, 0);
+        group
+            .placeholders
+            .iter()
+            .map(|&n| {
+                let id = prefab.nodes[n].placeholder.as_deref().unwrap();
+                paths.get(id).cloned().unwrap_or_else(|| format!("? {id}"))
+            })
+            .collect()
+    };
+    let pedestal = spawned("WorldEntities/Doodads/Precursor/Gun/IonCrystalPedestal.prefab");
+    assert_eq!(
+        pedestal,
+        ["WorldEntities/Natural/PrecursorIonCrystal.prefab"]
+    );
+    let door = spawned(
+        "WorldEntities/Environment/Precursor/Cache/Precursor_BloodKelpCache_DoorTerminalsRoot1.prefab",
+    );
+    assert_eq!(
+        door,
+        [
+            "WorldEntities/Environment/Precursor/Gun/Precursor_Gun_Terminal2Door.prefab",
+            "WorldEntities/Environment/Precursor/Precursor_PurpleKeyTerminal.prefab"
+        ]
+    );
 }
