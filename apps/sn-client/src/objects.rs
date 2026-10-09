@@ -25,7 +25,7 @@ use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, Face, TextureDimension, TextureFormat};
 use sn_assets::{
-    Assets as GameAssets, LootTable, MarmoSkies, ObjectRef, TerrainTexture, marmo_skies,
+    Assets as GameAssets, LootTable, MarmoSkies, ObjectRef, Prefab, TerrainTexture, marmo_skies,
 };
 use sn_install::GameData;
 use sn_unity::{Catalog, DayNightLight, LightKind, Material, SKIES_AUTO};
@@ -238,6 +238,13 @@ struct Instance {
     from_slot: bool,
 }
 
+/// Which scenes the worker loads, and their state.
+#[derive(Clone, Copy)]
+pub struct SceneOptions {
+    /// The Aurora after its explosion (a new game starts before it).
+    pub aurora_exploded: bool,
+}
+
 /// What the worker fills spawn slots with.
 struct SlotTables {
     seed: u64,
@@ -268,6 +275,12 @@ enum Update {
     },
     Batch {
         coord: BatchCoord,
+        instances: Vec<Instance>,
+        ms: f32,
+    },
+    /// A scene's top-level objects, shown always.
+    Scene {
+        summary: String,
         instances: Vec<Instance>,
         ms: f32,
     },
@@ -372,6 +385,46 @@ impl Library {
                 return vec![None];
             }
         };
+        self.send_geometry(key, &geometry, out)
+    }
+
+    /// A skinned node's mesh in its still pose, in the prefab root's space
+    /// (cached by the node's GameObject); `None` if it has no skin (then it
+    /// is drawn as a plain mesh).
+    fn skinned_mesh(
+        &mut self,
+        prefab: &Prefab,
+        node: usize,
+        out: &mut Vec<Update>,
+    ) -> Option<Vec<Option<u32>>> {
+        let n = &prefab.nodes[node];
+        let key = n.object.clone();
+        if self.meshes.contains_key(&(key.clone(), 0)) {
+            return Some(
+                (0..)
+                    .map_while(|i| self.meshes.get(&(key.clone(), i)).copied())
+                    .collect(),
+            );
+        }
+        let (mesh, geometry) = match self.assets.mesh(n.mesh.as_ref()?) {
+            Ok(x) => x,
+            Err(e) => {
+                out.push(Update::Warning(format!("mesh: {e}")));
+                return None;
+            }
+        };
+        let skinned = prefab.skinned_geometry(node, &mesh, &geometry)?;
+        Some(self.send_geometry(key, &skinned, out))
+    }
+
+    /// Sends a mesh's sub-meshes (Unity space in, Bevy's out), cached
+    /// under `key`.
+    fn send_geometry(
+        &mut self,
+        key: Key,
+        geometry: &sn_unity::MeshGeometry,
+        out: &mut Vec<Update>,
+    ) -> Vec<Option<u32>> {
         let flip = |p: [f32; 3]| [p[0], p[1], -p[2]];
         let positions: Vec<[f32; 3]> = geometry.positions.iter().map(|&p| flip(p)).collect();
         let normals: Vec<[f32; 3]> = geometry.normals.iter().map(|&n| flip(n)).collect();
@@ -443,12 +496,34 @@ impl Library {
                 return None;
             }
         };
+        let id = self.prefab_parts(&prefab, out);
+        self.prefabs.insert(path.to_string(), id);
+        id
+    }
+
+    /// Sends a loaded hierarchy's drawn parts and lights; its id, `None`
+    /// if it has nothing to draw.
+    fn prefab_parts(&mut self, prefab: &Prefab, out: &mut Vec<Update>) -> Option<u32> {
         let mut parts = Vec::new();
-        for node in prefab.visible_nodes() {
+        for (index, node) in prefab.visible() {
             // Other anchors (a fixed sky) are taken as the global sky.
             let biome_sky = node.sky_applier == Some(SKIES_AUTO);
             let Some(mesh) = &node.mesh else { continue };
-            let sub_meshes = self.mesh(mesh, out);
+            // Skinned meshes come out in the prefab root's space.
+            let skinned = if node.skinned {
+                self.skinned_mesh(prefab, index, out)
+            } else {
+                None
+            };
+            let local = if skinned.is_some() {
+                Placement::default()
+            } else {
+                node.in_prefab
+            };
+            let sub_meshes = match skinned {
+                Some(ids) => ids,
+                None => self.mesh(mesh, out),
+            };
             // One material per sub-mesh; extra materials (multi-pass) are
             // not drawn, sub-meshes without a material neither.
             for (sub, material) in sub_meshes.iter().zip(&node.materials) {
@@ -461,7 +536,7 @@ impl Library {
                 parts.push(Part {
                     mesh: *mesh,
                     material,
-                    local: node.in_prefab,
+                    local,
                     biome_sky,
                 });
             }
@@ -515,8 +590,77 @@ impl Library {
                 directional,
             });
         }
-        self.prefabs.insert(path.to_string(), id);
         id
+    }
+
+    /// The scenes the game spawns at start (`docs/DESIGN.md` M7f): each
+    /// top-level object becomes an instance at its world placement.
+    fn scenes(&mut self, options: &SceneOptions, out: &mut Vec<Update>) {
+        let start = Instant::now();
+        let autoload = match self.assets.startup_scenes() {
+            Ok((_, autoload)) => autoload,
+            Err(e) => {
+                out.push(Update::Warning(format!("scenes: {e}")));
+                return;
+            }
+        };
+        for a in autoload.iter().filter(|a| a.spawn_on_start) {
+            // Lifepod 5 is moved to a random start point first (M7f3).
+            if a.scene_name.eq_ignore_ascii_case("EscapePod") {
+                continue;
+            }
+            let mut scene = match self.assets.scene(&a.scene_name) {
+                Ok(s) => s,
+                Err(e) => {
+                    out.push(Update::Warning(format!("scene {}: {e}", a.scene_name)));
+                    continue;
+                }
+            };
+            scene.spawn_lightmapped_prefab();
+            let mut state = String::new();
+            if !scene
+                .behaviours(&self.assets, "CrashedShipExploder")
+                .is_empty()
+            {
+                match scene.swap_aurora_models(&self.assets, options.aurora_exploded) {
+                    Ok((off, on)) => {
+                        state = format!(
+                            ", Aurora {} ({off} objects off, {on} on)",
+                            if options.aurora_exploded {
+                                "exploded"
+                            } else {
+                                "intact"
+                            }
+                        );
+                    }
+                    Err(e) => out.push(Update::Warning(format!("scene {}: {e}", scene.name))),
+                }
+            }
+            let mut instances = Vec::new();
+            let mut drawn = 0;
+            for root in &scene.roots {
+                drawn += root.visible_nodes().count();
+                if let Some(prefab) = self.prefab_parts(root, out) {
+                    instances.push(Instance {
+                        level: 0,
+                        prefab,
+                        transform: root.nodes[0].local,
+                        from_slot: false,
+                    });
+                }
+            }
+            let nodes: usize = scene.roots.iter().map(|r| r.nodes.len()).sum();
+            out.push(Update::Scene {
+                summary: format!(
+                    "scene {}: {} top-level objects, {nodes} nodes, {drawn} drawn{state}",
+                    scene.name,
+                    scene.roots.len()
+                ),
+                instances,
+                ms: start.elapsed().as_secs_f32() * 1000.0,
+            });
+        }
+        self.assets.trim_cache(BUNDLE_CACHE_BYTES);
     }
 
     /// A prefab drawn as a still object: creatures move and animate, so
@@ -729,6 +873,7 @@ fn worker(
     shared: Arc<Shared>,
     tx: Sender<Update>,
     slot_seed: Option<u64>,
+    scenes: Option<SceneOptions>,
 ) {
     let start = Instant::now();
     let setup = || -> Result<Library, String> {
@@ -788,6 +933,15 @@ fn worker(
     let _ = tx.send(Update::Ready {
         ms: start.elapsed().as_secs_f32() * 1000.0,
     });
+    if let Some(options) = scenes {
+        let mut out = Vec::new();
+        library.scenes(&options, &mut out);
+        for update in out {
+            if tx.send(update).is_err() {
+                return;
+            }
+        }
+    }
     loop {
         let coord = {
             let mut queue = shared.queue.lock().unwrap();
@@ -823,6 +977,13 @@ struct BatchObjects {
     casting: bool,
 }
 
+/// A scene's top-level objects on the main thread.
+struct SceneObjects {
+    instances: Vec<Instance>,
+    /// `None` until spawned.
+    shown: Option<Vec<Entity>>,
+}
+
 #[derive(Default, Clone)]
 pub struct ObjectStats {
     pub batches: usize,
@@ -831,6 +992,8 @@ pub struct ObjectStats {
     pub per_level: [usize; SLOTS],
     /// Shown objects (not entities) that spawn slots filled.
     pub slot_objects: usize,
+    /// Entities of the scenes (shown always, not in `entities`).
+    pub scene_entities: usize,
     pub queued: usize,
     pub prefabs: usize,
     pub meshes: usize,
@@ -860,6 +1023,7 @@ pub struct ObjectStreamer {
     prefab_lights: HashMap<u32, Vec<LocalLight>>,
     prefab_directional: HashMap<u32, Vec<DirectionalSource>>,
     batches: HashMap<BatchCoord, BatchObjects>,
+    scenes: Vec<SceneObjects>,
     /// What was last put in the worker's queue.
     requested: Vec<BatchCoord>,
     defaults: Option<Defaults>,
@@ -875,7 +1039,13 @@ pub struct ObjectStreamer {
 impl ObjectStreamer {
     /// `lights`: spawn the objects' point and spot lights. `slot_seed`: fill
     /// the spawn slots with this world seed (`None`: leave them empty).
-    pub fn start(game: GameData, lights: bool, slot_seed: Option<u64>) -> ObjectStreamer {
+    /// `scenes`: load the scenes the game spawns at start (`None`: none).
+    pub fn start(
+        game: GameData,
+        lights: bool,
+        slot_seed: Option<u64>,
+        scenes: Option<SceneOptions>,
+    ) -> ObjectStreamer {
         // The worker's asset index borrows the install for the whole run.
         let game: &'static GameData = Box::leak(Box::new(game));
         let shared = Arc::new(Shared {
@@ -885,7 +1055,7 @@ impl ObjectStreamer {
         });
         let (tx, rx) = channel();
         let worker_shared = shared.clone();
-        std::thread::spawn(move || worker(game, worker_shared, tx, slot_seed));
+        std::thread::spawn(move || worker(game, worker_shared, tx, slot_seed, scenes));
         ObjectStreamer {
             shared,
             rx: Mutex::new(rx),
@@ -899,6 +1069,7 @@ impl ObjectStreamer {
             prefab_lights: HashMap::new(),
             prefab_directional: HashMap::new(),
             batches: HashMap::new(),
+            scenes: Vec::new(),
             requested: Vec::new(),
             defaults: None,
             lights,
@@ -947,6 +1118,12 @@ impl ObjectStreamer {
                 }
             }
         }
+        s.scene_entities = self
+            .scenes
+            .iter()
+            .flat_map(|sc| &sc.shown)
+            .map(Vec::len)
+            .sum();
         s
     }
 
@@ -1247,6 +1424,17 @@ pub fn stream_objects(
                     b.instances = Some(instances);
                 }
             }
+            Update::Scene {
+                summary,
+                instances,
+                ms,
+            } => {
+                info!("objects: {summary} ({ms:.0} ms)");
+                streamer.scenes.push(SceneObjects {
+                    instances,
+                    shown: None,
+                });
+            }
             Update::Warning(w) => {
                 streamer.warnings += 1;
                 if streamer.warnings <= 20 {
@@ -1307,9 +1495,9 @@ pub fn stream_objects(
         let Some(b) = streamer.batches.get_mut(&coord) else {
             continue;
         };
-        let Some(instances) = &b.instances else {
+        if b.instances.is_none() {
             continue;
-        };
+        }
         let casting = lod == 0;
         if casting != b.casting {
             for entity in b.shown.iter().flatten().flatten() {
@@ -1327,6 +1515,9 @@ pub fn stream_objects(
         }
         for level in 0..SLOTS {
             let want = shows_slot(level, lod, coord, camera_batch);
+            let Some(b) = streamer.batches.get_mut(&coord) else {
+                break;
+            };
             match (&b.shown[level], want) {
                 (Some(_), false) => {
                     for entity in b.shown[level].take().into_iter().flatten() {
@@ -1334,83 +1525,133 @@ pub fn stream_objects(
                     }
                 }
                 (None, true) if budget > 0 => {
+                    let todo: Vec<Instance> = b
+                        .instances
+                        .iter()
+                        .flatten()
+                        .filter(|i| i.level == level)
+                        .copied()
+                        .collect();
                     let mut entities = Vec::new();
-                    for inst in instances.iter().filter(|i| i.level == level) {
-                        let Some(parts) = streamer.prefabs.get(&inst.prefab) else {
-                            continue;
-                        };
-                        // `SkyApplier`: the biome at the object's root.
-                        let biome = water
-                            .as_deref()
-                            .and_then(|w| w.biome_at(inst.transform.position));
-                        for part in parts {
-                            let sky = streamer.skies.pick(part.biome_sky, biome);
-                            let Some(mesh) = streamer.meshes.get(&part.mesh) else {
-                                continue;
-                            };
-                            let material = match streamer.materials.get(&(part.material, sky)) {
-                                Some(m) => m.clone(),
-                                None => {
-                                    let Some(desc) = streamer.material_descs.get(&part.material)
-                                    else {
-                                        continue;
-                                    };
-                                    let look = sky.and_then(|i| streamer.skies.looks.get(i));
-                                    let m = materials.add(object_material(
-                                        desc,
-                                        look,
-                                        &streamer.textures,
-                                        &defaults,
-                                        &light,
-                                    ));
-                                    streamer.materials.insert((part.material, sky), m.clone());
-                                    m
-                                }
-                            };
-                            let world = inst.transform.then(&part.local);
-                            let mut entity = commands.spawn((
-                                Mesh3d(mesh.clone()),
-                                MeshMaterial3d(material.clone()),
-                                to_bevy(&world),
-                            ));
-                            if !casting {
-                                entity.insert(bevy::light::NotShadowCaster);
-                            }
-                            entities.push(entity.id());
-                        }
-                        let lights = streamer
-                            .prefab_lights
-                            .get(&inst.prefab)
-                            .filter(|_| streamer.lights);
-                        for light in lights.into_iter().flatten() {
-                            let world = to_bevy(&inst.transform.then(&light.local));
-                            entities.push(spawn_light(&mut commands, light, world));
-                        }
-                        let directional = streamer
-                            .prefab_directional
-                            .get(&inst.prefab)
-                            .filter(|_| streamer.lights);
-                        for light in directional.into_iter().flatten() {
-                            // `LargeWorldStreamer.OnBatchObjectsLoaded` destroys
-                            // batch objects' directional lights whose name has
-                            // "bounce" after its first letter
-                            // (`IndexOf(…) > 0`, ignoring case); "Bounce" stays.
-                            let lower = light.name.to_lowercase();
-                            if inst.level == BATCH_OBJECTS
-                                && lower.find("bounce").is_some_and(|i| i > 0)
-                            {
-                                continue;
-                            }
-                            let world = to_bevy(&inst.transform.then(&light.local));
-                            let marker = GameDirectionalLight(light.clone());
-                            entities.push(commands.spawn((marker, world)).id());
-                        }
+                    let mut spawner = Spawner {
+                        commands: &mut commands,
+                        materials: &mut materials,
+                        defaults: &defaults,
+                        light: &light,
+                        water: water.as_deref(),
+                    };
+                    for inst in &todo {
+                        streamer.spawn_instance(inst, casting, &mut spawner, &mut entities);
                     }
                     budget = budget.saturating_sub(entities.len().max(1));
-                    b.shown[level] = Some(entities);
+                    if let Some(b) = streamer.batches.get_mut(&coord) {
+                        b.shown[level] = Some(entities);
+                    }
                 }
                 _ => {}
             }
+        }
+    }
+
+    // Scenes: spawned once, shown always.
+    let mut spawner = Spawner {
+        commands: &mut commands,
+        materials: &mut materials,
+        defaults: &defaults,
+        light: &light,
+        water: water.as_deref(),
+    };
+    for i in 0..streamer.scenes.len() {
+        if streamer.scenes[i].shown.is_some() {
+            continue;
+        }
+        let todo = streamer.scenes[i].instances.clone();
+        let mut entities = Vec::new();
+        for inst in &todo {
+            streamer.spawn_instance(inst, true, &mut spawner, &mut entities);
+        }
+        streamer.scenes[i].shown = Some(entities);
+    }
+}
+
+/// What spawning an instance needs from the frame's system.
+struct Spawner<'a, 'w, 's> {
+    commands: &'a mut Commands<'w, 's>,
+    materials: &'a mut Assets<ObjectMaterial>,
+    defaults: &'a Defaults,
+    light: &'a GameLightImages,
+    water: Option<&'a WaterWorld>,
+}
+
+impl ObjectStreamer {
+    /// Spawns an instance's parts and lights, adding their entities to
+    /// `entities`.
+    fn spawn_instance(
+        &mut self,
+        inst: &Instance,
+        casting: bool,
+        s: &mut Spawner,
+        entities: &mut Vec<Entity>,
+    ) {
+        let Some(parts) = self.prefabs.get(&inst.prefab) else {
+            return;
+        };
+        // `SkyApplier`: the biome at the object's root.
+        let biome = s.water.and_then(|w| w.biome_at(inst.transform.position));
+        for part in parts {
+            let sky = self.skies.pick(part.biome_sky, biome);
+            let Some(mesh) = self.meshes.get(&part.mesh) else {
+                continue;
+            };
+            let material = match self.materials.get(&(part.material, sky)) {
+                Some(m) => m.clone(),
+                None => {
+                    let Some(desc) = self.material_descs.get(&part.material) else {
+                        continue;
+                    };
+                    let look = sky.and_then(|i| self.skies.looks.get(i));
+                    let m = s.materials.add(object_material(
+                        desc,
+                        look,
+                        &self.textures,
+                        s.defaults,
+                        s.light,
+                    ));
+                    self.materials.insert((part.material, sky), m.clone());
+                    m
+                }
+            };
+            let world = inst.transform.then(&part.local);
+            let mut entity = s.commands.spawn((
+                Mesh3d(mesh.clone()),
+                MeshMaterial3d(material.clone()),
+                to_bevy(&world),
+            ));
+            if !casting {
+                entity.insert(bevy::light::NotShadowCaster);
+            }
+            entities.push(entity.id());
+        }
+        let lights = self.prefab_lights.get(&inst.prefab).filter(|_| self.lights);
+        for light in lights.into_iter().flatten() {
+            let world = to_bevy(&inst.transform.then(&light.local));
+            entities.push(spawn_light(s.commands, light, world));
+        }
+        let directional = self
+            .prefab_directional
+            .get(&inst.prefab)
+            .filter(|_| self.lights);
+        for light in directional.into_iter().flatten() {
+            // `LargeWorldStreamer.OnBatchObjectsLoaded` destroys batch
+            // objects' directional lights whose name has "bounce" after its
+            // first letter (`IndexOf(…) > 0`, ignoring case); "Bounce" stays.
+            let lower = light.name.to_lowercase();
+            if inst.level == BATCH_OBJECTS && lower.find("bounce").is_some_and(|i| i > 0) {
+                continue;
+            }
+            let world = to_bevy(&inst.transform.then(&light.local));
+            let marker = GameDirectionalLight(light.clone());
+            entities.push(s.commands.spawn((marker, world)).id());
         }
     }
 }

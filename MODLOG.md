@@ -2,6 +2,90 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-09 — M7f2: skinned meshes
+
+**What:** skinned meshes are drawn in the pose their hierarchy stores.
+- `sn-unity`: `SkinnedMeshRenderer` (renderer fields, mesh, bones, blend
+  shape weights, root bone, bounds; `MeshRenderer` shares the renderer
+  part); `Mesh::bind_poses`; `MeshGeometry::bone_weights`/`bone_indices`
+  from vertex channels 12/13. Synthetic tests for both, cut-short input
+  gives errors.
+- `sn-assets::skin` (pure: `Σ w · bone · bindPose · v`, normals and
+  tangents too, missing bones left out; 4 unit tests on synthetic bones);
+  `PrefabNode::bones` (node indices), `Prefab::skinned_geometry`,
+  `Prefab::visible` (with indices). Skinned renderers now give the node
+  its mesh and materials, so they are drawn (before: skipped, the next
+  LOD level shown instead).
+- Client: skinned parts are skinned once per prefab node in the worker
+  and placed in the prefab root's space; bone-less ones as plain meshes.
+- `sn-inspect prefab --skinned` (checks, LOD 0 vs LOD 1 bounds, nearest
+  placement); `prefab <KEY>` exports skinned nodes skinned.
+  No new dependencies.
+
+**Dead end:** first read the bind poses column by column (assuming
+Unity's `m00 m10 …` field order). Sizes still matched LOD 1, as sizes
+ignore translation; the bottom-row check (269 of 269 wrong) showed the
+file stores them row by row. Fixed before anything used them; the
+census now also compares centres.
+
+**Verified (2026-10-09):**
+1. `sn-inspect prefab --skinned`: 73 placed prefabs with active skinned
+   meshes, 304 renderers drawn: 190 skinned, 113 bone-less (drawn plain),
+   1 without bone indices; 0 bones outside their hierarchy; 0 bind poses
+   without a 0 0 0 1 bottom row; LOD 0 vs static LOD 1 on the 3 prefabs
+   that have both: sizes within 0.1 %, centres within 1 cm. 0 errors.
+   Escape pod scene: 31 skinned renderers, all with bones.
+2. Real-data test `skinned_lod_matches_its_static_lod`
+   (`AbandonedBaseFloatingIsland1`, 1 % tolerance); all 11 real-data
+   tests of sn-assets/sn-unity, workspace tests, clippy, fmt: pass.
+3. Client at the lifepod start: 16,440 entities, 0 warnings, 300 frames
+   mean 12.13 ms (12.27 ms in the M7e2 follow-up run, not A/B in one
+   session). Close-up `out/m7f2-braincoral.png` (start 44 −18 96): the
+   brain coral (LOD 0 now, bone-less) at its place. **Not compared** with
+   the game; no animation (the game's `Animator`s pose these).
+
+## 2026-10-09 — M7f1: scenes, the Aurora
+
+**What:** plan for M7f in `docs/DESIGN.md` (three steps: scenes and the
+Aurora, skinned meshes, Lifepod 5). This step: a scene reader and the
+scenes the game spawns at start, drawn in the client.
+- `sn-unity::scene_scripts`: `MainGameController.additionalScenes`,
+  `LightmappedPrefabs.autoloadScenes`, `CrashedShipExploder` (synthetic
+  tests, cut-short input gives errors).
+- `sn-assets::Scene` (`Assets::scene`, `startup_scenes`, `behaviours`,
+  `spawn_lightmapped_prefab`, `swap_aurora_models`); the prefab hierarchy
+  reader is shared (`Assets::hierarchy`); `PrefabNode` now has its
+  GameObject key and own active flag, `Prefab::set_active` as Unity's
+  `SetActive`; `Assets::script_class` public.
+- `sn-inspect scene <name> [--tree D | --script Class]`, `scene --startup`.
+- Client: the worker loads the startup scenes after the asset index and
+  sends each top-level object as an instance, shown always (not streamed);
+  the escape pod scene is skipped until M7f3. Spawning one instance is now
+  `ObjectStreamer::spawn_instance`, shared by batches and scenes.
+  `--no-scenes`, `--aurora intact|exploded` (default intact: a new game).
+  No new dependencies.
+
+**Found** (`docs/formats/unity.md` § Scenes): `main` → `Essentials` →
+`Cyclops` (template), `EscapePod` and `Aurora` (spawned at the origin).
+The Aurora scene also holds four non-streaming world parts (Precursor
+prison exterior and aquarium, Lost River base, Lost River large trees).
+
+**Verified (2026-10-09):**
+1. `sn-inspect scene --startup`: the chain above; aurora 6 top-level
+   objects, intact 330 nodes drawn, exploded 337, 2 objects off / 2 on.
+2. Real-data test `startup_scenes_and_aurora` (those numbers, class
+   counts 3,189/437/291, escape pod 248 GameObjects, 35 skinned
+   renderers); all real-data tests of sn-assets and sn-unity, workspace
+   tests, clippy `-D warnings`, fmt: pass.
+3. Client at (250 120 650) looking at the Aurora: log "scene aurora: 6
+   top-level objects, 3189 nodes, 330 drawn, Aurora intact", 1,196 scene
+   entities (1,274 exploded), 0 warnings. 300 frames: 4.69 / 4.75 ms with
+   the scenes, 4.47 ms with `--no-scenes`, 5.96 ms exploded (one run each).
+   Screenshots `out/m7f1-aurora-far.png`, `out/m7f1-aurora-exploded.png`:
+   the ship sits in the water at the right place (by eye). **Not compared**
+   with the game; always the most detailed LOD (the game switches to LOD
+   1/2 with distance); no fire, smoke, radiation effects.
+
 ## 2026-10-09 — M7e2 follow-up: Noisey Wave's sway, UBER grass sky
 
 **What:** after the user's review of M7e (closing two of its open

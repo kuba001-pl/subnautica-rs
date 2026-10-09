@@ -84,7 +84,12 @@ pub struct MeshRenderer {
 impl MeshRenderer {
     pub fn parse(data: &[u8], big_endian: bool) -> Result<MeshRenderer> {
         let mut r = Reader::new(data, big_endian);
-        let game_object = PPtr::read(&mut r)?;
+        MeshRenderer::read(&mut r)
+    }
+
+    /// The fields every `Renderer` starts with, up to its materials.
+    fn read(r: &mut Reader) -> Result<MeshRenderer> {
+        let game_object = PPtr::read(r)?;
         let enabled = r.u8()? != 0;
         let cast_shadows = r.u8()?;
         // receive shadows, dynamic occludee, motion vectors, light probe and
@@ -96,12 +101,66 @@ impl MeshRenderer {
         r.u16()?;
         r.u16()?; // lightmap indices
         r.bytes(32)?; // lightmap tiling offsets
-        let materials = pptr_vector(&mut r)?;
+        let materials = pptr_vector(r)?;
         Ok(MeshRenderer {
             game_object,
             enabled,
             cast_shadows,
             materials,
+        })
+    }
+}
+
+/// `SkinnedMeshRenderer` (class 137): a renderer whose mesh is bent by
+/// bones (Transforms) each frame.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SkinnedMeshRenderer {
+    pub renderer: MeshRenderer,
+    pub mesh: PPtr,
+    /// Transforms, one per bind pose of the mesh.
+    pub bones: Vec<PPtr>,
+    pub blend_shape_weights: Vec<f32>,
+    pub root_bone: PPtr,
+    /// Bounds (centre, half-size) relative to the root bone.
+    pub aabb: ([f32; 3], [f32; 3]),
+}
+
+impl SkinnedMeshRenderer {
+    pub fn parse(data: &[u8], big_endian: bool) -> Result<SkinnedMeshRenderer> {
+        let mut r = Reader::new(data, big_endian);
+        let renderer = MeshRenderer::read(&mut r)?;
+        r.u16()?;
+        r.u16()?; // static batch info: first sub-mesh, count
+        PPtr::read(&mut r)?; // static batch root
+        PPtr::read(&mut r)?; // probe anchor
+        PPtr::read(&mut r)?; // light probe volume override
+        r.i32()?; // sorting layer id
+        r.i16()?;
+        r.i16()?; // sorting layer, sorting order
+        r.align(4)?;
+        r.i32()?; // quality
+        r.u8()?;
+        r.u8()?; // update when offscreen, skinned motion vectors
+        r.align(4)?;
+        let mesh = PPtr::read(&mut r)?;
+        let bones = pptr_vector(&mut r)?;
+        let n = r.count(4)?;
+        let mut blend_shape_weights = Vec::with_capacity(n);
+        for _ in 0..n {
+            blend_shape_weights.push(r.f32()?);
+        }
+        r.align(4)?;
+        let root_bone = PPtr::read(&mut r)?;
+        let v = |r: &mut Reader| -> Result<[f32; 3]> { Ok([r.f32()?, r.f32()?, r.f32()?]) };
+        let aabb = (v(&mut r)?, v(&mut r)?);
+        r.u8()?; // dirty AABB
+        Ok(SkinnedMeshRenderer {
+            renderer,
+            mesh,
+            bones,
+            blend_shape_weights,
+            root_bone,
+            aabb,
         })
     }
 }

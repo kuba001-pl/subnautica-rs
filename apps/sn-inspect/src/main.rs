@@ -11,6 +11,8 @@ mod mesh;
 mod octree;
 mod orient;
 mod prefab;
+mod scene;
+mod skinned;
 mod slots;
 mod texture;
 mod unity;
@@ -67,8 +69,18 @@ Commands:
   prefab --placed [--oracle]
                          Load every prefab placed in the world and decode
                          its meshes (--oracle: out/mesh-check-rust.txt)
+  prefab --skinned       Every skinned mesh of the placed prefabs and the
+                         escape pod: skin checks, skinned LOD 0 bounds vs
+                         the static LOD 1
   prefab --lights        The Light components of every placed prefab, and
                          how many lights the world's placements hold
+  scene <NAME> [--tree <DEPTH> | --script <CLASS>]
+                         A scene bundle (aurora, escapepod, main, …): object
+                         counts, top-level objects (with their hierarchy to
+                         DEPTH), what is drawn, scripts (with the bytes of
+                         each MonoBehaviour of script CLASS)
+  scene --startup        The scenes the game loads at start and what the
+                         spawned ones draw in a new game
   terrain-materials      Terrain block types → materials → textures, checked
                          against the type ids used by the octrees
   terrain-materials --props
@@ -166,8 +178,18 @@ fn run(mut args: Vec<String>) -> Result<ExitCode> {
         ["slots", x, y, z] => slots::run(&game, Some(parse_coord(x, y, z)?), seed),
         ["prefab", "--placed"] => prefab::placed(&game, false),
         ["prefab", "--lights"] => prefab::lights(&game),
+        ["prefab", "--skinned"] => skinned::run(&game),
         ["prefab", "--placed", "--oracle"] => prefab::placed(&game, true),
         ["prefab", key] => prefab::one(&game, key),
+        ["scene", "--startup"] => scene::startup(&game),
+        ["scene", name] => scene::run(&game, name, None, None),
+        ["scene", name, "--script", class] => scene::run(&game, name, None, Some(class)),
+        ["scene", name, "--tree", depth] => {
+            let depth = depth
+                .parse()
+                .map_err(|_| format!("depth {depth:?} is not a whole number"))?;
+            scene::run(&game, name, Some(depth), None)
+        }
         ["terrain-materials"] => materials::run(&game),
         ["terrain-materials", "--props"] => materials::props(&game),
         ["terrain-materials", "--region", x, y, z, r] => {

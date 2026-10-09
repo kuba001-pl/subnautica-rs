@@ -34,7 +34,7 @@ use sn_install::GameData;
 
 use crate::game_light::{GameLightPlugin, LightTextures, PendingLightTextures};
 use crate::object_look::ObjectLookPlugin;
-use crate::objects::ObjectStreamer;
+use crate::objects::{ObjectStreamer, SceneOptions};
 use crate::sky_dome::{PendingSky, PendingStars, SkyDomePlugin, SkyWorld};
 use crate::terrain::{BlockSettings, LodRanges, TerrainStreamer};
 use crate::terrain_look::{PendingTerrainLook, SUN_ILLUMINANCE, TerrainLookPlugin};
@@ -54,12 +54,16 @@ Usage: sn-client [--game-dir <PATH>] [--start <X> <Y> <Z>] [--look <X> <Y> <Z>]
   --look         point the camera looks at, Unity world coordinates
   --debug-colours  false colours per terrain type instead of the game's
                  terrain materials (also turns world objects off)
-  --no-objects   terrain only, no world objects (coral, rocks, …)
+  --no-objects   terrain only, no world objects (coral, rocks, â€¦)
   --no-local-lights  the objects' point and spot lights off (for comparisons)
   --slot-seed    world seed for filling the spawn slots (default 1; the game
                  picks anew in every save)
   --no-slots     leave the spawn slots empty (for comparisons)
   --no-grass     no terrain grass (for comparisons)
+  --no-scenes    without the scenes the game spawns at start (the Aurora,
+                 the Precursor bases it holds)
+  --aurora       intact | exploded: the Aurora before its explosion (default,
+                 as in a new game) or after it
   --fog-unit     scale on the game's light values (calibration; default 1:
                  one game light unit = 1.0 in the image, as in Unity)
   --color-grading  off | neutral | aces: the game's option of that name
@@ -99,6 +103,8 @@ struct Args {
     /// `None`: spawn slots stay empty.
     slot_seed: Option<u64>,
     no_grass: bool,
+    /// `None`: no scenes.
+    scenes: Option<SceneOptions>,
     fog_unit: f32,
     color_grading: ColorGrading,
     no_water_fog: bool,
@@ -123,6 +129,9 @@ fn parse_args() -> Result<Args, String> {
         no_local_lights: false,
         slot_seed: Some(1),
         no_grass: false,
+        scenes: Some(SceneOptions {
+            aurora_exploded: false,
+        }),
         fog_unit: 1.0,
         color_grading: ColorGrading::Off,
         no_water_fog: false,
@@ -165,6 +174,17 @@ fn parse_args() -> Result<Args, String> {
             }
             "--no-slots" => args.slot_seed = None,
             "--no-grass" => args.no_grass = true,
+            "--no-scenes" => args.scenes = None,
+            "--aurora" => {
+                let exploded = match it.next().map(String::as_str) {
+                    Some("intact") => false,
+                    Some("exploded") => true,
+                    _ => return Err("--aurora takes intact or exploded".into()),
+                };
+                if let Some(o) = args.scenes.as_mut() {
+                    o.aurora_exploded = exploded;
+                }
+            }
             "--no-water-fog" => args.no_water_fog = true,
             "--no-water-surface" => args.no_water_surface = true,
             "--water-quality" => {
@@ -289,7 +309,7 @@ fn load_water(game: &GameData, assets: &sn_assets::Assets) -> Result<WaterData, 
     })
 }
 
-/// Unity world coordinates → Bevy (flip z; see terrain.rs).
+/// Unity world coordinates â†’ Bevy (flip z; see terrain.rs).
 fn unity_to_bevy(p: Vec3) -> Vec3 {
     Vec3::new(p.x, p.y, -p.z)
 }
@@ -473,6 +493,7 @@ fn main() -> AppExit {
                     game,
                     !args.no_local_lights,
                     args.slot_seed,
+                    args.scenes,
                 ));
             }
             Err(e) => {
@@ -498,7 +519,7 @@ fn main() -> AppExit {
 
 /// The game's "Color grading" option (Unity's Post Processing Stack v1,
 /// `UwePostProcessingManager`): off (the default) writes the HDR values
-/// clamped to 0…1; neutral and ACES tonemap (here: Bevy's nearest
+/// clamped to 0â€¦1; neutral and ACES tonemap (here: Bevy's nearest
 /// tonemappers, **not** the game's exact curves yet).
 #[derive(Resource, Clone, Copy, Debug, PartialEq, Eq)]
 enum ColorGrading {
@@ -622,7 +643,7 @@ fn setup(
 
 /// The game's shadow cascades at "Detail" High (`QualitySettings`, read
 /// once with UnityPy on the dev machine; `docs/formats/lighting.md`
-/// § Shadows): 4 cascades to 50 m, split at 6.7 %, 20 % and 46.7 %.
+/// Â§ Shadows): 4 cascades to 50 m, split at 6.7 %, 20 % and 46.7 %.
 fn sun_cascades() -> bevy::light::CascadeShadowConfig {
     let distance = 50.0;
     let mut config = bevy::light::CascadeShadowConfigBuilder {
@@ -697,10 +718,11 @@ fn log_stats(
     if let Some(objects) = objects {
         let o = objects.stats();
         info!(
-            "objects: {} entities (cell levels 0..3, batch objects {:?}; {} objects from spawn slots) in {} batches, {} queued | {} prefabs, {} meshes, {} materials, {} textures | {} warnings",
+            "objects: {} entities (cell levels 0..3, batch objects {:?}; {} objects from spawn slots; {} scene entities) in {} batches, {} queued | {} prefabs, {} meshes, {} materials, {} textures | {} warnings",
             o.entities,
             o.per_level,
             o.slot_objects,
+            o.scene_entities,
             o.batches,
             o.queued,
             o.prefabs,
@@ -813,10 +835,11 @@ fn measure(
                 if let Some(o) = &objects {
                     let s = o.stats();
                     info!(
-                        "measure: objects: {} entities (cell levels 0..3, batch objects {:?}; {} objects from spawn slots), {} prefabs, {} meshes, {} materials, {} textures, {} warnings",
+                        "measure: objects: {} entities (cell levels 0..3, batch objects {:?}; {} objects from spawn slots; {} scene entities), {} prefabs, {} meshes, {} materials, {} textures, {} warnings",
                         s.entities,
                         s.per_level,
                         s.slot_objects,
+                        s.scene_entities,
                         s.prefabs,
                         s.meshes,
                         s.materials,
@@ -919,7 +942,7 @@ fn measure(
         let (lm, lp, lw) = percentiles(&latency);
         let (mm, mp, _) = percentiles(&meshing);
         info!(
-            "measure: lod {lod}: {} batches streamed; request→screen mean {lm:.0} ms, p95 {lp:.0} ms, worst {lw:.0} ms; meshing mean {mm:.0} ms, p95 {mp:.0} ms",
+            "measure: lod {lod}: {} batches streamed; requestâ†’screen mean {lm:.0} ms, p95 {lp:.0} ms, worst {lw:.0} ms; meshing mean {mm:.0} ms, p95 {mp:.0} ms",
             latency.len(),
         );
     }

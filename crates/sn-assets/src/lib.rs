@@ -11,6 +11,8 @@
 
 mod marmo;
 mod prefab;
+mod scene;
+mod skin;
 mod slots;
 mod terrain;
 mod water;
@@ -24,6 +26,8 @@ use sn_unity::{Bundle, BundleDirectory, ObjectInfo, PPtr, SerializedFile};
 
 pub use marmo::{BiomeSky, MarmoSkies, marmo_skies};
 pub use prefab::{Prefab, PrefabNode};
+pub use scene::{LIGHTMAPPED_PREFAB, Scene};
+pub use skin::{Mat4, skin};
 pub use slots::{LootTable, entity_infos, loot_table, parse_loot_table};
 pub use terrain::{
     BlendSettings, BlockSource, GrassLook, GrassShader, SurfaceLayer, TerrainGrass,

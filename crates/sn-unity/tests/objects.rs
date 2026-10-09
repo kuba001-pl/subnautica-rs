@@ -1,6 +1,9 @@
 //! Object readers on bytes built in code (Unity 2019.4 layouts).
 
-use sn_unity::{Material, MonoBehaviourHeader, PPtr, Texture2D, TextureFormat};
+use sn_unity::{
+    AutoLoadScene, CrashedShipExploder, Material, MonoBehaviourHeader, PPtr, Texture2D,
+    TextureFormat, parse_additional_scenes, parse_autoload_scenes,
+};
 
 /// Little-endian writer with Unity's 4-byte alignment for strings and bools.
 #[derive(Default)]
@@ -202,4 +205,102 @@ fn monobehaviour_header() {
         }
     );
     assert_eq!(h.fields_offset, 32);
+}
+
+fn behaviour() -> W {
+    let mut b = W::default();
+    b.pptr(0, 3).u8a(1).pptr(1, 62).str("");
+    b
+}
+
+#[test]
+fn scene_lists() {
+    let mut b = behaviour();
+    b.i32(1).str("Essentials");
+    assert_eq!(
+        parse_additional_scenes(&b.0, false).unwrap(),
+        ["Essentials"]
+    );
+
+    let mut b = behaviour();
+    b.i32(2).str("Cyclops").u8a(0).str("Aurora").u8a(1);
+    assert_eq!(
+        parse_autoload_scenes(&b.0, false).unwrap(),
+        [
+            AutoLoadScene {
+                scene_name: "Cyclops".into(),
+                spawn_on_start: false
+            },
+            AutoLoadScene {
+                scene_name: "Aurora".into(),
+                spawn_on_start: true
+            }
+        ]
+    );
+    // Cut short: an error, not a panic.
+    for len in 0..b.0.len() {
+        assert!(parse_autoload_scenes(&b.0[..len], false).is_err());
+    }
+}
+
+#[test]
+fn crashed_ship_exploder() {
+    let mut b = behaviour();
+    b.pptr(1, 9);
+    b.i32(2).pptr(0, 10).pptr(0, 11);
+    b.i32(1).pptr(0, 12);
+    b.pptr(0, 13);
+    b.f32(1.0); // later fields are ignored
+    let e = CrashedShipExploder::parse(&b.0, false).unwrap();
+    let p = |path_id| PPtr {
+        file_id: 0,
+        path_id,
+    };
+    assert_eq!(e.crashed_ship_prefab.path_id, 9);
+    assert_eq!(e.disable_on_explosion, [p(10), p(11)]);
+    assert_eq!(e.enable_on_explosion, [p(12)]);
+    assert_eq!(e.exploded_exterior, p(13));
+    for len in 0..b.0.len() - 4 {
+        assert!(CrashedShipExploder::parse(&b.0[..len], false).is_err());
+    }
+}
+
+#[test]
+fn skinned_mesh_renderer() {
+    let mut b = W::default();
+    // Renderer: game object, enabled, cast shadows, 6 flags, padding,
+    // layer mask, priority, lightmap indices, tiling offsets, materials.
+    b.pptr(0, 5);
+    b.0.extend([1, 1, 1, 1, 0, 1, 1, 0]);
+    b.u32(1).i32(0).i32(0xffff);
+    for _ in 0..8 {
+        b.f32(0.0);
+    }
+    b.i32(1).pptr(2, 77);
+    // Static batch info, three PPtrs, sorting layer id, layer, order.
+    b.i32(0).pptr(0, 0).pptr(0, 0).pptr(0, 0).i32(0).i32(0);
+    // Quality, two flags, mesh, bones, blend shape weights, root bone, AABB.
+    b.i32(0).u8a(0);
+    b.pptr(3, 9);
+    b.i32(2).pptr(0, 20).pptr(0, 21);
+    b.i32(1).f32(0.5);
+    b.pptr(0, 20);
+    for v in [1.0, 2.0, 3.0, 0.5, 0.5, 0.5] {
+        b.f32(v);
+    }
+    b.u8a(0);
+    let r = sn_unity::SkinnedMeshRenderer::parse(&b.0, false).unwrap();
+    assert!(r.renderer.enabled);
+    assert_eq!(r.renderer.materials[0].path_id, 77);
+    assert_eq!(r.mesh.path_id, 9);
+    assert_eq!(
+        r.bones.iter().map(|p| p.path_id).collect::<Vec<_>>(),
+        [20, 21]
+    );
+    assert_eq!(r.blend_shape_weights, [0.5]);
+    assert_eq!(r.root_bone.path_id, 20);
+    assert_eq!(r.aabb, ([1.0, 2.0, 3.0], [0.5; 3]));
+    for len in 0..b.0.len() - 4 {
+        assert!(sn_unity::SkinnedMeshRenderer::parse(&b.0[..len], false).is_err());
+    }
 }

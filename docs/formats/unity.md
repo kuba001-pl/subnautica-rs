@@ -222,9 +222,90 @@ and three base64 tables:
 
 38,483 string keys, 22,406 entries.
 
+### Scenes (M7f1) — confirmed
+
+A scene is a bundle `<name>.unity_<hash>.bundle` (13 in this build: `main`,
+`essentials`, `aurora`, `escapepod`, `cyclops`, `rocketspace`, menus,
+credits, cleaners). It holds two serialized files: the scene itself (the
+only one with a `RenderSettings`, class 104, and `LightmapSettings`) and
+`….sharedAssets` (meshes, materials, textures, prefabs the scene's scripts
+reference). Other assets come from other bundles through the externals, as
+for prefabs. Built scenes have no prefab instances left: every object is a
+GameObject of the scene file. A **top-level object** is one whose Transform
+has a null `father`; its Transform is its world placement (confirmed: the
+Aurora lines up with the terrain and the water line at y = 0, screenshot
+`out/m7f1-aurora-far.png`).
+
+**Which scenes the game loads** (read with `sn-inspect scene <name>
+--script <Class>` and the game's code):
+- `main` has one `MainGameController`; its `additionalScenes`
+  (`string[]`, the first field) is `["Essentials"]`, loaded additively.
+- `essentials` has one `LightmappedPrefabs`; its `autoloadScenes` (first
+  field, array of `{string sceneName; bool spawnOnStart}`, the bool padded
+  to 4 bytes) is `Cyclops` (false), `EscapePod` (true), `Aurora` (true).
+- When such a scene has loaded, `LightmappedPrefabs` takes its object named
+  `__LIGHTMAPPED_PREFAB__`, deactivates it and keeps it as a template; with
+  `spawnOnStart` it unparents it, puts it at the origin and activates it
+  (`ActivateLoadedPrefab`). The scene's other top-level objects stay where
+  they are, active as stored.
+
+**Aurora scene** (`aurora`): 3,189 GameObjects, 437 mesh renderers, 291 LOD
+groups, 361 MonoBehaviours (316 `CullingOccludee`), no lights. Six top-level
+objects: `__LIGHTMAPPED_PREFAB__` (the ship, 1,838 nodes),
+`StopwatchProfiler`, and four non-streaming parts of the world:
+`Precursor_Prison_Interior_Aquarium_NonStreaming`,
+`Precursor_Prison_exterior_NonStreaming`,
+`Precursor_LostRiverBase_NonStreaming`, `LostRiver_LargeTrees_NonStreaming`.
+`CrashedShipExploder` fields in order: `crashedShipPrefab` (PPtr),
+`disableOnExplosion` (PPtr[]), `enableOnExplosion` (PPtr[]),
+`explodedExterior` (PPtr), then non-PPtr fields we don't read. Its lists
+have 2 objects each; `SwapModels(exploded)` sets the first list active =
+!exploded and the second = exploded. Before the explosion (a new game) 330
+nodes are drawn at full detail (the hull `starship_crashed` and 10
+`CrashedShip_Damaged_Exterior_Quad`s among them); after it 337
+(`starship_exploded_02`, 18 meshes). The explosion time is
+`timeToStartCountdown = start + Random.Range(2.3, 4) × 1200 s`, swap 27 s
+later (game code, not from data).
+
+**Escape pod scene** (`escapepod`): 248 GameObjects, one top-level object
+(`__LIGHTMAPPED_PREFAB__` → `EscapePod`), 35 `SkinnedMeshRenderer`s (the
+hull `Life_Pod_damaged_03` is skinned), 5 lights, 7
+`AddressablesPrefabSpawn`. Placement: M7f3.
+
+### Skinned meshes (M7f2) — confirmed
+
+`SkinnedMeshRenderer` (class 137): the `Renderer` fields as in
+`MeshRenderer` up to `m_Materials`, then static batch info (2 × `u16`),
+three PPtrs (static batch root, probe anchor, light probe volume override),
+sorting layer id (`i32`), sorting layer and order (2 × `i16`), quality
+(`i32`), update-when-offscreen and skinned-motion-vectors (2 bytes, padded
+to 4), `m_Mesh` (PPtr), `m_Bones` (PPtr[] to Transforms),
+`m_BlendShapeWeights` (`f32[]`), `m_RootBone` (PPtr), `m_AABB` (centre,
+extent), `m_DirtyAABB` (byte). Confirmed on the game's data: every mesh
+and bone resolves (0 bones outside their hierarchy over 73 placed prefabs
+and the escape pod), and bones match bind poses in number except once.
+
+`Mesh.m_BindPose`: one 4×4 matrix per bone, **stored row by row**
+(`e00 e01 e02 e03 e10 …`) — confirmed: read that way, all 269 checked
+matrices have the bottom row 0 0 0 1; read column by column, none do.
+Bone weights and indices are vertex channels 12 (`BlendWeight`, float32,
+1–4 components) and 13 (`BlendIndices`, uint32), in the vertex streams
+like the other channels. With a single bone per vertex the weight channel
+is absent (weight 1).
+
+Skinned position = Σ wᵢ · boneᵢ.localToWorld · bindPoseᵢ · v (the
+renderer's own Transform is not used). Confirmed on the three prefabs that
+have a skinned LOD 0 and a static LOD 1 (`AbandonedBaseFloatingIsland1–3`):
+with the bones where the hierarchy stores them, the skinned LOD 0's bounds
+equal the static LOD 1's within 0.1 % (centres within 1 cm;
+`sn-inspect prefab --skinned`).
+
+Renderers with **no bones** (113 of 304 in placed prefabs, e.g. all of
+`BrainCoral`'s LOD 0, which use blend shapes) are drawn by Unity as the
+plain mesh at the renderer's Transform; we do the same.
+
 ## Not yet read
 
-- Skinned meshes (`SkinnedMeshRenderer`, class 137), blend shapes, bones:
-  layouts known, not read yet (creatures).
+- Blend shapes (read past, not applied), creature animation.
 - `StreamingAssets/AssetBundles/` (`logos`, `waterdisplacement`): legacy bundles,
   not yet looked at.

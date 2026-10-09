@@ -46,7 +46,10 @@ Tested on Windows 11 with game build 10 (Steam):
   (resource outcrops, eggs, fragments; picked with a fixed seed,
   `--slot-seed`), and the grass the terrain grows within ~100 m (sea grass,
   the Grassy Plateaus' red seaweed, small corals; the game's placement
-  rules and grass shader: tints, height gradient, waving), seen through the game's own water fog model (colours and distances
+  rules and grass shader: tints, height gradient, waving), and the scenes
+  the game spawns at start: the Aurora (intact as in a new game, or
+  `--aurora exploded`) and the Precursor bases and Lost River trees its
+  scene holds, seen through the game's own water fog model (colours and distances
   per biome) under the game's sun and sky light for a time of day
   (`--time`), with the game's water surface (simulated or baked waves, foam,
   reflection, refraction, sun glint; from above and below) under the
@@ -64,11 +67,13 @@ shadows). Flying from the lifepod
 
 The water clip map (no water inside the lifepod and bases,
 shore foam); water settings per pixel (the
-camera's are used everywhere); the Aurora, Lifepod 5; terrain grass
+camera's are used everywhere); Lifepod 5; the Aurora's distant levels of
+detail, fire and smoke; terrain grass
 beyond ~100 m, and grass tufts in the game's exact spots (the amount and
 spread follow its rules; our own random numbers); for world objects: reflections of the biome
 sky's cube map, cave/interior skies chosen by atmosphere volumes,
-animation (waving plants), skinned meshes, creatures (including the
+animation (waving plants; skinned meshes are drawn in their stored pose,
+blend shapes not applied), creatures (including the
 ~100,000 the spawn slots would add); player, audio,
 multiplayer.
 Linux/macOS: not tested.

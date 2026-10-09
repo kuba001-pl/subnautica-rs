@@ -4,7 +4,7 @@
 
 use sn_unity::{
     AssetBundleManifest, Catalog, DayNightLight, GameObject, Light, Location, LodGroup, Mesh,
-    MeshFilter, MeshGeometry, MeshRenderer, SkyApplier, TransformNode,
+    MeshFilter, MeshGeometry, MeshRenderer, SkinnedMeshRenderer, SkyApplier, TransformNode,
 };
 use sn_world::Transform;
 
@@ -29,6 +29,8 @@ const MAX_DEPTH: usize = 64;
 
 /// One GameObject of a prefab.
 pub struct PrefabNode {
+    /// The GameObject (bundle, file, path id).
+    pub object: (std::path::PathBuf, String, i64),
     pub name: String,
     /// Index of the parent node; `None` for the root.
     pub parent: Option<usize>,
@@ -38,14 +40,20 @@ pub struct PrefabNode {
     pub in_prefab: Transform,
     /// Active, and so are all its ancestors.
     pub active: bool,
+    /// The GameObject's own active flag.
+    pub active_self: bool,
     pub layer: u32,
     /// From a MeshFilter; `None` without one or with a null mesh.
     pub mesh: Option<ObjectRef>,
     /// From an enabled MeshRenderer, one per sub-mesh.
     pub materials: Vec<Option<ObjectRef>>,
     pub renderer_enabled: bool,
-    /// Has a SkinnedMeshRenderer (animated mesh; not read yet).
+    /// Has a SkinnedMeshRenderer (its mesh and materials are `mesh` and
+    /// `materials`; draw it through [`Prefab::skinned_geometry`]).
     pub skinned: bool,
+    /// The skinned renderer's bones as node indices (`None`: a bone outside
+    /// this hierarchy or missing).
+    pub bones: Vec<Option<usize>>,
     /// Level in its LOD group (0 = most detailed); `None` if not in one.
     pub lod: Option<usize>,
     /// The `anchorSky` of a `SkyApplier` listing this node's renderer (its
@@ -66,22 +74,67 @@ pub struct Prefab {
 }
 
 impl Prefab {
+    /// Sets a node's own active flag, as `GameObject.SetActive` does, and
+    /// updates `active` below it.
+    pub fn set_active(&mut self, node: usize, active: bool) {
+        if let Some(n) = self.nodes.get_mut(node) {
+            n.active_self = active;
+        }
+        // Nodes are stored parents first.
+        for i in 0..self.nodes.len() {
+            let parent = self.nodes[i].parent.is_none_or(|p| self.nodes[p].active);
+            self.nodes[i].active = parent && self.nodes[i].active_self;
+        }
+    }
+
+    /// A skinned node's mesh moved by its bones as the hierarchy stores
+    /// them, in the prefab root's space (like `in_prefab`). `None` if the
+    /// node is not skinned or its mesh has no skin or no bones: then it is
+    /// drawn as a plain mesh at `in_prefab`.
+    pub fn skinned_geometry(
+        &self,
+        node: usize,
+        mesh: &Mesh,
+        geometry: &MeshGeometry,
+    ) -> Option<MeshGeometry> {
+        let n = self.nodes.get(node)?;
+        if !n.skinned {
+            return None;
+        }
+        let bones: Vec<Option<Transform>> = n
+            .bones
+            .iter()
+            .map(|b| b.and_then(|i| self.nodes.get(i)).map(|b| b.in_prefab))
+            .collect();
+        crate::skin::skin(geometry, &mesh.bind_poses, &bones)
+    }
+
+    /// The node of a GameObject.
+    pub fn node_of(&self, object: &ObjectRef) -> Option<usize> {
+        let key = object.key();
+        self.nodes.iter().position(|n| n.object == key)
+    }
+
     /// Nodes we draw at full detail: active, with a mesh and an enabled
-    /// renderer, outside LOD groups or in the most detailed LOD level that
-    /// has such a node (LOD 0 is sometimes only a skinned mesh, which we
-    /// don't read yet).
+    /// renderer (skinned or not), outside LOD groups or in the most detailed
+    /// LOD level that has such a node.
     pub fn visible_nodes(&self) -> impl Iterator<Item = &PrefabNode> {
-        let drawable = |n: &&PrefabNode| n.active && n.renderer_enabled && n.mesh.is_some();
+        self.visible().map(|(_, n)| n)
+    }
+
+    /// [`Prefab::visible_nodes`] with their indices.
+    pub fn visible(&self) -> impl Iterator<Item = (usize, &PrefabNode)> {
+        let drawable = |n: &PrefabNode| n.active && n.renderer_enabled && n.mesh.is_some();
         let best = self
             .nodes
             .iter()
-            .filter(drawable)
+            .filter(|n| drawable(n))
             .filter_map(|n| n.lod)
             .min();
         self.nodes
             .iter()
-            .filter(drawable)
-            .filter(move |n| n.lod.is_none() || n.lod == best)
+            .enumerate()
+            .filter(move |(_, n)| drawable(n) && (n.lod.is_none() || n.lod == best))
     }
 }
 
@@ -151,10 +204,15 @@ impl Assets<'_> {
         let root = self
             .catalog_object(&location, GAME_OBJECT)?
             .ok_or_else(|| format!("{key}: {} not found in its bundle", location.internal_id))?;
+        self.hierarchy(key, &root)
+    }
 
+    /// The hierarchy below the GameObject `root` (a prefab's root or a
+    /// scene's root object), named `key`.
+    pub fn hierarchy(&self, key: &str, root: &ObjectRef) -> Result<Prefab> {
         let mut prefab = Building::new(key);
         let mut lods: Vec<(ObjectRef, LodGroup)> = Vec::new();
-        self.add_node(&root, None, true, &mut prefab, &mut lods, 0)?;
+        self.add_node(root, None, true, &mut prefab, &mut lods, 0)?;
 
         // LOD levels: match each group's renderers to nodes by object.
         for (file_of, group) in &lods {
@@ -195,17 +253,30 @@ impl Assets<'_> {
                 }
             }
         }
+        let index: std::collections::HashMap<_, usize> = prefab
+            .nodes
+            .iter()
+            .enumerate()
+            .map(|(i, n)| (n.key.clone(), i))
+            .collect();
         Ok(Prefab {
             key: prefab.key,
             nodes: prefab
                 .nodes
                 .into_iter()
                 .map(|n| PrefabNode {
+                    bones: n
+                        .bone_keys
+                        .iter()
+                        .map(|k| k.as_ref().and_then(|k| index.get(k).copied()))
+                        .collect(),
+                    object: n.key,
                     name: n.name,
                     parent: n.parent,
                     local: n.local,
                     in_prefab: n.in_prefab,
                     active: n.active,
+                    active_self: n.active_self,
                     layer: n.layer,
                     mesh: n.mesh,
                     materials: n.materials,
@@ -243,6 +314,7 @@ impl Assets<'_> {
         let mut skinned = false;
         let mut lights = Vec::new();
         let mut day_night_light = None;
+        let mut bone_keys = Vec::new();
         for component in &go.components {
             let Some(c) = self.resolve(file, *component)? else {
                 continue;
@@ -268,7 +340,30 @@ impl Assets<'_> {
                         materials.push(self.resolve(file, m)?);
                     }
                 }
-                SKINNED_MESH_RENDERER => skinned = true,
+                SKINNED_MESH_RENDERER => {
+                    let r = SkinnedMeshRenderer::parse(data, big_endian)
+                        .map_err(|e| format!("SkinnedMeshRenderer {}: {e}", c.path_id))?;
+                    skinned = true;
+                    renderer_enabled = r.renderer.enabled;
+                    mesh = self.resolve(file, r.mesh)?;
+                    materials.clear();
+                    for m in r.renderer.materials {
+                        materials.push(self.resolve(file, m)?);
+                    }
+                    for bone in r.bones {
+                        // Bone Transform → its GameObject's key.
+                        let key = match self.resolve(file, bone)? {
+                            Some(t) => {
+                                let (_, data) = t.data()?;
+                                let tn = TransformNode::parse(data, t.file.file().big_endian)
+                                    .map_err(|e| format!("bone {}: {e}", t.path_id))?;
+                                self.resolve(&t.file, tn.game_object)?.map(|g| g.key())
+                            }
+                            None => None,
+                        };
+                        bone_keys.push(key);
+                    }
+                }
                 LIGHT => lights.push(
                     Light::parse(data, big_endian)
                         .map_err(|e| format!("Light {}: {e}", c.path_id))?,
@@ -317,11 +412,13 @@ impl Assets<'_> {
             local,
             in_prefab,
             active,
+            active_self: go.active,
             layer: go.layer,
             mesh,
             materials,
             renderer_enabled,
             skinned,
+            bone_keys,
             lod: None,
             sky_applier: None,
             lights,
@@ -385,11 +482,13 @@ struct BuildingNode {
     local: Transform,
     in_prefab: Transform,
     active: bool,
+    active_self: bool,
     layer: u32,
     mesh: Option<ObjectRef>,
     materials: Vec<Option<ObjectRef>>,
     renderer_enabled: bool,
     skinned: bool,
+    bone_keys: Vec<Option<(std::path::PathBuf, String, i64)>>,
     lod: Option<usize>,
     sky_applier: Option<i32>,
     lights: Vec<Light>,

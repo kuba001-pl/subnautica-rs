@@ -77,6 +77,9 @@ pub fn one(game: &GameData, key: &str) -> Result<ExitCode> {
                 },
                 node.materials.iter().map(material_name).collect::<Vec<_>>()
             );
+            if node.skinned {
+                line.push_str(&format!(" [skinned: {} bones]", node.bones.len()));
+            }
             if node.active && node.renderer_enabled && node.lod.is_none_or(|l| l == 0) {
                 let _ = writeln!(obj, "o {}_{i}", node.name.replace(' ', "_"));
                 // Standing alone, the prefab keeps its root's rotation and
@@ -87,8 +90,11 @@ pub fn one(game: &GameData, key: &str) -> Result<ExitCode> {
                     position: [0.0; 3],
                     ..prefab.nodes[0].local
                 };
-                let t = root.then(&node.in_prefab);
-                append_obj(&mut obj, &g, &t, &mut base);
+                match prefab.skinned_geometry(i, &m, &g) {
+                    // Already in the prefab root's space.
+                    Some(skinned) => append_obj(&mut obj, &skinned, &root, &mut base),
+                    None => append_obj(&mut obj, &g, &root.then(&node.in_prefab), &mut base),
+                }
             }
         }
         println!("{line}");
@@ -146,7 +152,7 @@ fn placed_prefabs(game: &GameData) -> Result<BTreeMap<String, usize>> {
 }
 
 /// Every placed prefab with the world (Unity) positions of its placements.
-fn placed_positions(game: &GameData) -> Result<BTreeMap<String, Vec<[f32; 3]>>> {
+pub fn placed_positions(game: &GameData) -> Result<BTreeMap<String, Vec<[f32; 3]>>> {
     let prefabs = game.read_prefab_database()?;
     let mut keys: BTreeMap<String, Vec<[f32; 3]>> = BTreeMap::new();
     let (batches, _) = game.cell_batches()?;
@@ -421,7 +427,7 @@ pub fn placed(game: &GameData, oracle: bool) -> Result<ExitCode> {
         .filter(|k| without_mesh.contains(k))
         .collect();
     println!(
-        "prefabs with skinned meshes (not read yet): {} ({} with nothing else to draw, e.g. {:?})",
+        "prefabs with skinned meshes: {} ({} with nothing else to draw, e.g. {:?})",
         skinned.len(),
         skinned_only.len(),
         skinned_only.iter().take(4).collect::<Vec<_>>()

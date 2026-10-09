@@ -57,6 +57,8 @@ pub mod channel {
     pub const COLOR: usize = 3;
     pub const UV0: usize = 4;
     pub const UV1: usize = 5;
+    pub const BLEND_WEIGHT: usize = 12;
+    pub const BLEND_INDICES: usize = 13;
 }
 
 /// A `PackedBitVector`: `count` values of `bit_size` bits each, packed
@@ -186,6 +188,9 @@ pub struct Mesh {
     pub stream: Option<StreamingInfo>,
     /// Bounding box centre and half-size.
     pub aabb: ([f32; 3], [f32; 3]),
+    /// Per bone: mesh space → bone space, column by column (`m[col * 4 +
+    /// row]`; the file stores them row by row).
+    pub bind_poses: Vec<[f32; 16]>,
 }
 
 fn skip_vector(r: &mut Reader, item_bytes: usize) -> Result<()> {
@@ -237,7 +242,20 @@ impl Mesh {
         }
         r.align(4)?;
         skip_vector(&mut r, 4)?;
-        skip_vector(&mut r, 64)?; // bind poses
+        let n = r.count(64)?;
+        let mut bind_poses = Vec::with_capacity(n);
+        for _ in 0..n {
+            // Stored row by row (`e00 e01 e02 e03 e10 …`); kept column by
+            // column.
+            let mut m = [0.0; 16];
+            for row in 0..4 {
+                for col in 0..4 {
+                    m[col * 4 + row] = r.f32()?;
+                }
+            }
+            bind_poses.push(m);
+        }
+        r.align(4)?;
         skip_vector(&mut r, 4)?; // bone name hashes
         r.u32()?; // root bone name hash
         skip_vector(&mut r, 24)?; // bone AABBs
@@ -290,6 +308,7 @@ impl Mesh {
             compressed,
             stream,
             aabb,
+            bind_poses,
         })
     }
 
@@ -446,6 +465,22 @@ impl Mesh {
                 .into_iter()
                 .map(|v| [v[0], v[1]])
                 .collect(),
+            bone_weights: {
+                let dims = self
+                    .channels
+                    .get(channel::BLEND_INDICES)
+                    .map_or(0, Channel::components);
+                let mut weights = read(channel::BLEND_WEIGHT)?;
+                // One bone per vertex is stored without weights.
+                if weights.is_empty() && dims == 1 {
+                    weights = vec![[1.0, 0.0, 0.0, 0.0]; n];
+                }
+                weights
+            },
+            bone_indices: read(channel::BLEND_INDICES)?
+                .into_iter()
+                .map(|v| v.map(|i| i as u32))
+                .collect(),
             sub_meshes: Vec::new(),
         })
     }
@@ -551,6 +586,8 @@ impl Mesh {
             colors,
             uv0,
             uv1,
+            bone_weights: Vec::new(),
+            bone_indices: Vec::new(),
             sub_meshes: Vec::new(),
         })
     }
@@ -598,6 +635,10 @@ pub struct MeshGeometry {
     pub colors: Vec<[f32; 4]>,
     pub uv0: Vec<[f32; 2]>,
     pub uv1: Vec<[f32; 2]>,
+    /// Skin: up to 4 (bone, weight) pairs per vertex; empty if the mesh has
+    /// no skin (or a compressed one, not read).
+    pub bone_weights: Vec<[f32; 4]>,
+    pub bone_indices: Vec<[u32; 4]>,
     /// Per sub-mesh: triangle-list indices into the vertex arrays.
     pub sub_meshes: Vec<Vec<u32>>,
 }
@@ -712,6 +753,7 @@ mod tests {
             compressed: CompressedMesh::default(),
             stream: None,
             aabb: ([0.0; 3], [0.0; 3]),
+            bind_poses: Vec::new(),
         };
         // 4 vertices × (12 + 4) bytes, already a multiple of 16.
         assert_eq!(mesh.vertex_data_size(), Some(64));
@@ -725,5 +767,54 @@ mod tests {
         bad.sub_meshes[0].base_vertex = 2;
         assert!(bad.decode(&vertex).is_err());
         assert!(mesh.decode(&vertex[..40]).is_err());
+    }
+
+    #[test]
+    fn skin_channels() {
+        // Position (3 × f32), weights (2 × f32), indices (2 × u32): 28 bytes.
+        let mut channels = vec![Channel::default(); 14];
+        channels[channel::POSITION] = Channel {
+            stream: 0,
+            offset: 0,
+            format: 0,
+            dimension: 3,
+        };
+        channels[channel::BLEND_WEIGHT] = Channel {
+            stream: 0,
+            offset: 12,
+            format: 0,
+            dimension: 2,
+        };
+        channels[channel::BLEND_INDICES] = Channel {
+            stream: 0,
+            offset: 20,
+            format: 10,
+            dimension: 2,
+        };
+        let mut vertex = Vec::new();
+        for (w, i) in [([0.25f32, 0.75], [3u32, 1]), ([1.0, 0.0], [0, 0])] {
+            vertex.extend([0.0f32; 3].iter().flat_map(|v| v.to_le_bytes()));
+            vertex.extend(w.iter().flat_map(|v| v.to_le_bytes()));
+            vertex.extend(i.iter().flat_map(|v| v.to_le_bytes()));
+        }
+        vertex.resize(64, 0);
+        let mesh = Mesh {
+            name: "s".into(),
+            sub_meshes: Vec::new(),
+            compression: 0,
+            index_format: 0,
+            index_buffer: Vec::new(),
+            vertex_count: 2,
+            channels,
+            vertex_data: vertex.clone(),
+            compressed: CompressedMesh::default(),
+            stream: None,
+            aabb: ([0.0; 3], [0.0; 3]),
+            bind_poses: Vec::new(),
+        };
+        let g = mesh.decode(&vertex).unwrap();
+        assert_eq!(g.bone_weights[0], [0.25, 0.75, 0.0, 0.0]);
+        assert_eq!(g.bone_indices[0], [3, 1, 0, 0]);
+        assert_eq!(g.bone_indices[1], [0, 0, 0, 0]);
     }
 }

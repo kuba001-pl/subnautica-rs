@@ -606,3 +606,109 @@ fn spawn_slot_tables_and_fill() {
     assert_eq!(b.len(), 334);
     assert_ne!(b, a);
 }
+
+#[test]
+#[ignore = "needs SUBNAUTICA_DIR pointing at a Subnautica install"]
+fn startup_scenes_and_aurora() {
+    let Some(dir) = std::env::var_os("SUBNAUTICA_DIR") else {
+        eprintln!("SUBNAUTICA_DIR not set; skipping");
+        return;
+    };
+    let game = GameData::locate(Some(PathBuf::from(dir))).unwrap();
+    let assets = Assets::index(&game).unwrap();
+    let (additional, autoload) = assets.startup_scenes().unwrap();
+    assert_eq!(additional, ["Essentials"]);
+    let names: Vec<(&str, bool)> = autoload
+        .iter()
+        .map(|a| (a.scene_name.as_str(), a.spawn_on_start))
+        .collect();
+    assert_eq!(
+        names,
+        [("Cyclops", false), ("EscapePod", true), ("Aurora", true)]
+    );
+
+    let mut aurora = assets.scene("aurora").unwrap();
+    assert_eq!(aurora.class_counts[&1], 3189); // GameObjects
+    assert_eq!(aurora.class_counts[&23], 437); // MeshRenderers
+    assert_eq!(aurora.class_counts[&205], 291); // LODGroups
+    assert_eq!(aurora.roots.len(), 6);
+    assert!(aurora.spawn_lightmapped_prefab());
+    let drawn =
+        |s: &sn_assets::Scene| -> usize { s.roots.iter().map(|r| r.visible_nodes().count()).sum() };
+    assert_eq!(aurora.swap_aurora_models(&assets, false).unwrap(), (2, 2));
+    assert_eq!(drawn(&aurora), 330);
+    assert_eq!(aurora.swap_aurora_models(&assets, true).unwrap(), (2, 2));
+    assert_eq!(drawn(&aurora), 337);
+
+    let mut pod = assets.scene("escapepod").unwrap();
+    assert_eq!(pod.class_counts[&1], 248);
+    assert_eq!(pod.class_counts[&137], 35); // SkinnedMeshRenderers
+    assert!(pod.spawn_lightmapped_prefab());
+}
+
+#[test]
+#[ignore = "needs SUBNAUTICA_DIR pointing at a Subnautica install"]
+fn skinned_lod_matches_its_static_lod() {
+    let Some(dir) = std::env::var_os("SUBNAUTICA_DIR") else {
+        eprintln!("SUBNAUTICA_DIR not set; skipping");
+        return;
+    };
+    let game = GameData::locate(Some(PathBuf::from(dir))).unwrap();
+    let assets = Assets::index(&game).unwrap();
+    let catalog = assets.catalog().unwrap();
+    let prefab = assets
+        .prefab(
+            &catalog,
+            "WorldEntities/Environment/AbandonedBases/AbandonedBaseFloatingIsland1.prefab",
+        )
+        .unwrap();
+    let mut skinned_count = 0;
+    let mut bounds = |lod: usize| {
+        let mut lo = [f32::INFINITY; 3];
+        let mut hi = [f32::NEG_INFINITY; 3];
+        for (i, n) in prefab.nodes.iter().enumerate() {
+            if n.lod != Some(lod) || !n.active || !n.renderer_enabled || n.mesh.is_none() {
+                continue;
+            }
+            let (m, g) = assets.mesh(n.mesh.as_ref().unwrap()).unwrap();
+            for row in &m.bind_poses {
+                assert_eq!([row[3], row[7], row[11], row[15]], [0.0, 0.0, 0.0, 1.0]);
+            }
+            // Bone-less skinned renderers are drawn as plain meshes.
+            let points: Vec<[f32; 3]> = if let Some(s) = prefab.skinned_geometry(i, &m, &g) {
+                skinned_count += 1;
+                s.positions
+            } else {
+                g.positions
+                    .iter()
+                    .map(|&p| {
+                        n.in_prefab
+                            .then(&sn_world::Transform {
+                                position: p,
+                                ..Default::default()
+                            })
+                            .position
+                    })
+                    .collect()
+            };
+            for p in points {
+                for a in 0..3 {
+                    lo[a] = lo[a].min(p[a]);
+                    hi[a] = hi[a].max(p[a]);
+                }
+            }
+        }
+        (lo, hi)
+    };
+    let (a, b) = (bounds(0), bounds(1));
+    assert!(skinned_count > 0);
+    for k in 0..3 {
+        let size = b.1[k] - b.0[k];
+        assert!(size > 0.5, "LOD 1 found");
+        assert!(
+            ((a.1[k] - a.0[k]) - size).abs() < 0.03 * size,
+            "{a:?} vs {b:?}"
+        );
+        assert!(((a.1[k] + a.0[k]) - (b.1[k] + b.0[k])).abs() / 2.0 < 0.03 * size);
+    }
+}
