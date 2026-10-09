@@ -2,6 +2,18 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-10 — Lint and format fixes for the Anchor Pod commit
+
+**What:** `cargo fmt` on `crates/sn-assets/src/prefab.rs` (the Anchor Pod
+rotation block, line breaks only) and the Anchor Pod real-data test loops
+over `expected_rot` with `enumerate` (clippy `needless_range_loop`). No
+behaviour change.
+**Why:** both came in with f3dc283 and made `cargo fmt --check` and
+`cargo clippy -D warnings` fail.
+**Verified:** `cargo fmt --all -- --check` and `cargo clippy --workspace
+--all-targets -- -D warnings` clean; the Anchor Pod real-data test passes
+(`cargo test -p sn-assets --test real_data -- --ignored anchor`).
+
 ## 2026-10-09 — P0: gameplay data, headless
 
 **What:** first step of Phase E (`docs/DESIGN.md` § 4.3). New readers:

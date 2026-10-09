@@ -950,9 +950,9 @@ fn anchor_pod_orientation() {
 
         // The `model` node should have the -90 deg X rotation (Z-up to Y-up).
         let model_node = prefab.nodes.iter().find(|n| n.name == "model").unwrap();
-        for i in 0..4 {
+        for (i, expected) in expected_rot.iter().enumerate() {
             assert!(
-                (model_node.local.rotation[i] - expected_rot[i]).abs() < 1e-5,
+                (model_node.local.rotation[i] - expected).abs() < 1e-5,
                 "{name}: rot mismatch at {i}: {:?}",
                 model_node.local.rotation
             );

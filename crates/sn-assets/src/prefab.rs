@@ -410,7 +410,10 @@ impl Assets<'_> {
         // coordinates with stems along +Z, while the prefab's light and placement expect
         // them extending vertically along +Y. Rotate the top-level `model` child by -90 deg
         // around X (`Quaternion.Euler(-90, 0, 0)`) so the pod and vine meshes point upright.
-        if key.to_ascii_lowercase().contains("coral_reef_floating_stones") {
+        if key
+            .to_ascii_lowercase()
+            .contains("coral_reef_floating_stones")
+        {
             if let Some(model_idx) = result
                 .nodes
                 .iter()
