@@ -76,7 +76,7 @@ Commands:
                          how many lights the world's placements hold
   prefab --materials     Every material drawn by the placed prefabs and the
                          startup scenes: uses, what our object shader takes
-                         from it, its shader (name found by a string scan)
+                         from it, its shader and the shader's first pass
   scene <NAME> [--tree <DEPTH> | --script <CLASS>]
                          A scene bundle (aurora, escapepod, main, …): object
                          counts, top-level objects (with their hierarchy to

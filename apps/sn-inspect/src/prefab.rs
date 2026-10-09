@@ -9,7 +9,7 @@ use std::time::Instant;
 
 use sn_assets::{Assets, Prefab};
 use sn_install::GameData;
-use sn_unity::{Material, MeshGeometry};
+use sn_unity::{Material, MeshGeometry, Shader};
 
 use crate::Result;
 
@@ -465,42 +465,60 @@ pub fn placed(game: &GameData, oracle: bool) -> Result<ExitCode> {
     })
 }
 
-/// The strings of a shader object that look like a shader name
-/// (`Group/Name`): a length-prefixed run of name characters. A heuristic for
-/// inspection only: the name is stored deep in the serialized shader
-/// (`m_ParsedForm.m_Name`), which we don't parse.
-fn shader_names(object: &sn_assets::ObjectRef) -> String {
-    let Ok((_, data)) = object.data() else {
-        return "(unreadable)".into();
-    };
-    let mut names = BTreeSet::new();
-    for at in 0..data.len().saturating_sub(4) {
-        let Some(len) = data.get(at..at + 4) else {
-            break;
-        };
-        let len = u32::from_le_bytes([len[0], len[1], len[2], len[3]]) as usize;
-        if !(5..=96).contains(&len) {
-            continue;
+/// A shader object's name (`m_ParsedForm.m_Name`), its first pass's blend
+/// and depth state, and where it is stored.
+fn shader_summary(object: &sn_assets::ObjectRef) -> (String, String) {
+    let key = format!(
+        "{}:{}",
+        object
+            .file
+            .bundle
+            .path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("?"),
+        object.path_id
+    );
+    let shader = object.data().and_then(|(_, d)| {
+        Shader::parse(d, object.file.file().big_endian).map_err(|e| e.to_string())
+    });
+    match shader {
+        Ok(s) => {
+            let state = s.passes().first().map_or(String::new(), |p| {
+                let b = &p.state.blend[0];
+                let v = |v: &sn_unity::ShaderValue| {
+                    if v.property.is_empty() {
+                        format!("{}", v.value)
+                    } else {
+                        format!("[{}]", v.property)
+                    }
+                };
+                format!(
+                    "; pass 0 {:?}: blend {} {}, op {}, colour mask {}, z write {}, z test {}, cull {}",
+                    p.name,
+                    v(&b.src),
+                    v(&b.dst),
+                    v(&b.op),
+                    v(&b.color_mask),
+                    v(&p.state.z_write),
+                    v(&p.state.z_test),
+                    v(&p.state.cull)
+                )
+            });
+            (
+                s.name.clone(),
+                format!(
+                    "{key}	{}	{} sub-shaders, {} passes in the first{state}",
+                    s.name,
+                    s.sub_shaders.len(),
+                    s.passes().len()
+                ),
+            )
         }
-        let Some(run) = data.get(at + 4..at + 4 + len) else {
-            continue;
-        };
-        let Ok(s) = std::str::from_utf8(run) else {
-            continue;
-        };
-        if s.contains('/')
-            && s.starts_with(|c: char| c.is_ascii_uppercase())
-            && s.chars()
-                .all(|c| c.is_ascii_alphanumeric() || "/_- ()".contains(c))
-        {
-            names.insert(s.to_string());
-        }
-    }
-    let names: Vec<_> = names.into_iter().take(3).collect();
-    if names.is_empty() {
-        format!("(no name found, {} bytes)", data.len())
-    } else {
-        names.join(" | ")
+        Err(e) => (
+            format!("(unreadable: {e})"),
+            format!("{key}	(unreadable: {e})"),
+        ),
     }
 }
 
@@ -524,8 +542,10 @@ pub fn materials(game: &GameData) -> Result<ExitCode> {
         first: Option<[f32; 3]>,
         desc: String,
     }
-    let mut uses: BTreeMap<String, Use> = BTreeMap::new();
+    let mut uses: BTreeMap<(String, String), Use> = BTreeMap::new();
+    let mut shader_cache: BTreeMap<(std::path::PathBuf, String, i64), String> = BTreeMap::new();
     let mut mesh_names: BTreeMap<(std::path::PathBuf, String, i64), String> = BTreeMap::new();
+    let mut shaders: BTreeSet<String> = BTreeSet::new();
     let mut add = |prefab: &Prefab, key: &str, count: usize, at: Option<[f32; 3]>| {
         for node in prefab.visible_nodes() {
             for material in node.materials.iter().flatten() {
@@ -535,15 +555,24 @@ pub fn materials(game: &GameData) -> Result<ExitCode> {
                 let Ok(m) = Material::parse(data, material.file.file().big_endian) else {
                     continue;
                 };
-                let u = uses.entry(m.name.clone()).or_default();
+                // Materials are told apart by name and shader: names repeat
+                // across bundles.
+                let shader = match assets.resolve(&material.file, m.shader) {
+                    Ok(Some(s)) => shader_cache
+                        .entry(s.key())
+                        .or_insert_with(|| {
+                            let (name, line) = shader_summary(&s);
+                            shaders.insert(line);
+                            name
+                        })
+                        .clone(),
+                    _ => "(unresolved)".into(),
+                };
+                let u = uses.entry((m.name.clone(), shader.clone())).or_default();
                 if u.desc.is_empty() {
                     let uber =
                         m.float("_Shininess").is_some() && m.float("_GlowStrengthNight").is_some();
                     let main = m.texture("_MainTex").is_some_and(|t| !t.texture.is_null());
-                    let shader = match assets.resolve(&material.file, m.shader) {
-                        Ok(Some(s)) => shader_names(&s),
-                        _ => "(unresolved)".into(),
-                    };
                     let color = m
                         .color("_Color")
                         .map(|c| c.map(|v| (v * 1000.0).round() / 1000.0));
@@ -605,7 +634,7 @@ pub fn materials(game: &GameData) -> Result<ExitCode> {
     println!(
         "material\tdrawn nodes\tplacements\tdescription\tnode names\tmeshes\tprefabs\tlayers\tfirst placement"
     );
-    for (name, u) in &uses {
+    for ((name, _), u) in &uses {
         let few = |s: &BTreeSet<String>| {
             let v: Vec<_> = s.iter().take(3).cloned().collect();
             format!("{} ({})", v.join(", "), s.len())
@@ -621,6 +650,10 @@ pub fn materials(game: &GameData) -> Result<ExitCode> {
             u.layers,
             u.first.map(|p| p.map(f32::round))
         );
+    }
+    println!("shaders used: {}", shaders.len());
+    for line in &shaders {
+        println!("shader	{line}");
     }
     println!("time: {:.1} s", start.elapsed().as_secs_f64());
     Ok(ExitCode::SUCCESS)

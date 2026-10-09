@@ -2,6 +2,43 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-09 — M7g2: shader names and render state; unported shaders logged
+
+**What:** every material's shader is known by name (`docs/DESIGN.md`
+§ 4.2). Nothing is hidden: shaders we haven't ported stay drawn as before
+and are logged.
+- `sn_unity::Shader` (class 48): the parsed form up to the name:
+  properties (with defaults), sub-shaders, passes and their state (blend
+  per render target, colour mask, z write/test, cull, offsets, tags); the
+  programs' bindings walked over. Layout written from UnityPy's 2019.4 type
+  database (`docs/formats/unity.md` § Shaders); 2 tests on synthetic bytes.
+- Client: each material's shader name (one parse per shader object); a
+  shader other than MarmosetUBER is logged the first time a part with it is
+  drawn, and the totals per shader each time loading settles. The UBER
+  decision keeps the property fingerprint: it picks exactly the UBER
+  shaders (checked on all drawn materials).
+- `sn-inspect prefab --materials` uses `Shader` (the string scan is gone),
+  tells materials apart by name **and** shader (names repeat across bundles:
+  1,975 materials, not 1,973; `Standard` has 4, not 2), prints every shader
+  used with its first pass; `unity --all` parses every shader of the game.
+- Real-data test `shaders_of_the_fake_volumetric_light`. No new dependencies.
+
+**Verified (2026-10-09):** `unity --all`: 5,472 files, 363 shaders read, 0
+unreadable. The 17 shaders of the drawn materials: name, sub-shader and pass
+counts, first-pass blend, colour mask, z write, z test, cull identical to
+UnityPy (17 of 17; `out/m7g2/oracle.py`). The fake volumetric light is
+additive (`Blend One One`), no depth write, no culling. MarmosetUBER's
+texture defaults (`_MainTex`, `_SpecTex`, `_Illum` white, `_BumpMap` bump)
+read with UnityPy: our defaults match (was a hypothesis). Workspace tests
+143 pass, real-data 17 pass, clippy and fmt clean. Client at the lifepod
+(`--benchmark 300`): 9 unported shaders logged, totals e.g.
+`UWE/Particles/UBER` 91, `WBOIT-FakeVolumetricLight` 35, `UWE/SIG` 33,
+`Standard` 27, `SIG Triplanar with Capping` 15 drawn parts; 0 warnings;
+mean 11.55 ms (before M7g2: 11.60 ms). At the ion crystal pedestal: 8
+shaders logged; the screenshot (`out/m7g2-pedestal.png`) shows a wall in
+front of the camera, so no picture of the pedestal yet. **Not compared with
+the game.**
+
 ## 2026-10-09 — M7g1: the main camera's culling mask (occluder shells gone)
 
 **What:** the client no longer draws renderers on layers the game's main

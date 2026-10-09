@@ -12,7 +12,7 @@
 //! does when a cell first loads, with our own seeded random numbers
 //! (`sn_world::fill_slots`, M7d); the fillers show at their own cell level.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -28,7 +28,7 @@ use sn_assets::{
     Assets as GameAssets, LootTable, MarmoSkies, ObjectRef, Prefab, TerrainTexture, marmo_skies,
 };
 use sn_install::GameData;
-use sn_unity::{Catalog, DayNightLight, LightKind, Material, SKIES_AUTO};
+use sn_unity::{Catalog, DayNightLight, LightKind, Material, SKIES_AUTO, Shader};
 use sn_world::{BatchCoord, EntityInfo, SLOTS_COMPONENT, Transform as Placement};
 
 use crate::game_light::GameLightImages;
@@ -313,6 +313,35 @@ struct Library {
     /// never reach the picture (e.g. the occluder shells on layer 27,
     /// `docs/formats/materials.md`).
     culling_mask: u32,
+    /// Shader object → its name (`m_ParsedForm.m_Name`).
+    shader_names: HashMap<Key, String>,
+    /// Material id → its shader's name.
+    material_shaders: HashMap<u32, String>,
+    /// Shaders we draw with a stand-in look (not ported): parts drawn in
+    /// the prefabs and scenes loaded so far, per shader (`docs/DESIGN.md`
+    /// § 4.2: they stay drawn, and are logged so they're not forgotten).
+    unported: BTreeMap<String, usize>,
+    /// `unported` changed since it was last logged.
+    unported_changed: bool,
+}
+
+/// How far a shader is ported (`docs/formats/materials.md`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ShaderPort {
+    /// MarmosetUBER: our object shader is its port.
+    Ported,
+    /// A MarmosetUBER variant: drawn as UBER, its own properties not read.
+    AsUber,
+    /// Drawn as UBER-less `_MainTex` × `_Color` in our object shader.
+    NotPorted,
+}
+
+pub(crate) fn shader_port(name: &str) -> ShaderPort {
+    match name {
+        "MarmosetUBER" => ShaderPort::Ported,
+        "UWE/Marmoset/IonCrystal" | "UWE/Marmoset/Mesmer" => ShaderPort::AsUber,
+        _ => ShaderPort::NotPorted,
+    }
 }
 
 impl Library {
@@ -372,7 +401,73 @@ impl Library {
         let id = self.id();
         out.push(Update::Material { id, desc });
         self.materials.insert(object.key(), id);
+        let shader = self.shader_name(object, &material, out);
+        self.material_shaders.insert(id, shader);
         Some(id)
+    }
+
+    /// The name of a material's shader, read once per shader object.
+    fn shader_name(
+        &mut self,
+        material_object: &ObjectRef,
+        material: &Material,
+        out: &mut Vec<Update>,
+    ) -> String {
+        let shader = match self.assets.resolve(&material_object.file, material.shader) {
+            Ok(Some(s)) => s,
+            Ok(None) => return "(no shader)".into(),
+            Err(e) => {
+                out.push(Update::Warning(format!("shader of {}: {e}", material.name)));
+                return "(unresolved shader)".into();
+            }
+        };
+        if let Some(name) = self.shader_names.get(&shader.key()) {
+            return name.clone();
+        }
+        let name = shader
+            .data()
+            .and_then(|(_, d)| {
+                Shader::parse(d, shader.file.file().big_endian).map_err(|e| e.to_string())
+            })
+            .map_or_else(
+                |e| {
+                    out.push(Update::Warning(format!("shader of {}: {e}", material.name)));
+                    "(unreadable shader)".to_string()
+                },
+                |s| s.name,
+            );
+        self.shader_names.insert(shader.key(), name.clone());
+        name
+    }
+
+    /// Counts a drawn part whose shader is not ported; logs a shader the
+    /// first time it is seen.
+    fn count_unported(&mut self, material: u32, node: &str, prefab: &str) {
+        let Some(shader) = self.material_shaders.get(&material) else {
+            return;
+        };
+        if shader_port(shader) == ShaderPort::Ported {
+            return;
+        }
+        let n = self.unported.entry(shader.clone()).or_default();
+        *n += 1;
+        self.unported_changed = true;
+        if *n == 1 {
+            info!(
+                "objects: shader {shader:?} not ported yet, drawn with a stand-in look (first: {node:?} in {prefab})"
+            );
+        }
+    }
+
+    /// Logs the not-ported totals if they changed (called when the worker
+    /// has loaded everything asked for).
+    fn log_unported(&mut self) {
+        if std::mem::take(&mut self.unported_changed) {
+            info!(
+                "objects: shaders not ported (drawn parts in the prefabs and scenes loaded so far): {:?}",
+                self.unported
+            );
+        }
     }
 
     /// Ids of the mesh's sub-meshes (`None` for sub-meshes that failed).
@@ -546,6 +641,7 @@ impl Library {
                 let Some(material) = self.material(material, out) else {
                     continue;
                 };
+                self.count_unported(material, &node.name, &prefab.key);
                 parts.push(Part {
                     mesh: *mesh,
                     material,
@@ -959,6 +1055,10 @@ fn worker(
             next_id: 0,
             slots: None,
             culling_mask: u32::MAX,
+            shader_names: HashMap::new(),
+            material_shaders: HashMap::new(),
+            unported: BTreeMap::new(),
+            unported_changed: false,
         })
     };
     let mut library = match setup() {
@@ -1036,6 +1136,8 @@ fn worker(
                 if let Some(c) = queue.pop() {
                     break c;
                 }
+                // Idle: everything asked for is loaded.
+                library.log_unported();
                 queue = shared.wake.wait(queue).unwrap();
             }
         };

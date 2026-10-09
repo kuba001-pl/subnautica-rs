@@ -254,10 +254,10 @@ three runs each).
 
 **Why:** the user sees invisible walls in the alien bases, solid white
 spheres and cones, and untextured objects. `sn-inspect prefab --materials`
-(`docs/formats/materials.md`) shows the cause: of the 1,973 materials we
-draw, 70 use other shaders than MarmosetUBER. Three of them are its
+(`docs/formats/materials.md`) shows the cause: of the 1,975 materials we
+draw, 72 use other shaders than MarmosetUBER. Three of them are its
 IonCrystal and Mesmer variants, which we take as UBER; `material_desc`
-draws the other 67 as plain `_MainTex` × `_Color`. Those with no `_MainTex`
+draws the other 69 as plain `_MainTex` × `_Color`. Those with no `_MainTex`
 come out flat white.
 1. **Occluder shells:** 39 `Occluder_*_shell` nodes (`Unlit/DepthOnly`,
    layer 27 `Occluder`) in 38 Precursor rooms. The game never draws them in
@@ -303,7 +303,7 @@ and a MODLOG entry; nothing is committed or pushed without the user's OK):
 | Step | Work | Done when |
 |---|---|---|
 | **M7g1** ✅ (screenshot too dark to compare: the Lava Castle base at −1,192 m has no sunlight and its own lights are not drawn as the game does) | Camera culling mask: read `Camera` (class 20: culling mask, near/far, field of view) in `sn-unity`, with a test on synthetic bytes; nodes keep their layer (they do: `PrefabNode::layer`). `sn-assets` gives the main camera's mask from the `main` scene; the client does not draw nodes whose layer the mask leaves out. No name matching: the rule is the game's. | Unit test of the layout; real-data test: `MainCamera` mask `0x65ffff17`, UI `0x20`; the client logs "skipped by layer: 39 nodes (40 placements)", all `Occluder_*_shell`; screenshot inside the Gun's large hallway. |
-| **M7g2** | Shader names: parse enough of `Shader` (class 48, `m_ParsedForm.m_Name`, layout from UnityPy's 2019.4 type tree) to name every material's shader; `ShaderKind` in `MaterialDesc` (UBER, UBER variant, FakeVolumetricLight, Particles UBER, SIG, SIG triplanar, DepthOnly, other); kinds not ported yet stay drawn as now and are counted. Replaces the string scan in `sn-inspect prefab --materials`. | Every one of the 1,973 drawn materials gets a name (none unknown), counts per kind equal to `docs/formats/materials.md`; the client logs "shader not ported: N nodes per kind". |
+| **M7g2** ✅ | Shader names: parse enough of `Shader` (class 48, `m_ParsedForm.m_Name`, layout from UnityPy's 2019.4 type tree) to name every material's shader; `ShaderKind` in `MaterialDesc` (UBER, UBER variant, FakeVolumetricLight, Particles UBER, SIG, SIG triplanar, DepthOnly, other); kinds not ported yet stay drawn as now and are counted. Replaces the string scan in `sn-inspect prefab --materials`. Done: `sn_unity::Shader` (parsed form with passes and render state; programs walked over); the client keeps the property fingerprint for UBER (it picks exactly the UBER shaders, checked on all materials) and classifies by name for the log. | Every one of the 1,975 drawn materials gets a name (none unknown); all 363 shaders of the game parse; 17 used shaders equal to UnityPy; the client logs each unported shader when first drawn and the totals when loading settles. |
 | **M7g3** | `UWE/Particles/WBOIT-FakeVolumetricLight`: decode the compiled shader (its keywords `FX_ADDFOG FX_FRESNELCLIP FX_NEARCLIP FX_SOFTEDGES FX_SCROLL`, blend mode, properties), document it, port it as a transparent pass (soft edges need the depth texture). How the game's WBOIT (weighted blended order-independent transparency) composites is part of the decode; if we can't match it, write down the difference. | Formula unit-tested on known inputs; every constant explained in `materials.md`; screenshot of a pedestal and a Precursor spotlight next to the game's; GPU time logged. |
 | **M7g4** | `UWE/Particles/UBER` meshes: decode the shader's variants used by the 31 materials (two scrolling textures, deform, normal and refraction maps, blend modes from the material), port them; the Lost River lakes are the biggest user. | Variants used counted and each one decoded; matched screenshots of a Lost River brine lake and a Precursor terminal; GPU time logged. |
 | **M7g5** | `UWE/SIG Triplanar with Capping` and `UWE/SIG`: decode both (cap/side textures, SIG maps), compare with our terrain shader's triplanar formula and share code where the formulas agree. | Rocks textured: the client counts no drawn material without a texture except UBER ones; matched screenshot of a Safe Shallows rock and a coral deco. |

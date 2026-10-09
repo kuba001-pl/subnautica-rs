@@ -795,3 +795,47 @@ fn main_camera_skips_the_occluder_layer() {
         .collect();
     assert_eq!(hidden, ["Occluder_Precursor_LavaBase_Hallway_shell"]);
 }
+
+/// M7g2: shader names and render state from `Shader`'s parsed form; the
+/// values were checked against UnityPy (`docs/formats/materials.md`).
+#[test]
+#[ignore = "needs SUBNAUTICA_DIR pointing at a Subnautica install"]
+fn shaders_of_the_fake_volumetric_light() {
+    let Some(dir) = std::env::var_os("SUBNAUTICA_DIR") else {
+        eprintln!("SUBNAUTICA_DIR not set; skipping");
+        return;
+    };
+    let game = GameData::locate(Some(PathBuf::from(dir))).unwrap();
+    let assets = Assets::index(&game).unwrap();
+    let catalog = assets.catalog().unwrap();
+    let prefab = assets
+        .prefab(
+            &catalog,
+            "WorldEntities/Doodads/Precursor/Gun/IonCrystalPedestal.prefab",
+        )
+        .unwrap();
+    let mut names = Vec::new();
+    for node in prefab.visible_nodes() {
+        for material in node.materials.iter().flatten() {
+            let (_, data) = material.data().unwrap();
+            let m = sn_unity::Material::parse(data, material.file.file().big_endian).unwrap();
+            let shader = assets.resolve(&material.file, m.shader).unwrap().unwrap();
+            let (_, data) = shader.data().unwrap();
+            let s = sn_unity::Shader::parse(data, shader.file.file().big_endian).unwrap();
+            if node.name == "x_FakeVolumletricLight" {
+                let pass = &s.passes()[0];
+                let b = &pass.state.blend[0];
+                assert_eq!((b.src.value, b.dst.value), (1.0, 1.0));
+                assert_eq!(pass.state.z_write.value, 0.0);
+                assert_eq!(pass.state.cull.value, 0.0);
+            }
+            names.push(s.name);
+        }
+    }
+    assert!(
+        names
+            .iter()
+            .any(|n| n == "UWE/Particles/WBOIT-FakeVolumetricLight")
+    );
+    assert!(names.iter().any(|n| n == "MarmosetUBER"));
+}

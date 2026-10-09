@@ -9,7 +9,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
 use sn_install::GameData;
-use sn_unity::{Bundle, SerializedFile, class_name};
+use sn_unity::{Bundle, SerializedFile, Shader, class_name};
+
+const SHADER: i32 = 48;
 
 use crate::Result;
 
@@ -30,6 +32,9 @@ struct Totals {
     resources: usize,
     typetree_files: usize,
     classes: BTreeMap<i32, usize>,
+    /// `Shader` objects read through `sn_unity::Shader` (the rest fail).
+    shaders: usize,
+    shader_errors: Vec<String>,
     versions: BTreeMap<String, usize>,
     errors: Vec<String>,
 }
@@ -42,6 +47,8 @@ impl Totals {
         self.objects += t.objects;
         self.resources += t.resources;
         self.typetree_files += t.typetree_files;
+        self.shaders += t.shaders;
+        self.shader_errors.extend(t.shader_errors);
         for (k, v) in t.classes {
             *self.classes.entry(k).or_default() += v;
         }
@@ -55,12 +62,25 @@ impl Totals {
 fn describe_serialized(
     name: &str,
     file: &SerializedFile,
+    bytes: &[u8],
     out: &mut Vec<String>,
     totals: &mut Totals,
 ) {
-    let bytes: u64 = file.objects.iter().map(|o| u64::from(o.byte_size)).sum();
+    for o in file.objects.iter().filter(|o| o.class_id == SHADER) {
+        let parsed = file
+            .object_data(bytes, o)
+            .ok_or_else(|| "data out of range".to_string())
+            .and_then(|d| Shader::parse(d, file.big_endian).map_err(|e| e.to_string()));
+        match parsed {
+            Ok(_) => totals.shaders += 1,
+            Err(e) => totals
+                .shader_errors
+                .push(format!("{name} shader {}: {e}", o.path_id)),
+        }
+    }
+    let object_bytes: u64 = file.objects.iter().map(|o| u64::from(o.byte_size)).sum();
     out.push(format!(
-        "SERIALIZED {name} version={} unity={} typetree={} types={} objects={} object_bytes={bytes} externals={}",
+        "SERIALIZED {name} version={} unity={} typetree={} types={} objects={} object_bytes={object_bytes} externals={}",
         file.version,
         file.unity_version,
         u8::from(file.type_tree_enabled),
@@ -106,7 +126,7 @@ fn describe(
             if node.is_serialized_file() {
                 let file = SerializedFile::parse(data)
                     .map_err(|e| format!("{name}/{}: {e}", node.path))?;
-                describe_serialized(&node.path, &file, &mut out, totals);
+                describe_serialized(&node.path, &file, data, &mut out, totals);
             } else {
                 out.push(format!("  RESOURCE {} size={}", node.path, data.len()));
                 totals.resources += 1;
@@ -114,7 +134,7 @@ fn describe(
         }
     } else {
         let file = SerializedFile::parse(bytes).map_err(|e| format!("{name}: {e}"))?;
-        describe_serialized(&name, &file, &mut out, totals);
+        describe_serialized(&name, &file, bytes, &mut out, totals);
     }
     Ok(out)
 }
@@ -194,6 +214,14 @@ pub fn all(game: &GameData) -> Result<ExitCode> {
     println!("resource blobs:     {}", t.resources);
     println!("objects:            {}", t.objects);
     println!("format versions:    {:?}", t.versions);
+    println!(
+        "shaders read:       {} ({} unreadable)",
+        t.shaders,
+        t.shader_errors.len()
+    );
+    for e in t.shader_errors.iter().take(10) {
+        println!("  {e}");
+    }
     let mut by_count: Vec<(i32, usize)> = t.classes.into_iter().collect();
     by_count.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
     println!("most common classes:");

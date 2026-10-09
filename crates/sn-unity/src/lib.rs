@@ -18,6 +18,7 @@ mod prefab;
 mod reader;
 mod scene_scripts;
 mod serialized;
+mod shader;
 mod sky;
 mod texture;
 mod voxeland;
@@ -48,6 +49,9 @@ pub use scene_scripts::{
 };
 pub use serialized::{
     External, ObjectInfo, SUPPORTED_VERSIONS, SerializedFile, SerializedType, TypeTreeNode,
+};
+pub use shader::{
+    BlendState, PassState, Shader, ShaderPass, ShaderProperty, ShaderValue, SubShader,
 };
 pub use sky::{Gradient, SkyDome, SkyLight, SkyManager};
 pub use texture::{StreamingInfo, Texture2D, TextureFormat};

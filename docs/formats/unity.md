@@ -368,6 +368,42 @@ a menu fade (which puts it back afterwards), to 0 in `PlatformUtils`, and
 on the water's own clip camera. So the stored mask is the one used in play
 (confirmed by reading the code, not at run time).
 
+### Shaders (M7g2) — confirmed
+
+**Shader** (class 48), the part we read; written from UnityPy's Unity
+2019.4.36f1 type database. Strings and vectors align to 4 after their data,
+maps don't. `string object name, SerializedShader parsed form {
+SerializedProperty[] (string name, string description, string[] attributes,
+i32 type, u32 flags, f32[4] default, string default texture, i32 texture
+dimension); SerializedSubShader[] (SerializedPass[], map<string,string>
+tags, i32 LOD); string name; string custom editor; string fallback; …}`,
+then the dependencies and the program blobs (not read).
+- **SerializedPass:** `map<string,i32> name indices, i32 type (0 normal,
+  1 UsePass, 2 GrabPass), state, u32 program mask, 6 programs (vertex,
+  fragment, geometry, hull, domain, ray tracing), u8 instancing, u8
+  procedural instancing (align 4), string use name, string name, string
+  texture name, map<string,string> tags`.
+- **State:** `string name, 8 × blend state (7 values: src, dst, src alpha,
+  dst alpha, op, op alpha, colour mask), u8 separate blend (align 4), z clip,
+  z test, z write, cull, offset factor, offset units, alpha to mask, 3 ×
+  stencil op (4 values), stencil read mask, write mask, ref, fog start, end,
+  density, fog colour (4 values and a string), i32 fog mode, i32 GPU program
+  id, map<string,string> tags, i32 LOD, u8 lighting (align 4)`. A **value**
+  is `f32 value, string property`: the property is `<noninit>` for a fixed
+  value, else the material float it comes from (e.g. `_SrcBlend`).
+- **Program:** `SerializedSubProgram[]`, each `u32 blob index, bind
+  channels (2-byte items, align), i32 source map, u16[] global and local
+  keyword indices, i8 tier, i8 program type (align), vector (16-byte),
+  matrix (16), texture (16) and buffer (8) parameters, constant buffers
+  (i32 name, matrix and vector parameters, struct parameters of 16 bytes +
+  vector and matrix members, i32 size), buffer bindings (8), UAVs (12),
+  samplers (8), i32 requirements`.
+
+Checked: all 363 shader objects of the game parse (`sn-inspect unity
+--all`); the 17 that drawn materials use give the same name, sub-shader
+and pass counts, and first-pass blend, colour mask, z write, z test and
+cull as UnityPy (`docs/formats/materials.md`).
+
 ## Not yet read
 
 - Blend shapes (read past, not applied), creature animation.
