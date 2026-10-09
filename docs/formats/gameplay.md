@@ -130,6 +130,35 @@ are not `[NonSerialized]`, `static`, `const` or properties):
   capsule 2,445 / 33 / 226 / 57,320; mesh 284 / 0 / 15 / 438 (1 convex,
   no null mesh). 345 placed prefabs have no collider.
 
+## Collision (M9a)
+
+- **Confirmed (decompiled code + `clipmaps-high.json`):** terrain collides
+  only at the finest clipmap level. Level 0 of `clipmaps-high.json` has
+  `colliders: true` and 7×7×7 chunks of `chunkMeshRes` 16 voxels, so
+  about ±56 m around the player; levels 1–4 have `colliders: false`. Each
+  chunk's collision mesh (`VoxelandCollisionMeshSimplifier.Build`) takes
+  corners 0, 2, 4, 6 of each visible face as two triangles (0-2-4,
+  0-4-6). Above 100 triangles and 100 vertices it calls a native plugin,
+  `SimplifyMeshPlugin.SimplifyMesh(0.8, 0, …)`, with chunk-border vertices
+  fixed. We don't port that plugin: our collision uses the unsimplified
+  level 0 surface. The collider is put on layer 30.
+- **Confirmed (decompiled code):** under water the player is a
+  `Rigidbody` with a `CapsuleCollider` (`UnderwaterMotor`). Radius =
+  `PlayerController.controllerRadius`; height = `swimheight −
+  cameraOffset`; centre y = `−height / 2 − cameraOffset`. With the scene's
+  values (0.3, 0.5, −0.25) that is radius 0.3, height 0.75, centre
+  0.125 m below the camera. Standing uses `standheight − cameraOffset` =
+  1.75 (`GroundMotor`, M9b).
+- **Confirmed (real-data test `lifepod_colliders`):** the escape pod scene
+  has 40 colliders the player can hit, all boxes, on layer 0. The reader
+  also left out 10 triggers, 1 disabled collider and 3 on inactive nodes.
+- **Hypothesis (Unity's documentation, not checked in the game):** how
+  colliders scale. A box scales per axis. A sphere's radius scales by the
+  largest |scale|. A capsule's radius scales by the larger |scale| of its
+  two cross axes, and its height by its own axis.
+- Not read yet: the physics layer collision matrix (which layers the
+  player's capsule hits). Every kept collider seen so far is on layer 0.
+
 ## Pick-ups and outcrops
 
 - **Confirmed (census):** `Pickupable` is on 50 placed prefabs (23,832

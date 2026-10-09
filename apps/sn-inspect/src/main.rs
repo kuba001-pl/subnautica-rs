@@ -16,6 +16,7 @@ mod prefab;
 mod scene;
 mod skinned;
 mod slots;
+mod swim;
 mod texture;
 mod unity;
 mod voxel;
@@ -94,6 +95,11 @@ Commands:
   scene --lifepod [--seed <N>]
                          Lifepod 5 in a new game with world seed N (default
                          1): start point, player spawn, spawned modules
+  swim [--seed <N>] [--seconds <S>]
+                         M9a: a scripted swim from the lifepod (world seed
+                         N, default 1) to the nearest Kelp Forest through
+                         our collision, at most S simulated seconds
+                         (default 600): contacts, penetrations, cost per step
   scene --startup        The scenes the game loads at start and what the
                          spawned ones draw in a new game
   terrain-materials      Terrain block types → materials → textures, checked
@@ -213,6 +219,12 @@ fn run(mut args: Vec<String>) -> Result<ExitCode> {
         ["prefab", key] => prefab::one(&game, key),
         ["scene", "--startup"] => scene::startup(&game),
         ["scene", "--lifepod"] => scene::lifepod(&game, seed),
+        ["swim"] => swim::run(&game, seed, 600.0),
+        ["swim", "--seconds", s] => swim::run(
+            &game,
+            seed,
+            s.parse().map_err(|_| format!("{s:?} is not a number"))?,
+        ),
         ["scene", name] => scene::run(&game, name, None, None),
         ["scene", name, "--script", class] => scene::run(&game, name, None, Some(class)),
         ["scene", name, "--tree", depth] => {

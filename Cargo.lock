@@ -4799,6 +4799,7 @@ dependencies = [
  "sn-install",
  "sn-mesh",
  "sn-octree",
+ "sn-sim",
  "sn-terrain",
  "sn-unity",
  "sn-world",
@@ -4819,6 +4820,10 @@ version = "0.0.0"
 
 [[package]]
 name = "sn-octree"
+version = "0.0.0"
+
+[[package]]
+name = "sn-sim"
 version = "0.0.0"
 
 [[package]]

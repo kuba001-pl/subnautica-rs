@@ -2,6 +2,72 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-10 — M9a: collision (capsule sweep, terrain and object colliders, scripted swim)
+
+**What:** third step of Phase E (`docs/DESIGN.md` § 4.3, "M9a plan").
+- New crate `sn-sim` (layer 2, pure, no dependencies): `collide`. A
+  capsule is swept against triangles, spheres, capsules and oriented boxes
+  by conservative advancement on exact distances, so nothing can tunnel
+  through. `move_and_slide` makes up to 4 slides and keeps a 1 cm skin.
+  `clearance` and `push_out` find and fix overlaps. Bodies are added and
+  removed by id, with a uniform 4 m grid in each body.
+- `sn-terrain::collision_triangles`: the level 0 batch mesh without
+  skirts, as Unity-space triangles.
+- `sn-assets::collision`: `prefab_colliders` keeps enabled, non-trigger
+  colliders on active nodes and caches mesh-collider triangles.
+  `PrefabCollider::world` applies Unity's scaling rules (hypothesis).
+- `sn_world::Transform::transform_point` / `rotate_vector`.
+- `sn-inspect swim [--seed N] [--seconds S]`: the scripted swim, headless.
+  Terrain and objects (cells, slot spawns, batch objects) are loaded for
+  the batches within 56 m of the player, the game's collision range.
+- Real-data test `lifepod_colliders`.
+
+**Findings** (`docs/formats/gameplay.md` § Collision): the game collides
+with terrain only at clipmap level 0 (7×7×7 chunks of 16 voxels). There
+the collision mesh is thinned by a native plugin we don't port. The
+underwater player capsule is radius 0.3, height 0.75, centre 0.125 m
+below the camera. The lifepod has 40 box colliders.
+
+**Dead ends:**
+- The first swim stayed at −20 m and touched nothing (0 contacts), so it
+  tested nothing. The swim now aims below the seabed and slides along it.
+- The first target was the nearest Kelp Forest map cell. It lies on the
+  forest's edge (4 m cells), and 3 m short of it is Safe Shallows. The
+  target now needs Kelp Forest 20 m around it, and the end point must be
+  in Kelp Forest.
+- Seed 1 got wedged for 590 s in a 0.5 m slot between a terrain wall and
+  an overhanging object. That was correct collision: the slot is narrower
+  than the capsule. The script now detours sideways after 1 s blocked.
+- Two unit tests first expected the gap to stay ≤ `SKIN`. The 0.1 %
+  overbounce lifts it a few mm more (by design), so the bound is now
+  2 × `SKIN`.
+
+**Verified (2026-10-10):**
+- `cargo test --workspace` passes without the game. That includes
+  `sn-sim`'s 12 tests: floor and wall slides, an inside corner, a thin
+  wall at 100 m/s from both sides, each primitive's stopping distance, a
+  rotated box, a bumpy height field, and 3,000 random moves in a closed
+  room with obstacles with no penetration. Also the scaling rules,
+  `world_triangles` and `transform_point`.
+- `SUBNAUTICA_DIR=… cargo test -p sn-assets --test real_data -- --ignored
+  lifepod_colliders` passes.
+- `cargo run -p sn-inspect -- swim` (seed 1): ARRIVED in kelpForest after
+  51.8 s simulated, 3,693 contacts (3,424 terrain, 269 objects), 0
+  penetrations, smallest gap 5.3 mm, 30.5 µs mean / 118.9 µs p99 per
+  step, batch loads about 0.6 s each. Seeds 2–5: all arrive, 0
+  penetrations, smallest gap 5.1–5.3 mm.
+- `cargo fmt --all -- --check` and `cargo clippy --workspace --all-targets
+  -- -D warnings` are clean.
+- **Not tested:** anything in the client (M9b uses this); the game's own
+  collision for comparison; the physics layer matrix (not read); whether
+  the game's triangles are one-sided.
+
+**Follow-up (same day, user's request):** every M9a gap now has a home in
+`docs/DESIGN.md`. M9b's row gains the physics layer matrix, the lifepod
+module and placeholder colliders, and the one- or two-sided check (each
+with a "done when" check). The terrain thinning plugin, the scaling check
+and PhysX rigid-body response join the "Deferred, not dropped" list.
+
 ## 2026-10-10 — P1: our own .NET reader; tech type names, craft menus, TechData defaults
 
 **What:** second step of Phase E (`docs/DESIGN.md` § 4.3).

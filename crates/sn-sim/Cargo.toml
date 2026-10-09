@@ -1,0 +1,11 @@
+[package]
+name = "sn-sim"
+description = "Gameplay rules shared by the client and the server: collision, movement, later survival and inventory"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

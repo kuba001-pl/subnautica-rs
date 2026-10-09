@@ -350,7 +350,13 @@ played.
 **Deferred, not dropped:** M7e3, M7f4, the rest of M7g4, M7g5, M7g6, "M7g
 open", M4b, the remaining M8b/M8c items (cave atmosphere volumes, SSR,
 M8c6b, M8c7b), M8d, M8d1, the M8e2 falloff curve, M8e4, M8f, M8g. Their rows
-stay as they are. A deferred item is pulled forward only when it blocks play
+stay as they are. Also deferred from M9a (accepted differences until they
+block play): the game's terrain collision thinning (`SimplifyMeshPlugin`,
+native code our .NET reader cannot read; ours is the unthinned level 0
+surface), checking Unity's collider scaling rules in the game (a
+hypothesis from Unity's documentation), and PhysX rigid-body response
+instead of our kinematic slide (waits for § 3.3's physics decision).
+A deferred item is pulled forward only when it blocks play
 (e.g. water fog drawn inside the lifepod once the player stands in it).
 
 **Where the game keeps its gameplay data** (found 2026-10-09; details and
@@ -393,13 +399,80 @@ understand it, then write our own.
 |---|---|---|
 | **P0** ✅ | Gameplay data, headless. **Done 2026-10-09** (MODLOG; facts in `docs/formats/gameplay.md`): TechData 463 entries, 0 errors; `PDAData` reached through the main scene's `Player`; player numbers from the main scene; collider census on placed prefabs (`sn-inspect prefab --colliders`). Not 1:1 yet: TechData defaults and tech type names wait for P1. Plan as written: Read `Balance/TechData` (JSON) and `EntTechData` in `sn-assets`; find `PDAData` and the player's prefab and read their fields; census of collider components on placed prefabs (`BoxCollider` 65, `SphereCollider` 135, `CapsuleCollider` 136, `MeshCollider` 64) and of `Pickupable` / `BreakableResource`. `sn-inspect techdata`, `sn-inspect player`. | `docs/formats/gameplay.md` lists every fact with its source, *confirmed* or *hypothesis*; real-data test: TechData parses with 0 errors and the entry count is logged; every ingredient's tech type is also an entry or logged as a miss; collider counts per kind logged. |
 | **P1** ✅ | **Done 2026-10-10** (MODLOG; facts in `docs/formats/dotnet.md`): all 21,383 method bodies of the game's DLL decode; 793 `TechType` names, every TechData entry named; 7 menus, 159 nodes (fabricator 100), every craft node has TechData; TechData's 17 defaults. The scheme reader also needed `newarr`/`dup`/`stelem.ref` (C# `params` arrays) and `ret`: still straight-line, no branches or locals. Plan as written: `sn-dotnet` (new crate, layer 1, pure): our own reader of .NET PE files: metadata tables (`TypeDef`, `Field`, `MethodDef`, `Constant`), string heaps, method bodies; `TechType` names from the enum's constants; the `CraftTree` menus by walking the IL of its tree methods (only the patterns used there: `ldstr`, `ldc.i4`, `newobj CraftNode`, `call AddNode`). Unit tests on synthetic bytes we encode ourselves (no game files as fixtures). **Stop and ask** if the IL needs more than a simple pattern reader. | Synthetic round-trip tests; real-data test: number of `TechType` names logged and every TechData entry has a name; the fabricator tree's node count logged; every craft node's tech type has a TechData entry. |
-| **M9a** | Collision: a kinematic capsule swept against triangles. Terrain from the LOD 0 meshes already built around the camera; objects from their prefabs' colliders (box, sphere, capsule, mesh; read in `sn-unity`). Our own sweep in `sn-sim`, no physics engine yet (§ 3.3's physics decision waits for rigid bodies: floating lifepod, dropped items). | Unit tests of the sweep on synthetic meshes (slide, corner, thin wall); a scripted swim lifepod → Kelp Forest logs 0 penetrations and the contacts; cost per frame logged. |
-| **M9b** | Player: first-person camera at eye height, swimming, walking with gravity in the lifepod and above water, the lifepod hatch. Speeds from the player's serialized fields (P0). The fly camera stays as `--free-cam`. | Movement rules unit-tested; speeds logged next to the values read; scripted run lifepod → water → lifepod (positions logged). |
+| **M9a** ✅ | **Done 2026-10-10** (MODLOG; facts in `docs/formats/gameplay.md` § Collision; plan below). `sn-sim::collide` passes 12 unit tests. `sn-inspect swim` reaches the Kelp Forest from the lifepod for seeds 1–5: 0 penetrations, smallest gap ≥ 5.1 mm, 1,860–3,693 contacts, about 21–31 µs mean and 60–120 µs p99 per step. The client doesn't use it yet (M9b). Plan as written: Collision: a kinematic capsule swept against triangles. Terrain from the LOD 0 meshes already built around the camera; objects from their prefabs' colliders (box, sphere, capsule, mesh; read in `sn-unity`). Our own sweep in `sn-sim`, no physics engine yet (§ 3.3's physics decision waits for rigid bodies: floating lifepod, dropped items). | Unit tests of the sweep on synthetic meshes (slide, corner, thin wall); a scripted swim lifepod → Kelp Forest logs 0 penetrations and the contacts; cost per frame logged. |
+| **M9b** | Player: first-person camera at eye height, swimming, walking with gravity in the lifepod and above water, the lifepod hatch. Speeds from the player's serialized fields (P0). The fly camera stays as `--free-cam`. Collision gaps left by M9a that matter here: (1) read the physics layer collision matrix (`PhysicsManager`) and collide only with the layers the player's capsule hits; (2) colliders of the lifepod's spawned modules (fabricator, radio, …) and of what placeholders spawn (M7h), so walking inside the pod hits them; (3) find out whether the game's terrain and mesh colliders block from one side or both, and match it. | Movement rules unit-tested; speeds logged next to the values read; scripted run lifepod → water → lifepod (positions logged); the layer matrix logged and the colliders kept/dropped by layer counted; lifepod module and placeholder colliders counted in the run; one- vs two-sided recorded in `docs/formats/gameplay.md` with how it was checked. |
 | **M9c** | Oxygen, health, depth: drain under water, refill at the surface and in the lifepod, suffocation → respawn in the lifepod, with the game's numbers. A minimal HUD of our own (bars and numbers; the game's UI sprites later). | Rules unit-tested; a scripted dive logs oxygen over time against the values read. |
 | **M10** | Multiplayer as planned (Phase D): `sn-protocol`, `sn-net`, `sn-server`, handshake with the build check, join, player sync. From here solo play also runs against an in-process server (§ 3.1, principle 5), so items and crafting below are written server-authoritative once. | M10's own row. |
 | **M9d** | Pick up and inventory: `Pickupable` objects within reach, outcrops break into their resource (`BreakableResource`), inventory of the game's size, item sizes from TechData; picked objects gone for every player (server state keyed by entity id and slot seed). | Inventory rules unit-tested; a scripted pick-up logs item counts; the object's drawn count −1 on both clients. |
 | **M9e** | Crafting at the lifepod's fabricator: the menu from P1's tree, recipes and times from TechData, starting blueprints from `PDAData`; item names from the language files. | Crafting rules unit-tested on synthetic recipes; one real recipe crafted in a scripted run (counts before/after logged); menu node count equal to P1's. |
 | **M9f** | Save and load (player, inventory, removed objects, crafted items) on the server, in our own format, in the user's save folder (not `out/`, not the game folder). Becomes M11's persistence. | Round-trip unit test; server restart restores the logged state. |
+
+#### M9a plan (written 2026-10-10)
+
+**What the game does** (read in the decompiled code, to be recorded in
+`docs/formats/gameplay.md` § Collision with each fact marked):
+- Terrain collision exists only at the finest clipmap level:
+  `clipmaps-high.json` level 0 has `colliders: true` and 7×7×7 chunks of
+  `chunkMeshRes` 16 voxels, so about ±56 m around the player; levels 1–4
+  have none. Each chunk's collision mesh (`VoxelandCollisionMeshSimplifier`)
+  is made from the chunk's visible faces: corners 0, 2, 4, 6 of each face
+  give two triangles; above 100 triangles and 100 vertices a native plugin
+  (`SimplifyMeshPlugin`, ratio 0.8, chunk-border vertices fixed) thins it.
+- Under water the player is a `Rigidbody` with a `CapsuleCollider`
+  (`UnderwaterMotor`): radius `controllerRadius` 0.3, height
+  `swimheight − cameraOffset` = 0.5 + 0.25 = 0.75, centre
+  `−height/2 − cameraOffset` below the player's origin (the camera). On
+  ground a `CharacterController` with `standheight − cameraOffset` = 1.75
+  (M9b).
+
+**Steps:**
+1. **`sn-sim` (new crate, layer 2, pure, no dependencies): `collide`.**
+   Our own small vector maths. Shapes: triangles (a mesh with a uniform
+   grid for the broad phase), spheres, capsules, oriented boxes. A capsule
+   (segment + radius) is swept by conservative advancement on exact
+   distances (segment–triangle, segment–segment, segment–point,
+   segment–box), so a thin wall cannot be tunnelled through.
+   `move_and_slide` (up to 4 slides, 1 cm skin) returns the new position and
+   the contacts; `clearance` measures the distance to the nearest shape (a
+   penetration is clearance < −1 mm). Unit tests: slide along a floor and a
+   wall, an inside corner, a thin one-sided wall at 100 m/s, each primitive,
+   and a seeded random walk in a closed synthetic room that never
+   penetrates.
+2. **Game shapes in world space (`sn-assets::collision`).** Terrain: the
+   LOD 0 batch mesh without skirts (`sn-terrain`), in Unity coordinates.
+   Objects: every enabled, non-trigger collider on an active node of a
+   placed prefab (the world's cells and batch objects, and the lifepod
+   scene), with Unity's scaling rules (*hypothesis*, from Unity's
+   documentation: box × per-axis scale; sphere radius × largest |scale|;
+   capsule radius × the larger of the two other axes, height × its own
+   axis) and mesh colliders as their mesh's triangles.
+3. **`sn-inspect swim`: the scripted swim, headless.** Lifepod start for a
+   seed (as the client), the nearest Kelp Forest point on the biome map,
+   a path that dives from the lifepod towards it; terrain and objects
+   loaded for the batches within 56 m of the player as it moves; 60 steps
+   per second at the swim speed read in P0 (7.6 m/s). Logs: steps,
+   contacts, penetrations, minimum clearance, distance left, cost per step
+   (mean, p99) and per batch load.
+4. The client uses this from M9b (the player); M9a changes nothing on
+   screen.
+
+**Not 1:1 yet** (where each is planned: the layer matrix and one- or two-sided colliders go to M9b; the thinning, scaling and rigid-body items are deferred, see "Deferred, not dropped" above): no `SimplifyMeshPlugin` (native code, not
+ported; our terrain collision is the unsimplified LOD 0 surface, a little
+finer than the game's); kinematic slide instead of PhysX's rigid body
+response; the physics layer collision matrix (which layers the player
+hits) not read yet: every non-trigger collider counts; convex mesh
+colliders (1 in the census) use their triangles, not a hull.
+
+**As built (2026-10-10), where it differs from the plan:** the swim aims
+below the seabed (−150 m) so the capsule slides along terrain the whole
+way. A fixed depth of −20 m gave 0 contacts and tested nothing. The target
+is the nearest Kelp Forest map cell with Kelp Forest 20 m around it; the
+nearest cell alone lies on the forest's edge. When the capsule is wedged
+(seed 1: a 0.5 m slot between a terrain wall and an overhanging object),
+the script detours sideways for 1.5 s, as a player would. Also not
+loaded in the swim: what placeholders spawn (M7h), the lifepod's spawned
+modules, creatures. Triangles collide on both sides (the game's: not
+checked).
 
 **After Phase E** (order to be agreed then; each gets its own plan with
 steps before it starts):

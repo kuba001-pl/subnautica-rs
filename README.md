@@ -46,6 +46,11 @@ Tested on Windows 11 with game build 10 (Steam):
   `Assembly-CSharp.dll` with our own .NET reader (`sn-inspect code`): all
   793 tech type names, the 7 crafting menus (159 nodes; `--trees` prints
   them) and TechData's defaults; every method body of the DLL decodes.
+- Collision, headless (`sn-sim`, not used by the client yet): the
+  player's capsule swept against the full-resolution terrain and the
+  placed objects' colliders. `sn-inspect swim` swims from the lifepod
+  into the nearest Kelp Forest along the seabed; for seeds 1–5 it arrives
+  with 0 penetrations, at about 20–30 µs per step.
 - `sn-client`: a desktop window (Bevy) with a fly camera. Terrain streams in
   and out as you move, with four levels of detail out to 1.2 km, textured
   with the game's own terrain materials, blended between neighbouring

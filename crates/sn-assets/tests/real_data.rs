@@ -1161,3 +1161,61 @@ fn game_code_names_menus_and_defaults() {
     assert_eq!(d.max_charge, -1.0);
     assert!(!d.buildable);
 }
+
+#[test]
+#[ignore = "needs SUBNAUTICA_DIR pointing at a Subnautica install"]
+fn lifepod_colliders() {
+    let Some(dir) = std::env::var_os("SUBNAUTICA_DIR") else {
+        eprintln!("SUBNAUTICA_DIR not set; skipping");
+        return;
+    };
+    let game = GameData::locate(Some(PathBuf::from(dir))).unwrap();
+    let assets = Assets::index(&game).unwrap();
+    let mut scene = assets.scene("escapepod").unwrap();
+    scene.spawn_lightmapped_prefab();
+    scene.place_escape_pod(&assets, [10.0, 0.0, -20.0]).unwrap();
+    let mut meshes = sn_assets::ColliderMeshes::new();
+    let mut counts = sn_assets::ColliderCounts::default();
+    let mut kinds = [0usize; 4];
+    for root in &scene.roots {
+        let (list, c) = assets.prefab_colliders(root, &mut meshes).unwrap();
+        counts.add(&c);
+        for col in &list {
+            let w = col.world(&root.nodes[0].local);
+            let (kind, finite) = match &w {
+                sn_assets::WorldCollider::Box { center, half, .. } => {
+                    (0, center.iter().chain(half).all(|v| v.is_finite()))
+                }
+                sn_assets::WorldCollider::Sphere { center, radius } => (
+                    1,
+                    center.iter().all(|v| v.is_finite()) && radius.is_finite(),
+                ),
+                sn_assets::WorldCollider::Capsule { a, b, radius } => (
+                    2,
+                    a.iter().chain(b).all(|v| v.is_finite()) && radius.is_finite(),
+                ),
+                sn_assets::WorldCollider::Triangles(t) => {
+                    (3, t.iter().flatten().flatten().all(|v| v.is_finite()))
+                }
+            };
+            assert!(finite, "{w:?}");
+            kinds[kind] += 1;
+        }
+    }
+    eprintln!("lifepod colliders: {counts:?}; box, sphere, capsule, mesh: {kinds:?}");
+    // 40 boxes kept; 10 triggers, 1 disabled, 3 on inactive nodes left out.
+    assert_eq!(kinds, [40, 0, 0, 0]);
+    assert_eq!(
+        (
+            counts.kept,
+            counts.triggers,
+            counts.disabled,
+            counts.inactive
+        ),
+        (40, 10, 1, 3)
+    );
+    assert_eq!(
+        (counts.layout_errors, counts.mesh_errors, counts.null_mesh),
+        (0, 0, 0)
+    );
+}

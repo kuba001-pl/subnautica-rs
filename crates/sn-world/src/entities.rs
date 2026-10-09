@@ -49,6 +49,18 @@ impl Transform {
             scale: [0, 1, 2].map(|a| self.scale[a] * child.scale[a]),
         }
     }
+
+    /// A point in this transform's space → the parent's space (scale,
+    /// rotate, translate).
+    pub fn transform_point(&self, p: [f32; 3]) -> [f32; 3] {
+        let r = self.rotate_vector([0, 1, 2].map(|a| p[a] * self.scale[a]));
+        [0, 1, 2].map(|a| self.position[a] + r[a])
+    }
+
+    /// A direction rotated by this transform (no scale).
+    pub fn rotate_vector(&self, v: [f32; 3]) -> [f32; 3] {
+        rotate(self.rotation, v)
+    }
 }
 
 pub(crate) fn quat_mul(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
@@ -546,6 +558,26 @@ mod tests {
                 transform([1.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0], [1.0, 1.0, 1.0]),
             ),
         ])
+    }
+
+    #[test]
+    fn transform_point_scales_rotates_and_moves() {
+        // 90° about y: +x goes to -z (Unity, left-handed).
+        let h = std::f32::consts::FRAC_1_SQRT_2;
+        let t = Transform {
+            position: [1.0, 2.0, 3.0],
+            rotation: [0.0, h, 0.0, h],
+            scale: [2.0, 1.0, 1.0],
+        };
+        let p = t.transform_point([1.0, 0.0, 0.0]);
+        let want = [1.0, 2.0, 1.0];
+        assert!((0..3).all(|a| (p[a] - want[a]).abs() < 1e-5), "{p:?}");
+        // Same as placing a child there.
+        let child = Transform {
+            position: [1.0, 0.0, 0.0],
+            ..Transform::default()
+        };
+        assert_eq!(t.then(&child).position, p);
     }
 
     #[test]

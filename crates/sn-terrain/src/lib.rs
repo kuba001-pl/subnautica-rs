@@ -12,7 +12,7 @@ pub use grass::{GrassBudget, GrassMesh, GrassRule, GrassTemplate, GrassType, bui
 
 use sn_mesh::{Field, Mesh, surface_nets};
 use sn_octree::{Batch, OCTREE_SIZE, Voxel};
-use sn_world::{BatchCoord, WorldIndex};
+use sn_world::{BatchCoord, WorldIndex, voxel_to_world};
 
 /// Coarsest supported level of detail: samples every 2^3 = 8 voxels. Batch
 /// sizes (160, or 96 at the world edge) are multiples of 32, so every level
@@ -147,6 +147,27 @@ pub fn batch_mesh(around: &Neighbourhood, lod: u32) -> Option<Mesh> {
     batch_field(around, lod).map(|f| surface_nets(&f.field))
 }
 
+/// The centre batch's collision surface (M9a): the full-resolution mesh
+/// (level 0, no skirts) as triangles in Unity world coordinates. The game
+/// collides with its finest clipmap level only and thins that mesh with a
+/// native simplifier we don't port (`docs/formats/gameplay.md` § Terrain
+/// collision), so ours is a little finer than the game's. `None` if the
+/// centre batch has no file.
+pub fn collision_triangles(around: &Neighbourhood) -> Option<Vec<[[f32; 3]; 3]>> {
+    batch_mesh(around, 0).map(|m| world_triangles(&m))
+}
+
+/// A mesh in voxel-index space → its triangles in Unity world coordinates.
+pub fn world_triangles(mesh: &Mesh) -> Vec<[[f32; 3]; 3]> {
+    mesh.triangles
+        .iter()
+        .filter_map(|t| {
+            let p = |i: u32| mesh.positions.get(i as usize).map(|&p| voxel_to_world(p));
+            Some([p(t[0])?, p(t[1])?, p(t[2])?])
+        })
+        .collect()
+}
+
 /// A stable false colour per terrain type id (sRGB, 0..1), until real terrain
 /// materials are decoded (M6).
 pub fn debug_colour(ty: u8) -> [f32; 3] {
@@ -161,5 +182,23 @@ pub fn debug_colour(ty: u8) -> [f32; 3] {
         3 => [p, q, v],
         4 => [t, p, v],
         _ => [v, p, q],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn world_triangles_move_to_unity_space_and_skip_bad_indices() {
+        let mesh = Mesh {
+            positions: vec![[0.0; 3], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
+            normals: vec![[0.0, 1.0, 0.0]; 3],
+            triangles: vec![[0, 1, 2], [0, 1, 9]],
+            triangle_materials: vec![1, 1],
+        };
+        let tris = world_triangles(&mesh);
+        assert_eq!(tris.len(), 1);
+        assert_eq!(tris[0][1], voxel_to_world([1.0, 0.0, 0.0]));
     }
 }
