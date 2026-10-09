@@ -917,3 +917,78 @@ fn prefab_placeholders() {
         ]
     );
 }
+
+#[test]
+#[ignore = "needs SUBNAUTICA_DIR pointing at a Subnautica install"]
+fn anchor_pod_orientation() {
+    let Some(dir) = std::env::var_os("SUBNAUTICA_DIR") else {
+        eprintln!("SUBNAUTICA_DIR not set; skipping");
+        return;
+    };
+    let game = GameData::locate(Some(PathBuf::from(dir))).unwrap();
+    let assets = Assets::index(&game).unwrap();
+    let catalog = assets.catalog().unwrap();
+
+    let cases = [
+        ("Coral_reef_floating_stones_big_02", 9.69, 39.19),
+        ("Coral_reef_floating_stones_mid_01", 16.35, 16.79),
+        ("Coral_reef_floating_stones_mid_02", 26.72, 27.59),
+        ("Coral_reef_floating_stones_small_01", 9.18, 9.20),
+        ("Coral_reef_floating_stones_small_02", 14.27, 14.33),
+    ];
+
+    let expected_rot = [
+        -std::f32::consts::FRAC_1_SQRT_2,
+        0.0,
+        0.0,
+        std::f32::consts::FRAC_1_SQRT_2,
+    ];
+
+    for (name, expected_stone_y, expected_light_y) in cases {
+        let key = format!("WorldEntities/Environment/{name}.prefab");
+        let prefab = assets.prefab(&catalog, &key).unwrap();
+
+        // The `model` node should have the -90 deg X rotation (Z-up to Y-up).
+        let model_node = prefab.nodes.iter().find(|n| n.name == "model").unwrap();
+        for i in 0..4 {
+            assert!(
+                (model_node.local.rotation[i] - expected_rot[i]).abs() < 1e-5,
+                "{name}: rot mismatch at {i}: {:?}",
+                model_node.local.rotation
+            );
+        }
+
+        // The light node is along +Y at expected height.
+        let light_node = prefab.nodes.iter().find(|n| n.name == "light").unwrap();
+        let light_y = light_node.in_prefab.position[1];
+        assert!(
+            (light_y - expected_light_y).abs() < 0.1,
+            "{name}: light Y mismatch: {light_y} vs {expected_light_y}"
+        );
+
+        // Stone mesh bounds should be elevated along +Y pointing upwards.
+        let stone = prefab
+            .visible_nodes()
+            .find(|n| n.name.starts_with("stone_"))
+            .unwrap();
+        let (_, g) = assets.mesh(stone.mesh.as_ref().unwrap()).unwrap();
+        let mut min_y = f32::INFINITY;
+        let mut max_y = f32::NEG_INFINITY;
+        for p in &g.positions {
+            let world_p = stone.in_prefab.then(&sn_world::Transform {
+                position: *p,
+                rotation: [0.0, 0.0, 0.0, 1.0],
+                scale: [1.0; 3],
+            });
+            min_y = min_y.min(world_p.position[1]);
+            max_y = max_y.max(world_p.position[1]);
+        }
+        let center_y = (min_y + max_y) * 0.5;
+        assert!(
+            (center_y - expected_stone_y).abs() < 0.5,
+            "{name}: stone center Y {center_y} should match expected {expected_stone_y}"
+        );
+        // Vines/roots anchor at the seafloor and the stone bulb is elevated above them.
+        assert!(min_y > 5.0, "{name}: stone pod should be elevated above seafloor");
+    }
+}

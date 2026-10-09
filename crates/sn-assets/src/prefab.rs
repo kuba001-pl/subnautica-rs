@@ -372,7 +372,7 @@ impl Assets<'_> {
             .enumerate()
             .map(|(i, n)| (n.key.clone(), i))
             .collect();
-        Ok(Prefab {
+        let mut result = Prefab {
             key: prefab.key,
             placeholder_groups,
             nodes: prefab
@@ -404,7 +404,34 @@ impl Assets<'_> {
                     placeholder: n.placeholder,
                 })
                 .collect(),
-        })
+        };
+
+        // Anchor Pods (`Coral_reef_floating_stones_*`): the meshes were authored in Z-up
+        // coordinates with stems along +Z, while the prefab's light and placement expect
+        // them extending vertically along +Y. Rotate the top-level `model` child by -90 deg
+        // around X (`Quaternion.Euler(-90, 0, 0)`) so the pod and vine meshes point upright.
+        if key.to_ascii_lowercase().contains("coral_reef_floating_stones") {
+            if let Some(model_idx) = result
+                .nodes
+                .iter()
+                .position(|n| n.name == "model" && n.parent == Some(0))
+            {
+                let z_up_to_y_up = Transform {
+                    position: [0.0; 3],
+                    rotation: [
+                        -std::f32::consts::FRAC_1_SQRT_2,
+                        0.0,
+                        0.0,
+                        std::f32::consts::FRAC_1_SQRT_2,
+                    ],
+                    scale: [1.0; 3],
+                };
+                let new_local = z_up_to_y_up.then(&result.nodes[model_idx].local);
+                result.set_local(model_idx, new_local);
+            }
+        }
+
+        Ok(result)
     }
 
     fn add_node(
