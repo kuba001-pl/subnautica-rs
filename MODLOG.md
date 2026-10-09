@@ -2,6 +2,58 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-09 — P0: gameplay data, headless
+
+**What:** first step of Phase E (`docs/DESIGN.md` § 4.3). New readers:
+- `sn-unity::gameplay`: `EntTechData`, `PDAData` (log, databank, scanner,
+  `defaultTech`, `analysisTech`, `compoundTech`), `Player` (up to
+  `guiHand`, skipping its `GUIStyle`), `Oxygen`, `LiveMixin`,
+  `LiveMixinData`, `PlayerMotor` / `UnderwaterMotor`, `PlayerController`,
+  `BreakableResource`. `sn-unity::collider`: box, sphere, capsule and mesh
+  colliders (for M9a).
+- `sn-assets::gameplay`: `tech_data` (`Balance/TechData` JSON, keys the
+  game reads, absent keys kept as `None` until P1 reads the code's
+  defaults), `ent_tech_data`, `player_data` (the main scene's player
+  components and the `PDAData` the player points to),
+  `Assets::node_components`.
+- `sn-inspect techdata`, `sn-inspect player`, `sn-inspect prefab
+  --colliders` (also counts `Pickupable` / `BreakableResource` on placed
+  prefabs and on the loot table's prefabs).
+
+**Findings** (all in `docs/formats/gameplay.md`):
+- TechData: `{"entries": [...]}`; 463 entries + 513 ingredients = the 976
+  `techType` keys of the file search; 0 errors, duplicates or unknown
+  keys; 28 ingredient rows (12 tech types) have no entry of their own
+  (hypothesis: all-default entries trimmed by the game's editor).
+- `PDAData` is not a resource: the main scene's `Player.pdaData` points to
+  it. The player and its components are part of the main scene.
+- Player: oxygen capacity 45, suffocation 8 s / recovery 4 s, health 100,
+  swim speed 7.6 (the scene overrides the code's 6.64), walk 3.5.
+- Every collider (24,248 on placed prefabs) and every `BreakableResource`
+  (4 prefabs) parses to its last byte.
+
+**Dead end:** my field-listing script took `PlayerController.forwardReference`
+(a property) for a field; the exact-end check caught it (4 bytes short).
+
+**Verified (2026-10-09):**
+- `cargo test --workspace` (no `SUBNAUTICA_DIR`): all pass, including new
+  unit tests on synthetic bytes (`ent_tech_data`, `pda_data`,
+  `player_fields`, `oxygen_and_health`, `motors_and_controller`,
+  `breakable_resource`, `reads_every_shape`,
+  `wrong_class_or_size_is_an_error`, `reads_entries_and_reports_odd_ones`,
+  `bad_values_are_errors`); every parser test also checks that each prefix
+  is an error and byte changes don't panic.
+- `SUBNAUTICA_DIR=… cargo test -p sn-assets --test real_data -- --ignored
+  tech_data_and_ent_tech_data player_and_pda_data`: 2 pass.
+- `sn-inspect techdata` (0.5 s), `player` (0.8 s), `prefab --colliders`
+  (11 s): numbers above.
+- `cargo clippy` on the changed crates: clean except a
+  `needless_range_loop` in `crates/sn-assets/tests/real_data.rs:953`,
+  which comes from the previous commit (Anchor Pod test), not from P0;
+  left as it is.
+- **Not tested:** any of these numbers in the running game; the GroundMotor
+  fields beyond `PlayerMotor`; `Survival`; tech type names (P1).
+
 ## 2026-10-09 — Plan: Phase E, the road to a playable game
 
 **What:** `docs/DESIGN.md` § 4.3 (new): the remaining look milestones are

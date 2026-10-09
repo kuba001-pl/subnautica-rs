@@ -36,6 +36,13 @@ Tested on Windows 11 with game build 10 (Steam):
   triangle count.
 - Reading the biome map and the water settings of all 145 biomes
   (`sn-inspect biomes`, `sn-inspect biomes --at X Y Z`).
+- Reading gameplay data (headless, not used by the client yet): all 463
+  recipe/item entries of `Balance/TechData`, the prefab → tech type map,
+  the player's numbers (oxygen, health, swim and walk speeds) and the
+  starting blueprints and unlocks (`PDAData`) from the main scene
+  (`sn-inspect techdata`, `sn-inspect player`), and every collider of the
+  placed prefabs (`sn-inspect prefab --colliders`). Tech types are numbers
+  until their names are read from the game's DLL.
 - `sn-client`: a desktop window (Bevy) with a fly camera. Terrain streams in
   and out as you move, with four levels of detail out to 1.2 km, textured
   with the game's own terrain materials, blended between neighbouring

@@ -9,6 +9,8 @@ mod addressables;
 mod bundle;
 mod camera;
 mod classes;
+mod collider;
+mod gameplay;
 pub mod json;
 mod light;
 mod marmo;
@@ -33,6 +35,14 @@ pub use addressables::{Catalog, Location};
 pub use bundle::{BlockInfo, Bundle, BundleDirectory, BundleNode, Compression, write_bundle};
 pub use camera::{Camera, TAG_MAIN_CAMERA};
 pub use classes::class_name;
+pub use collider::{
+    BOX_COLLIDER, CAPSULE_COLLIDER, Collider, ColliderShape, MESH_COLLIDER, SPHERE_COLLIDER,
+};
+pub use gameplay::{
+    AnalysisTech, BreakableResource, CompoundTech, EncyclopediaEntry, EntTechEntry, LiveMixin,
+    LiveMixinData, LogEntry, Oxygen, PdaData, PlayerController, PlayerFields, PlayerMotor,
+    RandomPrefab, ScannerEntry, StoryGoal, UnderwaterMotor, parse_ent_tech_data,
+};
 pub use light::{
     BAKE_BAKED, BAKE_MIXED, BAKE_REALTIME, DayNightLight, Light, LightKind, ShadowKind,
     VfxVolumetricLight,

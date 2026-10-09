@@ -5,6 +5,7 @@ mod biomes;
 mod density;
 mod entities;
 mod game;
+mod gameplay;
 mod grass;
 mod materials;
 mod mesh;
@@ -78,6 +79,9 @@ Commands:
                          how many lights the world's placements hold
   prefab --placeholders  Placed prefabs with PrefabPlaceholders and whether
                          the world's saved objects already hold what they spawn
+  prefab --colliders     Collider components (box, sphere, capsule, mesh) on
+                         every placed prefab, and the Pickupable and
+                         BreakableResource scripts
   prefab --materials     Every material drawn by the placed prefabs and the
                          startup scenes: uses, what our object shader takes
                          from it, its shader and the shader's first pass
@@ -97,6 +101,10 @@ Commands:
                          Every property of every terrain material
   terrain-materials --region <X> <Y> <Z> <R>
                          Which types form the surface around a batch
+  techdata               Recipes and item data (Balance/TechData) and the
+                         prefab → tech type map (EntTechData), with checks
+  player                 The player's numbers from the main scene (oxygen,
+                         health, motors, speeds) and PDAData (unlocks)
   orient <X> <Y> <Z>     Score candidate child/octree orders using a batch and
                          its +X/+Y/+Z neighbours (default batch: 12 18 12)
 ";
@@ -189,6 +197,7 @@ fn run(mut args: Vec<String>) -> Result<ExitCode> {
         ["slots", x, y, z] => slots::run(&game, Some(parse_coord(x, y, z)?), seed),
         ["prefab", "--placed"] => prefab::placed(&game, false),
         ["prefab", "--lights"] => prefab::lights(&game),
+        ["prefab", "--colliders"] => gameplay::colliders(&game),
         ["prefab", "--materials"] => prefab::materials(&game),
         ["prefab", "--placeholders"] => prefab::placeholders(&game),
         ["prefab", "--skinned"] => skinned::run(&game),
@@ -213,6 +222,8 @@ fn run(mut args: Vec<String>) -> Result<ExitCode> {
                 .map_err(|_| format!("radius {r:?} is not a whole number"))?;
             materials::region(&game, parse_coord(x, y, z)?, radius)
         }
+        ["techdata"] => gameplay::techdata(&game),
+        ["player"] => gameplay::player(&game),
         ["orient"] => orient::run(&game, BatchCoord::new(12, 18, 12)),
         ["orient", x, y, z] => orient::run(&game, parse_coord(x, y, z)?),
         _ => Err(format!(

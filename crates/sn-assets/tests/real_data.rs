@@ -989,6 +989,105 @@ fn anchor_pod_orientation() {
             "{name}: stone center Y {center_y} should match expected {expected_stone_y}"
         );
         // Vines/roots anchor at the seafloor and the stone bulb is elevated above them.
-        assert!(min_y > 5.0, "{name}: stone pod should be elevated above seafloor");
+        assert!(
+            min_y > 5.0,
+            "{name}: stone pod should be elevated above seafloor"
+        );
+    }
+}
+
+#[test]
+#[ignore = "needs SUBNAUTICA_DIR pointing at a Subnautica install"]
+fn tech_data_and_ent_tech_data() {
+    let Some(dir) = std::env::var_os("SUBNAUTICA_DIR") else {
+        eprintln!("SUBNAUTICA_DIR not set; skipping");
+        return;
+    };
+    let game = GameData::locate(Some(PathBuf::from(dir))).unwrap();
+    let assets = Assets::index(&game).unwrap();
+    let data = sn_assets::tech_data(&assets).unwrap();
+    eprintln!("TechData entries: {}", data.entries.len());
+    // 463 entries + 513 ingredients = the 976 `techType` keys in the file.
+    assert_eq!(data.entries.len(), 463);
+    assert_eq!(
+        data.entries
+            .iter()
+            .map(|e| e.ingredients.len())
+            .sum::<usize>(),
+        513
+    );
+    assert_eq!(
+        data.entries
+            .iter()
+            .filter(|e| e.craft_time.is_some())
+            .count(),
+        40
+    );
+    assert_eq!(data.without_tech_type, 0);
+    assert!(data.duplicates.is_empty(), "{:?}", data.duplicates);
+    assert!(data.unknown_keys.is_empty(), "{:?}", data.unknown_keys);
+    assert_eq!(data.recipes().count(), 245);
+    // Ingredients with no entry of their own (all their fields are
+    // defaults, so the game's editor trimmed them): logged, not errors.
+    let misses = data.ingredients_without_entry();
+    let missing: std::collections::BTreeSet<i32> = misses.iter().map(|m| m.1).collect();
+    eprintln!(
+        "ingredients without an entry: {} rows, {} tech types",
+        misses.len(),
+        missing.len()
+    );
+    assert_eq!((misses.len(), missing.len()), (28, 12));
+
+    let ent = sn_assets::ent_tech_data(&assets).unwrap();
+    assert_eq!(ent.len(), 703);
+    assert!(ent.iter().all(|e| e.tech_type != 0));
+}
+
+#[test]
+#[ignore = "needs SUBNAUTICA_DIR pointing at a Subnautica install"]
+fn player_and_pda_data() {
+    let Some(dir) = std::env::var_os("SUBNAUTICA_DIR") else {
+        eprintln!("SUBNAUTICA_DIR not set; skipping");
+        return;
+    };
+    let game = GameData::locate(Some(PathBuf::from(dir))).unwrap();
+    let assets = Assets::index(&game).unwrap();
+    let d = sn_assets::player_data(&assets).unwrap();
+    assert_eq!(d.player.equipment_slots.len(), 3);
+    assert_eq!(d.player.player_sphere_radius, 0.5);
+    assert_eq!(
+        (
+            d.player.suffocation_time,
+            d.player.suffocation_recovery_time
+        ),
+        (8.0, 4.0)
+    );
+    assert_eq!(d.oxygen.oxygen_capacity, 45.0);
+    assert_eq!(
+        (d.live_mixin.health, d.live_mixin_data.max_health),
+        (100.0, 100.0)
+    );
+    let c = &d.controller;
+    assert_eq!(c.swim_forward_max_speed, 7.6);
+    assert_eq!(c.walk_run_forward_max_speed, 3.5);
+    assert_eq!((c.stand_height, c.swim_height), (1.5, 0.5));
+    assert_eq!(d.underwater_motor.motor.water_acceleration, 20.0);
+
+    let pda = &d.pda;
+    assert_eq!(
+        (
+            pda.log.len(),
+            pda.encyclopedia.len(),
+            pda.scanner.len(),
+            pda.default_tech.len(),
+            pda.analysis_tech.len(),
+            pda.compound_tech.len()
+        ),
+        (179, 323, 268, 46, 126, 3)
+    );
+    // Every starting blueprint has TechData.
+    let tech = sn_assets::tech_data(&assets).unwrap();
+    for t in &pda.default_tech {
+        assert!(tech.get(*t).is_some(), "default tech {t}");
     }
 }

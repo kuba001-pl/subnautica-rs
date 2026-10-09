@@ -9,6 +9,7 @@
 //!
 //! Read-only: everything comes from the player's install via `sn-install`.
 
+mod gameplay;
 mod marmo;
 mod prefab;
 mod scene;
@@ -24,6 +25,10 @@ use std::sync::{Arc, Mutex};
 use sn_install::GameData;
 use sn_unity::{Bundle, BundleDirectory, ObjectInfo, PPtr, SerializedFile};
 
+pub use gameplay::{
+    Ingredient, PlayerData, TechData, TechEntry, ent_tech_data, parse_tech_data, player_data,
+    tech_data,
+};
 pub use marmo::{BiomeSky, MarmoSkies, marmo_skies};
 pub use prefab::{PlaceholderGroup, Prefab, PrefabNode, VolumetricGlow};
 pub use scene::{LIGHTMAPPED_PREFAB, Scene, SceneSpawn};
