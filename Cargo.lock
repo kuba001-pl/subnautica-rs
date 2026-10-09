@@ -4765,6 +4765,7 @@ dependencies = [
 name = "sn-assets"
 version = "0.0.0"
 dependencies = [
+ "sn-dotnet",
  "sn-install",
  "sn-terrain",
  "sn-unity",
@@ -4786,10 +4787,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "sn-dotnet"
+version = "0.0.0"
+
+[[package]]
 name = "sn-inspect"
 version = "0.0.0"
 dependencies = [
  "sn-assets",
+ "sn-dotnet",
  "sn-install",
  "sn-mesh",
  "sn-octree",

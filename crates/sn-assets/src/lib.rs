@@ -9,6 +9,7 @@
 //!
 //! Read-only: everything comes from the player's install via `sn-install`.
 
+mod code;
 mod gameplay;
 mod marmo;
 mod prefab;
@@ -25,6 +26,7 @@ use std::sync::{Arc, Mutex};
 use sn_install::GameData;
 use sn_unity::{Bundle, BundleDirectory, ObjectInfo, PPtr, SerializedFile};
 
+pub use code::{GAME_ASSEMBLY, GameCode, TechDefaults, game_code, read_assembly};
 pub use gameplay::{
     Ingredient, PlayerData, TechData, TechEntry, ent_tech_data, parse_tech_data, player_data,
     tech_data,

@@ -2,6 +2,50 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-10 — P1: our own .NET reader; tech type names, craft menus, TechData defaults
+
+**What:** second step of Phase E (`docs/DESIGN.md` § 4.3).
+- New crate `sn-dotnet` (layer 1, pure, no dependencies): PE container,
+  CLI metadata (`#~` tables with the full ECMA-335 schema, `#Strings`,
+  `#US`, `#Blob`), method bodies, an IL decoder for every opcode, token
+  resolution (MethodDef, Field, MemberRef, TypeDef/TypeRef/TypeSpec).
+  Game readers: `enum_values` / `tech_type_names`, `craft_trees` (runs the
+  scheme methods on a small value stack, only the instructions they use),
+  `tech_data_defaults`.
+- `sn-assets::code`: `read_assembly`, `game_code` (`TechDefaults`).
+- `sn-inspect code [--trees]`, `sn-inspect code --il <Type> <Method>`
+  (console only).
+- Test-only encoder (`sn-dotnet/src/encode.rs`) that writes small .NET
+  assemblies, for unit tests on synthetic bytes.
+
+**Findings** (all in `docs/formats/dotnet.md`): 21,383 method bodies,
+570,477 instructions, 0 errors; 793 `TechType` names (793 distinct
+values); 7 menus, 159 nodes (fabricator 100), 134 craft nodes, each with a
+TechData entry; 17 TechData defaults (item size 1×1, craft amount 1, craft
+time 0, max charge −1, …). `RocketScheme` exists but is never used.
+
+**Dead ends / corrections:**
+- First real run stopped at a MemberRef whose parent is a TypeSpec
+  (generic `List<…>` constructor); TypeSpecs are now named by their
+  generic type.
+- `TechData.defaultProperties` matched the `default…` field rule but is
+  `new List<string>(defaults.Keys)`, not a value; skipped explicitly.
+- The scheme reader needed `newarr`/`dup`/`stelem.ref` (C# `params`
+  arrays) and `ret` beyond the planned four patterns; still straight-line
+  code, so no stop-and-ask.
+- `gameplay.md` said `TechType` had 787 members; the decompiled source has
+  793 too, so that was a miscount. Corrected.
+
+**Verified (2026-10-10):**
+- `cargo test --workspace` passes without the game (sn-dotnet: 9 tests,
+  incl. enum, menu and defaults round trips on our own encoded assembly,
+  and every truncation and 3 bit flips per byte without a panic).
+- `SUBNAUTICA_DIR=… cargo test -p sn-assets --test real_data -- --ignored
+  game_code` passes.
+- `cargo run -p sn-inspect -- code` prints the numbers above, exit 0.
+- `cargo fmt --all -- --check` and `cargo clippy --workspace --all-targets
+  -- -D warnings` clean.
+
 ## 2026-10-10 — Lint and format fixes for the Anchor Pod commit
 
 **What:** `cargo fmt` on `crates/sn-assets/src/prefab.rs` (the Anchor Pod

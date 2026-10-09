@@ -1091,3 +1091,73 @@ fn player_and_pda_data() {
         assert!(tech.get(*t).is_some(), "default tech {t}");
     }
 }
+
+#[test]
+#[ignore = "needs SUBNAUTICA_DIR pointing at a Subnautica install"]
+fn game_code_names_menus_and_defaults() {
+    let Some(dir) = std::env::var_os("SUBNAUTICA_DIR") else {
+        eprintln!("SUBNAUTICA_DIR not set; skipping");
+        return;
+    };
+    let game = GameData::locate(Some(PathBuf::from(dir))).unwrap();
+    let bytes = sn_assets::read_assembly(&game).unwrap();
+    let code = sn_assets::game_code(&bytes).unwrap();
+    eprintln!("TechType names: {}", code.tech_types.len());
+    assert_eq!(code.tech_types.len(), 793);
+    assert_eq!(code.tech_name(0), Some("None"));
+
+    // Every TechData entry and ingredient has a TechType name.
+    let assets = Assets::index(&game).unwrap();
+    let tech = sn_assets::tech_data(&assets).unwrap();
+    for e in &tech.entries {
+        assert!(
+            code.tech_name(e.tech_type).is_some(),
+            "entry {}",
+            e.tech_type
+        );
+        for i in &e.ingredients {
+            assert!(
+                code.tech_name(i.tech_type).is_some(),
+                "ingredient {}",
+                i.tech_type
+            );
+        }
+    }
+
+    let craft = code.tree_action("Craft").unwrap();
+    let counts: Vec<(&str, usize)> = code
+        .craft_trees
+        .iter()
+        .map(|t| (t.id.as_str(), t.root.walk().len()))
+        .collect();
+    eprintln!("craft trees (nodes): {counts:?}");
+    assert_eq!(
+        counts,
+        [
+            ("Fabricator", 100),
+            ("Constructor", 7),
+            ("Workbench", 13),
+            ("SeamothUpgrades", 22),
+            ("MapRoom", 5),
+            ("Centrifuge", 3),
+            ("CyclopsFabricator", 9),
+        ]
+    );
+    // Every craft node's tech type has TechData.
+    let mut crafts = 0;
+    for tree in &code.craft_trees {
+        for n in tree.root.walk() {
+            if n.action == craft {
+                crafts += 1;
+                assert!(tech.get(n.tech_type).is_some(), "{}: {}", tree.id, n.id);
+            }
+        }
+    }
+    assert_eq!(crafts, 134);
+
+    let d = &code.tech_defaults;
+    assert_eq!(d.item_size, [1, 1]);
+    assert_eq!((d.craft_time, d.craft_amount), (0.0, 1));
+    assert_eq!(d.max_charge, -1.0);
+    assert!(!d.buildable);
+}

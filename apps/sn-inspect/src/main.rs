@@ -2,6 +2,7 @@
 //! a Subnautica install. Reads the game folder, never writes to it.
 
 mod biomes;
+mod code;
 mod density;
 mod entities;
 mod game;
@@ -101,6 +102,12 @@ Commands:
                          Every property of every terrain material
   terrain-materials --region <X> <Y> <Z> <R>
                          Which types form the surface around a batch
+  code [--trees]         What the game keeps only in its code (its DLL):
+                         every method body decoded, TechType names, the
+                         crafting menus (--trees: every node), TechData's
+                         defaults; checked against Balance/TechData
+  code --il <TYPE> <METHOD>
+                         One method's IL with tokens resolved
   techdata               Recipes and item data (Balance/TechData) and the
                          prefab → tech type map (EntTechData), with checks
   player                 The player's numbers from the main scene (oxygen,
@@ -222,6 +229,9 @@ fn run(mut args: Vec<String>) -> Result<ExitCode> {
                 .map_err(|_| format!("radius {r:?} is not a whole number"))?;
             materials::region(&game, parse_coord(x, y, z)?, radius)
         }
+        ["code"] => code::run(&game, false),
+        ["code", "--trees"] => code::run(&game, true),
+        ["code", "--il", ty, method] => code::il(&game, ty, method),
         ["techdata"] => gameplay::techdata(&game),
         ["player"] => gameplay::player(&game),
         ["orient"] => orient::run(&game, BatchCoord::new(12, 18, 12)),

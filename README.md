@@ -41,8 +41,11 @@ Tested on Windows 11 with game build 10 (Steam):
   the player's numbers (oxygen, health, swim and walk speeds) and the
   starting blueprints and unlocks (`PDAData`) from the main scene
   (`sn-inspect techdata`, `sn-inspect player`), and every collider of the
-  placed prefabs (`sn-inspect prefab --colliders`). Tech types are numbers
-  until their names are read from the game's DLL.
+  placed prefabs (`sn-inspect prefab --colliders`).
+- Reading what the game keeps only in its code, from the player's own
+  `Assembly-CSharp.dll` with our own .NET reader (`sn-inspect code`): all
+  793 tech type names, the 7 crafting menus (159 nodes; `--trees` prints
+  them) and TechData's defaults; every method body of the DLL decodes.
 - `sn-client`: a desktop window (Bevy) with a fly camera. Terrain streams in
   and out as you move, with four levels of detail out to 1.2 km, textured
   with the game's own terrain materials, blended between neighbouring

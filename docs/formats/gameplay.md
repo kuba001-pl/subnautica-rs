@@ -56,7 +56,11 @@ are not `[NonSerialized]`, `static`, `const` or properties):
   (`TechData.TrimDefaults`), so the game uses the defaults for them.
 - **Confirmed (code):** keys missing from an entry fall back to defaults
   written in the code (`TechData.defaults`), not in the JSON. Our reader
-  keeps them as "absent"; P1 reads the defaults from the DLL.
+  keeps them as "absent"; P1 reads the defaults from the DLL
+  (`sn-assets::game_code`, see `dotnet.md`).
+- **Confirmed (P1, real data):** all 12 tech types used as ingredients
+  without an entry of their own have a `TechType` name. Whether all their
+  fields really are defaults (the hypothesis above) is not checked.
 
 ## Prefab ↔ tech type: `EntTechData`
 
@@ -147,17 +151,20 @@ are not `[NonSerialized]`, `static`, `const` or properties):
   constructor, workbench, vehicle upgrade console, rocket, …) is built in
   C# by nested `new CraftNode(id, TreeAction, TechType)` calls joined by
   `AddNode`. There is no data file for it.
-- Plan: read the IL of those methods from the player's
-  `Assembly-CSharp.dll` at runtime (DESIGN § 4.3, P1).
+- **Done (P1):** read from the IL of those methods in the player's
+  `Assembly-CSharp.dll` at runtime: 7 menus, 159 nodes, 134 craft nodes,
+  each with a TechData entry. Details in `dotnet.md`. There is no rocket
+  menu: `RocketScheme` exists but is never used.
 
 ## Tech type names: the `TechType` enum (code only)
 
-- **Confirmed (code):** `TechType` is a C# enum (787 members in the
-  decompiled source). The JSON and the serialized scripts use its numbers;
-  names are needed to match the language files and the code's own
-  references. Until P1 our tools print numbers.
-- Plan: read the enum's fields and their constants from the DLL's metadata
-  tables (P1).
+- **Confirmed (code):** `TechType` is a C# enum. The JSON and the
+  serialized scripts use its numbers; names are needed to match the
+  language files and the code's own references.
+- **Confirmed (P1, metadata):** 793 members with 793 distinct values, read
+  from the enum's fields and constants (`dotnet.md`). An earlier count of
+  787 here, from the decompiled source, was a miscount: the source has 793
+  too.
 
 ## Text
 
