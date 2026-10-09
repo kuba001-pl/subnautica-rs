@@ -10,6 +10,7 @@
 mod biomes;
 mod entities;
 mod slots;
+mod start;
 mod wire;
 
 use std::fmt;
@@ -24,6 +25,7 @@ pub use slots::{
     LootEntry, LootRows, SLOTS_COMPONENT, SlotKind, SlotRng, SlotSpawn, choose, fill_slots,
     parse_slots,
 };
+pub use start::{MAX_TRIES, StartMap, WORLD_EXTENTS};
 
 /// Offset between voxel indices and Unity world coordinates. **Plausible
 /// hypothesis**, not confirmed (see `docs/formats/optoctrees.md`): it puts the

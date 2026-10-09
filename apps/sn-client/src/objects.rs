@@ -243,6 +243,8 @@ struct Instance {
 pub struct SceneOptions {
     /// The Aurora after its explosion (a new game starts before it).
     pub aurora_exploded: bool,
+    /// Where Lifepod 5 starts (`None`: no lifepod).
+    pub lifepod: Option<[f32; 3]>,
 }
 
 /// What the worker fills spawn slots with.
@@ -593,6 +595,55 @@ impl Library {
         id
     }
 
+    /// `EscapePod.ChooseRandomStart` at `point`, the objects following
+    /// their targets, and what the pod's spawners put in it in a new game
+    /// (added to `instances`). Returns a summary for the log.
+    fn place_pod(
+        &mut self,
+        scene: &mut sn_assets::Scene,
+        point: [f32; 3],
+        instances: &mut Vec<Instance>,
+        out: &mut Vec<Update>,
+    ) -> Result<String, String> {
+        let spawn = scene.place_escape_pod(&self.assets, point)?;
+        let following = scene.follow_targets(&self.assets)?;
+        let mut spawned = Vec::new();
+        for s in scene.spawns(&self.assets)? {
+            if s.spawner.deactivate_on_spawn {
+                continue;
+            }
+            let prefab = match (&s.spawner.prefab, &s.object) {
+                (sn_unity::SpawnPrefab::Address(guid), _) => {
+                    self.assets.prefab(&self.catalog, guid)
+                }
+                (_, Some(object)) => self.assets.hierarchy(&s.name, object),
+                _ => continue,
+            };
+            let prefab = match prefab {
+                Ok(p) => p,
+                Err(e) => {
+                    out.push(Update::Warning(format!("lifepod {}: {e}", s.name)));
+                    continue;
+                }
+            };
+            let transform = s.placement(&prefab.nodes[0].local);
+            if let Some(id) = self.prefab_parts(&prefab, out) {
+                instances.push(Instance {
+                    level: 0,
+                    prefab: id,
+                    transform,
+                    from_slot: false,
+                });
+                spawned.push(s.name.clone());
+            }
+        }
+        Ok(format!(
+            ", Lifepod 5 at {:?}, player spawn {:?}, {following} objects on their targets, spawned {spawned:?}",
+            point.map(|v| (v * 100.0).round() / 100.0),
+            spawn.position.map(|v| (v * 100.0).round() / 100.0)
+        ))
+    }
+
     /// The scenes the game spawns at start (`docs/DESIGN.md` M7f): each
     /// top-level object becomes an instance at its world placement.
     fn scenes(&mut self, options: &SceneOptions, out: &mut Vec<Update>) {
@@ -605,8 +656,8 @@ impl Library {
             }
         };
         for a in autoload.iter().filter(|a| a.spawn_on_start) {
-            // Lifepod 5 is moved to a random start point first (M7f3).
-            if a.scene_name.eq_ignore_ascii_case("EscapePod") {
+            let is_pod = a.scene_name.eq_ignore_ascii_case("EscapePod");
+            if is_pod && options.lifepod.is_none() {
                 continue;
             }
             let mut scene = match self.assets.scene(&a.scene_name) {
@@ -637,6 +688,12 @@ impl Library {
                 }
             }
             let mut instances = Vec::new();
+            if let (true, Some(point)) = (is_pod, options.lifepod) {
+                match self.place_pod(&mut scene, point, &mut instances, out) {
+                    Ok(summary) => state = summary,
+                    Err(e) => out.push(Update::Warning(format!("lifepod: {e}"))),
+                }
+            }
             let mut drawn = 0;
             for root in &scene.roots {
                 drawn += root.visible_nodes().count();

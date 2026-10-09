@@ -270,7 +270,42 @@ later (game code, not from data).
 **Escape pod scene** (`escapepod`): 248 GameObjects, one top-level object
 (`__LIGHTMAPPED_PREFAB__` → `EscapePod`), 35 `SkinnedMeshRenderer`s (the
 hull `Life_Pod_damaged_03` is skinned), 5 lights, 7
-`AddressablesPrefabSpawn`. Placement: M7f3.
+`AddressablesPrefabSpawn`.
+
+**Lifepod placement (M7f3)** — confirmed from data and code:
+- `RandomStart` sits on the `essentials` scene's spawner prefab (its
+  `.sharedAssets`); its first field `validStartPointTexture` is the
+  Texture2D `RandomStart` (512 × 512, DXT1, embedded). 0.59 % of its
+  pixels have green > 0.5. `IsStartPointValid(p)`: pixel
+  (`(int)(clamp01((x + 2048) / 4096) × width)`, same with z for the row),
+  rows counted from the bottom (`GetPixel`). `GetRandomStartPoint`: up to
+  1,000 draws of x, z with `Random.Range(−2048, 2048)`, y = 0; else the
+  origin.
+- `EscapePod` (on the `EscapePod` child of `__LIGHTMAPPED_PREFAB__`):
+  first fields `bottomHatchEntrance` (GameObject), `playerSpawn`
+  (Transform). `StartAtPosition` sets the pod's world position to the
+  point (its anchor for floating) and puts the player at `playerSpawn`:
+  about 1 m from the pod's axis, 2.1 m above the water line.
+- 6 `MoveAndRotateWithTransform` (first field `target`, a Transform): each
+  frame the object takes the target's world position and rotation. The
+  module roots (`ModulesRoot/…Root`) follow mount points this way; with the
+  stored pose they sit 1.5–2.4 m up, within 3 m of the axis.
+- `PrefabSpawnBase` fields in order: `spawnType` (`SpawnType`: 0 OnStart, 1
+  Intermittent, 2 OnAwake, 3 OnNewBorn, 4 Manual), `intermittentSpawnTime`,
+  `inheritLayer`, `usePrefabTransformAsLocal`, `useCurrentTransformAsLocal`,
+  `keepScale` (bools padded to 4 bytes), `attachToParent` (Transform),
+  `spawnAtHealthPercent`, `useSpawnAtHealth`, `spawnedObj`,
+  `sendObjectMessageOnSpawn` (string), `deactivateOnSpawn`; then
+  `PrefabSpawn.prefab` (GameObject PPtr) or
+  `AddressablesPrefabSpawn.prefab` (`AssetReference`: GUID string, sub-object
+  name, sub-object type; the GUID is a catalog key). The spawned object is
+  instantiated under `attachToParent` (or the spawner) and reset to local
+  position 0 and no rotation, keeping the prefab's scale (`keepScale`), unless
+  one of the two "as local" flags is set.
+- In the escape pod: 6 `AddressablesPrefabSpawn` with OnNewBorn (medical
+  cabinet, fabricator, radio, 3 power cells), 1 `PrefabSpawn` OnAwake
+  (`UISpawn`, the pod's screen UI, nothing drawn), 2 `PrefabSpawn` Manual
+  (triggered by the intro: damage effects, birds; not drawn).
 
 ### Skinned meshes (M7f2) — confirmed
 

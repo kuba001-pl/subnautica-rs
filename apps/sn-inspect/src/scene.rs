@@ -117,6 +117,28 @@ pub fn run(
             *scripts.entry(class).or_default() += 1;
         }
     }
+    // The bundle's other files (`.sharedAssets`: prefabs the scene's
+    // scripts reference) for the dump.
+    if let Some(class) = dump_script {
+        let names: Vec<String> = scene.file.bundle.file_names().map(String::from).collect();
+        for name in names.iter().filter(|n| **n != scene.file.name) {
+            let file = assets.file(&scene.file.bundle.path, name)?;
+            for info in file
+                .objects()
+                .iter()
+                .filter(|o| o.class_id == MONO_BEHAVIOUR)
+            {
+                let object = sn_assets::ObjectRef {
+                    file: file.clone(),
+                    path_id: info.path_id,
+                };
+                if assets.script_class(&object).as_deref() == Some(class) {
+                    println!("in {name}:");
+                    dump(&object)?;
+                }
+            }
+        }
+    }
     let mut scripts: Vec<_> = scripts.into_iter().collect();
     scripts.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
     println!("MonoBehaviours by script ({} scripts):", scripts.len());
@@ -192,6 +214,54 @@ pub fn startup(game: &GameData) -> Result<ExitCode> {
             .filter(|n| n.active && n.skinned)
             .count();
         println!("{line}; drawn {drawn}, active skinned {skinned}");
+    }
+    println!("({:.2} s)", start.elapsed().as_secs_f64());
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Lifepod 5 in a new game with world seed `seed`: the start map, the
+/// start point, the player spawn and what the pod's spawners put in it.
+pub fn lifepod(game: &GameData, seed: u64) -> Result<ExitCode> {
+    let start = Instant::now();
+    let assets = Assets::index(game)?;
+    let catalog = assets.catalog()?;
+    let map = assets.start_map()?;
+    println!(
+        "start map: {:.2} % of the pixels are valid starts",
+        map.valid_share() * 100.0
+    );
+    let (point, tries) = map.random_start(seed);
+    println!(
+        "seed {seed}: start point {:?} after {tries} draws",
+        point.map(|v| (v * 100.0).round() / 100.0)
+    );
+    let mut scene = assets.scene("escapepod")?;
+    scene.spawn_lightmapped_prefab();
+    let spawn = scene.place_escape_pod(&assets, point)?;
+    println!(
+        "player spawn at {:?}",
+        spawn.position.map(|v| (v * 100.0).round() / 100.0)
+    );
+    let following = scene.follow_targets(&assets)?;
+    println!("objects following a target: {following}");
+    let spawns = scene.spawns(&assets)?;
+    println!("{} spawners fire in a new game:", spawns.len());
+    for s in &spawns {
+        let what = match (&s.spawner.prefab, &s.object) {
+            (sn_unity::SpawnPrefab::Address(guid), _) => catalog
+                .locate(guid)
+                .into_iter()
+                .find(|l| l.resource_type == "UnityEngine.GameObject")
+                .map_or(format!("{guid} (not in the catalog)"), |l| l.internal_id),
+            (_, Some(o)) => format!("object {} in {}", o.path_id, o.file.name),
+            _ => "(nothing)".into(),
+        };
+        println!(
+            "  {:?} (type {}): {what}; parent at {:?}",
+            s.name,
+            s.spawner.spawn_type,
+            s.parent.position.map(|v| (v * 100.0).round() / 100.0)
+        );
     }
     println!("({:.2} s)", start.elapsed().as_secs_f64());
     Ok(ExitCode::SUCCESS)

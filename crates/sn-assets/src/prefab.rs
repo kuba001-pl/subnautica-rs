@@ -109,6 +109,26 @@ impl Prefab {
         crate::skin::skin(geometry, &mesh.bind_poses, &bones)
     }
 
+    /// Sets a node's local placement and updates `in_prefab` of every node.
+    pub fn set_local(&mut self, node: usize, local: Transform) {
+        if let Some(n) = self.nodes.get_mut(node) {
+            n.local = local;
+        }
+        // Nodes are stored parents first; the root's own transform is left
+        // out of `in_prefab`.
+        for i in 1..self.nodes.len() {
+            if let Some(p) = self.nodes[i].parent {
+                self.nodes[i].in_prefab = self.nodes[p].in_prefab.then(&self.nodes[i].local);
+            }
+        }
+    }
+
+    /// A node's placement in the world when the root is placed at its own
+    /// `local` (scenes).
+    pub fn world(&self, node: usize) -> Transform {
+        self.nodes[0].local.then(&self.nodes[node].in_prefab)
+    }
+
     /// The node of a GameObject.
     pub fn node_of(&self, object: &ObjectRef) -> Option<usize> {
         let key = object.key();

@@ -49,7 +49,10 @@ Tested on Windows 11 with game build 10 (Steam):
   rules and grass shader: tints, height gradient, waving), and the scenes
   the game spawns at start: the Aurora (intact as in a new game, or
   `--aurora exploded`) and the Precursor bases and Lost River trees its
-  scene holds, seen through the game's own water fog model (colours and distances
+  scene holds, and Lifepod 5 at a start point drawn the game's way (from its
+  map of valid starts; seeded, `--lifepod-seed`, or `--lifepod X Z`) with
+  its fabricator, radio, medical cabinet and power cells; the camera starts
+  where the player does; seen through the game's own water fog model (colours and distances
   per biome) under the game's sun and sky light for a time of day
   (`--time`), with the game's water surface (simulated or baked waves, foam,
   reflection, refraction, sun glint; from above and below) under the
@@ -67,7 +70,9 @@ shadows). Flying from the lifepod
 
 The water clip map (no water inside the lifepod and bases,
 shore foam); water settings per pixel (the
-camera's are used everywhere); Lifepod 5; the Aurora's distant levels of
+camera's are used everywhere); Lifepod 5's own interior light and sky,
+floating on the waves, the player's eye height; the Aurora's explosion over
+time, its distant levels of
 detail, fire and smoke; terrain grass
 beyond ~100 m, and grass tufts in the game's exact spots (the amount and
 spread follow its rules; our own random numbers); for world objects: reflections of the biome
@@ -99,7 +104,7 @@ cargo run -p sn-inspect -- unity --all      # parse every Unity file of the game
 cargo run -p sn-inspect -- textures --census          # texture formats in the game
 cargo run -p sn-inspect -- terrain-materials          # terrain type → material → textures
 
-cargo run -p sn-client                      # fly around, starting at the lifepod
+cargo run -p sn-client                      # fly around, starting in the lifepod
 cargo run -p sn-client -- --view 2000       # see further
 cargo run -p sn-client -- --flythrough 1700 -80 0   # automated test flight to the crater edge
 

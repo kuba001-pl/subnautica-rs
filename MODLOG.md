@@ -2,6 +2,56 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-09 — M7f3: Lifepod 5
+
+**What:** the `escapepod` scene is placed as a new game does
+(`docs/formats/unity.md` § Scenes, Lifepod placement).
+- `sn-world::StartMap` (pure: `IsStartPointValid`, `GetRandomStartPoint`
+  with our seeded draw, wrap/clamp at the edge; 3 unit tests).
+- `sn-unity`: `parse_random_start`, `EscapePod`, `PrefabSpawner` (both
+  spawner scripts), `SpawnType` constants; synthetic tests.
+- `sn-assets`: `Assets::start_map` (the texture, rows flipped to
+  `GetPixel` order), `Scene::place_escape_pod` (returns the player spawn),
+  `Scene::follow_targets` (`MoveAndRotateWithTransform` once),
+  `Scene::spawns` + `SceneSpawn::placement` (`PrefabSpawnBase.SpawnObj`'s
+  rules), `Prefab::set_local`/`world`; unit tests for placement and the
+  inverse transform.
+- `sn-inspect scene --lifepod [--seed N]`.
+- Client: the start point and player spawn are computed before the app
+  starts (`--lifepod-seed N`, default 1; `--lifepod X Z`); the worker
+  places the pod with the same point and spawns its modules; **the camera
+  now starts at the player spawn** unless `--start` is given (before: 0
+  −10 0; benchmarks without `--start` are not comparable with earlier
+  ones). No new dependencies.
+
+**Verified (2026-10-09):**
+1. `sn-inspect scene --lifepod`: start map 0.59 % valid; seed 1 → (−127.73,
+   0, −49.75) after 72 draws, seed 2 → (24.92, 0, −133.47); player spawn
+   (−126.79, 2.1, −49.75); 6 objects on their targets; 7 spawners fire
+   (UI, medical cabinet, 3 power cells, fabricator, radio), their parents
+   inside the pod. Two client runs give the same point (seed 1).
+2. Real-data test `lifepod_start_and_modules`; all 12 real-data tests of
+   sn-assets/sn-unity/sn-world, workspace tests, clippy, fmt: pass.
+3. Client, default start: "scene escapepod: 1 top-level objects, 248
+   nodes, 25 drawn, Lifepod 5 at …, spawned [6 modules]", 1,242 scene
+   entities, 0 warnings, 300 frames mean 11.10 ms. Screenshots
+   `out/m7f3-outside.png` (the pod on its float ring at the water line,
+   "5 LIFEPOD") and `out/m7f3-inside.png` (seat, wall panel, a module).
+   **Not compared** with the game. Known gaps: the camera stands at the
+   spawn transform (the game's eye is higher), the interior is lit by the
+   outside sky (the pod's own Marmoset sky and lights not used), no
+   floating motion, no intro damage effects.
+
+**Differences from the game:** every known gap left by M7f1–M7f3 (Aurora
+LODs, explosion timing, culling, effects, skinned animation and blend
+shapes, the lifepod's floating, eye height, interior sky and lights, intro
+state, module scripts) is listed in the new `docs/DESIGN.md` row **M7f4**;
+README "What doesn't work yet" updated to match.
+
+**Also:** commit `16c6542` repaired characters a PowerShell round trip had
+re-encoded in `main.rs` and the skinned census (in `9256e34`); edits are
+now made with Python or the editor only.
+
 ## 2026-10-09 — M7f2: skinned meshes
 
 **What:** skinned meshes are drawn in the pose their hierarchy stores.

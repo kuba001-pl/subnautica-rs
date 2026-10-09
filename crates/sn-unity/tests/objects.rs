@@ -304,3 +304,54 @@ fn skinned_mesh_renderer() {
         assert!(sn_unity::SkinnedMeshRenderer::parse(&b.0[..len], false).is_err());
     }
 }
+
+#[test]
+fn escape_pod_and_spawners() {
+    let mut b = behaviour();
+    b.pptr(0, 40).pptr(0, 41).pptr(0, 99);
+    let pod = sn_unity::EscapePod::parse(&b.0, false).unwrap();
+    assert_eq!(pod.bottom_hatch_entrance.path_id, 40);
+    assert_eq!(pod.player_spawn.path_id, 41);
+
+    // PrefabSpawnBase fields as the game's escape pod stores them.
+    let base = |b: &mut W, message: &str| {
+        b.i32(sn_unity::SPAWN_ON_NEW_BORN).f32(0.0);
+        b.u8a(1).u8a(0).u8a(0).u8a(1); // inherit layer, …, keep scale
+        b.pptr(0, 376)
+            .f32(1.0)
+            .u8a(0)
+            .pptr(0, 0)
+            .str(message)
+            .u8a(0);
+    };
+    let mut b = behaviour();
+    base(&mut b, "ForceSpawnMedKit");
+    b.str("d8c3e8dc5d573b94098088e33f096e28").str("").str("");
+    let s = sn_unity::PrefabSpawner::parse(&b.0, false, true).unwrap();
+    assert!(s.spawns_in_new_game() && s.keep_scale && !s.use_prefab_transform_as_local);
+    assert_eq!(s.attach_to_parent.path_id, 376);
+    assert_eq!(
+        s.prefab,
+        sn_unity::SpawnPrefab::Address("d8c3e8dc5d573b94098088e33f096e28".into())
+    );
+    for len in 0..b.0.len() - 8 {
+        assert!(sn_unity::PrefabSpawner::parse(&b.0[..len], false, true).is_err());
+    }
+
+    let mut b = behaviour();
+    base(&mut b, "");
+    b.pptr(2, 157);
+    let s = sn_unity::PrefabSpawner::parse(&b.0, false, false).unwrap();
+    assert_eq!(
+        s.prefab,
+        sn_unity::SpawnPrefab::Object(PPtr {
+            file_id: 2,
+            path_id: 157
+        })
+    );
+    let manual = sn_unity::PrefabSpawner {
+        spawn_type: sn_unity::SPAWN_MANUAL,
+        ..s
+    };
+    assert!(!manual.spawns_in_new_game());
+}

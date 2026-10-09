@@ -79,6 +79,9 @@ Commands:
                          counts, top-level objects (with their hierarchy to
                          DEPTH), what is drawn, scripts (with the bytes of
                          each MonoBehaviour of script CLASS)
+  scene --lifepod [--seed <N>]
+                         Lifepod 5 in a new game with world seed N (default
+                         1): start point, player spawn, spawned modules
   scene --startup        The scenes the game loads at start and what the
                          spawned ones draw in a new game
   terrain-materials      Terrain block types → materials → textures, checked
@@ -182,6 +185,7 @@ fn run(mut args: Vec<String>) -> Result<ExitCode> {
         ["prefab", "--placed", "--oracle"] => prefab::placed(&game, true),
         ["prefab", key] => prefab::one(&game, key),
         ["scene", "--startup"] => scene::startup(&game),
+        ["scene", "--lifepod"] => scene::lifepod(&game, seed),
         ["scene", name] => scene::run(&game, name, None, None),
         ["scene", name, "--script", class] => scene::run(&game, name, None, Some(class)),
         ["scene", name, "--tree", depth] => {

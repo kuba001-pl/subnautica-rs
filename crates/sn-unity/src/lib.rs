@@ -40,7 +40,9 @@ pub use prefab::{
     TransformNode, parse_resource_container, parse_text_asset,
 };
 pub use scene_scripts::{
-    AutoLoadScene, CrashedShipExploder, parse_additional_scenes, parse_autoload_scenes,
+    AutoLoadScene, CrashedShipExploder, EscapePod, PrefabSpawner, SPAWN_INTERMITTENT, SPAWN_MANUAL,
+    SPAWN_ON_AWAKE, SPAWN_ON_NEW_BORN, SPAWN_ON_START, SpawnPrefab, parse_additional_scenes,
+    parse_autoload_scenes, parse_random_start,
 };
 pub use serialized::{
     External, ObjectInfo, SUPPORTED_VERSIONS, SerializedFile, SerializedType, TypeTreeNode,

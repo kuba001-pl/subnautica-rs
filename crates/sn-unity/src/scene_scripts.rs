@@ -76,3 +76,104 @@ impl CrashedShipExploder {
         })
     }
 }
+
+/// `RandomStart.validStartPointTexture`: the map of valid lifepod starts.
+pub fn parse_random_start(data: &[u8], big_endian: bool) -> Result<PPtr> {
+    let mut r = fields(data, big_endian)?;
+    PPtr::read(&mut r)
+}
+
+/// `EscapePod`: the fields we use (its first two).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EscapePod {
+    pub bottom_hatch_entrance: PPtr,
+    /// Transform where the player is put (`RespawnPlayer`).
+    pub player_spawn: PPtr,
+}
+
+impl EscapePod {
+    pub fn parse(data: &[u8], big_endian: bool) -> Result<EscapePod> {
+        let mut r = fields(data, big_endian)?;
+        Ok(EscapePod {
+            bottom_hatch_entrance: PPtr::read(&mut r)?,
+            player_spawn: PPtr::read(&mut r)?,
+        })
+    }
+}
+
+/// `SpawnType`.
+pub const SPAWN_ON_START: i32 = 0;
+pub const SPAWN_INTERMITTENT: i32 = 1;
+pub const SPAWN_ON_AWAKE: i32 = 2;
+pub const SPAWN_ON_NEW_BORN: i32 = 3;
+pub const SPAWN_MANUAL: i32 = 4;
+
+/// What a spawner instantiates.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SpawnPrefab {
+    /// `PrefabSpawn.prefab`: a GameObject.
+    Object(PPtr),
+    /// `AddressablesPrefabSpawn.prefab`: an asset GUID (a catalog key).
+    Address(String),
+}
+
+/// `PrefabSpawn` or `AddressablesPrefabSpawn` (`PrefabSpawnBase` fields,
+/// then the prefab).
+#[derive(Clone, Debug, PartialEq)]
+pub struct PrefabSpawner {
+    pub spawn_type: i32,
+    pub use_prefab_transform_as_local: bool,
+    pub use_current_transform_as_local: bool,
+    pub keep_scale: bool,
+    /// Parent of the spawned object; null: the spawner's own Transform.
+    pub attach_to_parent: PPtr,
+    pub deactivate_on_spawn: bool,
+    pub prefab: SpawnPrefab,
+}
+
+impl PrefabSpawner {
+    /// `addressable`: an `AddressablesPrefabSpawn` (else a `PrefabSpawn`).
+    pub fn parse(data: &[u8], big_endian: bool, addressable: bool) -> Result<PrefabSpawner> {
+        let mut r = fields(data, big_endian)?;
+        let bool4 = |r: &mut Reader| -> Result<bool> {
+            let b = r.u8()? != 0;
+            r.align(4)?;
+            Ok(b)
+        };
+        let spawn_type = r.i32()?;
+        r.f32()?; // intermittent spawn time
+        bool4(&mut r)?; // inherit layer
+        let use_prefab_transform_as_local = bool4(&mut r)?;
+        let use_current_transform_as_local = bool4(&mut r)?;
+        let keep_scale = bool4(&mut r)?;
+        let attach_to_parent = PPtr::read(&mut r)?;
+        r.f32()?; // spawn at health percent
+        bool4(&mut r)?; // use spawn at health
+        PPtr::read(&mut r)?; // spawned object
+        r.aligned_string()?; // message sent on spawn
+        let deactivate_on_spawn = bool4(&mut r)?;
+        let prefab = if addressable {
+            SpawnPrefab::Address(r.aligned_string()?)
+        } else {
+            SpawnPrefab::Object(PPtr::read(&mut r)?)
+        };
+        Ok(PrefabSpawner {
+            spawn_type,
+            use_prefab_transform_as_local,
+            use_current_transform_as_local,
+            keep_scale,
+            attach_to_parent,
+            deactivate_on_spawn,
+            prefab,
+        })
+    }
+
+    /// Whether it spawns by itself when a new game starts (not `Manual`,
+    /// which the game's code triggers, nor `Intermittent`).
+    pub fn spawns_in_new_game(&self) -> bool {
+        matches!(
+            self.spawn_type,
+            SPAWN_ON_START | SPAWN_ON_AWAKE | SPAWN_ON_NEW_BORN
+        )
+    }
+}

@@ -712,3 +712,52 @@ fn skinned_lod_matches_its_static_lod() {
         assert!(((a.1[k] + a.0[k]) - (b.1[k] + b.0[k])).abs() / 2.0 < 0.03 * size);
     }
 }
+
+#[test]
+#[ignore = "needs SUBNAUTICA_DIR pointing at a Subnautica install"]
+fn lifepod_start_and_modules() {
+    let Some(dir) = std::env::var_os("SUBNAUTICA_DIR") else {
+        eprintln!("SUBNAUTICA_DIR not set; skipping");
+        return;
+    };
+    let game = GameData::locate(Some(PathBuf::from(dir))).unwrap();
+    let assets = Assets::index(&game).unwrap();
+    let map = assets.start_map().unwrap();
+    // 0.59 % of the 512 × 512 pixels.
+    assert!(
+        (map.valid_share() - 0.0059).abs() < 0.0005,
+        "{}",
+        map.valid_share()
+    );
+    let (point, _) = map.random_start(1);
+    assert!(map.is_valid(point[0], point[2]));
+    let mut pod = assets.scene("escapepod").unwrap();
+    assert!(pod.spawn_lightmapped_prefab());
+    let spawn = pod.place_escape_pod(&assets, point).unwrap();
+    // The player spawn is inside the pod, about 2 m above the water line.
+    let d: Vec<f32> = (0..3).map(|a| spawn.position[a] - point[a]).collect();
+    assert!(
+        d[0].hypot(d[2]) < 2.0 && (1.5..2.5).contains(&d[1]),
+        "{d:?}"
+    );
+    assert_eq!(pod.follow_targets(&assets).unwrap(), 6);
+    let spawns = pod.spawns(&assets).unwrap();
+    assert_eq!(spawns.len(), 7);
+    let catalog = assets.catalog().unwrap();
+    let mut fabricators = 0;
+    for s in &spawns {
+        // Every module's parent is inside the pod (radius ~3 m).
+        let p = s.parent.position;
+        let r = (p[0] - point[0]).hypot(p[2] - point[2]);
+        assert!(
+            r < 4.0 && (-1.0..4.0).contains(&p[1]),
+            "{} at {p:?}",
+            s.name
+        );
+        if let sn_unity::SpawnPrefab::Address(guid) = &s.spawner.prefab {
+            let prefab = assets.prefab(&catalog, guid).unwrap();
+            fabricators += usize::from(prefab.nodes[0].name == "Fabricator");
+        }
+    }
+    assert_eq!(fabricators, 1);
+}

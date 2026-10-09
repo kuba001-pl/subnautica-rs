@@ -49,8 +49,8 @@ Usage: sn-client [--game-dir <PATH>] [--start <X> <Y> <Z>] [--look <X> <Y> <Z>]
                  [--benchmark <FRAMES> | --flythrough <X> <Y> <Z> [--speed <M/S>]]
 
   --game-dir     folder containing Subnautica.exe (or set SUBNAUTICA_DIR)
-  --start        camera start, Unity world coordinates (default 0 -10 0, the
-                 lifepod start in the Safe Shallows)
+  --start        camera start, Unity world coordinates (default: where the
+                 player starts, in Lifepod 5; 0 -10 0 with --no-scenes)
   --look         point the camera looks at, Unity world coordinates
   --debug-colours  false colours per terrain type instead of the game's
                  terrain materials (also turns world objects off)
@@ -64,6 +64,9 @@ Usage: sn-client [--game-dir <PATH>] [--start <X> <Y> <Z>] [--look <X> <Y> <Z>]
                  the Precursor bases it holds)
   --aurora       intact | exploded: the Aurora before its explosion (default,
                  as in a new game) or after it
+  --lifepod-seed world seed for Lifepod 5's random start point (default 1;
+                 the game picks anew in every new game)
+  --lifepod      <X> <Z>: put Lifepod 5 there instead (Unity world metres)
   --fog-unit     scale on the game's light values (calibration; default 1:
                  one game light unit = 1.0 in the image, as in Unity)
   --color-grading  off | neutral | aces: the game's option of that name
@@ -92,6 +95,11 @@ Q/E down/up, Shift to go fast, mouse wheel to change speed.
 struct Args {
     game_dir: Option<PathBuf>,
     start: Vec3,
+    /// `--start` given (else the player's spawn in the lifepod).
+    start_given: bool,
+    lifepod_seed: u64,
+    /// `--lifepod X Z`.
+    lifepod: Option<[f32; 2]>,
     look: Option<Vec3>,
     view: f32,
     benchmark: Option<usize>,
@@ -119,6 +127,9 @@ fn parse_args() -> Result<Args, String> {
     let mut args = Args {
         game_dir: None,
         start: Vec3::new(0.0, -10.0, 0.0),
+        start_given: false,
+        lifepod_seed: 1,
+        lifepod: None,
         look: None,
         view: 1200.0,
         benchmark: None,
@@ -131,6 +142,7 @@ fn parse_args() -> Result<Args, String> {
         no_grass: false,
         scenes: Some(SceneOptions {
             aurora_exploded: false,
+            lifepod: None,
         }),
         fog_unit: 1.0,
         color_grading: ColorGrading::Off,
@@ -159,7 +171,19 @@ fn parse_args() -> Result<Args, String> {
             "--game-dir" => {
                 args.game_dir = Some(it.next().ok_or("--game-dir needs a path")?.into());
             }
-            "--start" => args.start = vec3(&mut it, "--start")?,
+            "--start" => {
+                args.start = vec3(&mut it, "--start")?;
+                args.start_given = true;
+            }
+            "--lifepod-seed" => {
+                let seed = it.next().and_then(|v| v.parse().ok());
+                args.lifepod_seed = seed.ok_or("--lifepod-seed needs a whole number")?;
+            }
+            "--lifepod" => {
+                let x = number(it.next(), "--lifepod")?;
+                let z = number(it.next(), "--lifepod")?;
+                args.lifepod = Some([x, z]);
+            }
             "--look" => args.look = Some(vec3(&mut it, "--look")?),
             "--view" => args.view = number(it.next(), "--view")?,
             "--benchmark" => args.benchmark = Some(number(it.next(), "--benchmark")? as usize),
@@ -321,14 +345,65 @@ fn lod_ranges(view: f32) -> LodRanges {
     LodRanges(default.map(|r| r * scale))
 }
 
+/// Lifepod 5's start point (`RandomStart` with our seeded draw, or the
+/// chosen x, z) and where the player starts in it.
+fn lifepod_start(
+    game_dir: Option<PathBuf>,
+    seed: u64,
+    chosen: Option<[f32; 2]>,
+) -> Result<([f32; 3], sn_world::Transform), String> {
+    let game = GameData::locate(game_dir).map_err(|e| e.to_string())?;
+    let assets = sn_assets::Assets::index(&game)?;
+    let point = match chosen {
+        Some([x, z]) => [x, 0.0, z],
+        None => {
+            let map = assets.start_map()?;
+            let (p, tries) = map.random_start(seed);
+            println!(
+                "lifepod: seed {seed}: start {p:?} after {tries} draws ({:.2} % of the start map valid)",
+                map.valid_share() * 100.0
+            );
+            p
+        }
+    };
+    let mut scene = assets.scene("escapepod")?;
+    scene.spawn_lightmapped_prefab();
+    let spawn = scene.place_escape_pod(&assets, point)?;
+    Ok((point, spawn))
+}
+
 fn main() -> AppExit {
-    let args = match parse_args() {
+    let mut args = match parse_args() {
         Ok(args) => args,
         Err(message) => {
             eprintln!("{message}");
             return AppExit::error();
         }
     };
+    if !args.debug_colours
+        && !args.no_objects
+        && let Some(options) = args.scenes.as_mut()
+    {
+        match lifepod_start(args.game_dir.clone(), args.lifepod_seed, args.lifepod) {
+            Ok((point, spawn)) => {
+                options.lifepod = Some(point);
+                if !args.start_given {
+                    args.start = Vec3::from(spawn.position);
+                    if args.look.is_none() {
+                        // Unity's forward is the rotation's +z.
+                        let ahead = spawn
+                            .then(&sn_world::Transform {
+                                position: [0.0, 0.0, 10.0],
+                                ..Default::default()
+                            })
+                            .position;
+                        args.look = Some(Vec3::from(ahead));
+                    }
+                }
+            }
+            Err(e) => eprintln!("warning: no lifepod: {e}"),
+        }
+    }
     let ranges = lod_ranges(args.view);
     let (look, blocks, water, sky_data, surface, sky_textures, caustics, stars) =
         if args.debug_colours {
