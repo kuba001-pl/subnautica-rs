@@ -184,7 +184,7 @@ pub fn run(game: &GameData) -> Result<ExitCode> {
     );
     println!("without skin data: {:?}", t.why);
     println!(
-        "bones ??? bind poses: {}; bones outside the hierarchy: {}; bind poses without a 0 0 0 1 bottom row: {}",
+        "bones ≠ bind poses: {}; bones outside the hierarchy: {}; bind poses without a 0 0 0 1 bottom row: {}",
         t.bone_mismatch, t.missing_bones, t.bad_layout
     );
     let mut worst = 0.0f32;

@@ -54,7 +54,7 @@ Usage: sn-client [--game-dir <PATH>] [--start <X> <Y> <Z>] [--look <X> <Y> <Z>]
   --look         point the camera looks at, Unity world coordinates
   --debug-colours  false colours per terrain type instead of the game's
                  terrain materials (also turns world objects off)
-  --no-objects   terrain only, no world objects (coral, rocks, â€¦)
+  --no-objects   terrain only, no world objects (coral, rocks, …)
   --no-local-lights  the objects' point and spot lights off (for comparisons)
   --slot-seed    world seed for filling the spawn slots (default 1; the game
                  picks anew in every save)
@@ -309,7 +309,7 @@ fn load_water(game: &GameData, assets: &sn_assets::Assets) -> Result<WaterData, 
     })
 }
 
-/// Unity world coordinates â†’ Bevy (flip z; see terrain.rs).
+/// Unity world coordinates → Bevy (flip z; see terrain.rs).
 fn unity_to_bevy(p: Vec3) -> Vec3 {
     Vec3::new(p.x, p.y, -p.z)
 }
@@ -519,7 +519,7 @@ fn main() -> AppExit {
 
 /// The game's "Color grading" option (Unity's Post Processing Stack v1,
 /// `UwePostProcessingManager`): off (the default) writes the HDR values
-/// clamped to 0â€¦1; neutral and ACES tonemap (here: Bevy's nearest
+/// clamped to 0…1; neutral and ACES tonemap (here: Bevy's nearest
 /// tonemappers, **not** the game's exact curves yet).
 #[derive(Resource, Clone, Copy, Debug, PartialEq, Eq)]
 enum ColorGrading {
@@ -643,7 +643,7 @@ fn setup(
 
 /// The game's shadow cascades at "Detail" High (`QualitySettings`, read
 /// once with UnityPy on the dev machine; `docs/formats/lighting.md`
-/// Â§ Shadows): 4 cascades to 50 m, split at 6.7 %, 20 % and 46.7 %.
+/// § Shadows): 4 cascades to 50 m, split at 6.7 %, 20 % and 46.7 %.
 fn sun_cascades() -> bevy::light::CascadeShadowConfig {
     let distance = 50.0;
     let mut config = bevy::light::CascadeShadowConfigBuilder {
@@ -942,7 +942,7 @@ fn measure(
         let (lm, lp, lw) = percentiles(&latency);
         let (mm, mp, _) = percentiles(&meshing);
         info!(
-            "measure: lod {lod}: {} batches streamed; requestâ†’screen mean {lm:.0} ms, p95 {lp:.0} ms, worst {lw:.0} ms; meshing mean {mm:.0} ms, p95 {mp:.0} ms",
+            "measure: lod {lod}: {} batches streamed; request→screen mean {lm:.0} ms, p95 {lp:.0} ms, worst {lw:.0} ms; meshing mean {mm:.0} ms, p95 {mp:.0} ms",
             latency.len(),
         );
     }
