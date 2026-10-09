@@ -339,6 +339,35 @@ Renderers with **no bones** (113 of 304 in placed prefabs, e.g. all of
 `BrainCoral`'s LOD 0, which use blend shapes) are drawn by Unity as the
 plain mesh at the renderer's Transform; we do the same.
 
+### Cameras and layers — confirmed (2026-10-09)
+
+**Camera** (class 20), Unity 2019.4 layout as far as we read it: `PPtr game
+object, u8 enabled (align 4), u32 clear flags, rgba background, i32
+projection matrix mode, i32 gate fit, vec2 sensor size, vec2 lens shift,
+f32 focal length, rect viewport, f32 near, f32 far, f32 field of view, u8
+orthographic (align 4), f32 orthographic size, f32 depth, u32 culling mask`
+(offset 104). `sn-inspect scene main` prints the three cameras of the
+`PlayerCameras` object: `MainCamera` near 0.03, far 1,700, field of view 60,
+mask `0x65ffff17`; `MainCamera (UI)` mask `0x00000020`; `ImguiCamera` mask
+`0x80000000`. Checked: the UI cameras' masks are exactly the `UI` (5) and
+`DebugOverlays` (31) layers.
+
+**Layer names** (the `TagManager`'s 32 layers in `globalgamemanagers`, read
+with a throwaway string scan; the indices agree with the UI cameras' masks):
+0 Default, 1 TransparentFX, 2 Ignore Raycast, 4 Water, 5 UI, 8 Viewmodel,
+9 OnlyVehicle, 10 BuildPreview, 11 BuiltEntities, 12 HardPoints, 13 Useable,
+14 IgnoreDepthWorldUI, 15 Minimap, 16 HUDRenderTexture, 17 Vehicle,
+18 FrontEnd, 19 Player, 20 TouchScreen, 21 Trigger, 22 NotUseable,
+23 SubRigidbodyExclude, 24 RenderForAllCameras, 26 DiveReel, 27 Occluder,
+28 BaseClipProxy, 29 Sky, 30 TerrainCollider, 31 DebugOverlays (3, 6, 7, 25
+unnamed). The main camera draws every layer except 3, 5, 6, 7, 25, 27, 28
+and 31. Of the nodes we draw, all are on layer 0 except the flashlight's
+light cone (8, Viewmodel) and the 39 occluder shells (27;
+`docs/formats/materials.md`). The game's code assigns `cullingMask` only in
+a menu fade (which puts it back afterwards), to 0 in `PlatformUtils`, and
+on the water's own clip camera. So the stored mask is the one used in play
+(confirmed by reading the code, not at run time).
+
 ## Not yet read
 
 - Blend shapes (read past, not applied), creature animation.

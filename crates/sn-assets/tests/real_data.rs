@@ -761,3 +761,37 @@ fn lifepod_start_and_modules() {
     }
     assert_eq!(fabricators, 1);
 }
+
+/// M7g1: the game's main camera leaves the `Occluder` layer (27) out, and
+/// the occluder shells are on it (`docs/formats/materials.md`).
+#[test]
+#[ignore = "needs SUBNAUTICA_DIR pointing at a Subnautica install"]
+fn main_camera_skips_the_occluder_layer() {
+    let Some(dir) = std::env::var_os("SUBNAUTICA_DIR") else {
+        eprintln!("SUBNAUTICA_DIR not set; skipping");
+        return;
+    };
+    let game = GameData::locate(Some(PathBuf::from(dir))).unwrap();
+    let assets = Assets::index(&game).unwrap();
+    let camera = assets.main_camera().unwrap();
+    assert_eq!(camera.culling_mask, 0x65ff_ff17);
+    assert_eq!(
+        (camera.near, camera.far, camera.field_of_view),
+        (0.03, 1700.0, 60.0)
+    );
+    assert!(!camera.draws_layer(27));
+
+    let catalog = assets.catalog().unwrap();
+    let prefab = assets
+        .prefab(
+            &catalog,
+            "WorldEntities/Doodads/Precursor/LavaBase/Final_Rooms/Precursor_LavaBase_Hallway.prefab",
+        )
+        .unwrap();
+    let hidden: Vec<&str> = prefab
+        .visible_nodes()
+        .filter(|n| !camera.draws_layer(n.layer))
+        .map(|n| n.name.as_str())
+        .collect();
+    assert_eq!(hidden, ["Occluder_Precursor_LavaBase_Hallway_shell"]);
+}

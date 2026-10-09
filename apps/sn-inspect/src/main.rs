@@ -74,6 +74,9 @@ Commands:
                          the static LOD 1
   prefab --lights        The Light components of every placed prefab, and
                          how many lights the world's placements hold
+  prefab --materials     Every material drawn by the placed prefabs and the
+                         startup scenes: uses, what our object shader takes
+                         from it, its shader (name found by a string scan)
   scene <NAME> [--tree <DEPTH> | --script <CLASS>]
                          A scene bundle (aurora, escapepod, main, …): object
                          counts, top-level objects (with their hierarchy to
@@ -181,6 +184,7 @@ fn run(mut args: Vec<String>) -> Result<ExitCode> {
         ["slots", x, y, z] => slots::run(&game, Some(parse_coord(x, y, z)?), seed),
         ["prefab", "--placed"] => prefab::placed(&game, false),
         ["prefab", "--lights"] => prefab::lights(&game),
+        ["prefab", "--materials"] => prefab::materials(&game),
         ["prefab", "--skinned"] => skinned::run(&game),
         ["prefab", "--placed", "--oracle"] => prefab::placed(&game, true),
         ["prefab", key] => prefab::one(&game, key),

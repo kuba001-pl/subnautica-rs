@@ -101,6 +101,29 @@ pub fn run(
         }
     }
 
+    for info in scene.file.objects().iter().filter(|i| i.class_id == 20) {
+        let Some((_, data)) = scene.file.object(info.path_id) else {
+            continue;
+        };
+        let camera = match sn_unity::Camera::parse(data, scene.file.file().big_endian) {
+            Ok(c) => c,
+            Err(e) => {
+                println!("camera {}: {e}", info.path_id);
+                continue;
+            }
+        };
+        let name = scene
+            .roots
+            .iter()
+            .flat_map(|r| &r.nodes)
+            .find(|n| n.object.2 == camera.game_object.path_id)
+            .map_or("?", |n| n.name.as_str());
+        println!(
+            "camera {name:?}: enabled {}, near {}, far {}, field of view {}, culling mask {:#010x}",
+            camera.enabled, camera.near, camera.far, camera.field_of_view, camera.culling_mask
+        );
+    }
+
     let mut scripts: BTreeMap<String, usize> = BTreeMap::new();
     for info in scene.file.objects() {
         if info.class_id == MONO_BEHAVIOUR {

@@ -183,6 +183,7 @@ reach them — expect the far end of this list to change.
 | **M7f2** ✅ | Skinned meshes (`SkinnedMeshRenderer`: 73 placed prefabs, e.g. `BrainCoral` LOD 0, and the lifepod's hull): read the renderer (materials, mesh, bones, root bone) and the mesh's bind poses and bone weights; skin on the CPU at load time in the pose the hierarchy stores (the game's `Animator` poses them; animation comes later). | Unit test of the skinning on synthetic bones; skinned prefabs counted in the log; a skinned LOD 0 has the bounds of its static LOD 1 (within a few %) on a sample. Done: the three prefabs with both match within 0.1 %; bone-less skinned renderers (blend shapes) are drawn as plain meshes; blend shapes not applied. |
 | **M7f3** ✅ (not compared with the game) | Lifepod 5: the `escapepod` scene placed as `EscapePod.ChooseRandomStart` does: `RandomStart.GetRandomStartPoint` draws x, z in ±2,048 m with y = 0 until the `validStartPointTexture` pixel there has green > 0.5 (the game's draw uses Unity's unseeded `Random`, so any valid point is the game's behaviour; ours is seeded, `--lifepod <X> <Z>` to choose); the camera starts at its player spawn point; the pod's spawned modules (`AddressablesPrefabSpawn`: fabricator, radio, medical cabinet, …) in place, on the mount points `MoveAndRotateWithTransform` puts them (stored pose). Not yet: the camera at the player's eye height (it stands at `playerSpawn`), the pod's own sky (`MarmoLifepodSky`) and lights (`LightingController`), the pod's animation, floating on the waves (`WorldForces`, `Stabilizer`; comes with physics, M9), the intro's damage effects. | Start point and the share of valid texture pixels logged; the pod and its modules visible (screenshot); the same seed gives the same start. |
 | **M7f4** | Everything M7f1–M7f3 left different from the game (recorded 2026-10-09; nothing here is 1:1 yet). **Aurora and scenes:** always the most detailed LOD (the game's `LODGroup`s switch to LOD 1/2 with distance; same for the pod); the explosion is a flag (`--aurora`), not timed from the game clock (`timeToStartCountdown` = start + 2.3–4 days × 1,200 s, swap 27 s later); `ShipExteriorCullManager`/`CullExplodedExterior` (exterior hidden from inside) and the 316 `CullingOccludee`s not ported; fire, smoke, radiation and explosion effects (particle systems, `VFXController`), sounds; scene renderers all cast sun shadows (their `m_CastShadows` not read; M8c6b). **Skinned meshes:** shown in the pose the hierarchy stores, not animated (`Animator`, e.g. the pod's `lifepod_damage` blend, creatures); blend shapes read past, not applied (e.g. `BrainCoral` LOD 0 shows its base shape); normals of bones with non-uniform scale are moved by the linear part, not its inverse transpose (Unity's GPU skinning: **hypothesis** it does the same). **Lifepod 5:** our seeded draw instead of Unity's unseeded `Random` (the point differs per run in the game anyway); fixed at y = 0 (the game floats it with `WorldForces`/`Stabilizer` around its anchor and the waves; needs physics, M9); camera at the `playerSpawn` transform, not the player's eye height or initial look direction; interior lit by the outside: the pod's own sky (`MarmoLifepodSky`, `SkyEscapePod`), its 5 lights driven by `LightingController` (red alert in the intro) and the `AtmosphereVolume` not used; intro state not shown (damage effects, fire, smoke, birds: the `Manual` spawners); spawned modules' own scripts not run (e.g. nested spawners, storage contents from `SpawnEscapePodSupplies`, the screen UI); `MoveAndRotateWithTransform` applied once, not every frame. | Each item ported or confirmed equal by a matched screenshot, number or unit test; this row emptied. |
+| **M7g** | Objects whose materials are not MarmosetUBER, drawn as the game does: the occluder shells hidden, fake volumetric lights, mesh effects, triplanar rocks: see § 4.2. | See § 4.2. |
 
 ### Phase C — Being underwater
 
@@ -248,6 +249,66 @@ and a MODLOG entry; nothing is pushed without the user's OK):
 (60 fps) on the dev machine (RTX 3080) with all of the above. Measure each
 step with `--benchmark` A/B against the step before (same build flags,
 three runs each).
+
+### 4.2 Materials the object shader doesn't cover (plan written 2026-10-09)
+
+**Why:** the user sees invisible walls in the alien bases, solid white
+spheres and cones, and untextured objects. `sn-inspect prefab --materials`
+(`docs/formats/materials.md`) shows the cause: of the 1,973 materials we
+draw, 70 use other shaders than MarmosetUBER. Three of them are its
+IonCrystal and Mesmer variants, which we take as UBER; `material_desc`
+draws the other 67 as plain `_MainTex` × `_Color`. Those with no `_MainTex`
+come out flat white.
+1. **Occluder shells:** 39 `Occluder_*_shell` nodes (`Unlit/DepthOnly`,
+   layer 27 `Occluder`) in 38 Precursor rooms. The game never draws them in
+   the picture: its main camera's culling mask (`0x65ffff17`) leaves layer
+   27 out, and only `CullingCamera` draws them, into its occlusion depth
+   texture. We draw them as opaque white shells.
+2. **Fake volumetric lights:** 68 nodes, 239 placements (`x_AtmoLight_Sphere`
+   on ion crystal pedestals, `x_AtmoLight_Cone` under Precursor lights),
+   shader `UWE/Particles/WBOIT-FakeVolumetricLight`. We draw them as solid
+   white blended meshes (alpha 1).
+3. **Mesh effects** (`UWE/Particles/UBER`): 31 materials, 169 nodes, 1,058
+   placements: Lost River brine lakes and waterfalls, Precursor terminal
+   screens and halos, lava and sand falls, tech light cones. We draw them as
+   plain blended textures.
+4. **Triplanar rocks** (`UWE/SIG Triplanar with Capping`): 976 placements
+   of Safe Shallows rocks and coral clumps, drawn white (no `_MainTex`).
+   `UWE/SIG` (11,095 placements, coral deco, lava rocks) has a `_MainTex`
+   but its own maps are not used.
+5. Small: `Legacy Shaders/Diffuse` (8 nodes), `Blinn Phong` (the Sea
+   Emperor babies, 4), `FX/WBOIT-WaterBase` (the Gun's moon pool, 1), SIG
+   grass/waving/sand drift (3), geyser smoke (2), IonCrystal and Mesmer
+   (UBER variants: their extra properties not read).
+
+**What the earlier research got wrong** (checked 2026-10-09): the sphere
+and cone lights are drawn alpha-blended, not opaque (it looks the same, as
+their alpha is 1). The door force field `precursor_doorway_portal` is not
+drawn at all, because its prefab is not placed in the world data (it is
+spawned at run time). It missed the `UWE/Particles/UBER` meshes and the
+triplanar rocks, which are larger groups than the spheres.
+
+**Approach:** tell the shader by its **name** (read from the material's
+`Shader`), not by property fingerprints, and give `MaterialDesc` a shader
+kind. Each kind is drawn by its own port. Until a kind is ported it stays
+drawn as now (the user's decision, 2026-10-09: hidden effects get
+forgotten), and the client logs it at start as "shader not ported: N nodes
+per kind", so the gap is visible in every run. Shaders are decoded
+from their compiled programs as for MarmosetUBER (`lighting.md` § Objects),
+and the findings written up in `docs/formats/materials.md`.
+
+**Order of work** (each step ends with numbers, a screenshot for the user
+and a MODLOG entry; nothing is committed or pushed without the user's OK):
+
+| Step | Work | Done when |
+|---|---|---|
+| **M7g1** ✅ (screenshot too dark to compare: the Lava Castle base at −1,192 m has no sunlight and its own lights are not drawn as the game does) | Camera culling mask: read `Camera` (class 20: culling mask, near/far, field of view) in `sn-unity`, with a test on synthetic bytes; nodes keep their layer (they do: `PrefabNode::layer`). `sn-assets` gives the main camera's mask from the `main` scene; the client does not draw nodes whose layer the mask leaves out. No name matching: the rule is the game's. | Unit test of the layout; real-data test: `MainCamera` mask `0x65ffff17`, UI `0x20`; the client logs "skipped by layer: 39 nodes (40 placements)", all `Occluder_*_shell`; screenshot inside the Gun's large hallway. |
+| **M7g2** | Shader names: parse enough of `Shader` (class 48, `m_ParsedForm.m_Name`, layout from UnityPy's 2019.4 type tree) to name every material's shader; `ShaderKind` in `MaterialDesc` (UBER, UBER variant, FakeVolumetricLight, Particles UBER, SIG, SIG triplanar, DepthOnly, other); kinds not ported yet stay drawn as now and are counted. Replaces the string scan in `sn-inspect prefab --materials`. | Every one of the 1,973 drawn materials gets a name (none unknown), counts per kind equal to `docs/formats/materials.md`; the client logs "shader not ported: N nodes per kind". |
+| **M7g3** | `UWE/Particles/WBOIT-FakeVolumetricLight`: decode the compiled shader (its keywords `FX_ADDFOG FX_FRESNELCLIP FX_NEARCLIP FX_SOFTEDGES FX_SCROLL`, blend mode, properties), document it, port it as a transparent pass (soft edges need the depth texture). How the game's WBOIT (weighted blended order-independent transparency) composites is part of the decode; if we can't match it, write down the difference. | Formula unit-tested on known inputs; every constant explained in `materials.md`; screenshot of a pedestal and a Precursor spotlight next to the game's; GPU time logged. |
+| **M7g4** | `UWE/Particles/UBER` meshes: decode the shader's variants used by the 31 materials (two scrolling textures, deform, normal and refraction maps, blend modes from the material), port them; the Lost River lakes are the biggest user. | Variants used counted and each one decoded; matched screenshots of a Lost River brine lake and a Precursor terminal; GPU time logged. |
+| **M7g5** | `UWE/SIG Triplanar with Capping` and `UWE/SIG`: decode both (cap/side textures, SIG maps), compare with our terrain shader's triplanar formula and share code where the formulas agree. | Rocks textured: the client counts no drawn material without a texture except UBER ones; matched screenshot of a Safe Shallows rock and a coral deco. |
+| **M7g6** | The small rest (Legacy Diffuse, Blinn Phong, WaterBase moon pool, SIG grass/waving/sand drift, geyser smoke, IonCrystal and Mesmer properties): each ported or listed in M7f4 as not 1:1, with its count. | `materials.md` lists each with "ported" or "not ported"; no kind left unexplained. |
+| later | `CullingCamera`'s occlusion culling with the occluder shells (a speed-up, not a visual change); the door force fields with the objects the game spawns at run time. | — |
 
 ### Phase D — Multiplayer
 

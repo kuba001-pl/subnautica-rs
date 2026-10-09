@@ -464,3 +464,164 @@ pub fn placed(game: &GameData, oracle: bool) -> Result<ExitCode> {
         ExitCode::FAILURE
     })
 }
+
+/// The strings of a shader object that look like a shader name
+/// (`Group/Name`): a length-prefixed run of name characters. A heuristic for
+/// inspection only: the name is stored deep in the serialized shader
+/// (`m_ParsedForm.m_Name`), which we don't parse.
+fn shader_names(object: &sn_assets::ObjectRef) -> String {
+    let Ok((_, data)) = object.data() else {
+        return "(unreadable)".into();
+    };
+    let mut names = BTreeSet::new();
+    for at in 0..data.len().saturating_sub(4) {
+        let Some(len) = data.get(at..at + 4) else {
+            break;
+        };
+        let len = u32::from_le_bytes([len[0], len[1], len[2], len[3]]) as usize;
+        if !(5..=96).contains(&len) {
+            continue;
+        }
+        let Some(run) = data.get(at + 4..at + 4 + len) else {
+            continue;
+        };
+        let Ok(s) = std::str::from_utf8(run) else {
+            continue;
+        };
+        if s.contains('/')
+            && s.starts_with(|c: char| c.is_ascii_uppercase())
+            && s.chars()
+                .all(|c| c.is_ascii_alphanumeric() || "/_- ()".contains(c))
+        {
+            names.insert(s.to_string());
+        }
+    }
+    let names: Vec<_> = names.into_iter().take(3).collect();
+    if names.is_empty() {
+        format!("(no name found, {} bytes)", data.len())
+    } else {
+        names.join(" | ")
+    }
+}
+
+/// `prefab --materials`: every material on a drawn node of the placed
+/// prefabs and the startup scenes (Aurora intact, escape pod at the origin),
+/// with what our object shader makes of it.
+pub fn materials(game: &GameData) -> Result<ExitCode> {
+    let start = Instant::now();
+    let placed = placed_positions(game)?;
+    let assets = Assets::index(game)?;
+    let catalog = assets.catalog()?;
+    #[derive(Default)]
+    struct Use {
+        nodes: usize,
+        placements: usize,
+        node_names: BTreeSet<String>,
+        meshes: BTreeSet<String>,
+        prefabs: BTreeSet<String>,
+        layers: BTreeSet<u32>,
+        /// Where the first placement's root is (world, Unity axes).
+        first: Option<[f32; 3]>,
+        desc: String,
+    }
+    let mut uses: BTreeMap<String, Use> = BTreeMap::new();
+    let mut mesh_names: BTreeMap<(std::path::PathBuf, String, i64), String> = BTreeMap::new();
+    let mut add = |prefab: &Prefab, key: &str, count: usize, at: Option<[f32; 3]>| {
+        for node in prefab.visible_nodes() {
+            for material in node.materials.iter().flatten() {
+                let Ok((_, data)) = material.data() else {
+                    continue;
+                };
+                let Ok(m) = Material::parse(data, material.file.file().big_endian) else {
+                    continue;
+                };
+                let u = uses.entry(m.name.clone()).or_default();
+                if u.desc.is_empty() {
+                    let uber =
+                        m.float("_Shininess").is_some() && m.float("_GlowStrengthNight").is_some();
+                    let main = m.texture("_MainTex").is_some_and(|t| !t.texture.is_null());
+                    let shader = match assets.resolve(&material.file, m.shader) {
+                        Ok(Some(s)) => shader_names(&s),
+                        _ => "(unresolved)".into(),
+                    };
+                    let color = m
+                        .color("_Color")
+                        .map(|c| c.map(|v| (v * 1000.0).round() / 1000.0));
+                    let slots: Vec<&str> = m
+                        .textures
+                        .iter()
+                        .filter(|t| !t.texture.is_null())
+                        .map(|t| t.name.as_str())
+                        .collect();
+                    u.desc = format!(
+                        "uber {uber}, _MainTex {main}, _Color {color:?}, queue {}, keywords [{}], textures [{}], shader {shader}",
+                        m.custom_render_queue,
+                        m.keywords,
+                        slots.join(" ")
+                    );
+                }
+                u.nodes += 1;
+                u.placements += count;
+                u.node_names.insert(node.name.clone());
+                if let Some(mesh) = &node.mesh {
+                    let name = mesh_names.entry(mesh.key()).or_insert_with(|| {
+                        assets
+                            .mesh(mesh)
+                            .map_or("(unreadable)".into(), |(m, _)| m.name)
+                    });
+                    u.meshes.insert(name.clone());
+                }
+                u.prefabs.insert(key.to_string());
+                u.layers.insert(node.layer);
+                u.first = u.first.or(at);
+            }
+        }
+    };
+    let mut errors = 0;
+    for (key, positions) in &placed {
+        match assets.prefab(&catalog, key) {
+            Ok(p) => add(&p, key, positions.len(), positions.first().copied()),
+            Err(_) => errors += 1,
+        }
+        assets.trim_cache(512 << 20);
+    }
+    for name in ["aurora", "escapepod"] {
+        let mut scene = assets.scene(name)?;
+        scene.spawn_lightmapped_prefab();
+        if name == "aurora" {
+            scene.swap_aurora_models(&assets, false)?;
+        }
+        for root in &scene.roots {
+            add(
+                root,
+                &format!("scene {name}"),
+                1,
+                Some(root.nodes[0].local.position),
+            );
+        }
+    }
+    println!("placed prefabs: {}; unreadable: {errors}", placed.len());
+    println!("materials on drawn nodes: {}", uses.len());
+    println!(
+        "material\tdrawn nodes\tplacements\tdescription\tnode names\tmeshes\tprefabs\tlayers\tfirst placement"
+    );
+    for (name, u) in &uses {
+        let few = |s: &BTreeSet<String>| {
+            let v: Vec<_> = s.iter().take(3).cloned().collect();
+            format!("{} ({})", v.join(", "), s.len())
+        };
+        println!(
+            "{name}\t{}\t{}\t{}\t{}\t{}\t{}\t{:?}\t{:?}",
+            u.nodes,
+            u.placements,
+            u.desc,
+            few(&u.node_names),
+            few(&u.meshes),
+            few(&u.prefabs),
+            u.layers,
+            u.first.map(|p| p.map(f32::round))
+        );
+    }
+    println!("time: {:.1} s", start.elapsed().as_secs_f64());
+    Ok(ExitCode::SUCCESS)
+}

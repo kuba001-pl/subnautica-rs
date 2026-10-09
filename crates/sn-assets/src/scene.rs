@@ -7,8 +7,9 @@
 use std::collections::BTreeMap;
 
 use sn_unity::{
-    AutoLoadScene, CrashedShipExploder, EscapePod, MonoBehaviourHeader, PrefabSpawner, SpawnPrefab,
-    TransformNode, parse_additional_scenes, parse_autoload_scenes, parse_random_start,
+    AutoLoadScene, Camera, CrashedShipExploder, EscapePod, GameObject, MonoBehaviourHeader,
+    PrefabSpawner, SpawnPrefab, TAG_MAIN_CAMERA, TransformNode, parse_additional_scenes,
+    parse_autoload_scenes, parse_random_start,
 };
 use sn_world::{StartMap, Transform};
 
@@ -17,6 +18,7 @@ use crate::{Assets, FileRef, ObjectRef, Result};
 
 const GAME_OBJECT: i32 = 1;
 const TRANSFORM: i32 = 4;
+const CAMERA: i32 = 20;
 const RECT_TRANSFORM: i32 = 224;
 /// Only a scene's own file has these (one each).
 const RENDER_SETTINGS: i32 = 104;
@@ -433,6 +435,33 @@ impl Assets<'_> {
             }
         }
         Ok((additional, autoload))
+    }
+
+    /// The game's `Camera.main`: the enabled camera of the `main` scene
+    /// whose GameObject is active and tagged `MainCamera`. Its culling mask
+    /// decides which layers reach the picture.
+    pub fn main_camera(&self) -> Result<Camera> {
+        let main = self.scene("main")?;
+        let big_endian = main.file.file().big_endian;
+        for info in main.file.objects().iter().filter(|o| o.class_id == CAMERA) {
+            let object = ObjectRef {
+                file: main.file.clone(),
+                path_id: info.path_id,
+            };
+            let (_, data) = object.data()?;
+            let camera = Camera::parse(data, big_endian)
+                .map_err(|e| format!("camera {}: {e}", info.path_id))?;
+            let Some(go) = self.resolve(&main.file, camera.game_object)? else {
+                continue;
+            };
+            let (_, data) = go.data()?;
+            let go = GameObject::parse(data, big_endian)
+                .map_err(|e| format!("camera {} game object: {e}", info.path_id))?;
+            if camera.enabled && go.active && go.tag == TAG_MAIN_CAMERA {
+                return Ok(camera);
+            }
+        }
+        Err("main scene: no enabled camera tagged MainCamera".into())
     }
 
     /// The class name of a MonoBehaviour's script; `None` if `behaviour` is

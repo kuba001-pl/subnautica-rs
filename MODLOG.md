@@ -2,6 +2,68 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-09 — M7g1: the main camera's culling mask (occluder shells gone)
+
+**What:** the client no longer draws renderers on layers the game's main
+camera leaves out (`docs/DESIGN.md` § 4.2). The game's rule, no name
+matching.
+- `sn-unity::Camera` (class 20, up to the culling mask; `draws_layer`),
+  `TAG_MAIN_CAMERA`; 2 tests on synthetic bytes.
+- `sn-assets::Assets::main_camera` (the `main` scene's enabled camera on an
+  active GameObject tagged `MainCamera`, like `Camera.main`); real-data test
+  `main_camera_skips_the_occluder_layer`.
+- Client: the worker reads the mask at start (logged with the layers it
+  leaves out; if it fails, a warning and every layer drawn) and skips such
+  nodes in `prefab_parts`, logging each one it skips.
+- `sn-inspect scene` uses `Camera`; `prefab --materials` also prints the
+  first placement of each material. Plan changed at the user's request:
+  shaders not yet ported **stay drawn** and get logged (M7g2), not hidden.
+  No new dependencies.
+
+**Verified (2026-10-09):** workspace tests 141 pass; real-data tests 16
+pass; clippy `-D warnings`, fmt clean. Client `--start -59 -1192 85 --look
+-59 -1199 95 --benchmark 120` (the Lava Castle base): "main camera: culling
+mask 0x65ffff17, layers not drawn [3, 5, 6, 7, 25, 27, 28, 31]"; 28 nodes
+skipped in the area that loaded, all `Occluder_*_shell` on layer 27
+(including the prison aquarium's in the Aurora scene); 0 warnings; 120
+frames mean 10.64 ms. The screenshot (`out/m7g1-lavabase.png`) is nearly
+black: no sunlight at that depth, and the base's own lights are not drawn
+as the game does. **Not compared with the game** on screen.
+
+## 2026-10-09 — Research: occluder shells, white spheres, untextured objects (plan M7g)
+
+**What:** checked an earlier research note (by another model, not in the
+repo) on the "invisible walls" in alien bases and the white spheres, and
+wrote the plan (`docs/DESIGN.md` § 4.2, M7g1–M7g6). Nothing in the client
+changed.
+- `sn-inspect prefab --materials`: every material on a drawn node of the
+  placed prefabs and the startup scenes, with uses, layers, texture slots,
+  render queue, keywords and its shader's name (a heuristic string scan,
+  inspection only).
+- `sn-inspect scene <name>` also prints each `Camera`'s near/far and
+  culling mask (Unity 2019.4 layout, hand-written).
+- New `docs/formats/materials.md` (census, per-shader findings);
+  `docs/formats/unity.md` § Cameras and layers. No new dependencies.
+
+**Verified (2026-10-09):** `sn-inspect prefab --materials` (65 s): 1,369
+prefabs, 0 unreadable, 1,973 materials. `DepthOnly` → `Unlit/DepthOnly`, 39
+nodes in 38 prefabs, all on layer 27; `x_AtmoLight_*` →
+`UWE/Particles/WBOIT-FakeVolumetricLight`, queue 3101, 68 nodes.
+`sn-inspect scene main`: `MainCamera` mask `0x65ffff17` (layer 27 off),
+`MainCamera (UI)` `0x20`, `ImguiCamera` `0x80000000`, which matches the
+layer names (UI = 5, DebugOverlays = 31). Earlier note **confirmed:** the
+occluder shells and the sphere/cone lights are drawn as white meshes by us
+and not by the game. **Corrected:** the lights are blended, not opaque
+(alpha 1, so they look the same); the door force field is not drawn at all
+(its prefab is not placed in the world data). **Missed by it:**
+`UWE/Particles/UBER` meshes (1,058 placements) and the triplanar rocks
+(976 placements, drawn white). Not checked on screen.
+
+**Housekeeping noticed, not changed:** the repo root holds gitignored
+leftovers of earlier sessions (`Voxeland.cs`, `VoxelandChunk.cs` look like
+decompiled game code, plus `scratch_*.py`, `shaders.txt`, `test_colors.py`).
+They are not tracked, but AGENTS.md wants such output in `out/`.
+
 ## 2026-10-09 — M7f3: Lifepod 5
 
 **What:** the `escapepod` scene is placed as a new game does

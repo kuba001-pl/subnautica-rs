@@ -59,7 +59,8 @@ Tested on Windows 11 with game build 10 (Steam):
   game's sky (scattering, sun, clouds, planet, moon; day to night), lit
   the way the game lights surfaces (caustics, sunlight dimmed under water,
   the game's ambient; objects with their specular maps, glow maps with day
-  and night strengths, and each biome's ambient settings; the point, spot and
+  and night strengths, and each biome's ambient settings; renderers on layers the game's camera
+skips, e.g. the alien bases' occluder shells, left out; the point, spot and
 directional lights placed objects carry, e.g. glowing coral, without their
 shadows). Flying from the lifepod
   to the crater edge
@@ -78,7 +79,10 @@ beyond ~100 m, and grass tufts in the game's exact spots (the amount and
 spread follow its rules; our own random numbers); for world objects: reflections of the biome
 sky's cube map, cave/interior skies chosen by atmosphere volumes,
 animation (waving plants; skinned meshes are drawn in their stored pose,
-blend shapes not applied), creatures (including the
+blend shapes not applied), objects on shaders other than the game's main
+object shader (light glows drawn as white spheres and cones, Lost River
+brine and other effect meshes flat, Safe Shallows triplanar rocks white;
+`docs/formats/materials.md`), creatures (including the
 ~100,000 the spawn slots would add); player, audio,
 multiplayer.
 Linux/macOS: not tested.

@@ -7,6 +7,7 @@
 
 mod addressables;
 mod bundle;
+mod camera;
 mod classes;
 pub mod json;
 mod light;
@@ -28,6 +29,7 @@ use std::fmt;
 
 pub use addressables::{Catalog, Location};
 pub use bundle::{BlockInfo, Bundle, BundleDirectory, BundleNode, Compression, write_bundle};
+pub use camera::{Camera, TAG_MAIN_CAMERA};
 pub use classes::class_name;
 pub use light::{
     BAKE_BAKED, BAKE_MIXED, BAKE_REALTIME, DayNightLight, Light, LightKind, ShadowKind,

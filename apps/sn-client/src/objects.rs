@@ -309,6 +309,10 @@ struct Library {
     /// `None`: spawn slots stay empty (`--no-slots`, or the tables failed
     /// to load).
     slots: Option<SlotTables>,
+    /// The game's main camera's culling mask: renderers on other layers
+    /// never reach the picture (e.g. the occluder shells on layer 27,
+    /// `docs/formats/materials.md`).
+    culling_mask: u32,
 }
 
 impl Library {
@@ -508,6 +512,13 @@ impl Library {
     fn prefab_parts(&mut self, prefab: &Prefab, out: &mut Vec<Update>) -> Option<u32> {
         let mut parts = Vec::new();
         for (index, node) in prefab.visible() {
+            if node.layer >= 32 || self.culling_mask & (1 << node.layer) == 0 {
+                info!(
+                    "objects: {:?} in {} not drawn: layer {} is not in the main camera's culling mask",
+                    node.name, prefab.key, node.layer
+                );
+                continue;
+            }
             // Other anchors (a fixed sky) are taken as the global sky.
             let biome_sky = node.sky_applier == Some(SKIES_AUTO);
             let Some(mesh) = &node.mesh else { continue };
@@ -947,6 +958,7 @@ fn worker(
             textures: HashMap::new(),
             next_id: 0,
             slots: None,
+            culling_mask: u32::MAX,
         })
     };
     let mut library = match setup() {
@@ -964,6 +976,21 @@ fn worker(
         }
     };
     let _ = tx.send(Update::Skies(SkySet::new(skies)));
+    match library.assets.main_camera() {
+        Ok(camera) => {
+            let hidden: Vec<u32> = (0..32).filter(|&l| !camera.draws_layer(l)).collect();
+            info!(
+                "main camera: culling mask {:#010x}, layers not drawn {hidden:?}",
+                camera.culling_mask
+            );
+            library.culling_mask = camera.culling_mask;
+        }
+        Err(e) => {
+            let _ = tx.send(Update::Warning(format!(
+                "main camera: {e}; drawing every layer"
+            )));
+        }
+    }
     if let Some(seed) = slot_seed {
         let tables = sn_assets::loot_table(&library.assets).and_then(|loot| {
             Ok(SlotTables {
