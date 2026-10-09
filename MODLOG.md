@@ -2,6 +2,28 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-09 — Plan: Phase E, the road to a playable game
+
+**What:** `docs/DESIGN.md` § 4.3 (new): the remaining look milestones are
+deferred (listed there; their rows unchanged) and Phase E comes first: P0
+gameplay data, P1 our own .NET metadata/IL reader (`sn-dotnet`), M9a–M9c
+(collision, player, oxygen/health), M10 (multiplayer), M9d–M9f (pick-up and
+inventory, crafting, save/load, server-authoritative), then a list of later
+blocks toward the full game. New `docs/formats/gameplay.md`: where the game
+keeps its gameplay data. The M9 row points to § 4.3.
+**Why:** the user wants real gameplay and, in the end, Subnautica 1:1. Most
+look milestones are first passes waiting on matched screenshots, and nothing
+can be played yet. The user chose (2026-10-09) to read code-only data from
+their own `Assembly-CSharp.dll` at runtime rather than store it.
+**Findings (decompiled with ilspycmd into the system temp folder, nothing
+kept in the repository):** recipes are **not** in code. `TechData` loads the
+JSON text asset `Balance/TechData` (found in `resources.assets`: 976
+`techType` keys, 40 `craftTime`). Code only: the `CraftTree` menus, the
+`TechType` enum names, TechData's defaults.
+**Dead end:** the first string search (`CraftData`, `CraftTree`) suggested
+recipes were in code; decompiling `CraftData` showed they moved to `TechData`.
+**Verified:** docs only, no code changed. **Not tested:** everything in the plan.
+
 ## 2026-10-09 — M7g4 (part): the door force fields; extra materials as extra passes
 
 **What:** the user reported the Blood Kelp cache (camera −620 −556 1488) and

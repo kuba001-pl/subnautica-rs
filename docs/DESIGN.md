@@ -200,7 +200,7 @@ reach them — expect the far end of this list to change.
 | **M8c7** (first pass) | The object shader, MarmosetUBER (`docs/formats/lighting.md` § Objects): specular maps, gloss, fresnel, glow with day/night strengths, each biome's Marmoset sky (exposures, SH ambient, unlit flag), `SkyApplier`. Remaining: the sky's specular cube reflections, atmosphere volumes in the biome lookup (cave skies), anchors other than Auto. | Real-data test of the 37 skies; materials with specular/glow maps counted in the log; matched screenshots. |
 | **M8e** | Local lights (point and spot), the game's light sources: see § 4.1. | See § 4.1. |
 | **M8d** | The game's camera post-processing (Unity Post Processing Stack v1 with `default_Post-FXProfile`, per the user's options): bloom + lens dirt, ambient occlusion, screen-space reflections, depth of field, motion blur, FXAA, dithering, colour grading (off/neutral/ACES exactly as the stack does it). | Matched screenshots (same place and time) with the game; GPU time per effect logged. |
-| **M9** | Player: swim controller, terrain collision, surfacing/air, first-person camera. | Can swim from the Lifepod to the Kelp Forest without clipping through terrain (logged collision checks). |
+| **M9** | Player: swim controller, terrain collision, surfacing/air, first-person camera. Split into M9a–M9f in § 4.3 (Phase E). | Can swim from the Lifepod to the Kelp Forest without clipping through terrain (logged collision checks). |
 
 ### 4.1 Lighting plan (written 2026-10-08)
 
@@ -335,6 +335,93 @@ effects). Ours, `effects.rs`:
 Not 1:1 yet, recorded: the game's fog volume textures (we use the
 camera's water settings, as our fog pass does); temperature refraction
 (`FX_TEMPERATURE_REFRACT`, above 40 °C), sonar and PDA composite variants.
+
+### 4.3 Road to a playable game (plan written 2026-10-09, approved in outline by the user the same day)
+
+**Why:** Phases B and C are roughly 30 look milestones. Most are first
+passes that wait on matched screenshots only the user can take, and each one
+changes less than the last. Nothing can be *played* yet. The user's goal is
+Subnautica 1:1 in Rust, and that means the game, not only the picture. From
+now on gameplay comes first, and the look work resumes once the game can be
+played.
+
+**Deferred, not dropped:** M7e3, M7f4, the rest of M7g4, M7g5, M7g6, "M7g
+open", M4b, the remaining M8b/M8c items (cave atmosphere volumes, SSR,
+M8c6b, M8c7b), M8d, M8d1, the M8e2 falloff curve, M8e4, M8f, M8g. Their rows
+stay as they are. A deferred item is pulled forward only when it blocks play
+(e.g. water fog drawn inside the lifepod once the player stands in it).
+
+**Where the game keeps its gameplay data** (found 2026-10-09; details and
+how each was checked in `docs/formats/gameplay.md`). Most of it is data we
+can read at runtime like everything else:
+- Recipes, craft times, craft amounts, item sizes, equipment slots, energy
+  costs, harvest outputs: the JSON text asset `Balance/TechData` in
+  `resources.assets`, read like `Balance/EntityDistributions` (M7d).
+- Starting blueprints and unlock rules: `PDAData` (`defaultTech`,
+  `compoundTech`, `analysisTech`), a serialized asset (where it is stored:
+  not found yet).
+- Prefab ↔ tech type: the `EntTechData` resource (serialized).
+- Player numbers (oxygen capacity, suffocation times, …): serialized fields
+  of the player's components (`Oxygen.oxygenCapacity`, `Player.*`).
+- Item and UI text: `StreamingAssets/SNUnmanagedData/LanguageFiles/*.json`.
+
+Only a few things exist **only in the game's code** (`Assembly-CSharp.dll`):
+the fabricator menus (`CraftTree`: nested `CraftNode` constructors), the
+names of the `TechType` enum values (the JSON stores numbers), and a handful
+of defaults (`TechData.defaults`). We read them from the player's own DLL at
+runtime with our own reader (user decision 2026-10-09): the .NET metadata
+tables for the enum names, and a small IL reader that follows the
+constructor calls in `CraftTree`. Nothing from the DLL is copied into the
+repository. Behaviour (how oxygen drains, how the fabricator works) is
+ported the way the shaders and the grass were: read the game's code to
+understand it, then write our own.
+
+**Rules for this road:**
+- Gameplay rules go in `sn-sim` (layer 2, pure, tested headless); the client
+  only reads input and draws. The server (M10+) runs the same code.
+- Every number comes from the install at runtime. If a value cannot be
+  found, our stand-in is labelled "not the game's" in the code and in the
+  step's row.
+- Each step lists what is not 1:1 yet, as M7f4 does. Committing and
+  pushing still need the user's explicit OK each time.
+
+**Phase E — First playable (single player, then co-op):**
+
+| Step | Work | Done when |
+|---|---|---|
+| **P0** | Gameplay data, headless. Read `Balance/TechData` (JSON) and `EntTechData` in `sn-assets`; find `PDAData` and the player's prefab and read their fields; census of collider components on placed prefabs (`BoxCollider` 65, `SphereCollider` 135, `CapsuleCollider` 136, `MeshCollider` 64) and of `Pickupable` / `BreakableResource`. `sn-inspect techdata`, `sn-inspect player`. | `docs/formats/gameplay.md` lists every fact with its source, *confirmed* or *hypothesis*; real-data test: TechData parses with 0 errors and the entry count is logged; every ingredient's tech type is also an entry or logged as a miss; collider counts per kind logged. |
+| **P1** | `sn-dotnet` (new crate, layer 1, pure): our own reader of .NET PE files: metadata tables (`TypeDef`, `Field`, `MethodDef`, `Constant`), string heaps, method bodies; `TechType` names from the enum's constants; the `CraftTree` menus by walking the IL of its tree methods (only the patterns used there: `ldstr`, `ldc.i4`, `newobj CraftNode`, `call AddNode`). Unit tests on synthetic bytes we encode ourselves (no game files as fixtures). **Stop and ask** if the IL needs more than a simple pattern reader. | Synthetic round-trip tests; real-data test: number of `TechType` names logged and every TechData entry has a name; the fabricator tree's node count logged; every craft node's tech type has a TechData entry. |
+| **M9a** | Collision: a kinematic capsule swept against triangles. Terrain from the LOD 0 meshes already built around the camera; objects from their prefabs' colliders (box, sphere, capsule, mesh; read in `sn-unity`). Our own sweep in `sn-sim`, no physics engine yet (§ 3.3's physics decision waits for rigid bodies: floating lifepod, dropped items). | Unit tests of the sweep on synthetic meshes (slide, corner, thin wall); a scripted swim lifepod → Kelp Forest logs 0 penetrations and the contacts; cost per frame logged. |
+| **M9b** | Player: first-person camera at eye height, swimming, walking with gravity in the lifepod and above water, the lifepod hatch. Speeds from the player's serialized fields (P0). The fly camera stays as `--free-cam`. | Movement rules unit-tested; speeds logged next to the values read; scripted run lifepod → water → lifepod (positions logged). |
+| **M9c** | Oxygen, health, depth: drain under water, refill at the surface and in the lifepod, suffocation → respawn in the lifepod, with the game's numbers. A minimal HUD of our own (bars and numbers; the game's UI sprites later). | Rules unit-tested; a scripted dive logs oxygen over time against the values read. |
+| **M10** | Multiplayer as planned (Phase D): `sn-protocol`, `sn-net`, `sn-server`, handshake with the build check, join, player sync. From here solo play also runs against an in-process server (§ 3.1, principle 5), so items and crafting below are written server-authoritative once. | M10's own row. |
+| **M9d** | Pick up and inventory: `Pickupable` objects within reach, outcrops break into their resource (`BreakableResource`), inventory of the game's size, item sizes from TechData; picked objects gone for every player (server state keyed by entity id and slot seed). | Inventory rules unit-tested; a scripted pick-up logs item counts; the object's drawn count −1 on both clients. |
+| **M9e** | Crafting at the lifepod's fabricator: the menu from P1's tree, recipes and times from TechData, starting blueprints from `PDAData`; item names from the language files. | Crafting rules unit-tested on synthetic recipes; one real recipe crafted in a scripted run (counts before/after logged); menu node count equal to P1's. |
+| **M9f** | Save and load (player, inventory, removed objects, crafted items) on the server, in our own format, in the user's save folder (not `out/`, not the game folder). Becomes M11's persistence. | Round-trip unit test; server restart restores the logged state. |
+
+**After Phase E** (order to be agreed then; each gets its own plan with
+steps before it starts):
+1. **Survival:** food and water (`Survival`, eating, the fabricator's food
+   tab), knife and harvesting, first aid, tanks and fins.
+2. **Scanner and PDA:** fragments, blueprints unlocked by scanning
+   (`analysisTech`, `TechFragment`), the databank text from the language
+   files, the PDA screen.
+3. **Creatures:** spawning (the 102,777 slot creatures of M7d plus placed
+   ones), swimming AI, skinned animation (needs the `Animator` work deferred
+   in M7f4), attacks and damage. The largest single block.
+4. **Vehicles:** Seaglide, Seamoth, Prawn suit, Cyclops; the Mobile Vehicle
+   Bay (constructor tree, P1).
+5. **Base building:** Habitat Builder, base pieces and their placement
+   rules, power.
+6. **Story:** the Aurora's countdown and explosion on the game clock
+   (M7f4), radio messages, Precursor bases and keys, the ending.
+7. **Audio:** FMOD banks (§ 7: decoding and licensing to check first).
+8. **The deferred look items** above, reviewed with the user: which matter
+   most once the game can be played.
+
+**Honest size:** Phase E is about 9 milestones. "Subnautica 1:1" is the
+whole list above, many times that. The plan keeps each step small and
+verifiable so the game is playable early and grows from there.
 
 ### Phase D — Multiplayer
 
