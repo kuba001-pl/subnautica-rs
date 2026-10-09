@@ -145,7 +145,10 @@ const RESOURCE_MANAGER: i32 = 147;
 const TEXT_ASSET: i32 = 49;
 
 /// The objects `Resources.Load` finds under `path` (lower case).
-fn resources(assets: &Assets, path: &str) -> Result<(crate::FileRef, Vec<sn_unity::PPtr>)> {
+pub(crate) fn resources(
+    assets: &Assets,
+    path: &str,
+) -> Result<(crate::FileRef, Vec<sn_unity::PPtr>)> {
     let ggm = assets.standalone("globalgamemanagers")?;
     let info = ggm
         .objects()

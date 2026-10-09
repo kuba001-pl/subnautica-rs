@@ -11,6 +11,7 @@
 
 mod marmo;
 mod prefab;
+mod slots;
 mod terrain;
 mod water;
 
@@ -23,6 +24,7 @@ use sn_unity::{Bundle, BundleDirectory, ObjectInfo, PPtr, SerializedFile};
 
 pub use marmo::{BiomeSky, MarmoSkies, marmo_skies};
 pub use prefab::{Prefab, PrefabNode};
+pub use slots::{LootTable, entity_infos, loot_table, parse_loot_table};
 pub use terrain::{
     BlendSettings, BlockSource, SurfaceLayer, TerrainMaterial, TerrainMaterials, TerrainTexture,
     terrain_materials,

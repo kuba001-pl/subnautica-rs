@@ -478,3 +478,58 @@ fn default_spot_cookie() {
         assert!(hi - lo <= 8, "r {r}: {a:?}");
     }
 }
+
+#[test]
+#[ignore = "needs SUBNAUTICA_DIR pointing at a Subnautica install"]
+fn spawn_slot_tables_and_fill() {
+    let Some(dir) = std::env::var_os("SUBNAUTICA_DIR") else {
+        eprintln!("SUBNAUTICA_DIR not set; skipping");
+        return;
+    };
+    let game = GameData::locate(Some(PathBuf::from(dir))).unwrap();
+    let assets = Assets::index(&game).unwrap();
+    let table = sn_assets::loot_table(&assets).unwrap();
+    assert_eq!((table.prefabs, table.rows), (190, 1295));
+    assert_eq!(table.distribution.biome_count(), 352);
+    assert_eq!(table.biome_names.len(), 352);
+    let infos = sn_assets::entity_infos(&assets).unwrap();
+    assert_eq!(infos.len(), 3336);
+    // Every prefab the distribution can pick is known to the info table.
+    for (_, entries) in table.distribution.biomes() {
+        for e in entries.iter().filter(|e| e.class_id != "None") {
+            assert!(infos.contains_key(&e.class_id), "{}", e.class_id);
+        }
+    }
+
+    // The lifepod's batch: its placeholders, slots and fillers per seed.
+    let cells = game
+        .read_batch_cells(sn_world::BatchCoord::new(12, 18, 12))
+        .unwrap()
+        .unwrap();
+    let fill = |seed| {
+        let (mut placeholders, mut slots, mut spawned) = (0, 0, Vec::new());
+        for tree in cells.cells.iter().filter_map(|c| c.objects.as_ref()) {
+            for o in &tree.objects {
+                for c in o
+                    .components
+                    .iter()
+                    .filter(|c| c.type_name == sn_world::SLOTS_COMPONENT)
+                {
+                    placeholders += 1;
+                    let s = sn_world::parse_slots(&c.data).unwrap();
+                    slots += s.len();
+                    for sp in sn_world::fill_slots(seed, &o.id, &s, &table.distribution, &infos) {
+                        spawned.push((sp.class_id.to_string(), sp.transform));
+                    }
+                }
+            }
+        }
+        (placeholders, slots, spawned)
+    };
+    let (placeholders, slots, a) = fill(1);
+    assert_eq!((placeholders, slots, a.len()), (30, 1719, 325));
+    assert_eq!(fill(1).2, a, "the same seed gives the same world");
+    let b = fill(2).2;
+    assert_eq!(b.len(), 334);
+    assert_ne!(b, a);
+}

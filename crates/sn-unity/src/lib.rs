@@ -8,6 +8,7 @@
 mod addressables;
 mod bundle;
 mod classes;
+pub mod json;
 mod light;
 mod marmo;
 mod mesh;
@@ -20,6 +21,7 @@ mod texture;
 mod voxeland;
 mod water;
 mod water_surface;
+mod world_entity;
 
 use std::fmt;
 
@@ -44,6 +46,7 @@ pub use texture::{StreamingInfo, Texture2D, TextureFormat};
 pub use voxeland::{Voxeland, VoxelandBlockType, VoxelandBlockTypePrefab};
 pub use water::{BiomeWater, WaterBiomeManager, WaterSettings, WaterscapeVolume};
 pub use water_surface::{AnimationCurve, FftWaves, Keyframe, WaterSurface};
+pub use world_entity::{WorldEntityInfo, parse_world_entity_data};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Error {

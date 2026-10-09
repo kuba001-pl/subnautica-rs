@@ -54,6 +54,9 @@ Usage: sn-client [--game-dir <PATH>] [--start <X> <Y> <Z>] [--look <X> <Y> <Z>]
                  terrain materials (also turns world objects off)
   --no-objects   terrain only, no world objects (coral, rocks, …)
   --no-local-lights  the objects' point and spot lights off (for comparisons)
+  --slot-seed    world seed for filling the spawn slots (default 1; the game
+                 picks anew in every save)
+  --no-slots     leave the spawn slots empty (for comparisons)
   --fog-unit     scale on the game's light values (calibration; default 1:
                  one game light unit = 1.0 in the image, as in Unity)
   --color-grading  off | neutral | aces: the game's option of that name
@@ -90,6 +93,8 @@ struct Args {
     debug_colours: bool,
     no_objects: bool,
     no_local_lights: bool,
+    /// `None`: spawn slots stay empty.
+    slot_seed: Option<u64>,
     fog_unit: f32,
     color_grading: ColorGrading,
     no_water_fog: bool,
@@ -112,6 +117,7 @@ fn parse_args() -> Result<Args, String> {
         debug_colours: false,
         no_objects: false,
         no_local_lights: false,
+        slot_seed: Some(1),
         fog_unit: 1.0,
         color_grading: ColorGrading::Off,
         no_water_fog: false,
@@ -148,6 +154,11 @@ fn parse_args() -> Result<Args, String> {
             "--debug-colours" => args.debug_colours = true,
             "--no-objects" => args.no_objects = true,
             "--no-local-lights" => args.no_local_lights = true,
+            "--slot-seed" => {
+                let seed = it.next().and_then(|v| v.parse().ok());
+                args.slot_seed = Some(seed.ok_or("--slot-seed needs a whole number")?);
+            }
+            "--no-slots" => args.slot_seed = None,
             "--no-water-fog" => args.no_water_fog = true,
             "--no-water-surface" => args.no_water_surface = true,
             "--water-quality" => {
@@ -446,7 +457,11 @@ fn main() -> AppExit {
     if !args.debug_colours && !args.no_objects {
         match GameData::locate(args.game_dir.clone()) {
             Ok(game) => {
-                app.insert_resource(ObjectStreamer::start(game, !args.no_local_lights));
+                app.insert_resource(ObjectStreamer::start(
+                    game,
+                    !args.no_local_lights,
+                    args.slot_seed,
+                ));
             }
             Err(e) => {
                 eprintln!("error: {e}");
@@ -666,9 +681,10 @@ fn log_stats(
     if let Some(objects) = objects {
         let o = objects.stats();
         info!(
-            "objects: {} entities (cell levels 0..3, batch objects {:?}) in {} batches, {} queued | {} prefabs, {} meshes, {} materials, {} textures | {} warnings",
+            "objects: {} entities (cell levels 0..3, batch objects {:?}; {} objects from spawn slots) in {} batches, {} queued | {} prefabs, {} meshes, {} materials, {} textures | {} warnings",
             o.entities,
             o.per_level,
+            o.slot_objects,
             o.batches,
             o.queued,
             o.prefabs,
@@ -781,9 +797,10 @@ fn measure(
                 if let Some(o) = &objects {
                     let s = o.stats();
                     info!(
-                        "measure: objects: {} entities (cell levels 0..3, batch objects {:?}), {} prefabs, {} meshes, {} materials, {} textures, {} warnings",
+                        "measure: objects: {} entities (cell levels 0..3, batch objects {:?}; {} objects from spawn slots), {} prefabs, {} meshes, {} materials, {} textures, {} warnings",
                         s.entities,
                         s.per_level,
+                        s.slot_objects,
                         s.prefabs,
                         s.meshes,
                         s.materials,

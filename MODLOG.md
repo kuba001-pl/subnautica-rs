@@ -2,6 +2,51 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-09 — M7d: spawn slots filled
+
+**What:** the cells' 90,289 `EntitySlotsPlaceholder`s are filled the way
+the game fills them when a cell first loads (`docs/formats/entities.md`
+§ Spawn slots). New: `sn-world::slots` (slot parse, the game's choice
+rule, copies within 4 m, Z-up turn, our seeded SplitMix64 keyed by
+placeholder id and slot index), `sn-unity::json` (the catalog's JSON
+reader moved out of `addressables.rs`, now accepting `//` and `/* */`
+comments), `sn-unity::parse_world_entity_data`, `sn-assets::loot_table` /
+`entity_infos`, `sn-inspect slots [X Y Z] [--seed N]`. The client spawns
+the fillers with the cells at their own cell level (creatures skipped, as
+for placed objects); `--slot-seed N` (default 1), `--no-slots`. No new
+dependencies.
+
+**Finding:** the roadmap's hypothesis was wrong: slots hold **no
+vegetation**. Seed 1: 141,639 objects, of which 102,777 creatures (not
+drawn), 35,808 resource outcrops (limestone, quartz, …), 1,186 eggs, 1,029
+fragments. The missing small plants must come from somewhere else (M7e
+grass is the next candidate).
+
+**Verified (2026-10-09):**
+1. `sn-inspect slots`: 90,289 placeholders, 1,288,139 slots, 0 errors;
+   190 distribution entries / 1,295 rows / 352 biomes, 3,336 entity infos,
+   every pickable prefab has an info and a path; all but 7 slots inside
+   their batch; counts per biome logged (e.g. Safe Shallows sand flat
+   4,766 slots, 559 filled, 830 objects). Hash of all spawns
+   `0d4ea805ed9120b2` on two runs with seed 1, `8edc2ef9122ad69a` with
+   seed 2.
+2. Real-data test `spawn_slot_tables_and_fill` (lifepod batch: 30
+   placeholders, 1,719 slots, 325 objects at seed 1, 334 at seed 2; same
+   seed equal) and unit tests (slot parse and corruption, choice rule,
+   copies/rotation, determinism, JSON comments, WorldEntityData) pass;
+   all real-data tests of sn-unity/sn-assets/sn-install pass (catalog with
+   the moved JSON reader). Clippy, fmt: clean.
+3. Lifepod benchmark (300 frames, two runs with slots, one without): 328
+   slot objects shown (478 more entities: 16,216 vs 15,738), identical on
+   both runs, 0 warnings; mean 11.10 / 11.20 ms vs 11.02 ms without.
+   Screenshots `out/m7d-slots.png` / `m7d-noslots.png` (wreck debris
+   appears on the sand), `out/m7d-outcrops-slots.png` /
+   `m7d-outcrops-noslots.png` at (−76 −7 −100): a limestone outcrop on
+   the slope, seated on the terrain. **Not compared** with the game.
+
+**Dead ends:** UnityPy can't read `WorldEntityData` by type tree (no
+script types); its layout was read from the raw bytes (68 bytes per info).
+
 ## 2026-10-09 — M8e3: the objects' lights light the world
 
 **What:** placed objects' realtime lights spawned with them

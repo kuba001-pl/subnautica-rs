@@ -10,6 +10,7 @@ mod mesh;
 mod octree;
 mod orient;
 mod prefab;
+mod slots;
 mod texture;
 mod unity;
 mod voxel;
@@ -53,6 +54,10 @@ Commands:
   entities <X> <Y> <Z>   A batch's saved objects (batch objects, baked cells)
                          with prefab paths and world positions
   entities --all         Parse every object cache file; totals and checks
+  slots [<X> <Y> <Z>] [--seed <N>]
+                         Spawn slots of every batch (or one) and what they
+                         fill with for world seed N (default 1): counts per
+                         biome, spawned prefabs, a hash of the result
   prefab <KEY>           A prefab (e.g. WorldEntities/…/X.prefab): hierarchy,
                          meshes, materials; writes out/prefabs/<name>.obj
   prefab --placed [--oracle]
@@ -94,6 +99,14 @@ fn run(mut args: Vec<String>) -> Result<ExitCode> {
         }
         game_dir = Some(PathBuf::from(args.remove(i + 1)));
         args.remove(i);
+    }
+    let mut seed = 1;
+    if let Some(i) = args.iter().position(|a| a == "--seed") {
+        seed = args
+            .get(i + 1)
+            .and_then(|v| v.parse().ok())
+            .ok_or("--seed needs a number")?;
+        args.drain(i..i + 2);
     }
     let game = GameData::locate(game_dir)?;
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
@@ -144,6 +157,8 @@ fn run(mut args: Vec<String>) -> Result<ExitCode> {
         }
         ["entities", "--all"] => entities::all(&game),
         ["entities", x, y, z] => entities::one(&game, parse_coord(x, y, z)?),
+        ["slots"] => slots::run(&game, None, seed),
+        ["slots", x, y, z] => slots::run(&game, Some(parse_coord(x, y, z)?), seed),
         ["prefab", "--placed"] => prefab::placed(&game, false),
         ["prefab", "--lights"] => prefab::lights(&game),
         ["prefab", "--placed", "--oracle"] => prefab::placed(&game, true),

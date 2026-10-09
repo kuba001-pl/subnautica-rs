@@ -7,6 +7,10 @@
 //! once and spawns one entity per placed mesh part. Cell level *n* is shown
 //! while its batch's terrain level of detail is at most *n* (our choice; see
 //! `docs/DESIGN.md`, M7c).
+//!
+//! The cells' spawn slots (`EntitySlotsPlaceholder`) are filled as the game
+//! does when a cell first loads, with our own seeded random numbers
+//! (`sn_world::fill_slots`, M7d); the fillers show at their own cell level.
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -20,10 +24,12 @@ use bevy::math::Affine2;
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, Face, TextureDimension, TextureFormat};
-use sn_assets::{Assets as GameAssets, MarmoSkies, ObjectRef, TerrainTexture, marmo_skies};
+use sn_assets::{
+    Assets as GameAssets, LootTable, MarmoSkies, ObjectRef, TerrainTexture, marmo_skies,
+};
 use sn_install::GameData;
 use sn_unity::{Catalog, DayNightLight, LightKind, Material, SKIES_AUTO};
-use sn_world::{BatchCoord, Transform as Placement};
+use sn_world::{BatchCoord, EntityInfo, SLOTS_COMPONENT, Transform as Placement};
 
 use crate::game_light::GameLightImages;
 use crate::object_look::{ObjectExtension, ObjectMaterial, ObjectParams};
@@ -227,6 +233,15 @@ struct Instance {
     level: usize,
     prefab: u32,
     transform: Placement,
+    /// Spawned by a spawn slot (not placed in the cells).
+    from_slot: bool,
+}
+
+/// What the worker fills spawn slots with.
+struct SlotTables {
+    seed: u64,
+    loot: LootTable,
+    infos: HashMap<String, EntityInfo>,
 }
 
 enum Update {
@@ -275,6 +290,9 @@ struct Library {
     /// `None`: the texture's own colour space.
     textures: HashMap<(Key, Option<bool>), Option<u32>>,
     next_id: u32,
+    /// `None`: spawn slots stay empty (`--no-slots`, or the tables failed
+    /// to load).
+    slots: Option<SlotTables>,
 }
 
 impl Library {
@@ -554,6 +572,62 @@ impl Library {
         id
     }
 
+    /// A prefab drawn as a still object: creatures move and animate, so
+    /// they are left out (a later milestone).
+    fn still_prefab(&mut self, path: &str, out: &mut Vec<Update>) -> Option<u32> {
+        if path.starts_with("WorldEntities/Creatures/") {
+            return None;
+        }
+        self.prefab(path, out)
+    }
+
+    /// Fills the slots of a placeholder (component `data`, placed at
+    /// `placeholder` in world space); each filler shows at its own cell
+    /// level (`WorldEntityInfo.cellLevel`; batch and global levels at the
+    /// farthest).
+    fn fill_slots(
+        &mut self,
+        id: &str,
+        data: &[u8],
+        placeholder: &Placement,
+        instances: &mut Vec<Instance>,
+        out: &mut Vec<Update>,
+    ) {
+        let Some(tables) = &self.slots else { return };
+        let slots = match sn_world::parse_slots(data) {
+            Ok(s) => s,
+            Err(e) => {
+                out.push(Update::Warning(format!("slots of {id}: {e}")));
+                return;
+            }
+        };
+        let spawns = sn_world::fill_slots(
+            tables.seed,
+            id,
+            &slots,
+            &tables.loot.distribution,
+            &tables.infos,
+        );
+        let wanted: Vec<(String, Placement, usize)> = spawns
+            .iter()
+            .filter_map(|s| {
+                let path = self.class_paths.get(s.class_id)?;
+                let level = usize::try_from(s.info.cell_level).map_or(0, |l| l.min(LEVELS - 1));
+                Some((path.clone(), placeholder.then(&s.transform), level))
+            })
+            .collect();
+        for (path, transform, level) in wanted {
+            if let Some(prefab) = self.still_prefab(&path, out) {
+                instances.push(Instance {
+                    level,
+                    prefab,
+                    transform,
+                    from_slot: true,
+                });
+            }
+        }
+    }
+
     fn batch(&mut self, game: &GameData, coord: BatchCoord, out: &mut Vec<Update>) {
         let start = Instant::now();
         let mut instances = Vec::new();
@@ -563,19 +637,26 @@ impl Library {
                     let Some(tree) = &cell.objects else { continue };
                     let (world, _) = tree.world_transforms();
                     for (object, transform) in tree.objects.iter().zip(world) {
+                        for c in &object.components {
+                            if c.type_name == SLOTS_COMPONENT {
+                                self.fill_slots(
+                                    &object.id,
+                                    &c.data,
+                                    &transform,
+                                    &mut instances,
+                                    out,
+                                );
+                            }
+                        }
                         let Some(path) = self.class_paths.get(&object.class_id).cloned() else {
                             continue;
                         };
-                        // Creatures move and animate; not drawn as still
-                        // objects (a later milestone).
-                        if path.starts_with("WorldEntities/Creatures/") {
-                            continue;
-                        }
-                        if let Some(prefab) = self.prefab(&path, out) {
+                        if let Some(prefab) = self.still_prefab(&path, out) {
                             instances.push(Instance {
                                 level: (cell.level as usize).min(LEVELS - 1),
                                 prefab,
                                 transform,
+                                from_slot: false,
                             });
                         }
                     }
@@ -607,6 +688,7 @@ impl Library {
                             level: BATCH_OBJECTS,
                             prefab,
                             transform,
+                            from_slot: false,
                         });
                     }
                 }
@@ -631,7 +713,12 @@ struct Shared {
     shutdown: AtomicBool,
 }
 
-fn worker(game: &'static GameData, shared: Arc<Shared>, tx: Sender<Update>) {
+fn worker(
+    game: &'static GameData,
+    shared: Arc<Shared>,
+    tx: Sender<Update>,
+    slot_seed: Option<u64>,
+) {
     let start = Instant::now();
     let setup = || -> Result<Library, String> {
         let assets = GameAssets::index(game)?;
@@ -646,6 +733,7 @@ fn worker(game: &'static GameData, shared: Arc<Shared>, tx: Sender<Update>) {
             materials: HashMap::new(),
             textures: HashMap::new(),
             next_id: 0,
+            slots: None,
         })
     };
     let mut library = match setup() {
@@ -663,6 +751,29 @@ fn worker(game: &'static GameData, shared: Arc<Shared>, tx: Sender<Update>) {
         }
     };
     let _ = tx.send(Update::Skies(SkySet::new(skies)));
+    if let Some(seed) = slot_seed {
+        let tables = sn_assets::loot_table(&library.assets).and_then(|loot| {
+            Ok(SlotTables {
+                seed,
+                loot,
+                infos: sn_assets::entity_infos(&library.assets)?,
+            })
+        });
+        match tables {
+            Ok(t) => {
+                info!(
+                    "slots: seed {seed}, loot table of {} prefabs in {} biomes, {} world entity infos",
+                    t.loot.prefabs,
+                    t.loot.distribution.biome_count(),
+                    t.infos.len()
+                );
+                library.slots = Some(t);
+            }
+            Err(e) => {
+                let _ = tx.send(Update::Warning(format!("slots stay empty: {e}")));
+            }
+        }
+    }
     let _ = tx.send(Update::Ready {
         ms: start.elapsed().as_secs_f32() * 1000.0,
     });
@@ -707,6 +818,8 @@ pub struct ObjectStats {
     pub entities: usize,
     /// Cell levels 0–3, then batch objects.
     pub per_level: [usize; SLOTS],
+    /// Shown objects (not entities) that spawn slots filled.
+    pub slot_objects: usize,
     pub queued: usize,
     pub prefabs: usize,
     pub meshes: usize,
@@ -749,8 +862,9 @@ pub struct ObjectStreamer {
 }
 
 impl ObjectStreamer {
-    /// `lights`: spawn the objects' point and spot lights.
-    pub fn start(game: GameData, lights: bool) -> ObjectStreamer {
+    /// `lights`: spawn the objects' point and spot lights. `slot_seed`: fill
+    /// the spawn slots with this world seed (`None`: leave them empty).
+    pub fn start(game: GameData, lights: bool, slot_seed: Option<u64>) -> ObjectStreamer {
         // The worker's asset index borrows the install for the whole run.
         let game: &'static GameData = Box::leak(Box::new(game));
         let shared = Arc::new(Shared {
@@ -760,7 +874,7 @@ impl ObjectStreamer {
         });
         let (tx, rx) = channel();
         let worker_shared = shared.clone();
-        std::thread::spawn(move || worker(game, worker_shared, tx));
+        std::thread::spawn(move || worker(game, worker_shared, tx, slot_seed));
         ObjectStreamer {
             shared,
             rx: Mutex::new(rx),
@@ -813,6 +927,12 @@ impl ObjectStreamer {
                 if let Some(e) = shown {
                     s.entities += e.len();
                     s.per_level[level] += e.len();
+                    s.slot_objects += b
+                        .instances
+                        .iter()
+                        .flatten()
+                        .filter(|i| i.from_slot && i.level == level)
+                        .count();
                 }
             }
         }

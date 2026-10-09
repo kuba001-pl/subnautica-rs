@@ -15,7 +15,7 @@ use crate::Result;
 const MARGIN: f32 = 1.0;
 
 /// World-space box of a batch (Unity coordinates).
-fn batch_box(coord: BatchCoord, size: [i32; 3]) -> ([f32; 3], [f32; 3]) {
+pub(crate) fn batch_box(coord: BatchCoord, size: [i32; 3]) -> ([f32; 3], [f32; 3]) {
     let c = [coord.x, coord.y, coord.z];
     let lo: [f32; 3] = std::array::from_fn(|a| (c[a] * size[a]) as f32 - VOXEL_WORLD_OFFSET[a]);
     let hi: [f32; 3] = std::array::from_fn(|a| lo[a] + size[a] as f32);
@@ -23,7 +23,7 @@ fn batch_box(coord: BatchCoord, size: [i32; 3]) -> ([f32; 3], [f32; 3]) {
 }
 
 /// How far `p` lies outside the box (0 inside).
-fn distance_outside(p: [f32; 3], (lo, hi): ([f32; 3], [f32; 3])) -> f32 {
+pub(crate) fn distance_outside(p: [f32; 3], (lo, hi): ([f32; 3], [f32; 3])) -> f32 {
     (0..3)
         .map(|a| (lo[a] - p[a]).max(p[a] - hi[a]).max(0.0))
         .fold(0.0, f32::max)
@@ -35,20 +35,20 @@ fn outside(p: [f32; 3], bounds: ([f32; 3], [f32; 3])) -> bool {
 
 /// FNV-1a, to tell whether two runs saw exactly the same data.
 #[derive(Clone, Copy)]
-struct Hash(u64);
+pub(crate) struct Hash(pub(crate) u64);
 
 impl Hash {
-    fn new() -> Hash {
+    pub(crate) fn new() -> Hash {
         Hash(0xcbf2_9ce4_8422_2325)
     }
 
-    fn add(&mut self, bytes: &[u8]) {
+    pub(crate) fn add(&mut self, bytes: &[u8]) {
         for &b in bytes {
             self.0 = (self.0 ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3);
         }
     }
 
-    fn add_transform(&mut self, t: &Transform) {
+    pub(crate) fn add_transform(&mut self, t: &Transform) {
         for v in t.position.iter().chain(&t.rotation).chain(&t.scale) {
             self.add(&v.to_le_bytes());
         }

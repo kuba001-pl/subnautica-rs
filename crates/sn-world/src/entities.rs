@@ -51,7 +51,7 @@ impl Transform {
     }
 }
 
-fn quat_mul(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
+pub(crate) fn quat_mul(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
     let [ax, ay, az, aw] = a;
     let [bx, by, bz, bw] = b;
     [
@@ -107,7 +107,7 @@ fn string(w: &Wire, value: Wire) -> Result<String> {
     String::from_utf8(value.bytes().to_vec()).or_else(|_| w.error("string is not UTF-8"))
 }
 
-fn bytes_field<'a>(w: &Wire, number: u32, value: Value<'a>) -> Result<Wire<'a>> {
+pub(crate) fn bytes_field<'a>(w: &Wire, number: u32, value: Value<'a>) -> Result<Wire<'a>> {
     match value {
         Value::Bytes(b) => Ok(b),
         other => w.error(format!(
@@ -117,7 +117,7 @@ fn bytes_field<'a>(w: &Wire, number: u32, value: Value<'a>) -> Result<Wire<'a>> 
     }
 }
 
-fn varint_field(w: &Wire, number: u32, value: Value) -> Result<u64> {
+pub(crate) fn varint_field(w: &Wire, number: u32, value: Value) -> Result<u64> {
     match value {
         Value::Varint(v) => Ok(v),
         other => w.error(format!(
@@ -140,7 +140,7 @@ fn count(w: &mut Wire) -> Result<u64> {
 }
 
 /// Floats in fields 1, 2, 3, … of a message; absent fields keep `out`'s value.
-fn floats<const N: usize>(mut m: Wire, mut out: [f32; N]) -> Result<[f32; N]> {
+pub(crate) fn floats<const N: usize>(mut m: Wire, mut out: [f32; N]) -> Result<[f32; N]> {
     while let Some((number, value)) = m.field()? {
         let i = number as usize;
         match value {

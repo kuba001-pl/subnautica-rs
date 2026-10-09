@@ -1,13 +1,15 @@
 //! Subnautica world layout: how big the world is, how it is cut into octrees
 //! and batches, and how batch files are named.
 //!
-//! Also reads the world's saved objects (`entities`).
+//! Also reads the world's saved objects (`entities`) and fills their spawn
+//! slots (`slots`).
 //!
 //! Pure: parses bytes and strings and does arithmetic, never touches the
 //! filesystem.
 
 mod biomes;
 mod entities;
+mod slots;
 mod wire;
 
 use std::fmt;
@@ -16,6 +18,11 @@ pub use biomes::{BatchRootSettings, BiomeMap, parse_biome_names};
 pub use entities::{
     BakedCell, BatchCells, EntityError, ObjectTree, SavedComponent, SavedObject, TREE_MAGIC,
     Transform, parse_prefab_database,
+};
+pub use slots::{
+    EXTRA_COPY_RADIUS, EntityInfo, EntitySlot, FILLER_CLASS_ID, Filler, LootDistribution,
+    LootEntry, LootRows, SLOTS_COMPONENT, SlotKind, SlotRng, SlotSpawn, choose, fill_slots,
+    parse_slots,
 };
 
 /// Offset between voxel indices and Unity world coordinates. **Plausible

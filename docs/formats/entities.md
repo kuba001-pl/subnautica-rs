@@ -80,7 +80,7 @@ offsets from the batch corner: 8, 24, …, 152 at level 0; 16, 48, …, 144 at
 the others).
 
 Most-placed prefabs: `EntitySlotsPlaceholder` (90,289; spawn slots,
-**hypothesis**: filled at run time), then coral-reef doodads
+filled when a cell first loads, see § Spawn slots), then coral-reef doodads
 (`Coral_reef_tree_mushrooms_connector_01` 22,290, …).
 
 Oddities, as found:
@@ -101,3 +101,80 @@ Prefab paths are keys of the Addressables catalog, which leads to the
 prefab's bundle in `aa/StandaloneWindows64/`; see `unity.md` § Prefabs. A
 placed object's saved Transform **replaces** its prefab root's transform
 (confirmed there).
+
+## Spawn slots
+
+Code: `crates/sn-world/src/slots.rs` (slots, the fill rule),
+`crates/sn-unity/src/world_entity.rs`, `crates/sn-assets/src/slots.rs`
+(tables). Inspector: `sn-inspect slots [<X> <Y> <Z>] [--seed <N>]`. Opt-in
+test: `spawn_slot_tables_and_fill` in `crates/sn-assets/tests/real_data.rs`.
+
+### Slot data — confirmed
+
+An `EntitySlotsPlaceholder` component's saved data (in the cell object
+trees) is a protobuf message: field 1 = version (1), field 2 repeated =
+one slot each. A slot: field 1 = version (1), 2 = biome (the game's
+`BiomeType` number, e.g. 102), 3 = allowed slot types as flags (1 small,
+2 medium, 4 large, 8 tall, 16 creature), 4 = density (float), 5 = position
+and 6 = rotation relative to the placeholder (vector/quaternion messages
+as in transforms, zero fields left out). An absent density is 1 (the
+class's initial value; protobuf-net runs the constructor). Confirmed by
+parsing all 90,289 placeholders with 0 errors, and by the slots landing in
+place: all but 7 of 1,288,139 slots lie inside their batch.
+
+Census (`sn-inspect slots`): 1,288,139 slots; allowed types 0x03 (small or
+medium) 528,027, 0x10 (creature) 759,730, a few hundred others; density
+0.94–139.7. Slot offsets from their placeholder reach 1,638 m (not
+understood; the world positions are fine). 72,670 slots are in 59 biomes
+without a loot table (e.g. 122, 0); those stay empty.
+
+### Tables — confirmed
+
+- **Loot distribution**: the `TextAsset` that `Resources.Load` finds under
+  `Balance/EntityDistributions` (in `resources.assets`). JSON with `//`
+  comments: an object of ClassId → `{prefabPath, distribution: [{biome,
+  count, probability}, …]}`; the key `None` is a filler entry the game
+  skips. The game's editor writes the biome's enum name as a comment above
+  each row; we read those names for logs only. Build 10: 190 entries,
+  1,295 rows, 352 biomes.
+- **World entity infos**: the MonoBehaviour `WorldEntities/WorldEntityData`:
+  after the MonoBehaviour header, an `i32` count (3,336) and per info: the
+  ClassId (aligned string), `TechType` (`i32`), slot type (`i32` index: 0
+  small, 1 medium, 2 large, 3 tall, 4 creature), Z-up (bool padded to 4),
+  cell level (`i32`: 0–3, 10 batch, 100 global), local scale (3 floats).
+  68 bytes per info; 226,900 bytes in all, read to the last byte. Every
+  prefab the distribution can pick has an info and a `prefabs.db` path.
+- **Spawn restrictions** (`SNUnmanagedData/spawnrestrictions-<quality>.csv`,
+  used by the game to drop a share of some prefabs): no such file in this
+  install, so nothing is dropped.
+
+### How the game fills a slot
+
+From the game's behaviour (our reading of its scripts, re-implemented):
+per slot, take the biome's rows in table order, skip `None`, prefabs whose
+slot type the slot does not allow, and weights ≤ 0, where weight =
+`probability / density`. A uniform draw *r* in [0, 1] is scaled by the
+total if the total exceeds 1; the first row whose running sum reaches *r*
+wins, otherwise the slot stays empty (so with a total below 1 the rest is
+"nothing"). Density is the number of same-biome slots around (weighted,
+32 m radius), computed when the world was built, so each neighbourhood
+gets about `probability` objects. The winner spawns `count` times: the
+first at the slot, the others at a random point within 4 m; rotation is
+the slot's, turned −90° about x for Z-up prefabs; scale is the info's.
+The game also skips fragments the player has already scanned (none in a
+new game) — not ported.
+
+The game draws from Unity's global random generator when a cell first
+loads, so every save differs. We draw from SplitMix64 seeded by FNV-1a of
+(placeholder id, seed, slot index): the same seed gives the same world in
+any loading order (unit test and real-data test).
+
+### What the slots hold — confirmed (seed 1)
+
+141,639 objects: creatures 102,777 (`WorldEntities/Creatures/…`, e.g.
+Boomerang, SpadeFish, Peeper), resource outcrops 35,808
+(`WorldEntities/Natural/…`: limestone, sandstone, quartz, salt, metal),
+eggs 1,186, fragments 1,029, doodads 654, others ~185. **No flora.** By
+cell level: 0: 121,899, 1: 19,292, 2: 448. Seed 2 gives 142,446.
+Lifepod batch 12-18-12: 30 placeholders, 1,719 slots, 325 objects (225
+creatures).
