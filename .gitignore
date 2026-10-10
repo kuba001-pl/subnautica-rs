@@ -26,6 +26,7 @@
 !/LICENSE-APACHE
 !/THIRD-PARTY-NOTICES.md
 !/docs/**/*.md
+!/banner.png
 
 # 4. Rust workspace configuration.
 !/Cargo.toml

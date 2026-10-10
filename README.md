@@ -1,3 +1,5 @@
+![subnautica-rs](banner.png)
+
 # subnautica-rs
 
 An unofficial, from-scratch Rust reimplementation of the Subnautica engine for
@@ -6,10 +8,12 @@ runtime. This repository contains no game files, and never will.
 
 > Unofficial fan project, not affiliated with or endorsed by Unknown Worlds or
 > Krafton. You need a legally owned copy of Subnautica. Developed with heavy
-> use of AI coding agents; see `AGENTS.md` for the rules they follow.
+> use of AI coding agents; see [`AGENTS.md`](AGENTS.md) for the rules they follow.
 
-Status: **early**. There is no game yet, only data tools. Architecture and
-roadmap are in [docs/DESIGN.md](docs/DESIGN.md), and file format findings in
+Status: **early** (active development). The desktop client (`sn-client`) streams
+terrain, materials, world objects, lighting, and player movement; gameplay
+systems and multiplayer are in progress. Architecture and roadmap are in
+[docs/DESIGN.md](docs/DESIGN.md), and file format findings in
 [docs/formats/](docs/formats/).
 
 ## What works
