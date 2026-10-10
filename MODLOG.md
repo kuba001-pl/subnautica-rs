@@ -2,6 +2,68 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-10 — M7f4d: blend shapes
+
+**What:** fourth step of M7f4 (`docs/DESIGN.md` § 4.4, "as built").
+- `sn-unity/src/blend_shape.rs` (new): `Mesh.m_Shapes` read (offsets,
+  frames, channels, full weights; every range checked against the
+  mesh's vertex count) instead of skipped; Unity's frame-weight rule
+  (`channel_frame_factors`); weights applied to decoded geometry;
+  `PlayerSettings.legacyClampBlendShapeWeights` read from the object's
+  last four bytes.
+- `sn-assets`: stored weights applied before skinning for meshes drawn
+  in their stored pose; `blend_shape_clamp`, `blend_shape_names`,
+  `mesh_info` (a mesh without its geometry). Animator defaults of blend
+  shape slots now find their channel (CRC-32 of the name alone).
+- `sn-client`: rigs also for animators that drive only blend shapes;
+  driven renderers get one Bevy morph target per frame and
+  `MeshMorphWeights` written every frame (clamped 0–100, as the game);
+  bone-less skinned renderers hang on their rig node; morphed bone-less
+  meshes get fixed bounds holding every shape. Logs: shapes per rig,
+  blend shape parts weighted per frame.
+- `sn-inspect prefab --shapes`; `anim` lists missing binding path hashes.
+- Docs: `docs/formats/unity.md` § Blend shapes (new),
+  `docs/formats/animation.md` (the binding attribute).
+- No new dependency.
+
+**Why:** M7f4 plan; the player's body and creatures use blend shapes.
+
+**Findings:**
+- 16,019 meshes, 83 with blend shapes: 319 channels, one frame each, full
+  weight 100, all with normals and tangents; 1,080,876 offsets.
+- Placed prefabs and the escape pod: 65 drawn renderers with blend shapes
+  (7,270 placements), 665 channels, **every stored weight 0**; 22
+  renderers (6,800 placements) have 102 channels driven by an animator.
+- Unclamped animated weights run from −91.4 to 102.9 over 30 s; the
+  project's clamp flag is set, so the game shows 0–100.
+
+**Dead ends:**
+- M7f4a–c matched blend shape bindings against
+  `CRC-32("blendShape.<name>")`; nothing matched. The attribute is the
+  CRC-32 of the channel name alone (the Bleeder's three, then every
+  binding that reaches a renderer with shapes).
+- The UnityPy oracle in temp had lost its `__init__.py`; reinstalled
+  UnityPy 1.25.4 into a fresh temp folder.
+- Python's text mode wrote CRLF into some edited files; set back to LF.
+
+**Verified (2026-10-10):**
+- `cargo test --workspace` passes (new: 7 `blend_shape` tests on
+  synthetic bytes — read, truncation, ranges, frame factors, apply,
+  dense frames, the clamp flag — and `morph_weights_follow_the_slots` in
+  `sn-client`); `cargo clippy --workspace --all-targets` and
+  `cargo fmt --all --check` clean.
+- Real data (`--ignored`): `every_mesh_parses_with_its_blend_shapes`
+  (counts above, equal to UnityPy's), `blend_shape_clamp_and_brain_coral`
+  (flag set, as UnityPy reads it; `BrainCoral` LOD 0: 3 channels, stored
+  at 0). `sn-inspect prefab --shapes` logs `BrainCoral` LOD 0's bounds
+  with and without its stored weights (the same: all 0); 0 errors.
+- `sn-client --benchmark 300` from the lifepod: 1,121 rigs (58 before),
+  468 blend shape parts weighted per frame, animation 0.5–0.7 ms per
+  frame; mean 21.06 ms vs 20.01 ms with `--no-animation`; no warnings.
+- **Not checked:** the motion on screen against the game (the user);
+  GPU-skinned meshes whose shapes reach past their bone bounds
+  (creatures, not placed yet).
+
 ## 2026-10-10 — M7f4c: animated objects in the client
 
 **What:** third step of M7f4 (`docs/DESIGN.md` § 4.4, "as built").

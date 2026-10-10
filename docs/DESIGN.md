@@ -790,6 +790,22 @@ user's OK):
   not counted). New: `sn-inspect anim --placed` (82 placed prefabs,
   9,252 placements with a running animator; 6.7 ms per frame if all
   updated at once, one thread).
+- **M7f4d.** Blend shape bindings name the channel by the CRC-32 of its
+  name alone, not of `blendShape.<name>` as M7f4a–c assumed. Every
+  stored weight in the game is 0, so the stored-weight path (applied
+  before skinning, for meshes drawn in their stored pose) changes
+  nothing today; blend shapes show only where an animator drives them.
+  The project clamps weights to 0–100
+  (`PlayerSettings.legacyClampBlendShapeWeights`, read and honoured);
+  unclamped, the animated weights run from −91 to 103. In the client,
+  rigs are also built for animators that drive only blend shapes, and
+  skinned renderers without bones now hang on their rig node (they were
+  drawn where the hierarchy stores them). Driven renderers get one Bevy
+  morph target per blend shape frame; a bone-less one gets fixed bounds
+  that hold every shape, a GPU-skinned one keeps its bone-driven bounds
+  (blend shapes beyond them may be culled early: **not checked**).
+  Driven shapes on a skinned mesh not bent by that rig stay still
+  (logged). New: `sn-inspect prefab --shapes`.
 
 **Moved out of M7f4 (not dropped; each one goes where its subsystem
 lives):**

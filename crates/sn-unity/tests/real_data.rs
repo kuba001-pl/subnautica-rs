@@ -334,3 +334,156 @@ fn controller_checks(c: &sn_unity::AnimatorController, at: &str, errors: &mut Ve
         }
     }
 }
+
+#[derive(Default)]
+struct ShapeTotals {
+    meshes: usize,
+    with_shapes: usize,
+    channels: usize,
+    frames: usize,
+    multi_frame_channels: usize,
+    most_frames: usize,
+    most_channels: usize,
+    offsets: usize,
+    with_normals: usize,
+    with_tangents: usize,
+    /// Channels whose frames' full weights don't rise.
+    unsorted: usize,
+    /// Full weights other than 100.
+    not_100: usize,
+    /// Largest dense size (vertices × frames).
+    largest_dense: usize,
+    errors: Vec<String>,
+}
+
+/// Every `Mesh` in the game parses with its blend shapes, which are
+/// in range (`docs/formats/unity.md` § Blend shapes).
+#[test]
+#[ignore = "needs SUBNAUTICA_DIR pointing at a Subnautica install"]
+fn every_mesh_parses_with_its_blend_shapes() {
+    use sn_unity::Mesh;
+    let Some(files) = unity_files() else {
+        eprintln!("SUBNAUTICA_DIR not set or not a Subnautica install; skipping");
+        return;
+    };
+    let next = AtomicUsize::new(0);
+    let totals = Mutex::new(ShapeTotals::default());
+    let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
+    std::thread::scope(|scope| {
+        for _ in 0..threads {
+            scope.spawn(|| {
+                let mut t = ShapeTotals::default();
+                while let Some(path) = files.get(next.fetch_add(1, Ordering::Relaxed)) {
+                    let bytes = std::fs::read(path).unwrap();
+                    let mut check = |data: &[u8], name: &str| {
+                        let Ok(file) = SerializedFile::parse(data) else {
+                            return;
+                        };
+                        for o in file.objects.iter().filter(|o| o.class_id == 43) {
+                            let Some(obj) = file.object_data(data, o) else {
+                                continue;
+                            };
+                            let mesh = match Mesh::parse(obj, false) {
+                                Ok(m) => m,
+                                Err(e) => {
+                                    t.errors.push(format!("{name} object {}: {e}", o.path_id));
+                                    continue;
+                                }
+                            };
+                            t.meshes += 1;
+                            let s = &mesh.blend_shapes;
+                            if s.is_empty() {
+                                continue;
+                            }
+                            t.with_shapes += 1;
+                            t.channels += s.channels.len();
+                            t.frames += s.frames.len();
+                            t.offsets += s.vertices.len();
+                            t.most_channels = t.most_channels.max(s.channels.len());
+                            t.with_normals += s.frames.iter().filter(|f| f.has_normals).count();
+                            t.with_tangents += s.frames.iter().filter(|f| f.has_tangents).count();
+                            t.not_100 += s.full_weights.iter().filter(|&&w| w != 100.0).count();
+                            t.largest_dense = t
+                                .largest_dense
+                                .max(mesh.vertex_count as usize * s.frames.len());
+                            for c in &s.channels {
+                                let n = c.frame_count as usize;
+                                t.most_frames = t.most_frames.max(n);
+                                t.multi_frame_channels += usize::from(n > 1);
+                                let first = c.frame_index as usize;
+                                let w = &s.full_weights[first..first + n];
+                                if w.windows(2).any(|p| p[1] <= p[0]) || w[0] <= 0.0 {
+                                    t.unsorted += 1;
+                                }
+                                if sn_unity::name_hash(&c.name) != c.name_hash {
+                                    t.errors.push(format!(
+                                        "{name} mesh {:?}: channel {:?} hash",
+                                        mesh.name, c.name
+                                    ));
+                                }
+                            }
+                        }
+                    };
+                    let name = path.display().to_string();
+                    if bytes.starts_with(b"UnityFS\0") {
+                        if let Ok(bundle) = Bundle::parse(&bytes) {
+                            for node in bundle.nodes.iter().filter(|n| n.is_serialized_file()) {
+                                check(bundle.node_data(node), &format!("{name}/{}", node.path));
+                            }
+                        }
+                    } else {
+                        check(&bytes, &name);
+                    }
+                }
+                let mut all = totals.lock().unwrap();
+                all.meshes += t.meshes;
+                all.with_shapes += t.with_shapes;
+                all.channels += t.channels;
+                all.frames += t.frames;
+                all.multi_frame_channels += t.multi_frame_channels;
+                all.most_frames = all.most_frames.max(t.most_frames);
+                all.most_channels = all.most_channels.max(t.most_channels);
+                all.offsets += t.offsets;
+                all.with_normals += t.with_normals;
+                all.with_tangents += t.with_tangents;
+                all.unsorted += t.unsorted;
+                all.not_100 += t.not_100;
+                all.largest_dense = all.largest_dense.max(t.largest_dense);
+                all.errors.extend(t.errors);
+            });
+        }
+    });
+    let t = totals.into_inner().unwrap();
+    eprintln!(
+        "meshes {}, with blend shapes {}: channels {} (most per mesh {}), frames {} \
+         (with normals {}, tangents {}), multi-frame channels {} (most frames {}), \
+         offsets {}, unsorted channels {}, full weights not 100: {}, largest vertices × frames {}",
+        t.meshes,
+        t.with_shapes,
+        t.channels,
+        t.most_channels,
+        t.frames,
+        t.with_normals,
+        t.with_tangents,
+        t.multi_frame_channels,
+        t.most_frames,
+        t.offsets,
+        t.unsorted,
+        t.not_100,
+        t.largest_dense
+    );
+    assert!(
+        t.errors.is_empty(),
+        "{} errors, first: {:?}",
+        t.errors.len(),
+        &t.errors[..t.errors.len().min(10)]
+    );
+    assert_eq!(t.meshes, 16_019);
+    assert_eq!(t.with_shapes, 83);
+    assert_eq!(t.channels, 319);
+    assert_eq!(t.frames, 319);
+    assert_eq!(t.multi_frame_channels, 0, "a multi-frame channel appeared");
+    assert_eq!((t.with_normals, t.with_tangents), (319, 319));
+    assert_eq!(t.offsets, 1_080_876);
+    assert_eq!((t.unsorted, t.not_100), (0, 0));
+}

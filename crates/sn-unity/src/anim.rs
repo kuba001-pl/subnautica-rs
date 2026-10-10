@@ -114,8 +114,9 @@ pub struct DenseClip {
 pub struct GenericBinding {
     /// CRC-32 of the object's path below the animator ("" for itself).
     pub path: u32,
-    /// For a Transform: [`ATTR_POSITION`] …; else CRC-32 of the property
-    /// name (e.g. `blendShape.<name>`, `m_Intensity`).
+    /// For a Transform: [`ATTR_POSITION`] …; for a blend shape weight
+    /// (class 137, custom type 20) the CRC-32 of the channel's name; else
+    /// CRC-32 of the property name (e.g. `m_Intensity`).
     pub attribute: u32,
     pub script: PPtr,
     /// Class id of the animated component (4 Transform, 137 skinned mesh

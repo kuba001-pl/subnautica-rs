@@ -7,6 +7,7 @@
 
 mod addressables;
 mod anim;
+mod blend_shape;
 mod bundle;
 mod camera;
 mod classes;
@@ -41,6 +42,10 @@ pub use anim::{
     GenericBinding, Interruption, Layer, LayerBlending, Param, ParamKind, SELECTOR_BASE,
     SelectorState, SelectorTransition, State, StateMachine, StreamedKey, Transition, Xform,
     name_hash,
+};
+pub use blend_shape::{
+    BlendShapeChannel, BlendShapeFrame, BlendShapeVertex, BlendShapes, PLAYER_SETTINGS,
+    channel_frame_factors, clamps_blend_shape_weights,
 };
 pub use bundle::{BlockInfo, Bundle, BundleDirectory, BundleNode, Compression, write_bundle};
 pub use camera::{Camera, TAG_MAIN_CAMERA};

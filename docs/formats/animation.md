@@ -94,8 +94,14 @@ object curve (align 4)`.
   animator) all match a path of their hierarchy.
 - For Transforms (`type id` 4), `attribute` is 1 position, 2 rotation
   (quaternion), 3 scale, 4 Euler angles (`custom type` 4). For other
-  components it is the CRC-32 of the property name (e.g.
-  `blendShape.<name>`).
+  components it is the CRC-32 of the property name. For blend-shape
+  weights (type 137, custom 20) it is the CRC-32 of the **channel's name
+  alone** (the mesh channel's `nameHash`), not of `blendShape.<name>` as
+  the editor shows it. Confirmed 2026-10-10 (M7f4d): the Bleeder's three
+  attributes equal the CRC-32 of its three channel names, and with that
+  rule every blend-shape binding that reaches a renderer with shapes
+  finds its channel (`sn-inspect prefab --shapes`). M7f4a–c assumed the
+  prefix; nothing used it before M7f4d except the defaults.
 - Bound properties over all clips: Transform 319,290 (+ 89 Euler),
   blend-shape weights (type 137, custom 20) 1,674, light values (108,
   custom 25) 151, script fields (114) 185, renderer material values (23,

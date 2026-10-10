@@ -1,7 +1,8 @@
 //! Animated objects (M7f4c, `docs/formats/animation.md`): the game's
 //! `Animator`s run every frame (`sn-anim`) and move the Transforms below
 //! them; skinned meshes bend with their bones on the GPU (Bevy's skinning,
-//! the bones as joints).
+//! the bones as joints), and blend shapes move with their weights (Bevy's
+//! morph targets, one per blend shape frame; M7f4d).
 //!
 //! The worker describes each animator of a prefab as a [`RigDesc`]; every
 //! spawned instance gets the rig's Transforms as a small entity hierarchy
@@ -11,6 +12,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use bevy::camera::visibility::ViewVisibility;
+use bevy::mesh::morph::MeshMorphWeights;
 use bevy::prelude::*;
 use sn_anim::{Animator, Program, SlotKind};
 use sn_world::Transform as Placement;
@@ -34,6 +36,8 @@ pub struct RigDesc {
     /// 2 cull completely.
     pub culling: i32,
     pub skins: Vec<SkinDesc>,
+    /// Renderers whose blend shapes the animator drives.
+    pub shapes: Vec<ShapeDesc>,
     /// For logs: the prefab and the controller.
     pub name: String,
 }
@@ -47,6 +51,55 @@ pub struct SkinDesc {
     pub inverse_bindposes: Vec<Mat4>,
 }
 
+/// A renderer whose blend shapes a rig drives (M7f4d). Its meshes have
+/// one morph target per blend shape frame, in the mesh's frame order.
+#[derive(Clone)]
+pub struct ShapeDesc {
+    pub channels: Vec<ShapeChannel>,
+    /// Morph targets (the mesh's blend shape frames).
+    pub targets: usize,
+    /// Weights clamped to 0–100 (`PlayerSettings.legacyClampBlendShapeWeights`).
+    pub clamp: bool,
+}
+
+/// One blend shape channel of a [`ShapeDesc`].
+#[derive(Clone)]
+pub struct ShapeChannel {
+    /// Offset in the pose of the slot driving it (`None`: it keeps
+    /// `default`).
+    pub slot: Option<usize>,
+    /// The renderer's stored weight (0–100 scale).
+    pub default: f32,
+    /// Its first frame (morph target).
+    pub first: usize,
+    /// Its frames' full weights.
+    pub full: Vec<f32>,
+}
+
+impl ShapeDesc {
+    /// The morph target weights for a pose (`None`: the defaults), as
+    /// Unity weighs the frames (`sn_unity::channel_frame_factors`).
+    pub fn morph_weights(&self, pose: Option<&[f32]>, out: &mut Vec<f32>) {
+        out.clear();
+        out.resize(self.targets, 0.0);
+        for c in &self.channels {
+            let mut w = c
+                .slot
+                .and_then(|at| pose.and_then(|p| p.get(at)))
+                .copied()
+                .unwrap_or(c.default);
+            if self.clamp {
+                w = w.clamp(0.0, 100.0);
+            }
+            for (k, f) in sn_unity::channel_frame_factors(&c.full, w) {
+                if let Some(t) = out.get_mut(c.first + k) {
+                    *t += f;
+                }
+            }
+        }
+    }
+}
+
 /// An animator running on a spawned instance (on the rig's base entity).
 #[derive(Component)]
 pub struct AnimatedRig {
@@ -56,6 +109,9 @@ pub struct AnimatedRig {
     pub culling: i32,
     /// The rig's drawn parts: visible when any is.
     pub parts: Vec<Entity>,
+    /// Drawn parts with blend shapes, by [`RigDesc::shapes`] index.
+    pub shape_parts: Vec<(Entity, u16)>,
+    pub desc: Arc<RigDesc>,
 }
 
 /// Counts for the log (`--no-animation` turns animation off).
@@ -65,6 +121,8 @@ pub struct AnimationStats {
     /// Rigs updated / whose Transforms were written in the last frame.
     pub updated: usize,
     pub applied: usize,
+    /// Blend shape parts whose weights were written in the last frame.
+    pub shaped: usize,
     /// CPU time of the last frame's animation, µs.
     pub micros: f32,
     /// Largest CPU time over the run, µs.
@@ -90,10 +148,11 @@ pub fn animate(
     mut rigs: Query<&mut AnimatedRig>,
     visibility: Query<&ViewVisibility>,
     mut transforms: Query<&mut Transform, Without<AnimatedRig>>,
+    mut morphs: Query<&mut MeshMorphWeights>,
 ) {
     let start = Instant::now();
     let dt = time.delta_secs();
-    let (mut count, mut updated, mut applied) = (0, 0, 0);
+    let (mut count, mut updated, mut applied, mut shaped) = (0, 0, 0, 0);
     for mut rig in &mut rigs {
         count += 1;
         let visible = rig
@@ -125,11 +184,24 @@ pub fn animate(
                 SlotKind::Float { .. } => {}
             }
         }
+        for &(entity, shape) in &rig.shape_parts {
+            let (Some(desc), Ok(mut morph)) = (
+                rig.desc.shapes.get(usize::from(shape)),
+                morphs.get_mut(entity),
+            ) else {
+                continue;
+            };
+            if let MeshMorphWeights::Value { weights } = &mut *morph {
+                desc.morph_weights(Some(pose), weights);
+                shaped += 1;
+            }
+        }
     }
     let micros = start.elapsed().as_secs_f32() * 1e6;
     stats.rigs = count;
     stats.updated = updated;
     stats.applied = applied;
+    stats.shaped = shaped;
     stats.micros = micros;
     stats.worst_micros = stats.worst_micros.max(micros);
 }
@@ -163,6 +235,41 @@ mod tests {
         let a = mirror(unity.transform_point3(p));
         let b = bevy.transform_point3(mirror(p));
         assert!((a - b).length() < 1e-5, "{a} vs {b}");
+    }
+
+    #[test]
+    fn morph_weights_follow_the_slots() {
+        let shape = ShapeDesc {
+            channels: vec![
+                // Driven, two frames at 50 and 100.
+                ShapeChannel {
+                    slot: Some(1),
+                    default: 0.0,
+                    first: 0,
+                    full: vec![50.0, 100.0],
+                },
+                // Not driven: keeps its stored weight.
+                ShapeChannel {
+                    slot: None,
+                    default: 25.0,
+                    first: 2,
+                    full: vec![100.0],
+                },
+            ],
+            targets: 3,
+            clamp: true,
+        };
+        let mut w = Vec::new();
+        shape.morph_weights(Some(&[0.0, 75.0]), &mut w);
+        assert_eq!(w, vec![0.5, 0.5, 0.25]);
+        // Clamped: past 100 is 100, below 0 is 0.
+        shape.morph_weights(Some(&[0.0, 130.0]), &mut w);
+        assert_eq!(w, vec![0.0, 1.0, 0.25]);
+        shape.morph_weights(Some(&[0.0, -40.0]), &mut w);
+        assert_eq!(w, vec![0.0, 0.0, 0.25]);
+        // No pose: the defaults.
+        shape.morph_weights(None, &mut w);
+        assert_eq!(w, vec![0.0, 0.0, 0.25]);
     }
 
     #[test]

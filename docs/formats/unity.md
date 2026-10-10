@@ -153,7 +153,8 @@ used by a placed prefab (3,263) and comparing with UnityPy (below).
 - **Mesh** (43): `string name, SubMesh[] (u32 first byte, u32 index count,
   i32 topology, u32 base vertex, u32 first vertex, u32 vertex count, AABB),
   blend shapes {vertex[40 B], shape[12 B], channel {string, u32, i32, i32}[],
-  f32[]}, mat4[] bind poses, u32[] bone hashes, u32 root bone hash, AABB[] bone
+  f32[]} (§ Blend shapes below), mat4[] bind poses, u32[] bone hashes, u32 root
+  bone hash, AABB[] bone
   bounds, u32[] variable bone weights, u8 compression, 3 × bool (align 4), i32
   index format, u8[] index buffer, vertex data {u32 vertex count, channel {u8
   stream, u8 offset, u8 format, u8 dimension}[], u8[] data}, compressed mesh
@@ -337,7 +338,56 @@ equal the static LOD 1's within 0.1 % (centres within 1 cm;
 
 Renderers with **no bones** (113 of 304 in placed prefabs, e.g. all of
 `BrainCoral`'s LOD 0, which use blend shapes) are drawn by Unity as the
-plain mesh at the renderer's Transform; we do the same.
+plain mesh at the renderer's Transform; we do the same (since M7f4d the
+mesh follows that Transform when an animator moves it).
+
+### Blend shapes (M7f4d) — confirmed
+
+`Mesh.m_Shapes` (`BlendShapeData`), between the sub-meshes and the bind
+poses, Unity 2019.4:
+
+- `vertices`: `{f32×3 position, f32×3 normal, f32×3 tangent, u32 index}[]`
+  (40 B each): sparse offsets, `index` into the mesh's vertices (align 4).
+- `shapes` (*frames*): `{u32 first vertex, u32 vertex count, u8 has
+  normals, u8 has tangents, align 4}[]` (12 B each): `vertices[first ..
+  first + count]`.
+- `channels`: `{string name, u32 name hash, i32 frame index, i32 frame
+  count}[]`: what a renderer weights; `name hash` is the CRC-32 of
+  `name` (checked on every channel).
+- `fullWeights`: `f32[]`, one per frame: the channel weight at which that
+  frame is fully applied.
+
+Confirmed 2026-10-10 by reading every `Mesh` of the game and comparing
+with UnityPy 1.25.4's typetree read: 16,019 meshes, 83 with blend shapes,
+319 channels and 319 frames, 1,080,876 vertex offsets, the same in both;
+every range is valid (`every_mesh_parses_with_its_blend_shapes`). In this
+build every channel has one frame, every frame has normals and tangents,
+and every full weight is 100. The largest mesh has 19 channels.
+
+`SkinnedMeshRenderer.m_BlendShapeWeights` holds one weight per channel
+(0–100 scale; missing entries are 0). Every stored weight in the game is 0
+(665 channels on 65 drawn renderers of the placed prefabs and the escape
+pod; `sn-inspect prefab --shapes`), so blend shapes show only where an
+animator drives them: animation curves on type 137, custom type 20, with
+the channel name's CRC-32 as attribute (`docs/formats/animation.md`).
+
+How the weights move a vertex (our implementation; **hypothesis** where
+not stated): each channel's weight is turned into frame factors (below the
+first frame's full weight `w₀`: that frame × `weight / w₀`; between two
+frames: linear between them; past the last: the last two extrapolated).
+Offsets × factors are added to positions, normals and tangents, before
+skinning (Unity's documented order). With one frame at 100, as every
+channel here, the factor is `weight / 100`.
+
+**`PlayerSettings.legacyClampBlendShapeWeights`** (class 129 in
+`globalgamemanagers`): when set, Unity clamps every weight to 0–100. In
+2019.4 it is the class's last field, after three bools (`cloudEnabled`,
+`enableNativePlatformBackendsForNewInputSystem`,
+`disableOldInputManagerSupport`), so we read it from the object's last
+four bytes (each must be 0 or 1). Confirmed against UnityPy's full read:
+it is **set** in this build. It matters: animated weights before the
+clamp run from −91.4 to 102.9 over 30 s (`Crab_snake_mushrooms_04`,
+`CuteEgg`, `BrainCoral` −18.5..37.2).
 
 ### Cameras and layers — confirmed (2026-10-09)
 
@@ -417,6 +467,6 @@ cull as UnityPy (`docs/formats/materials.md`).
 
 ## Not yet read
 
-- Blend shapes (read past, not applied), creature animation.
+- Creature animation (the creatures are not placed yet).
 - `StreamingAssets/AssetBundles/` (`logos`, `waterdisplacement`): legacy bundles,
   not yet looked at.

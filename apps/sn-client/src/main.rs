@@ -872,8 +872,8 @@ fn log_stats(
         );
         if let Some(a) = animation {
             info!(
-                "animation: {} animators, {} updated, {} moved their Transforms in the last frame; {:.0} µs (worst {:.0} µs)",
-                a.rigs, a.updated, a.applied, a.micros, a.worst_micros
+                "animation: {} animators, {} updated, {} moved their Transforms, {} blend shape parts weighted in the last frame; {:.0} µs (worst {:.0} µs)",
+                a.rigs, a.updated, a.applied, a.shaped, a.micros, a.worst_micros
             );
         }
         info!(

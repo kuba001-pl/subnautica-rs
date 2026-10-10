@@ -2,6 +2,7 @@
 //! interleaved vertex streams, or Unity's compressed (bit-packed) form.
 //! See `docs/formats/unity.md`.
 
+use crate::blend_shape::BlendShapes;
 use crate::objects::PPtr;
 use crate::reader::Reader;
 use crate::texture::StreamingInfo;
@@ -191,6 +192,9 @@ pub struct Mesh {
     /// Per bone: mesh space → bone space, column by column (`m[col * 4 +
     /// row]`; the file stores them row by row).
     pub bind_poses: Vec<[f32; 16]>,
+    /// Blend shapes (empty for most meshes; M7f4d), checked against
+    /// `vertex_count`.
+    pub blend_shapes: BlendShapes,
 }
 
 fn skip_vector(r: &mut Reader, item_bytes: usize) -> Result<()> {
@@ -230,18 +234,8 @@ impl Mesh {
             sub_meshes.push(s);
         }
         r.align(4)?;
-        // Blend shapes: vertices, shapes, channels, full weights.
-        skip_vector(&mut r, 40)?;
-        skip_vector(&mut r, 12)?;
-        let channels = r.count(16)?;
-        for _ in 0..channels {
-            r.aligned_string()?;
-            r.u32()?;
-            r.i32()?;
-            r.i32()?;
-        }
-        r.align(4)?;
-        skip_vector(&mut r, 4)?;
+        let shapes_at = r.pos();
+        let blend_shapes = BlendShapes::read(&mut r)?;
         let n = r.count(64)?;
         let mut bind_poses = Vec::with_capacity(n);
         for _ in 0..n {
@@ -268,6 +262,12 @@ impl Mesh {
         let index_format = r.i32()?;
         let index_buffer = byte_vector(&mut r)?;
         let vertex_count = r.u32()?;
+        if let Err(e) = blend_shapes.check(vertex_count) {
+            return Err(Error {
+                offset: shapes_at,
+                kind: ErrorKind::Invalid(format!("mesh {name:?}: blend shapes: {e}")),
+            });
+        }
         let n = r.count(4)?;
         let mut channels = Vec::with_capacity(n);
         for _ in 0..n {
@@ -309,6 +309,7 @@ impl Mesh {
             stream,
             aabb,
             bind_poses,
+            blend_shapes,
         })
     }
 
@@ -754,6 +755,7 @@ mod tests {
             stream: None,
             aabb: ([0.0; 3], [0.0; 3]),
             bind_poses: Vec::new(),
+            blend_shapes: BlendShapes::default(),
         };
         // 4 vertices × (12 + 4) bytes, already a multiple of 16.
         assert_eq!(mesh.vertex_data_size(), Some(64));
@@ -811,6 +813,7 @@ mod tests {
             stream: None,
             aabb: ([0.0; 3], [0.0; 3]),
             bind_poses: Vec::new(),
+            blend_shapes: BlendShapes::default(),
         };
         let g = mesh.decode(&vertex).unwrap();
         assert_eq!(g.bone_weights[0], [0.25, 0.75, 0.0, 0.0]);

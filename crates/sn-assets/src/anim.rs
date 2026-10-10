@@ -8,7 +8,7 @@ use std::sync::Arc;
 use sn_anim::{Program, SlotKind};
 use sn_unity::{
     ANIMATION_CLIP, ANIMATOR_CONTROLLER, AVATAR, AnimationClip, AnimatorController, Avatar,
-    name_hash,
+    PLAYER_SETTINGS, clamps_blend_shape_weights, name_hash,
 };
 
 use crate::prefab::Prefab;
@@ -102,6 +102,42 @@ impl Assets<'_> {
     }
 }
 
+/// Whether the game clamps blend shape weights to 0–100
+/// (`PlayerSettings.legacyClampBlendShapeWeights`, `globalgamemanagers`).
+pub fn blend_shape_clamp(assets: &Assets) -> Result<bool> {
+    let ggm = assets.standalone("globalgamemanagers")?;
+    let info = ggm
+        .objects()
+        .iter()
+        .find(|o| o.class_id == PLAYER_SETTINGS)
+        .ok_or("globalgamemanagers: no PlayerSettings")?;
+    let (_, data) = ggm
+        .object(info.path_id)
+        .ok_or("globalgamemanagers: PlayerSettings unreadable")?;
+    clamps_blend_shape_weights(data).map_err(|e| format!("PlayerSettings: {e}"))
+}
+
+impl Assets<'_> {
+    /// The blend shape channel names of every skinned renderer in
+    /// `prefab` whose mesh has some, by node (for
+    /// [`Prefab::bind_animator`]). Meshes that fail to load are left out.
+    pub fn blend_shape_names(&self, prefab: &Prefab) -> HashMap<usize, Vec<String>> {
+        let mut out = HashMap::new();
+        for (i, n) in prefab.nodes.iter().enumerate() {
+            let Some(object) = n.mesh.as_ref().filter(|_| n.skinned) else {
+                continue;
+            };
+            if let Ok(mesh) = self.mesh_info(object)
+                && !mesh.blend_shapes.is_empty()
+            {
+                let names = mesh.blend_shapes.channels.into_iter().map(|c| c.name);
+                out.insert(i, names.collect());
+            }
+        }
+        out
+    }
+}
+
 impl Prefab {
     /// The nodes at and below `node` by the hash of their path relative
     /// to it (`""` for `node` itself, `"a/b"` below), as bindings name
@@ -178,16 +214,15 @@ impl Prefab {
                 SlotKind::Position => defaults[at..at + 3].copy_from_slice(&n.local.position),
                 SlotKind::Rotation => defaults[at..at + 4].copy_from_slice(&n.local.rotation),
                 SlotKind::Scale => defaults[at..at + 3].copy_from_slice(&n.local.scale),
+                // A blend shape weight: the attribute is the CRC-32 of the
+                // channel's name (no `blendShape.` prefix; M7f4d).
                 SlotKind::Float {
                     type_id: 137,
                     attribute,
-                    ..
+                    custom_type: 20,
                 } => {
                     let names = blend_shape_names(index);
-                    if let Some(i) = names
-                        .iter()
-                        .position(|name| name_hash(&format!("blendShape.{name}")) == attribute)
-                    {
+                    if let Some(i) = names.iter().position(|name| name_hash(name) == attribute) {
                         defaults[at] = n.blend_shape_weights.get(i).copied().unwrap_or(0.0);
                     }
                 }

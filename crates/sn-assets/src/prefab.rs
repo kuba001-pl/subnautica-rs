@@ -149,7 +149,37 @@ impl Prefab {
             .iter()
             .map(|b| b.and_then(|i| self.nodes.get(i)).map(|b| b.in_prefab))
             .collect();
-        crate::skin::skin(geometry, &mesh.bind_poses, &bones)
+        // Unity applies the blend shapes first, then the skin.
+        let shaped = self.shaped_geometry(node, mesh, geometry);
+        crate::skin::skin(
+            shaped.as_ref().unwrap_or(geometry),
+            &mesh.bind_poses,
+            &bones,
+        )
+    }
+
+    /// A skinned node's mesh with its renderer's stored blend shape weights
+    /// applied, in mesh space (M7f4d). `None` if the node is not skinned,
+    /// its mesh has no blend shapes, or every stored weight is 0 (the mesh
+    /// is then drawn as it is). Weights are used as stored, without the
+    /// project's 0–100 clamp: every stored weight in the game is 0
+    /// (`sn-inspect prefab --shapes`).
+    pub fn shaped_geometry(
+        &self,
+        node: usize,
+        mesh: &Mesh,
+        geometry: &MeshGeometry,
+    ) -> Option<MeshGeometry> {
+        let n = self.nodes.get(node)?;
+        if !n.skinned
+            || mesh.blend_shapes.is_empty()
+            || n.blend_shape_weights.iter().all(|&w| w == 0.0)
+        {
+            return None;
+        }
+        let mut out = geometry.clone();
+        mesh.blend_shapes.apply(&mut out, &n.blend_shape_weights);
+        Some(out)
     }
 
     /// Sets a node's local placement and updates `in_prefab` of every node.
@@ -634,6 +664,13 @@ impl Assets<'_> {
     /// Reads a texture with its pixel data (inline or from a resource file).
     pub fn texture(&self, object: &ObjectRef) -> Result<crate::TerrainTexture> {
         crate::terrain::load_texture(self, object)
+    }
+
+    /// Reads a mesh without decoding its geometry.
+    pub fn mesh_info(&self, object: &ObjectRef) -> Result<Mesh> {
+        let data = expect(object, MESH)?;
+        Mesh::parse(data, object.file.file().big_endian)
+            .map_err(|e| format!("Mesh {}: {e}", object.path_id))
     }
 
     /// Reads a mesh and decodes its geometry (vertex data inline or from

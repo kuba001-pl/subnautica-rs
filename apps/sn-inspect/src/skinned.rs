@@ -2,9 +2,12 @@
 //! escape pod scene: skin data checks, and the skinned LOD 0's bounds next
 //! to the static LOD 1's where a prefab has both.
 
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::process::ExitCode;
+use std::sync::Arc;
 use std::time::Instant;
 
+use sn_anim::{Animator, Program, SlotKind};
 use sn_assets::{Assets, Prefab};
 use sn_install::GameData;
 use sn_world::Transform;
@@ -207,6 +210,247 @@ pub fn run(game: &GameData) -> Result<ExitCode> {
         worst * 100.0,
         worst_shift * 100.0
     );
+    println!("errors: {}", t.errors.len());
+    for e in t.errors.iter().take(10) {
+        println!("  {e}");
+    }
+    println!("({:.1} s)", start.elapsed().as_secs_f64());
+    Ok(ExitCode::SUCCESS)
+}
+
+type ClipCache = HashMap<(std::path::PathBuf, String, i64), Arc<sn_unity::AnimationClip>>;
+
+#[derive(Default)]
+struct ShapeTotals {
+    /// Drawn skinned renderers whose mesh has blend shapes, and their
+    /// placements in the world.
+    renderers: usize,
+    placements: usize,
+    with_bones: usize,
+    channels: usize,
+    /// Stored weights: 0, in 0–100, outside 0–100.
+    stored: [usize; 3],
+    /// Renderers with a channel an active animator drives, their
+    /// placements, and the channels driven.
+    animated: usize,
+    animated_placements: usize,
+    animated_channels: usize,
+    /// Blend shape slots that reach no channel: path not below the
+    /// animator, node without blend shapes, no channel of that name.
+    unmatched_slots: [usize; 3],
+    /// Animated weights over 30 s from the defaults: lowest, highest.
+    range: (f32, f32),
+    errors: Vec<String>,
+}
+
+/// Mesh-space bounds, rounded to mm, as (min, max) per axis.
+fn rounded_bounds(points: &[[f32; 3]]) -> Option<[(f32, f32); 3]> {
+    let mut b = None;
+    for &p in points {
+        grow(&mut b, p);
+    }
+    let r = |v: f32| (v * 1000.0).round() / 1000.0;
+    b.map(|(lo, hi): Bounds| [0, 1, 2].map(|k| (r(lo[k]), r(hi[k]))))
+}
+
+fn shapes_of(
+    assets: &Assets,
+    name: &str,
+    prefab: &Prefab,
+    placements: usize,
+    cache: &mut ClipCache,
+    t: &mut ShapeTotals,
+) {
+    let names = assets.blend_shape_names(prefab);
+    if names.is_empty() {
+        return;
+    }
+    // Channels an animator drives, per node.
+    let mut animated: BTreeMap<usize, BTreeSet<usize>> = BTreeMap::new();
+    for (i, node) in prefab.nodes.iter().enumerate() {
+        let Some(a) = &node.animator else { continue };
+        if !node.active || !a.component.enabled {
+            continue;
+        }
+        let Some(controller) = &a.controller else {
+            continue;
+        };
+        let set = match assets.animation_set(controller, cache) {
+            Ok(s) => s,
+            Err(e) => {
+                t.errors.push(format!("{name}: {e}"));
+                continue;
+            }
+        };
+        let program = Arc::new(Program::new(Arc::new(set.controller), &set.clips));
+        let binding =
+            prefab.bind_animator(i, &program, &|n| names.get(&n).cloned().unwrap_or_default());
+        let mut driven = Vec::new();
+        for (s, slot) in program.slots.iter().enumerate() {
+            let SlotKind::Float {
+                type_id: 137,
+                attribute,
+                custom_type: 20,
+            } = slot.kind
+            else {
+                continue;
+            };
+            let Some(n) = binding.nodes[s] else {
+                t.unmatched_slots[0] += 1;
+                continue;
+            };
+            let Some(channels) = names.get(&n) else {
+                t.unmatched_slots[1] += 1;
+                continue;
+            };
+            let found = channels
+                .iter()
+                .position(|c| sn_unity::name_hash(c) == attribute);
+            match found {
+                Some(c) => {
+                    animated.entry(n).or_default().insert(c);
+                    driven.push(slot.offset);
+                }
+                None => t.unmatched_slots[2] += 1,
+            }
+        }
+        if driven.is_empty() {
+            continue;
+        }
+        let mut animator = Animator::new(program, binding.defaults);
+        let mut range = (f32::INFINITY, f32::NEG_INFINITY);
+        for _ in 0..30 * 60 {
+            animator.update(1.0 / 60.0);
+            for &at in &driven {
+                let v = animator.pose()[at];
+                range.0 = range.0.min(v);
+                range.1 = range.1.max(v);
+            }
+        }
+        if range.0 < 0.0 || range.1 > 100.0 {
+            println!(
+                "  {name}: animator on {:?} drives blend shape weights outside 0–100: {:.2}..{:.2}",
+                node.name, range.0, range.1
+            );
+        }
+        t.range.0 = t.range.0.min(range.0);
+        t.range.1 = t.range.1.max(range.1);
+    }
+    for (&i, channels) in &names {
+        let node = &prefab.nodes[i];
+        if !node.active || !node.renderer_enabled {
+            continue;
+        }
+        t.renderers += 1;
+        t.placements += placements;
+        t.with_bones += usize::from(!node.bones.is_empty());
+        t.channels += channels.len();
+        for c in 0..channels.len() {
+            let w = node.blend_shape_weights.get(c).copied().unwrap_or(0.0);
+            let bucket = if w == 0.0 {
+                0
+            } else if (0.0..=100.0).contains(&w) {
+                1
+            } else {
+                2
+            };
+            t.stored[bucket] += 1;
+        }
+        let driven = animated.get(&i);
+        if let Some(a) = driven {
+            t.animated += 1;
+            t.animated_placements += placements;
+            t.animated_channels += a.len();
+        }
+        let Some(object) = &node.mesh else { continue };
+        let (m, g) = match assets.mesh(object) {
+            Ok(x) => x,
+            Err(e) => {
+                t.errors.push(format!("{name}: {e}"));
+                continue;
+            }
+        };
+        let shaped = prefab.shaped_geometry(i, &m, &g);
+        println!(
+            "  {name} {:?} (LOD {:?}, {} bones, {placements} placements): channels {:?}, stored weights {:?}, animated {:?}",
+            node.name,
+            node.lod,
+            node.bones.len(),
+            channels,
+            node.blend_shape_weights,
+            driven.map(|a| a.iter().map(|&c| channels[c].as_str()).collect::<Vec<_>>()),
+        );
+        println!(
+            "    mesh-space bounds (min, max per axis): base {:?}; with the stored weights {:?}",
+            rounded_bounds(&g.positions),
+            shaped.map(|s| rounded_bounds(&s.positions))
+        );
+    }
+}
+
+/// `prefab --shapes`: blend shapes of the placed prefabs and the escape
+/// pod (M7f4d): renderers, stored weights, which an animator drives, the
+/// range of animated weights, and each renderer's bounds with and without
+/// its stored weights.
+pub fn shapes(game: &GameData) -> Result<ExitCode> {
+    let start = Instant::now();
+    let positions = crate::prefab::placed_positions(game)?;
+    let assets = Assets::index(game)?;
+    let catalog = assets.catalog()?;
+    let mut t = ShapeTotals {
+        range: (f32::INFINITY, f32::NEG_INFINITY),
+        ..Default::default()
+    };
+    let mut cache = ClipCache::new();
+    // Creatures are counted apart: the client does not place them yet.
+    let mut creatures = ShapeTotals {
+        range: t.range,
+        ..Default::default()
+    };
+    for (key, at) in &positions {
+        let totals = if key.starts_with("WorldEntities/Creatures/") {
+            &mut creatures
+        } else {
+            &mut t
+        };
+        match assets.prefab(&catalog, key) {
+            Ok(prefab) => shapes_of(&assets, key, &prefab, at.len(), &mut cache, totals),
+            Err(e) => totals.errors.push(e),
+        }
+    }
+    let mut pod = assets.scene("escapepod")?;
+    pod.spawn_lightmapped_prefab();
+    for root in &pod.roots {
+        shapes_of(&assets, "escapepod scene", root, 1, &mut cache, &mut t);
+    }
+    println!(
+        "drawn renderers with blend shapes: {} ({} placements; {} with bones), channels {}",
+        t.renderers, t.placements, t.with_bones, t.channels
+    );
+    println!(
+        "stored weights: {} at 0, {} in 0–100, {} outside",
+        t.stored[0], t.stored[1], t.stored[2]
+    );
+    println!(
+        "animated: {} renderers ({} placements), {} channels; blendShape slots reaching no channel (path not below the animator, node without shapes, no such channel): {:?}; animated weights over 30 s in {:.2}..{:.2}",
+        t.animated,
+        t.animated_placements,
+        t.animated_channels,
+        t.unmatched_slots,
+        t.range.0,
+        t.range.1
+    );
+    println!(
+        "creatures (not placed by the client yet): {} renderers with blend shapes ({} placements), {} animated, {} channels driven; slots reaching no channel {:?}; animated weights in {:.2}..{:.2}",
+        creatures.renderers,
+        creatures.placements,
+        creatures.animated,
+        creatures.animated_channels,
+        creatures.unmatched_slots,
+        creatures.range.0,
+        creatures.range.1
+    );
+    t.errors.extend(creatures.errors);
     println!("errors: {}", t.errors.len());
     for e in t.errors.iter().take(10) {
         println!("  {e}");

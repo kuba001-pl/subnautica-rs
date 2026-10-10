@@ -1284,6 +1284,7 @@ mod tests {
             indices: vec![0, 1, 0],
             joints: Vec::new(),
             weights: Vec::new(),
+            morphs: Vec::new(),
         };
         let bytes = vertex_bytes(&data);
         assert_eq!(bytes.len(), 2 * VERTEX_FLOATS * 4);

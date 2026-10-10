@@ -20,13 +20,15 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::Instant;
 
 use bevy::asset::RenderAssetUsages;
-use bevy::camera::visibility::DynamicSkinnedMeshBounds;
+use bevy::camera::primitives::Aabb;
+use bevy::camera::visibility::{DynamicSkinnedMeshBounds, NoAutoAabb};
 use bevy::math::Affine2;
+use bevy::mesh::morph::{MAX_MORPH_WEIGHTS, MeshMorphWeights, MorphAttributes};
 use bevy::mesh::skinning::{SkinnedMesh, SkinnedMeshInverseBindposes};
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, Face, TextureDimension, TextureFormat};
-use sn_anim::{Animator, Program};
+use sn_anim::{Animator, Program, SlotKind};
 use sn_assets::{
     Assets as GameAssets, LootTable, MarmoSkies, ObjectRef, Prefab, TerrainTexture, marmo_skies,
 };
@@ -34,7 +36,7 @@ use sn_install::GameData;
 use sn_unity::{Catalog, DayNightLight, LightKind, Material, SKIES_AUTO, Shader};
 use sn_world::{BatchCoord, EntityInfo, SLOTS_COMPONENT, Transform as Placement};
 
-use crate::animation::{AnimatedRig, RigDesc, SkinDesc, bindpose_to_bevy};
+use crate::animation::{AnimatedRig, RigDesc, ShapeChannel, ShapeDesc, SkinDesc, bindpose_to_bevy};
 use crate::effects::{
     EffectLook, EffectMeshes, EffectPart, EffectValues, PARTICLES_TEXTURES, ParticlesValues,
 };
@@ -109,6 +111,10 @@ pub struct MeshData {
     /// meshes; M7f4c).
     pub(crate) joints: Vec<[u16; 4]>,
     pub(crate) weights: Vec<[f32; 4]>,
+    /// Blend shape frames as morph targets, one target after another
+    /// (`targets × vertices`; empty for most meshes; M7f4d): position,
+    /// normal and tangent offsets.
+    pub(crate) morphs: Vec<[[f32; 3]; 3]>,
 }
 
 #[derive(Clone, Copy)]
@@ -250,6 +256,9 @@ struct Part {
     /// mesh, the rig node it hangs on (`local` is then the identity);
     /// for a skinned mesh, its skin in the rig.
     rig: Option<RigPart>,
+    /// Its blend shapes driven by that rig (M7f4d): the index in the rig's
+    /// `shapes`; `mesh` then has the morph targets.
+    shape: Option<u16>,
 }
 
 #[derive(Clone, Copy)]
@@ -327,12 +336,22 @@ fn saved_below<'t>(
     below
 }
 
+/// A spawned rig: its base, its nodes, its drawn parts, and those with
+/// blend shapes (with their index in [`RigDesc::shapes`]).
+type RigEntities = (Entity, Vec<Entity>, Vec<Entity>, Vec<(Entity, u16)>);
+
+/// A skinned mesh bent by a rig on the GPU: (rig, skin, blend shapes,
+/// sub-meshes); see `Library::gpu_skin`.
+type GpuSkin = (u16, u16, Option<u16>, Vec<Option<u32>>);
+
 /// A rig while a prefab's content is put together.
 struct RigBuild {
     /// The animator's node in the prefab.
     animator: usize,
     /// Prefab node → rig node.
     node_map: HashMap<usize, u16>,
+    /// Prefab node → its blend shapes in `desc.shapes`.
+    shape_nodes: HashMap<usize, u16>,
     desc: RigDesc,
 }
 
@@ -461,6 +480,11 @@ struct Library {
     clips: HashMap<Key, Arc<sn_unity::AnimationClip>>,
     /// Skinned meshes with their bone weights, as `meshes`.
     skin_meshes: HashMap<(Key, usize), Option<u32>>,
+    /// Meshes with their blend shapes as morph targets (and their bone
+    /// weights if the bool is set), as `meshes` (M7f4d).
+    morph_meshes: HashMap<(Key, bool, usize), Option<u32>>,
+    /// The project clamps blend shape weights to 0–100.
+    blend_clamp: bool,
 }
 
 /// How far a shader is ported (`docs/formats/materials.md`).
@@ -876,7 +900,10 @@ impl Library {
             );
         }
         let mut ids = Vec::new();
-        for (i, data) in split_geometry(&geometry, None).into_iter().enumerate() {
+        for (i, data) in split_geometry(&geometry, None, None)
+            .into_iter()
+            .enumerate()
+        {
             let id = self.id();
             out.push(Update::EffectMesh { id, data });
             self.effect_meshes.insert((key.clone(), i), Some(id));
@@ -987,7 +1014,7 @@ impl Library {
         out: &mut Vec<Update>,
     ) -> Vec<Option<u32>> {
         let mut ids = Vec::new();
-        for (i, data) in split_geometry(geometry, None).into_iter().enumerate() {
+        for (i, data) in split_geometry(geometry, None, None).into_iter().enumerate() {
             let id = self.id();
             out.push(Update::Mesh { id, data });
             self.meshes.insert((key.clone(), i), Some(id));
@@ -1124,10 +1151,16 @@ impl Library {
         program
     }
 
-    /// The prefab's animators that move a Transform (active, enabled, with
-    /// a controller), each with its nodes (M7f4c). Animators that only
-    /// change blend shapes or other properties are left out (M7f4d).
-    fn rigs(&mut self, prefab: &Prefab, out: &mut Vec<Update>) -> Vec<RigBuild> {
+    /// The prefab's animators that move a Transform or drive blend shapes
+    /// (active, enabled, with a controller), each with its nodes (M7f4c,
+    /// M7f4d). `shapes`: the blend shapes of the prefab's skinned nodes.
+    /// Animators that change only other properties are left out.
+    fn rigs(
+        &mut self,
+        prefab: &Prefab,
+        shapes: &HashMap<usize, sn_unity::BlendShapes>,
+        out: &mut Vec<Update>,
+    ) -> Vec<RigBuild> {
         let mut rigs = Vec::new();
         for (i, node) in prefab.nodes.iter().enumerate() {
             let Some(a) = &node.animator else { continue };
@@ -1163,7 +1196,12 @@ impl Library {
                 node_map.insert(j, nodes.len() as u16);
                 nodes.push((Some(pk), prefab.nodes[j].local));
             }
-            let binding = prefab.bind_animator(i, &program, &|_| Vec::new());
+            let names = |n: usize| {
+                shapes.get(&n).map_or(Vec::new(), |s| {
+                    s.channels.iter().map(|c| c.name.clone()).collect()
+                })
+            };
+            let binding = prefab.bind_animator(i, &program, &names);
             let slot_nodes: Vec<Option<u16>> = binding
                 .nodes
                 .iter()
@@ -1173,7 +1211,9 @@ impl Library {
                         .and_then(|n| node_map.get(&n).copied())
                 })
                 .collect();
-            if slot_nodes.iter().all(Option::is_none) {
+            let (shape_nodes, shape_descs) =
+                self.shape_descs(prefab, shapes, &program, &binding.nodes, &node_map, out);
+            if slot_nodes.iter().all(Option::is_none) && shape_descs.is_empty() {
                 continue;
             }
             let base = node
@@ -1182,6 +1222,7 @@ impl Library {
             rigs.push(RigBuild {
                 animator: i,
                 node_map,
+                shape_nodes,
                 desc: RigDesc {
                     base,
                     nodes,
@@ -1191,14 +1232,94 @@ impl Library {
                     defaults: binding.defaults,
                     culling: a.component.culling_mode,
                     skins: Vec::new(),
+                    shapes: shape_descs,
                 },
             });
         }
         rigs
     }
 
+    /// The renderers below an animator whose blend shapes its slots drive
+    /// (a float slot on a skinned mesh, class 137 custom type 20, whose
+    /// attribute is a channel's name hash), as prefab node → index, and
+    /// each one's [`ShapeDesc`]. `slot_nodes`: each slot's prefab node.
+    fn shape_descs(
+        &self,
+        prefab: &Prefab,
+        shapes: &HashMap<usize, sn_unity::BlendShapes>,
+        program: &Program,
+        slot_nodes: &[Option<usize>],
+        node_map: &HashMap<usize, u16>,
+        out: &mut Vec<Update>,
+    ) -> (HashMap<usize, u16>, Vec<ShapeDesc>) {
+        // Prefab node → (channel, pose offset) of each driven channel.
+        let mut driven: BTreeMap<usize, Vec<(usize, usize)>> = BTreeMap::new();
+        for (slot, node) in program.slots.iter().zip(slot_nodes) {
+            let SlotKind::Float {
+                type_id: 137,
+                attribute,
+                custom_type: 20,
+            } = slot.kind
+            else {
+                continue;
+            };
+            let Some(n) = node.filter(|n| node_map.contains_key(n)) else {
+                continue;
+            };
+            let Some(c) = shapes
+                .get(&n)
+                .and_then(|s| s.channels.iter().position(|c| c.name_hash == attribute))
+            else {
+                continue;
+            };
+            driven.entry(n).or_default().push((c, slot.offset));
+        }
+        let mut map = HashMap::new();
+        let mut descs = Vec::new();
+        for (n, channels) in driven {
+            let s = &shapes[&n];
+            if s.frames.len() > MAX_MORPH_WEIGHTS {
+                out.push(Update::Warning(format!(
+                    "{}: {:?} has {} blend shape frames, more than Bevy's {MAX_MORPH_WEIGHTS} morph targets; not animated",
+                    prefab.key,
+                    prefab.nodes[n].name,
+                    s.frames.len(),
+                )));
+                continue;
+            }
+            let stored = &prefab.nodes[n].blend_shape_weights;
+            let desc = ShapeDesc {
+                channels: s
+                    .channels
+                    .iter()
+                    .enumerate()
+                    .map(|(c, ch)| {
+                        let first = ch.frame_index as usize;
+                        let count = ch.frame_count as usize;
+                        ShapeChannel {
+                            slot: channels.iter().find(|d| d.0 == c).map(|d| d.1),
+                            default: stored.get(c).copied().unwrap_or(0.0),
+                            first,
+                            full: s
+                                .full_weights
+                                .get(first..first + count)
+                                .unwrap_or(&[])
+                                .to_vec(),
+                        }
+                    })
+                    .collect(),
+                targets: s.frames.len(),
+                clamp: self.blend_clamp,
+            };
+            map.insert(n, descs.len() as u16);
+            descs.push(desc);
+        }
+        (map, descs)
+    }
+
     /// A skinned node bent on the GPU by a rig that holds all its bones:
-    /// (rig, skin, sub-meshes with bone weights). `None`: drawn in its
+    /// (rig, skin, its blend shapes if that rig drives them, sub-meshes
+    /// with bone weights and then morph targets). `None`: drawn in its
     /// stored pose instead (no such rig, too many bones for Bevy, bind
     /// poses missing).
     fn gpu_skin(
@@ -1207,7 +1328,7 @@ impl Library {
         node: usize,
         rigs: &mut [RigBuild],
         out: &mut Vec<Update>,
-    ) -> Option<(u16, u16, Vec<Option<u32>>)> {
+    ) -> Option<GpuSkin> {
         let n = &prefab.nodes[node];
         if n.bones.is_empty() || n.bones.len() > 256 {
             return None;
@@ -1243,13 +1364,16 @@ impl Library {
             .map(bindpose_to_bevy)
             .collect();
         let key = object.key();
-        let ids = if self.skin_meshes.contains_key(&(key.clone(), 0)) {
+        let shape = rig.shape_nodes.get(&node).copied();
+        let ids = if shape.is_some() {
+            self.morph_mesh(key, &geometry, &mesh.blend_shapes, Some(joints.len()), out)
+        } else if self.skin_meshes.contains_key(&(key.clone(), 0)) {
             (0..)
                 .map_while(|i| self.skin_meshes.get(&(key.clone(), i)).copied())
                 .collect()
         } else {
             let mut ids = Vec::new();
-            for (i, data) in split_geometry(&geometry, Some(joints.len()))
+            for (i, data) in split_geometry(&geometry, Some(joints.len()), None)
                 .into_iter()
                 .enumerate()
             {
@@ -1265,7 +1389,60 @@ impl Library {
             joints,
             inverse_bindposes,
         });
-        Some((r as u16, skin, ids))
+        Some((r as u16, skin, shape, ids))
+    }
+
+    /// A mesh's sub-meshes with its blend shapes as morph targets (and
+    /// bone weights for `joints` bones), cached under `key` (M7f4d).
+    fn morph_mesh(
+        &mut self,
+        key: Key,
+        geometry: &sn_unity::MeshGeometry,
+        shapes: &sn_unity::BlendShapes,
+        joints: Option<usize>,
+        out: &mut Vec<Update>,
+    ) -> Vec<Option<u32>> {
+        let skinned = joints.is_some();
+        if self.morph_meshes.contains_key(&(key.clone(), skinned, 0)) {
+            return (0..)
+                .map_while(|i| self.morph_meshes.get(&(key.clone(), skinned, i)).copied())
+                .collect();
+        }
+        let mut ids = Vec::new();
+        for (i, data) in split_geometry(geometry, joints, Some(shapes))
+            .into_iter()
+            .enumerate()
+        {
+            let id = self.id();
+            out.push(Update::Mesh { id, data });
+            self.morph_meshes
+                .insert((key.clone(), skinned, i), Some(id));
+            ids.push(Some(id));
+        }
+        ids
+    }
+
+    /// The blend shapes of a prefab's skinned nodes, by node, if the prefab
+    /// has an animator that could drive them (meshes that fail to read are
+    /// left out; they fail again, with a warning, when drawn).
+    fn node_shapes(&self, prefab: &Prefab) -> HashMap<usize, sn_unity::BlendShapes> {
+        let animated = prefab
+            .nodes
+            .iter()
+            .any(|n| n.active && n.animator.as_ref().is_some_and(|a| a.component.enabled));
+        if !self.animate || !animated {
+            return HashMap::new();
+        }
+        prefab
+            .nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| n.skinned)
+            .filter_map(|(i, n)| {
+                let mesh = self.assets.mesh_info(n.mesh.as_ref()?).ok()?;
+                (!mesh.blend_shapes.is_empty()).then_some((i, mesh.blend_shapes))
+            })
+            .collect()
     }
 
     /// A hierarchy's drawn parts and lights relative to its root, with the
@@ -1278,8 +1455,9 @@ impl Library {
         depth: usize,
     ) -> PrefabContent {
         let mut parts = Vec::new();
+        let shapes = self.node_shapes(prefab);
         let mut rigs = if self.animate {
-            self.rigs(prefab, out)
+            self.rigs(prefab, &shapes, out)
         } else {
             Vec::new()
         };
@@ -1318,13 +1496,29 @@ impl Library {
             } else {
                 None
             };
-            let on_node = if node.skinned {
+            // Still meshes, and skinned ones without bones (drawn at their
+            // node, as Unity draws them), hang on their rig node.
+            let on_node = if node.skinned && !node.bones.is_empty() {
                 None
             } else {
                 rig_of(index, &rigs)
             };
+            // Blend shapes of a bone-less skinned mesh driven by that rig.
+            let node_shape = on_node
+                .filter(|_| gpu.is_none() && skinned.is_none())
+                .and_then(|(r, _)| rigs[usize::from(r)].shape_nodes.get(&index).copied());
+            let shape = match &gpu {
+                Some((_, _, shape, _)) => *shape,
+                None => node_shape,
+            };
+            if shape.is_none() && rigs.iter().any(|r| r.shape_nodes.contains_key(&index)) {
+                info!(
+                    "objects: blend shapes of {:?} in {} not animated: its skin is not bent by the rig that drives them",
+                    node.name, prefab.key
+                );
+            }
             let rig = match (&gpu, on_node) {
-                (Some((rig, skin, _)), _) => Some(RigPart::Skin {
+                (Some((rig, skin, _, _)), _) => Some(RigPart::Skin {
                     rig: *rig,
                     skin: *skin,
                 }),
@@ -1336,10 +1530,17 @@ impl Library {
             } else {
                 node.in_prefab
             };
-            let sub_meshes = match (gpu, skinned) {
-                (Some((_, _, ids)), _) => ids,
-                (None, Some(ids)) => ids,
-                (None, None) => self.mesh(mesh, out),
+            let sub_meshes = match (gpu, skinned, node_shape.and(shapes.get(&index))) {
+                (Some((_, _, _, ids)), _, _) => ids,
+                (None, Some(ids), _) => ids,
+                (None, None, Some(s)) => match self.assets.mesh(mesh) {
+                    Ok((_, geometry)) => self.morph_mesh(mesh.key(), &geometry, s, None, out),
+                    Err(e) => {
+                        out.push(Update::Warning(format!("mesh: {e}")));
+                        continue;
+                    }
+                },
+                (None, None, None) => self.mesh(mesh, out),
             };
             // Effect sub-meshes come from their own copy (with vertex
             // colours), made when the first one is met.
@@ -1396,6 +1597,7 @@ impl Library {
                     biome_sky,
                     effect,
                     rig,
+                    shape: shape.filter(|_| !effect),
                 });
             }
         }
@@ -1962,6 +2164,8 @@ fn worker(
             programs: HashMap::new(),
             clips: HashMap::new(),
             skin_meshes: HashMap::new(),
+            morph_meshes: HashMap::new(),
+            blend_clamp: true,
         })
     };
     let mut library = match setup() {
@@ -1979,6 +2183,14 @@ fn worker(
         }
     };
     let _ = tx.send(Update::Skies(SkySet::new(skies)));
+    match sn_assets::blend_shape_clamp(&library.assets) {
+        Ok(clamp) => library.blend_clamp = clamp,
+        Err(e) => {
+            let _ = tx.send(Update::Warning(format!(
+                "blend shapes: {e}; weights clamped to 0–100"
+            )));
+        }
+    }
     match library.assets.main_camera() {
         Ok(camera) => {
             let hidden: Vec<u32> = (0..32).filter(|&l| !camera.draws_layer(l)).collect();
@@ -2113,6 +2325,8 @@ pub struct ObjectStreamer {
     prefab_rigs: HashMap<u32, Vec<Arc<RigDesc>>>,
     /// (prefab, rig, skin) → its inverse bind poses.
     bindposes: HashMap<(u32, u16, u16), Handle<SkinnedMeshInverseBindposes>>,
+    /// Meshes with morph targets: bounds at any weights (M7f4d).
+    morph_bounds: HashMap<u32, Aabb>,
     prefab_lights: HashMap<u32, Vec<LocalLight>>,
     prefab_directional: HashMap<u32, Vec<DirectionalSource>>,
     batches: HashMap<BatchCoord, BatchObjects>,
@@ -2174,6 +2388,7 @@ impl ObjectStreamer {
             meshes: HashMap::new(),
             prefabs: HashMap::new(),
             prefab_rigs: HashMap::new(),
+            morph_bounds: HashMap::new(),
             bindposes: HashMap::new(),
             prefab_lights: HashMap::new(),
             prefab_directional: HashMap::new(),
@@ -2315,7 +2530,11 @@ fn spawn_light(commands: &mut Commands, light: &LocalLight, transform: Transform
 /// each with only the vertices it uses. `joints`: keep the bone weights for
 /// GPU skinning with that many bones (indices past it lose their weight;
 /// weights are normalised).
-fn split_geometry(geometry: &sn_unity::MeshGeometry, joints: Option<usize>) -> Vec<MeshData> {
+fn split_geometry(
+    geometry: &sn_unity::MeshGeometry,
+    joints: Option<usize>,
+    shapes: Option<&sn_unity::BlendShapes>,
+) -> Vec<MeshData> {
     fn pick<T: Copy>(attr: &[T], n: usize, used: &[usize]) -> Vec<T> {
         if attr.len() == n {
             used.iter().map(|&v| attr[v]).collect()
@@ -2360,6 +2579,19 @@ fn split_geometry(geometry: &sn_unity::MeshGeometry, joints: Option<usize>) -> V
         }
         _ => (Vec::new(), Vec::new()),
     };
+    // Every blend shape frame's offsets for every vertex, mirrored as the
+    // vertices are.
+    let frames: Vec<Vec<[[f32; 3]; 3]>> = shapes.map_or(Vec::new(), |s| {
+        (0..s.frames.len())
+            .map(|f| {
+                let mut dense = s.dense_frame(f, n);
+                for v in &mut dense {
+                    *v = v.map(flip);
+                }
+                dense
+            })
+            .collect()
+    });
     let mut meshes = Vec::new();
     for indices in &geometry.sub_meshes {
         let mut remap = vec![u32::MAX; n];
@@ -2381,6 +2613,7 @@ fn split_geometry(geometry: &sn_unity::MeshGeometry, joints: Option<usize>) -> V
             uvs: pick(&geometry.uv0, n, &used),
             joints: pick(&bone_joints, n, &used),
             weights: pick(&bone_weights, n, &used),
+            morphs: frames.iter().flat_map(|f| pick(f, n, &used)).collect(),
             indices: local
                 .chunks_exact(3)
                 .flat_map(|t| [t[0], t[2], t[1]])
@@ -2426,7 +2659,38 @@ fn build_mesh(data: MeshData) -> Mesh {
             warn!("objects: skinned mesh bounds: {e}");
         }
     }
+    if !data.morphs.is_empty() {
+        mesh.set_morph_targets(
+            data.morphs
+                .iter()
+                .map(|&[p, n, t]| MorphAttributes::new(Vec3::from(p), Vec3::from(n), Vec3::from(t)))
+                .collect(),
+        );
+    }
     mesh
+}
+
+/// Bounds that hold a morphed mesh at any target weights in 0–1 (each
+/// vertex at its base position plus every target's offsets that push it
+/// one way, per axis). `None` without morph targets or vertices.
+fn morph_bounds(data: &MeshData) -> Option<Aabb> {
+    let n = data.positions.len();
+    if data.morphs.is_empty() || n == 0 || data.morphs.len() % n != 0 {
+        return None;
+    }
+    let mut lo = Vec3::splat(f32::INFINITY);
+    let mut hi = Vec3::splat(f32::NEG_INFINITY);
+    for (v, &p) in data.positions.iter().enumerate() {
+        let (mut down, mut up) = (Vec3::ZERO, Vec3::ZERO);
+        for target in data.morphs.chunks_exact(n) {
+            let d = Vec3::from(target[v][0]);
+            down += d.min(Vec3::ZERO);
+            up += d.max(Vec3::ZERO);
+        }
+        lo = lo.min(Vec3::from(p) + down);
+        hi = hi.max(Vec3::from(p) + up);
+    }
+    Some(Aabb::from_min_max(lo, hi))
 }
 
 /// Default textures of the object material.
@@ -2603,6 +2867,9 @@ pub fn stream_objects(
                 streamer.material_descs.insert(id, *desc);
             }
             Update::Mesh { id, data } => {
+                if let Some(aabb) = morph_bounds(&data) {
+                    streamer.morph_bounds.insert(id, aabb);
+                }
                 streamer.meshes.insert(id, meshes.add(build_mesh(data)));
             }
             Update::EffectMesh { id, data } => {
@@ -2619,12 +2886,18 @@ pub fn stream_objects(
                 if !rigs.is_empty() {
                     for (r, rig) in rigs.iter().enumerate() {
                         info!(
-                            "animation: {}: {} nodes, {} of {} slots move Transforms, {} skinned meshes on the GPU, culling mode {}",
+                            "animation: {}: {} nodes, {} of {} slots move Transforms, {} skinned meshes on the GPU, {} renderers with blend shapes ({} channels driven), culling mode {}",
                             rig.name,
                             rig.nodes.len(),
                             rig.slot_nodes.iter().flatten().count(),
                             rig.slot_nodes.len(),
                             rig.skins.len(),
+                            rig.shapes.len(),
+                            rig.shapes
+                                .iter()
+                                .flat_map(|s| &s.channels)
+                                .filter(|c| c.slot.is_some())
+                                .count(),
                             rig.culling
                         );
                         for (k, skin) in rig.skins.iter().enumerate() {
@@ -2834,7 +3107,8 @@ impl ObjectStreamer {
             .get(&inst.prefab)
             .cloned()
             .unwrap_or_default();
-        let mut rig_entities: Vec<(Entity, Vec<Entity>, Vec<Entity>)> = Vec::new();
+        // (base, nodes, drawn parts, drawn parts with blend shapes).
+        let mut rig_entities: Vec<RigEntities> = Vec::new();
         for rig in &rigs {
             let base = s
                 .commands
@@ -2853,7 +3127,7 @@ impl ObjectStreamer {
                         .id(),
                 );
             }
-            rig_entities.push((base, nodes, Vec::new()));
+            rig_entities.push((base, nodes, Vec::new(), Vec::new()));
         }
         for part in parts {
             if part.effect {
@@ -2907,7 +3181,7 @@ impl ObjectStreamer {
             };
             if let Some(rig_part) = part.rig {
                 let r = usize::from(rig_part.rig());
-                let Some((base, nodes, drawn)) = rig_entities.get_mut(r) else {
+                let Some((base, nodes, drawn, shaped)) = rig_entities.get_mut(r) else {
                     continue;
                 };
                 let entity = match rig_part {
@@ -2956,6 +3230,24 @@ impl ObjectStreamer {
                         .entity(entity)
                         .insert(bevy::light::NotShadowCaster);
                 }
+                // Blend shapes: the weights before the first update, and
+                // (for a mesh not skinned on the GPU) bounds that hold
+                // every shape.
+                let shape = part
+                    .shape
+                    .and_then(|k| rigs[r].shapes.get(usize::from(k)).map(|d| (k, d)));
+                if let Some((k, desc)) = shape {
+                    let mut weights = Vec::new();
+                    desc.morph_weights(None, &mut weights);
+                    let mut e = s.commands.entity(entity);
+                    e.insert(MeshMorphWeights::Value { weights });
+                    if let (RigPart::Node { .. }, Some(aabb)) =
+                        (rig_part, self.morph_bounds.get(&part.mesh))
+                    {
+                        e.insert((*aabb, NoAutoAabb));
+                    }
+                    shaped.push((entity, k));
+                }
                 drawn.push(entity);
                 continue;
             }
@@ -2971,7 +3263,7 @@ impl ObjectStreamer {
             entities.push(entity.id());
         }
         // Each rig's animator, on its base.
-        for (rig, (base, nodes, drawn)) in rigs.iter().zip(rig_entities) {
+        for (rig, (base, nodes, drawn, shaped)) in rigs.iter().zip(rig_entities) {
             let slots = rig
                 .slot_nodes
                 .iter()
@@ -2982,6 +3274,8 @@ impl ObjectStreamer {
                 slots,
                 culling: rig.culling,
                 parts: drawn,
+                shape_parts: shaped,
+                desc: rig.clone(),
             });
         }
         let lights = self.prefab_lights.get(&inst.prefab).filter(|_| self.lights);

@@ -81,6 +81,9 @@ Commands:
   prefab --skinned       Every skinned mesh of the placed prefabs and the
                          escape pod: skin checks, skinned LOD 0 bounds vs
                          the static LOD 1
+  prefab --shapes        M7f4d: blend shapes of the placed prefabs and the
+                         escape pod: stored weights, which ones animators
+                         drive, bounds with and without the stored weights
   prefab --lights        The Light components of every placed prefab, and
                          how many lights the world's placements hold
   prefab --placeholders  Placed prefabs with PrefabPlaceholders and whether
@@ -239,6 +242,7 @@ fn run(mut args: Vec<String>) -> Result<ExitCode> {
         ["prefab", "--materials"] => prefab::materials(&game),
         ["prefab", "--placeholders"] => prefab::placeholders(&game),
         ["prefab", "--skinned"] => skinned::run(&game),
+        ["prefab", "--shapes"] => skinned::shapes(&game),
         ["prefab", "--placed", "--oracle"] => prefab::placed(&game, true),
         ["prefab", key, "--props"] => prefab::props(&game, key),
         ["prefab", key] => prefab::one(&game, key),

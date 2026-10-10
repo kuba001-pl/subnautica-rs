@@ -29,7 +29,7 @@ use std::sync::{Arc, Mutex};
 use sn_install::GameData;
 use sn_unity::{Bundle, BundleDirectory, ObjectInfo, PPtr, SerializedFile};
 
-pub use anim::{AnimationSet, AnimatorBinding};
+pub use anim::{AnimationSet, AnimatorBinding, blend_shape_clamp};
 pub use code::{
     GAME_ASSEMBLY, GameCode, PlayerCode, TechDefaults, game_code, player_code, read_assembly,
 };

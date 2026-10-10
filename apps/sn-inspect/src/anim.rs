@@ -411,6 +411,9 @@ pub fn run(game: &GameData, target: &str, states: bool, play_for: Option<f32>) -
                 unique.len(),
                 missing_paths.len()
             );
+            if !missing_paths.is_empty() {
+                println!("    missing path hashes (CRC-32): {missing_paths:?}");
+            }
             for c in &unique {
                 println!("    {}", clip_summary(c));
             }

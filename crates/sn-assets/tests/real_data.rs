@@ -1357,3 +1357,29 @@ fn player_and_lifepod_animators_run() {
         }
     }
 }
+
+#[test]
+#[ignore = "needs SUBNAUTICA_DIR pointing at a Subnautica install"]
+fn blend_shape_clamp_and_brain_coral() {
+    let Some(dir) = std::env::var_os("SUBNAUTICA_DIR") else {
+        eprintln!("SUBNAUTICA_DIR not set; skipping");
+        return;
+    };
+    let game = GameData::locate(Some(PathBuf::from(dir))).unwrap();
+    let assets = Assets::index(&game).unwrap();
+    // `PlayerSettings.legacyClampBlendShapeWeights` (M7f4d).
+    assert!(sn_assets::blend_shape_clamp(&assets).unwrap());
+    let catalog = assets.catalog().unwrap();
+    let prefab = assets
+        .prefab(&catalog, "WorldEntities/Environment/BrainCoral.prefab")
+        .unwrap();
+    let names = assets.blend_shape_names(&prefab);
+    eprintln!("BrainCoral: blend shape channels by node {names:?}");
+    // One skinned renderer (LOD 0) with three channels, all stored at 0.
+    assert_eq!(names.len(), 1);
+    let (&node, channels) = names.iter().next().unwrap();
+    assert_eq!(channels.len(), 3);
+    let n = &prefab.nodes[node];
+    assert_eq!(n.lod, Some(0));
+    assert!(n.blend_shape_weights.iter().all(|&w| w == 0.0));
+}
