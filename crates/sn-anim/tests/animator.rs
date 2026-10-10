@@ -599,6 +599,69 @@ fn exit_nodes_lead_back_to_the_entry() {
     assert!(state_is(&a, 0, "a"));
 }
 
+/// A sub-machine's exit node with no transition that holds goes on to the
+/// layer's own exit, then the entry (the game's "Swim" sub-machine leaving
+/// the water: its exit node only lists other ways out).
+#[test]
+fn unmatched_sub_machine_exit_goes_to_the_layer_exit() {
+    let mut sm = machine(vec![
+        state(
+            "walk",
+            vec![leaf(0)],
+            vec![to(2, vec![cond(ConditionMode::If, "wet", 0.0)])],
+        ),
+        state("other", vec![leaf(1)], vec![]),
+        state(
+            "swim",
+            vec![leaf(1)],
+            vec![to(
+                SELECTOR_BASE + 2,
+                vec![cond(ConditionMode::IfNot, "wet", 0.0)],
+            )],
+        ),
+    ]);
+    // 1: the layer's exit → its entry. 2: the sub-machine's exit, with a
+    // transition that doesn't hold.
+    sm.selectors.push(SelectorState {
+        transitions: vec![SelectorTransition {
+            destination: SELECTOR_BASE,
+            conditions: vec![],
+        }],
+        full_path_id: name_hash("Base"),
+        is_entry: false,
+    });
+    sm.selectors.push(SelectorState {
+        transitions: vec![SelectorTransition {
+            destination: 1,
+            conditions: vec![cond(ConditionMode::If, "surface", 0.0)],
+        }],
+        full_path_id: name_hash("Base.Sub"),
+        is_entry: false,
+    });
+    let mut base = layer(0);
+    base.binding = name_hash("Base");
+    let c = controller(
+        vec![base],
+        vec![sm],
+        &[("wet", ParamKind::Bool), ("surface", ParamKind::Bool)],
+        2,
+    );
+    let mut a = animator(c, vec![hold_x("walk", 0.0), hold_x("swim", 1.0)], vec![]);
+    a.set_bool(name_hash("wet"), true);
+    a.update(0.1);
+    assert!(state_is(&a, 0, "swim"));
+    a.set_bool(name_hash("wet"), false);
+    a.update(0.1);
+    assert!(state_is(&a, 0, "walk"));
+    // With the sub-machine's own transition holding, it is taken.
+    a.set_bool(name_hash("wet"), true);
+    a.update(0.1);
+    a.set_bool(name_hash("wet"), false);
+    a.set_bool(name_hash("surface"), true);
+    a.update(0.1);
+    assert!(state_is(&a, 0, "other"));
+}
+
 #[test]
 fn override_layers_blend_by_weight_and_mask() {
     let arm = name_hash("arm");

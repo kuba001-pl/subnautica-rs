@@ -660,22 +660,50 @@ impl Animator {
         }
     }
 
+    /// The layer's own exit node: the exit selector named after the layer.
+    fn top_exit(&self, layer: usize) -> Option<usize> {
+        let name = self.program.controller.layers.get(layer)?.binding;
+        self.machine(layer)?
+            .selectors
+            .iter()
+            .position(|s| !s.is_entry && s.full_path_id == name)
+    }
+
     /// Follows selectors (entry/exit nodes) to a state. `None`: no
     /// selector transition holds, or a selector leads nowhere.
+    ///
+    /// An exit node of a sub-state machine none of whose transitions holds
+    /// goes on to the layer's own exit node (and from there to the entry
+    /// and the default state). **Hypothesis**: Unity goes to the enclosing
+    /// machine's exit; the compiled data keeps only path hashes, so the
+    /// enclosing machine is taken to be the layer's top level (true for
+    /// sub-machines one level down).
     fn resolve(&mut self, layer: usize, destination: u32, consume: bool) -> Option<usize> {
         let mut d = destination;
         for _ in 0..16 {
             if d < SELECTOR_BASE {
                 return Some(d as usize);
             }
+            let index = (d - SELECTOR_BASE) as usize;
             let sm = self.machine(layer)?;
-            let sel = sm.selectors.get((d - SELECTOR_BASE) as usize)?;
+            let sel = sm.selectors.get(index)?;
             let found = sel
                 .transitions
                 .iter()
                 .find(|t| self.conditions_hold(&t.conditions))
                 .map(|t| (t.destination, t.conditions.clone()));
-            let (next, conditions) = found?;
+            let is_entry = sel.is_entry;
+            let (next, conditions) = match found {
+                Some(f) => f,
+                None if !is_entry => {
+                    let top = self.top_exit(layer)?;
+                    if top == index {
+                        return None;
+                    }
+                    (SELECTOR_BASE + top as u32, Vec::new())
+                }
+                None => return None,
+            };
             if consume {
                 self.consume_triggers(&conditions);
             }

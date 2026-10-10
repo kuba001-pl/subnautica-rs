@@ -759,6 +759,18 @@ impl Assets<'_> {
     /// decides which layers reach the picture.
     pub fn main_camera(&self) -> Result<Camera> {
         let main = self.scene("main")?;
+        Ok(self.main_camera_object(&main)?.0)
+    }
+
+    /// The node of the main scene's `Camera.main` (see
+    /// [`Assets::main_camera`]) if it is in top-level object `root`.
+    pub fn main_camera_node(&self, main: &Scene, root: usize) -> Result<Option<usize>> {
+        let (_, go) = self.main_camera_object(main)?;
+        Ok(main.locate(&go).and_then(|(r, n)| (r == root).then_some(n)))
+    }
+
+    /// `Camera.main` of the main scene and its GameObject.
+    fn main_camera_object(&self, main: &Scene) -> Result<(Camera, ObjectRef)> {
         let big_endian = main.file.file().big_endian;
         for info in main.file.objects().iter().filter(|o| o.class_id == CAMERA) {
             let object = ObjectRef {
@@ -768,14 +780,14 @@ impl Assets<'_> {
             let (_, data) = object.data()?;
             let camera = Camera::parse(data, big_endian)
                 .map_err(|e| format!("camera {}: {e}", info.path_id))?;
-            let Some(go) = self.resolve(&main.file, camera.game_object)? else {
+            let Some(go_ref) = self.resolve(&main.file, camera.game_object)? else {
                 continue;
             };
-            let (_, data) = go.data()?;
+            let (_, data) = go_ref.data()?;
             let go = GameObject::parse(data, big_endian)
                 .map_err(|e| format!("camera {} game object: {e}", info.path_id))?;
             if camera.enabled && go.active && go.tag == TAG_MAIN_CAMERA {
-                return Ok(camera);
+                return Ok((camera, go_ref));
             }
         }
         Err("main scene: no enabled camera tagged MainCamera".into())

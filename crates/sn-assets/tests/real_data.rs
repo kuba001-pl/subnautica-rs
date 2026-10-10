@@ -1654,6 +1654,21 @@ fn player_body() {
         let id = sn_unity::name_hash(name);
         assert!(controller.params.iter().any(|p| p.id == id), "{name}");
     }
+    // M9g2: the numbers `sn_sim::body` runs with.
+    let bp = body.body_params(0.0);
+    eprintln!("body params: {bp:?}");
+    assert_eq!(bp.turn_animation_damp_time, 0.0);
+    assert_eq!(
+        (bp.skin, bp.step_amount, bp.view_model_roll),
+        (0.0, 0.0, 0.0)
+    );
+    assert!((bp.camera_up_position.y - 0.063).abs() < 1e-3);
+    assert!((bp.camera_up_position.z + 0.15).abs() < 1e-3);
+    // A few micrometres of editor rounding.
+    assert!(bp.camera_offset_position.length() < 1e-5);
+    // The main camera hangs on cameraOffsetTransform (AutoParent).
+    assert_eq!(body.main_camera_parent, body.camera_offset_node);
+    assert_eq!(body.main_camera_in_object.position, [0.0; 3]);
     // Equipping the first body model hides the default and shows it.
     let (tech, node) = body.slots[0].models[0];
     let default = body.slots[0].default_node.unwrap();

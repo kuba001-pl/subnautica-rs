@@ -233,6 +233,16 @@ lifepod's animators for 60 s: no NaN, quaternions of length 1.
   destination starts at the offset; the blend weight is linear in time.
   Triggers are cleared by the transition that uses them. Destinations of
   30,000 + n go through selector n (entry/exit nodes) to a state.
+  An exit node of a sub-state machine none of whose transitions holds
+  goes on to the layer's own exit node (the exit selector whose path
+  hash is the layer's name), then the entry and the default state
+  (M9g3; **hypothesis**: Unity goes to the enclosing machine's exit, and
+  the compiled data keeps only path hashes, so the enclosing machine is
+  taken to be the top level). The player's base layer needs it: its
+  `Swim` sub-machine's exit lists only the surface, the Seaglide, the
+  Seamoth and the Prawn suit, yet the game leaves `Swim` for `Walking`
+  when the player gets out of the water (`IfNot is_underwater`).
+  `sn-inspect anim --states` prints each selector's transitions.
   Any-state transitions don't restart their own state when "can
   transition to self" is off.
 - **Interruptions.** During a blend, any-state transitions and, by the

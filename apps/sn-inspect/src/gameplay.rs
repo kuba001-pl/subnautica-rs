@@ -226,8 +226,46 @@ pub fn player_body(game: &GameData) -> Result<ExitCode> {
     );
     println!("camera (MainCameraControl): {}", p(body.camera_node));
     println!("cameraUPTransform: {}", p(body.camera_up_node));
+    println!("cameraOffsetTransform: {}", p(body.camera_offset_node));
+    let c = &body.main_camera_in_object;
+    println!(
+        "main camera: its object is put under {} by AutoParent (identity locals); the camera in its object: position {:.3} {:.3} {:.3}, rotation {:.3} {:.3} {:.3} {:.3}",
+        p(body.main_camera_parent),
+        c.position[0],
+        c.position[1],
+        c.position[2],
+        c.rotation[0],
+        c.rotation[1],
+        c.rotation[2],
+        c.rotation[3]
+    );
+    // The camera's chain, each node's local placement (M9g2: the eye).
+    let mut chain = vec![body.camera_offset_node];
+    while let Some(parent) = nodes[*chain.last().unwrap_or(&0)].parent {
+        chain.push(parent);
+    }
+    for &i in chain.iter().rev() {
+        let t = &nodes[i].local;
+        println!(
+            "  {:<12} local position {:.3} {:.3} {:.3}, rotation {:.3} {:.3} {:.3} {:.3}",
+            nodes[i].name,
+            t.position[0],
+            t.position[1],
+            t.position[2],
+            t.rotation[0],
+            t.rotation[1],
+            t.rotation[2],
+            t.rotation[3]
+        );
+    }
     println!("animator: {}", p(body.animator_node));
 
+    let bp = body.body_params(sn_assets::player_data(&assets)?.ocean_level);
+    let e = bp.camera_up_position + bp.camera_offset_position;
+    println!(
+        "eye at rest (sn_sim::body): {:.4} {:.4} {:.4} from the player's transform; skin {}, step amount {}, view model roll {}",
+        e.x, e.y, e.z, bp.skin, bp.step_amount, bp.view_model_roll
+    );
     let a = &body.arms;
     println!("ArmsController:");
     println!("  smoothSpeedUnderWater:  {}", a.smooth_speed_under_water);

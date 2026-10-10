@@ -221,6 +221,12 @@ pub struct Player {
     /// `Player.isUnderwaterForSwimming`.
     pub swimming: bool,
     pub grounded: bool,
+    /// `GroundMotor.IsGrounded()`: the walking motor's own flag. It starts
+    /// true (`PlayerMotor.grounded`) and only the walking motor's steps
+    /// change it, so it keeps its last value while swimming, dead or
+    /// moved by a hatch or a respawn (M9g3: the body's falling clock reads
+    /// it). `grounded` is cleared by those.
+    pub walk_grounded: bool,
     /// The controller's current height (eases to the motor's).
     pub height: f64,
     ground_normal: V3,
@@ -241,6 +247,7 @@ impl Player {
             pod_position: None,
             swimming: false,
             grounded: false,
+            walk_grounded: true,
             height: params.stand_height - params.camera_offset,
             ground_normal: V3::ZERO,
             jump_held_for: None,
@@ -368,7 +375,10 @@ impl Player {
         }
         match self.motor {
             Motor::Swim => self.swim(params, world, input, &mut events),
-            Motor::Walk => self.walk(params, world, input, &mut events),
+            Motor::Walk => {
+                self.walk(params, world, input, &mut events);
+                self.walk_grounded = self.grounded;
+            }
         }
         events
     }
@@ -782,6 +792,31 @@ mod tests {
         assert!((r - v(1.0, 0.0, 0.0)).length() < 1e-12);
         let r = look_rotate(0.0, std::f64::consts::FRAC_PI_2, v(0.0, 0.0, 1.0));
         assert!((r - v(0.0, -1.0, 0.0)).length() < 1e-12);
+    }
+
+    /// `GroundMotor.IsGrounded()` keeps its value while the walking motor
+    /// doesn't run (swimming, a teleport); walking steps update it.
+    #[test]
+    fn walk_grounded_is_the_walking_motors_own_flag() {
+        let p = params();
+        let w = world(floor_at(0.0));
+        let mut pl = Player::new(&p, v(0.0, 5.0, 0.0), false);
+        assert!(pl.walk_grounded, "starts true, as PlayerMotor.grounded");
+        pl.step(&p, &w, &Input::default());
+        assert!(!pl.walk_grounded, "falling");
+        for _ in 0..200 {
+            pl.step(&p, &w, &Input::default());
+        }
+        assert!(pl.grounded && pl.walk_grounded);
+        // A teleport clears `grounded`, not the walking motor's flag.
+        pl.teleport(&p, v(0.0, 3.0, 0.0), None);
+        assert!(!pl.grounded && pl.walk_grounded);
+        // Swimming doesn't touch it either.
+        let mut sw = Player::new(&p, v(0.0, -20.0, 0.0), false);
+        for _ in 0..10 {
+            sw.step(&p, &World::new(), &forward());
+        }
+        assert!(!sw.grounded && sw.walk_grounded);
     }
 
     #[test]

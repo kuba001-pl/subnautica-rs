@@ -307,7 +307,9 @@ are ported in `sn-sim::vitals`.
   scene on `camRoot`, at the player's origin; all its fields read to the
   last byte: `minimumY` −87, `maximumY` 87 (the code's initial values are
   ±80, so the scene's count), `skin` 0 (the camera sits at its parent),
-  `cameraTiltMod` 0.1, `camPDAZOffset` 0.18.
+  `cameraTiltMod` 0.1, `camPDAZOffset` 0.18. **Corrected in M9g2:** the
+  main camera is not at `camRoot` but 0.063 m up and 0.15 m back from it
+  (§ The player's body).
 - **Hypothesis:** Unity's Input System reads the mouse delta on Windows
   as raw input counts, as Bevy's `AccumulatedMouseMotion` does, so the
   same physical movement turns the view by the same angle. Not checked
@@ -332,6 +334,14 @@ Reader: `sn_unity::PlayerFields` (now every field), `ArmsController`;
   models for 3 suits: the radiation suit has two), `Gloves` (a default
   and 2) and `Foots` (no default, 3 fin models). Every model reference
   finds a node.
+- **Confirmed (code), M9g3:** `GroundMotor.IsGrounded()` is the walking
+  motor's own flag (`PlayerMotor.grounded`, initially true), changed only
+  in `GroundMotor`'s update (falling off, landing, jumping). It keeps its
+  last value while the player swims, is dead or is moved by a hatch or a
+  respawn. `sn-sim`'s `Player::walk_grounded` is that flag; the body's
+  falling clock and speeds read it. With our `grounded` (cleared by
+  swimming and teleports) the respawned player, held still in the pod
+  for 2 s, counted as falling and played the falling animation.
 - **Confirmed (code):** `Player.Start` calls `EquipmentChanged` with
   nothing equipped, so a new game shows each slot's default model and
   hides every other model (the stored scene has several suits active).
@@ -352,10 +362,60 @@ Reader: `sn_unity::PlayerFields` (now every field), `ArmsController`;
   `MainCameraControl`) and `player_view` (the animator, with the
   `ArmsController`). `cameraUPTransform` is `camOffset`, 0.063 m above and
   0.15 m behind `camRoot` in the player's axes: looking up turns about
-  that point. How the drawn camera (`PlayerCameras/MainCamera`, a
-  separate top-level object) follows the player was not found in the
-  code yet (searched: `SNCameraRoot`, `MainCameraControl`, `Player`,
-  `CameraToPlayerManager`): M9g2.
+  that point. Where the drawn camera hangs: below (M9g2).
+- **Confirmed (real data, M9g2): where the camera is.** The scene's one
+  `AutoParent` sits on the top-level `PlayerCameras` (which holds the
+  camera tagged `MainCamera`, at identity in its object) and on `Start`
+  puts it under `cameraOffsetTransform` (`pdaCamPivot`, below `camOffset`)
+  with identity locals (`makeLocalsIdentity` on). So the eye is
+  `camRoot` (at the player's origin) → `camOffset` (0, 0.063, −0.15) →
+  `pdaCamPivot` (a few micrometres from `camOffset`, editor rounding).
+  Looking down turns `camRoot`, so the eye swings about the player's
+  origin; looking up turns `camOffset`, so the eye stays put.
+  `sn-inspect player --body` prints the eye at rest: 0, 0.0628, −0.15 m.
+  This corrects M9c's "the camera sits at the player's transform".
+- **The rules ported in `sn-sim::body` (M9g2; code, read):**
+  - Speeds (`SetPlayerSpeedParameters`): the velocity in the camera's
+    frame (`InverseTransformDirection` of the camera's rotation) under
+    water or when not grounded; else its dot products with the camera's
+    forward and right flattened to the ground (so pitch doesn't matter
+    when walking). Smoothed with `Vector3.Slerp(smoothed, new, speed ×
+    dt)`. `Vector3.Slerp` is Unity's native code: our version turns the
+    direction by the fraction of the angle and blends the length
+    linearly, a linear blend when either vector is zero (**hypothesis**).
+  - `view_pitch` (`GetCameraPitch`): the x angles of `camRoot`,
+    `cameraUPTransform` and `cameraOffsetTransform` summed, wrapped to
+    ±180°, negated: equal to `rotationY` without camera shake.
+    `view_turn`: `Mathf.DeltaAngle` of the view model's world yaw since
+    the last frame ÷ dt (the first frame compares with 0, as the game's
+    field starts at 0); damp time 0, so set as computed (**hypothesis**:
+    Unity's damped `SetFloat` with damp time 0 sets the value).
+  - The falling animation (`jump`, `Player.GetPlayFallingAnimation`):
+    falling (`FixedUpdate`: not under water, not grounded, no cinematic)
+    for 0.45 s; `OnJump` sets it at once (falling began 0.45 s ago).
+  - Diving (`UpdateDiving`): out of water, not grounded, falling
+    (velocity y < 0); every 0.5 s a ray from the player along the
+    velocity's direction + down, normalised, 5 m long or, above y = 0,
+    to 1.5 m under the surface along it; a hit gives `diving_land`, none
+    `diving`.
+  - `on_surface`: within 1 m of the water level, not inside (the pod),
+    swimming.
+  - Camera (`OnUpdate`, normal play): `swimCameraAnimation` ±1/s with
+    `UnderWaterTracker` (= `Player.IsUnderwater`, each physics step); the
+    swim bob `(sin(6 t) − 1) × (0.02 + 0.15 × s) × swimCameraAnimation`,
+    `s` moving towards min(1, speed / 5) by dt (`UWE.Utils.Slerp` for
+    floats is a move-towards: read in `Assembly-CSharp-firstpass`),
+    with the camera-bobbing option (on by default); the landing bob
+    (`OnLand`: force = clamp(−impact y, 0, 15); bob += force × dt up to
+    0.9, force −= max(1, force) × 5 dt, bob −= √bob × 3 dt); strafe tilt
+    under water (−12°/s × strafe input, clamped ±10°, then 4°/s back to
+    0, so it settles at ∓9.92°). The view model takes `camRoot`'s yaw and
+    its local position (the bobs).
+  - Death triggers: every death we have (suffocation, falls) is
+    `player_death` (fire and explosion pick the other two).
+  - **Hypothesis:** in one frame `ArmsController.Update` runs before
+    `MainCameraControl.OnUpdate` (a `ManagedUpdate` queue), so the arms
+    read the camera as the last frame left it.
 - **Confirmed (real data):** `ArmsController`: `smoothSpeedUnderWater`
   10, `smoothSpeedAboveWater` 15 (the code's initial values are 4 and 8;
   the scene's count), `turnAnimationDampTime` 0 (so `view_turn` is set

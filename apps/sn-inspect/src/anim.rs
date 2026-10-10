@@ -161,7 +161,7 @@ fn print_controller(set: &AnimationSet, states: bool) {
                 .iter()
                 .map(|t| {
                     let to = if t.destination >= SELECTOR_BASE {
-                        "exit".to_string()
+                        format!("selector {}", t.destination - SELECTOR_BASE)
                     } else {
                         sm.states
                             .get(t.destination as usize)
@@ -191,6 +191,37 @@ fn print_controller(set: &AnimationSet, states: bool) {
                     " (no write defaults)"
                 },
                 transitions.join("; ")
+            );
+        }
+        // Entry and exit nodes: their transitions, in order.
+        for (i, sel) in sm.selectors.iter().enumerate() {
+            let list: Vec<String> = sel
+                .transitions
+                .iter()
+                .map(|t| {
+                    let to = if t.destination == u32::MAX {
+                        "nowhere".to_string()
+                    } else if t.destination >= SELECTOR_BASE {
+                        format!("selector {}", t.destination - SELECTOR_BASE)
+                    } else {
+                        sm.states
+                            .get(t.destination as usize)
+                            .map(|d| name(c, d.name_id))
+                            .unwrap_or_else(|| "?".into())
+                    };
+                    let conds: Vec<String> = t
+                        .conditions
+                        .iter()
+                        .map(|k| format!("{:?} {} {}", k.mode, name(c, k.param), k.threshold))
+                        .collect();
+                    format!("→ {to} [{}]", conds.join(" & "))
+                })
+                .collect();
+            println!(
+                "      selector {i} ({}, {}): {}",
+                if sel.is_entry { "entry" } else { "exit" },
+                name(c, sel.full_path_id),
+                list.join("; ")
             );
         }
     }

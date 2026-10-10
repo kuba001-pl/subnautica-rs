@@ -985,6 +985,27 @@ impl PlayerCinematicController {
     }
 }
 
+/// `AutoParent`: on `Start` its object is put under `parent_transform`,
+/// with an identity local placement if `make_locals_identity` (M9g2: how
+/// the main camera follows the player). Every field.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AutoParent {
+    pub parent_transform: PPtr,
+    pub make_locals_identity: bool,
+}
+
+impl AutoParent {
+    pub fn parse(data: &[u8], big_endian: bool) -> Result<AutoParent> {
+        let mut r = fields(data, big_endian)?;
+        let a = AutoParent {
+            parent_transform: PPtr::read(&mut r)?,
+            make_locals_identity: r.bool4()?,
+        };
+        at_end(&r, data)?;
+        Ok(a)
+    }
+}
+
 /// `EscapePodFirstUseCinematicsController`: which lifepod hatch triggers
 /// are the first-use ones (13 object references).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1555,6 +1576,18 @@ mod tests {
         assert_eq!(g.movement_transfer, 2);
         assert!(g.jump_enabled && !g.fly_cheat_enabled);
         robust(&w.0, |d| GroundMotor::parse(d, false));
+    }
+
+    #[test]
+    fn auto_parent() {
+        let mut w = W::behaviour();
+        w.pptr(0, 183).bool4(true);
+        let a = AutoParent::parse(&w.0, false).unwrap();
+        assert_eq!(a.parent_transform.path_id, 183);
+        assert!(a.make_locals_identity);
+        robust(&w.0, |d| AutoParent::parse(d, false));
+        w.u8(0);
+        assert!(AutoParent::parse(&w.0, false).is_err());
     }
 
     #[test]

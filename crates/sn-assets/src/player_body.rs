@@ -83,9 +83,20 @@ pub struct PlayerBody {
     pub head_node: usize,
     /// `MainCameraControl.viewModel`.
     pub view_model_node: usize,
-    /// The node `MainCameraControl` sits on, and its `cameraUPTransform`.
+    /// The node `MainCameraControl` sits on, its `cameraUPTransform` and
+    /// its `cameraOffsetTransform`.
     pub camera_node: usize,
     pub camera_up_node: usize,
+    pub camera_offset_node: usize,
+    /// `MainCameraControl` itself (look limits, `skin`, tilt).
+    pub camera: sn_unity::MainCameraControl,
+    /// Where the main camera hangs (M9g2): the scene's one `AutoParent`
+    /// puts the top-level object holding the `MainCamera`-tagged camera
+    /// under this node, with identity locals, when the game starts.
+    pub main_camera_parent: usize,
+    /// Where that camera sits in its own top-level object (its local
+    /// placement chain below the object's root; identity is expected).
+    pub main_camera_in_object: sn_world::Transform,
     pub slots: Vec<EquipmentSlot>,
 }
 
@@ -97,6 +108,34 @@ impl PlayerBody {
     pub fn equip(&mut self, in_slot: impl Fn(&str) -> i32) {
         for (node, active) in equipment_changes(&self.slots, in_slot) {
             self.prefab.set_active(node, active);
+        }
+    }
+}
+
+impl PlayerBody {
+    /// The numbers `sn_sim::body` needs (M9g2). `ocean_level`:
+    /// `Ocean.GetOceanLevel` ([`crate::PlayerData::ocean_level`]).
+    pub fn body_params(&self, ocean_level: f32) -> sn_sim::body::BodyParams {
+        use sn_sim::V3;
+        let nodes = &self.prefab.nodes;
+        let a = &self.arms;
+        let c = &self.camera;
+        // `cameraAngleMotion` is the view model's stored local Euler
+        // angles; its y (Unity's Z-X-Y decomposition) times the tilt.
+        let [x, y, z, w] = nodes[self.view_model_node].local.rotation.map(f64::from);
+        let yaw = (2.0 * (x * z + w * y))
+            .atan2(1.0 - 2.0 * (x * x + y * y))
+            .to_degrees();
+        sn_sim::body::BodyParams {
+            smooth_speed_under_water: f64::from(a.smooth_speed_under_water),
+            smooth_speed_above_water: f64::from(a.smooth_speed_above_water),
+            turn_animation_damp_time: f64::from(a.turn_animation_damp_time),
+            skin: f64::from(c.skin),
+            step_amount: f64::from(c.step_amount),
+            view_model_roll: yaw * f64::from(c.camera_tilt_mod),
+            camera_up_position: V3::from_f32(nodes[self.camera_up_node].local.position),
+            camera_offset_position: V3::from_f32(nodes[self.camera_offset_node].local.position),
+            ocean_level: f64::from(ocean_level),
         }
     }
 }
@@ -229,6 +268,38 @@ impl Assets<'_> {
             camera.camera_up_transform,
             "MainCameraControl.cameraUPTransform",
         )?;
+        let camera_offset_node = node_of_component(
+            camera.camera_offset_transform,
+            "MainCameraControl.cameraOffsetTransform",
+        )?;
+
+        // The main camera: the scene's `AutoParent` moves its top-level
+        // object under a player node.
+        let mut parents = scene.behaviours(self, "AutoParent");
+        if parents.len() != 1 {
+            return Err(format!(
+                "main scene: {} AutoParent behaviours, expected 1",
+                parents.len()
+            ));
+        }
+        let auto_ref = parents.remove(0);
+        let auto = sn_unity::AutoParent::parse(auto_ref.data()?.1, big_endian)
+            .map_err(|e| format!("AutoParent: {e}"))?;
+        if !auto.make_locals_identity {
+            return Err("AutoParent: makeLocalsIdentity is off".into());
+        }
+        let main_camera_parent =
+            node_of_component(auto.parent_transform, "AutoParent.parentTransform")?;
+        let (camera_root, camera_root_node) = scene
+            .behaviour_node(self, &auto_ref)?
+            .ok_or("AutoParent: object not in the main scene")?;
+        if camera_root_node != 0 {
+            return Err("AutoParent is not on a top-level object".into());
+        }
+        let main_camera_in_object = self
+            .main_camera_node(&scene, camera_root)?
+            .map(|n| scene.roots[camera_root].nodes[n].in_prefab)
+            .ok_or("AutoParent's object holds no MainCamera-tagged camera")?;
 
         let mut body = PlayerBody {
             prefab,
@@ -240,6 +311,10 @@ impl Assets<'_> {
             view_model_node,
             camera_node,
             camera_up_node,
+            camera_offset_node,
+            camera,
+            main_camera_parent,
+            main_camera_in_object,
             slots,
         };
         body.equip(|_| TECH_TYPE_NONE);
@@ -293,6 +368,55 @@ mod tests {
         // A matching model with a null reference still hides the default.
         let c = equipment_changes(&slots(), |s| if s == "Body" { 12 } else { 0 });
         assert_eq!(c, vec![(2, false), (3, false), (1, false), (4, false)]);
+    }
+
+    /// `sn_sim::body` sets exactly the listed parameters (the fire and
+    /// explosion death triggers have no cause yet).
+    #[test]
+    fn sim_sets_the_listed_parameters() {
+        use sn_sim::V3;
+        use sn_sim::body::{Body, BodyFrame, BodyParams};
+        let params = BodyParams {
+            smooth_speed_under_water: 10.0,
+            smooth_speed_above_water: 15.0,
+            turn_animation_damp_time: 0.0,
+            skin: 0.0,
+            step_amount: 0.0,
+            view_model_roll: 0.0,
+            camera_up_position: V3::ZERO,
+            camera_offset_position: V3::ZERO,
+            ocean_level: 0.0,
+        };
+        let mut body = Body::new(&params);
+        body.died();
+        let frame = BodyFrame {
+            dt: 0.02,
+            time: 0.0,
+            position: V3::ZERO,
+            velocity: V3::ZERO,
+            grounded: true,
+            underwater: false,
+            swimming: false,
+            inside: false,
+            look: Default::default(),
+            strafe: 0.0,
+            controls: true,
+            bobbing: true,
+        };
+        let mut set: Vec<&str> = body
+            .update(&params, &frame, &mut |_, _, _| false)
+            .into_iter()
+            .map(|(n, _)| n)
+            .collect();
+        set.sort_unstable();
+        let mut listed: Vec<&str> = RULE_PARAMETERS
+            .iter()
+            .chain(FIXED_PARAMETERS)
+            .copied()
+            .filter(|n| !matches!(*n, "player_death_fire" | "player_death_explosion"))
+            .collect();
+        listed.sort_unstable();
+        assert_eq!(set, listed);
     }
 
     #[test]

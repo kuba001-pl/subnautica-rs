@@ -19,7 +19,41 @@ use sn_sim::vitals::{
 
 use crate::Result;
 use crate::collision::Streamed;
-use crate::walk::{Run, board, leave_pod, report, start};
+use crate::walk::{Expected, Run, board, check_body, leave_pod, report, start};
+
+/// The plan's "M9g3 expected states" for the dive's phases.
+const DIVE_EXPECTED: [Expected; 5] = [
+    Expected {
+        phase: "in the pod",
+        layer: "Base Modes",
+        has: &["Walking"],
+        only: &["Walking"],
+    },
+    Expected {
+        phase: "at the surface",
+        layer: "Base Modes",
+        has: &["surface swim"],
+        only: &["Swim", "surface swim"],
+    },
+    Expected {
+        phase: "down to the seabed",
+        layer: "Base Modes",
+        has: &["Swim"],
+        only: &["Swim", "surface swim", "Walking"],
+    },
+    Expected {
+        phase: "down to the seabed",
+        layer: "Death",
+        has: &["New State", "player_death"],
+        only: &["New State", "player_death"],
+    },
+    Expected {
+        phase: "in the pod",
+        layer: "Death",
+        has: &["New State"],
+        only: &["New State"],
+    },
+];
 
 fn input(dir: V3) -> Input {
     Input {
@@ -197,11 +231,16 @@ pub fn run(game: &GameData, seed: u64) -> Result<ExitCode> {
     // 1. Out of the pod and up to the surface.
     let out = leave_pod(d.r)?;
     check("left the pod", out);
+    d.r.body.set_phase("clear of the pod");
     d.clear_of_the_pod()?;
+    d.r.body.set_phase("up");
     let mut above = 0;
     for _ in 0..(15.0 / dt) as usize {
         d.step(up)?;
         above = if d.underwater() { 0 } else { above + 1 };
+        if above == 1 {
+            d.r.body.set_phase("at the surface");
+        }
         if above as f64 * dt >= 2.0 {
             break;
         }
@@ -213,6 +252,7 @@ pub fn run(game: &GameData, seed: u64) -> Result<ExitCode> {
     );
 
     // 2. Down to the seabed and held there until the death and respawn.
+    d.r.body.set_phase("down to the seabed");
     let from = d.r.vitals_events.len();
     let mut went_under = None;
     let mut y_at_empty = None;
@@ -284,12 +324,15 @@ pub fn run(game: &GameData, seed: u64) -> Result<ExitCode> {
     // 3. Out again, 20 s down, then up until it breathes: the refill.
     let out = leave_pod(d.r)?;
     check("left the pod again", out);
+    d.r.body.set_phase("clear of the pod again");
     d.clear_of_the_pod()?;
+    d.r.body.set_phase("second dive");
     for _ in 0..(20.0 / dt) as usize {
         d.step(down)?;
     }
     // The seabed may have led back under the pod.
     d.clear_of_the_pod()?;
+    d.r.body.set_phase("up again");
     let mut surfaced = None;
     let mut full = None;
     for _ in 0..(30.0 / dt) as usize {
@@ -353,6 +396,13 @@ pub fn run(game: &GameData, seed: u64) -> Result<ExitCode> {
         "no penetrations or surfaces passed through",
         penetrations == 0,
     );
+    let body_ok = d.r.body.report();
+    check(
+        "body: no NaN, unit quaternions, every parameter known",
+        body_ok,
+    );
+    let states_ok = check_body(&d.r.body, &DIVE_EXPECTED);
+    check("body: states as expected", states_ok);
     crate::swim::print_load_stats(&s);
     println!(
         "{} (total {:.1} s)",

@@ -3,7 +3,9 @@
 //! use it, swim away for 10 s and back, board. Logs positions, motor
 //! changes, the hatch triggers used and speeds next to the values read
 //! from the game. See `docs/DESIGN.md` § 4.3 "M9b plan". The pieces
-//! ([`start`], [`leave_pod`], [`Run`]) are shared with `dive` (M9c).
+//! ([`start`], [`leave_pod`], [`Run`]) are shared with `dive` (M9c). Both
+//! also run the player's body and animator (M9g3, [`BodyRun`]); the hand's
+//! ray starts at the game's eye (M9g2), not at the player's transform.
 
 use std::process::ExitCode;
 use std::time::Instant;
@@ -17,6 +19,7 @@ use sn_sim::player::{
 use sn_sim::vitals::{Situation, Vitals, VitalsEvent, VitalsParams};
 
 use crate::Result;
+use crate::body_run::BodyRun;
 use crate::collision::{HATCH, Streamed, kind};
 use crate::swim::{PENETRATION, percentile};
 
@@ -41,6 +44,8 @@ pub(crate) struct Run<'a, 'g> {
     pub(crate) vitals: Option<(VitalsParams, Vitals)>,
     /// The vitals' events with the time they happened.
     pub(crate) vitals_events: Vec<(f64, VitalsEvent)>,
+    /// The player's body and animator (M9g3).
+    pub(crate) body: BodyRun,
     pub(crate) steps: usize,
     penetrations: usize,
     /// Surfaces the capsule's centre passed through in a step (the hatch's
@@ -116,12 +121,17 @@ impl Run<'_, '_> {
         for e in events {
             match e {
                 Event::MotorChanged(m) => self.log(&format!("motor → {m:?}")),
-                Event::Landed { impact_y } => landed = Some(impact_y),
-                Event::Jumped => {}
+                Event::Landed { impact_y } => {
+                    landed = Some(impact_y);
+                    self.body.landed(impact_y);
+                }
+                Event::Jumped => self.body.jumped(self.t()),
                 other => self.log(&format!("{other:?}")),
             }
         }
-        if self.step_vitals(landed)? {
+        let respawned = self.step_vitals(landed)?;
+        self.step_body(input);
+        if respawned {
             return Ok(());
         }
         let after = self.centre();
@@ -154,6 +164,35 @@ impl Run<'_, '_> {
         Ok(())
     }
 
+    /// One step of the body and its animator (M9g3), after the player
+    /// and the vitals.
+    fn step_body(&mut self, input: &Input) {
+        let p = &self.player;
+        let controls = self
+            .vitals
+            .as_ref()
+            .is_none_or(|(_, v)| v.controls_enabled());
+        let frame = sn_sim::body::BodyFrame {
+            dt: self.params.fixed_dt,
+            time: self.t(),
+            position: p.position,
+            velocity: p.velocity,
+            grounded: p.walk_grounded,
+            // `Player.IsUnderwater`.
+            underwater: !p.in_pod && p.position.y < self.params.ocean_level,
+            swimming: p.swimming,
+            inside: p.in_pod,
+            look: self.body.look(input.yaw, input.pitch),
+            strafe: if controls { input.move_dir.x } else { 0.0 },
+            controls,
+            bobbing: true,
+        };
+        let world = &self.s.world;
+        let mut ray =
+            |o: V3, d: V3, l: f64| world.cast(sn_sim::collide::MOVE, o, d, 0.0, l).is_some();
+        self.body.step(&frame, &mut ray);
+    }
+
     /// One step of the vitals, if they run: logs their events (not the
     /// breaths) and moves the player to the respawn point when they say
     /// so. True if it did.
@@ -173,6 +212,9 @@ impl Run<'_, '_> {
         for e in events {
             self.vitals_events.push((time, e));
             respawn |= e == VitalsEvent::MoveToRespawn;
+            if e == VitalsEvent::Died {
+                self.body.died();
+            }
             if !matches!(e, VitalsEvent::Breath(_)) {
                 self.log(&format!("{e:?} (oxygen {oxygen:.2}, health {health:.1})"));
             }
@@ -196,7 +238,7 @@ impl Run<'_, '_> {
         {
             return None;
         }
-        let eye = self.player.position;
+        let eye = self.body.eye(self.player.position);
         let (yaw, pitch) = look_at(eye, self.at(i));
         let (d, hit) = hand_target(&self.s.world, eye, yaw, pitch)?;
         if hit.body & HATCH == 0 || ((hit.body >> 8) & 0xff) as usize != i {
@@ -295,6 +337,7 @@ pub(crate) fn start<'a, 'g>(s: &'a mut Streamed<'g>, seed: u64) -> Result<Run<'a
         params.fixed_dt
     );
 
+    let body = BodyRun::new(assets, data.ocean_level)?;
     let (point, _) = assets.start_map()?.random_start(seed);
     let rules = s.rules.clone();
     let pod = s.loader.lifepod(&rules, point)?;
@@ -356,6 +399,7 @@ pub(crate) fn start<'a, 'g>(s: &'a mut Streamed<'g>, seed: u64) -> Result<Run<'a
         hatches,
         vitals: None,
         vitals_events: Vec::new(),
+        body,
         steps: 0,
         penetrations: 0,
         crossings: 0,
@@ -377,6 +421,7 @@ pub(crate) fn start<'a, 'g>(s: &'a mut Streamed<'g>, seed: u64) -> Result<Run<'a
 /// Stands for a second, then walks to the exit that ends in the water and
 /// uses it. False if it could not.
 pub(crate) fn leave_pod(r: &mut Run) -> Result<bool> {
+    r.body.set_phase("in the pod");
     for _ in 0..50 {
         r.step(&Input::default())?;
     }
@@ -397,6 +442,7 @@ pub(crate) fn leave_pod(r: &mut Run) -> Result<bool> {
         println!("  no active exit ends in the water");
         return Ok(false);
     };
+    r.body.set_phase("walking to the hatch");
     let ok = r.go_to(r.at(i), 10.0, Some(i), 0.0)?;
     if !ok {
         r.log(&format!(
@@ -441,12 +487,14 @@ pub fn run(game: &GameData, seed: u64) -> Result<ExitCode> {
             .normalized()
             .unwrap_or(V3::new(1.0, 0.0, 0.0));
         let far = r.player.position + away * 100.0 + V3::new(0.0, -3.0, 0.0);
+        r.body.set_phase("swimming away");
         r.go_to(far, 10.0, None, 0.5)?;
         r.log(&format!(
             "swam away, {:.1} m from the pod",
             (r.player.position - point).length()
         ));
         ok = board(&mut r)?;
+        r.body.set_phase("after boarding");
         for _ in 0..50 {
             r.step(&Input::default())?;
         }
@@ -468,8 +516,9 @@ pub fn run(game: &GameData, seed: u64) -> Result<ExitCode> {
         r.params.swim_forward * (1.0 - r.params.swim_drag * r.params.fixed_dt)
     );
     let penetrations = report(&r);
+    let body_ok = r.body.report() & check_body(&r.body, &WALK_EXPECTED);
     crate::swim::print_load_stats(&s);
-    let ok = ok && penetrations == 0;
+    let ok = ok && penetrations == 0 && body_ok;
     println!(
         "{} (total {:.1} s)",
         if ok { "RUN OK" } else { "RUN FAILED" },
@@ -482,8 +531,87 @@ pub fn run(game: &GameData, seed: u64) -> Result<ExitCode> {
     })
 }
 
+/// What a phase's base layer must have been in (`all`: some of these,
+/// nothing else; `has`: at least these), from the plan's "M9g3 expected
+/// states", written before the run.
+pub(crate) struct Expected {
+    pub(crate) phase: &'static str,
+    pub(crate) layer: &'static str,
+    pub(crate) has: &'static [&'static str],
+    pub(crate) only: &'static [&'static str],
+}
+
+/// States no phase of the scripts may reach (`docs/DESIGN.md`).
+const NEVER: &[&str] = &[
+    "Dive",
+    "Dive_loops",
+    "player_view_jump_loop",
+    "player_view_jump_land",
+    "pda",
+    "cyclops_steering",
+];
+
+const WALK_EXPECTED: [Expected; 4] = [
+    Expected {
+        phase: "in the pod",
+        layer: "Base Modes",
+        has: &["Walking"],
+        only: &["Walking"],
+    },
+    Expected {
+        phase: "walking to the hatch",
+        layer: "Base Modes",
+        has: &["Walking"],
+        only: &["Walking"],
+    },
+    Expected {
+        phase: "swimming away",
+        layer: "Base Modes",
+        has: &["Swim"],
+        only: &["Walking", "Swim", "surface swim"],
+    },
+    Expected {
+        phase: "after boarding",
+        layer: "Base Modes",
+        has: &["Walking"],
+        only: &["Walking", "Swim", "surface swim"],
+    },
+];
+
+/// Checks the states seen against `expected` and [`NEVER`]; prints each.
+pub(crate) fn check_body(body: &BodyRun, expected: &[Expected]) -> bool {
+    let mut ok = true;
+    for e in expected {
+        let seen = body.states(e.phase, e.layer);
+        let good = e.has.iter().all(|s| seen.contains(*s))
+            && seen.iter().all(|s| e.only.contains(&s.as_str()));
+        println!(
+            "check: {} {:?} in {:?}, expected {:?} (only {:?}): {}",
+            e.phase,
+            e.layer,
+            seen,
+            e.has,
+            e.only,
+            if good { "ok" } else { "FAILED" }
+        );
+        ok &= good;
+    }
+    let all = body.states("", "Base Modes");
+    let bad: Vec<&String> = all.iter().filter(|s| NEVER.contains(&s.as_str())).collect();
+    println!(
+        "check: never in {NEVER:?}: {}",
+        if bad.is_empty() {
+            "ok".to_string()
+        } else {
+            format!("FAILED {bad:?}")
+        }
+    );
+    ok && bad.is_empty()
+}
+
 /// Swims to the nearest active entry and uses it. False if it could not.
 pub(crate) fn board(r: &mut Run) -> Result<bool> {
+    r.body.set_phase("boarding");
     let here = r.player.position;
     let entry = (0..r.hatches.triggers.len())
         .filter(|&i| r.hatches.triggers[i].active && r.hatches.triggers[i].enters)

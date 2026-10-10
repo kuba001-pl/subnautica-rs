@@ -2,6 +2,86 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-10 — M9g3: the body in the scripted runs
+
+**What:** third step of M9g (`docs/DESIGN.md` § 4.3, "M9g plan", the
+expected states and "as built").
+- `sn-inspect`: `body_run.rs` (new): the body's rules set the player's
+  animator every physics step in `walk` and `dive`; the base and Death
+  layers' states are collected per phase and checked against the
+  expected states written in DESIGN before the run; NaNs, quaternion
+  lengths, unknown parameters and cost logged. The hand's ray starts at
+  the game's eye (M9g2). `anim --states` prints the selectors.
+- `sn-anim`: an exit node with no transition that holds goes on to the
+  layer's exit (**hypothesis**; unit test
+  `unmatched_sub_machine_exit_goes_to_the_layer_exit`).
+- `sn-sim`: `Player::walk_grounded` (`GroundMotor.IsGrounded()`; unit
+  test `walk_grounded_is_the_walking_motors_own_flag`).
+- Docs: `animation.md` (selectors), `gameplay.md` (the walking motor's
+  flag), DESIGN expected states and "as built".
+- No new dependency.
+
+**Why:** M9g's "Done when" for this step: each phase reaches its states,
+no NaN, unit quaternions, cost logged.
+
+**How verified:**
+- `cargo test --workspace`: passes (sn-anim 20 animator tests, sn-sim 65).
+- `cargo clippy --workspace --all-targets -- -D warnings`: clean.
+- `SUBNAUTICA_DIR=... cargo test -p sn-assets --test real_data -- --ignored
+  player_`: 4 passed (including the player's and lifepod's animators run
+  60 s, with the new exit rule).
+- `sn-inspect walk --seed N` and `dive --seed N`, N = 1–5: all RUN OK;
+  every state check ok; 0 NaNs; worst |q| − 1 1.2e-7; no unknown
+  parameter; body 54–60 µs per step (mean).
+
+**Dead ends / found:** the first runs failed twice, each time on
+something our code did differently from the game: the player stayed in
+`Swim` after boarding (the sub-machine exit rule above), and after the
+respawn the body played the falling animation (our `grounded` is not
+the walking motor's flag). The dive's time to empty moved by one breath
+(42.26 → 45.18 s on every seed) because the hatch is now used 0.08 s
+later from the game's eye; still within the one-breath check. Checked by
+running the committed build's `dive --seed 1` against this one.
+
+## 2026-10-10 — M9g2: the body's rules (animator values, camera rig)
+
+**What:** second step of M9g (`docs/DESIGN.md` § 4.3, "M9g plan" and "as
+built").
+- `sn-sim::body` (new): `Body` (`fixed_step`, `update`, `jumped`,
+  `landed`, `died`), `BodyParams`, `BodyFrame`, `CameraPose` (`rotate`,
+  `inverse_rotate`, `eye`, `camera_pitch`), `AnimValue`; helpers
+  `move_towards` (`UWE.Utils.Slerp` for floats), `delta_angle`,
+  `vector_slerp`.
+- `sn-unity`: `AutoParent` reader. `sn-assets`: `PlayerBody` gains
+  `camera_offset_node`, `camera`, `main_camera_parent`,
+  `main_camera_in_object` and `body_params`; `Assets::main_camera_node`.
+- `sn-inspect player --body` prints the camera chain and the eye.
+- Docs: `gameplay.md` § The player's body (the rules, the eye; M9c's
+  camera place corrected), DESIGN row and "as built".
+- No new dependency.
+
+**Why:** M9g3 (the scripts) and M9g4 (the client) drive the player's
+animator and camera with these rules.
+
+**How verified:**
+- `cargo test --workspace`: passes (new: 12 `body` tests: helpers,
+  smoothing in the view frame, walking ignores pitch, the yaw rate and
+  its wrap, the falling delay and jump, dive scans, the surface band,
+  bob ranges −0.04 at rest and −0.34 at speed, the landing bob, strafe
+  tilt settling at ∓9.92°, the eye's pivots, the death trigger; in
+  `sn-assets` the parameter set equals the lists; `auto_parent`).
+- `cargo clippy --workspace --all-targets -- -D warnings`: clean.
+- `SUBNAUTICA_DIR=... cargo test -p sn-assets --test real_data -- --ignored
+  player_`: 4 passed (`player_body` now also checks the body numbers and
+  that the main camera hangs on `cameraOffsetTransform`).
+- `sn-inspect player --body`: eye at rest 0, 0.0628, −0.15 m; errors 0.
+
+**Found:** M9g1's dead end resolved: `AutoParent` on `PlayerCameras`
+moves the main camera under `pdaCamPivot` at start. M9c's camera place
+(the player's transform) was 6.3 cm low and 15 cm forward of the
+game's; not changed in the client yet (M9g4). Not ported: Unity's
+damped `SetFloat` (the game's damp time is 0).
+
 ## 2026-10-10 — M9g1: the player's body, headless
 
 **What:** first step of M9g (`docs/DESIGN.md` § 4.3, "M9g plan" and "as

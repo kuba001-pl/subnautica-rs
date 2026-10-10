@@ -4,6 +4,7 @@
 mod anim;
 mod aurora;
 mod biomes;
+mod body_run;
 mod code;
 mod collision;
 mod density;

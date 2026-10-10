@@ -758,8 +758,8 @@ user's OK):
 | Step | Work | Done when |
 |---|---|---|
 | **M9g1** ✅ (2026-10-10; see "as built") | **Data, headless.** `sn-unity`: the rest of `Player` (`equipmentModels`, `head`, `playerAnimator` and the fields between), `ArmsController` (smoothing speeds, `turnAnimationDampTime`, `ikToggleTime`, dive scan interval, …), `MainCameraControl`'s `viewModel` and bob/tilt fields if M9c did not keep them. `sn-assets`: the player's body (its prefab nodes from the `main` scene, the active models for an equipment set, the head node, the body renderers' shadow modes and shaders). `sn-inspect player --body`. In `gameplay.md`, each of the controller's 201 parameters marked: set by a rule ported here, left at its default with empty hands, or later (the script named). | Unit tests of the readers on synthetic bytes; real-data test of the reads; the models active in a new game logged; no parameter left unmarked; shaders of the body listed (unported ones logged, as § 4.2). |
-| **M9g2** | **Rules, pure.** `sn-sim::body`: `ArmsController`'s empty-hand rules (relative velocity, smoothing, the parameters above, `UpdateDiving` with `collide`'s ray) and the view model's transform (yaw, swim bob, landing bob, step amount, strafe tilt, the look-up pivot); output a list of parameter values and the view model's local transform. `sn-anim`: `set_float_damped` (Unity's damped `SetFloat`: its exact formula is a **hypothesis** until compared). | Unit tests: speeds and smoothing on known inputs, the dive flags, the bobs' ranges, the damped set's step response. |
-| **M9g3** | **Scripted check, headless.** `sn-inspect walk` and `dive` run the player's animator with these rules: each layer's state changes per phase (in the pod, walking, leaving, swimming, diving, at the surface, death, respawn). | Each phase reaches its states (names logged, the expected ones written in the plan before the run); no NaN, unit quaternions; cost per step logged. |
+| **M9g2** ✅ (2026-10-10; see "as built") | **Rules, pure.** `sn-sim::body`: `ArmsController`'s empty-hand rules (relative velocity, smoothing, the parameters above, `UpdateDiving` with `collide`'s ray) and the view model's transform (yaw, swim bob, landing bob, step amount, strafe tilt, the look-up pivot); output a list of parameter values and the view model's local transform. `sn-anim`: `set_float_damped` (Unity's damped `SetFloat`: its exact formula is a **hypothesis** until compared). | Unit tests: speeds and smoothing on known inputs, the dive flags, the bobs' ranges, the damped set's step response. |
+| **M9g3** ✅ (2026-10-10; see "as built") | **Scripted check, headless.** `sn-inspect walk` and `dive` run the player's animator with these rules: each layer's state changes per phase (in the pod, walking, leaving, swimming, diving, at the surface, death, respawn). | Each phase reaches its states (names logged, the expected ones written in the plan before the run); no NaN, unit quaternions; cost per step logged. |
 | **M9g4** | **Client.** The `Player` hierarchy spawned from the `main` scene (equipment rule, camera culling mask), its root at the simulated player, the view model's transform each frame, the animator each frame with the rules (a rig as M7f4c, GPU skinning). "Shadows only" drawn as the game does (render layer seen by the sun, not the camera), for the head and for the M7f4e renderer. The camera's near plane from `MainCamera` (read in M7g1). `--third-person`: a debug orbit camera that shows the head (also what remote players will look like). | Body nodes, bones and active models counted in the log; head drawn only in the shadow pass (counted); CPU time of the body logged; screenshots in first person (looking down, swimming) and third person for the user. |
 | **M9g5** | **Cinematics.** The hatches as the game plays them (`PlayerCinematicController`: the player's animator state, the pod's hatch layer, the end at the animation's last frame), replacing M9b's end points (and the VR-only stand-ins); the death animation by damage type. Can come after M10 if the user prefers (cinematics then also need syncing). | `walk` boards and leaves with the cinematic, end poses logged next to M9b's end points; screenshots. |
 
@@ -781,7 +781,59 @@ user's OK):
   `gameplay.md`). New for M9g2: `cameraUPTransform` (`camOffset`) sits
   0.063 m up and 0.15 m back from `camRoot`, so looking up moves the eye
   around that point; how the drawn camera (`PlayerCameras`) follows the
-  player was not found in the code yet.
+  player was not found in the code yet (found in M9g2).
+- **M9g2.** `sn-sim::body` (12 unit tests): `Body::update` gives the 29
+  parameters (17 by rule, 12 fixed; a test in `sn-assets` checks the set
+  equals `RULE_PARAMETERS` + `FIXED_PARAMETERS`, without the fire and
+  explosion death triggers), and the camera rig (`CameraPose`: `camRoot`'s
+  bob, look-down pitch, yaw and roll; `cameraUPTransform`'s look-up
+  pitch; the eye's place and rotation). `fixed_step` runs the falling
+  clock, `jumped`, `landed` and `died` take the events. Differences from
+  the plan: (1) no damped `SetFloat` in `sn-anim`: the game's damp time
+  is 0, so `view_turn` is set as computed; (2) **the camera is not at the
+  player's transform**: the scene's `AutoParent` hangs `PlayerCameras`
+  on `cameraOffsetTransform`, 0.063 m up and 0.15 m back from `camRoot`
+  (`sn-assets` reads it; real-data test), which corrects M9c's "as
+  built". The client and the scripts still put the camera and the
+  hand's ray at the player's transform: M9g3 (scripts) and M9g4 (client)
+  switch to `CameraPose::eye`. `PlayerBody::body_params` gives the
+  numbers. Hypotheses: `Vector3.Slerp` (Unity's native code), the order
+  of `ArmsController` before `MainCameraControl` in a frame.
+- **M9g3.** `sn-inspect walk` and `dive` run the body and the player's
+  animator every physics step (`body_run.rs`), collect the base and Death
+  layers' states per phase and check them against the expected states
+  below (written before the run). Seeds 1–5, both scripts: RUN OK, every
+  state check ok, 0 NaNs, worst |q| − 1 1.2·10⁻⁷, all 29 parameters
+  known, 54–60 µs per step (mean; p99 83–115 µs). Transitions on seed 1:
+  `Walking → Swim` 0.02 s after leaving the pod, `Swim → surface swim`
+  and back at the surface, Death `New State → player_death` at the death
+  and back 1.02 s later, `Swim → Walking` after boarding. Two fixes the
+  runs needed: (1) `sn-anim`: a sub-machine's exit node with no
+  transition that holds goes on to the layer's exit (**hypothesis**,
+  `animation.md`; without it the player stayed in `Swim` after
+  boarding); (2) `sn-sim::Player::walk_grounded`, the walking motor's
+  own flag (`gameplay.md`; without it the respawned player played the
+  falling animation). The hand's ray now starts at the game's eye, so
+  the scripts use the hatches from a little closer (seed 1: 1.68 m
+  instead of 1.95 m, 0.08 s later); the dive's time to empty moved by
+  one breath period (42.26 → 45.18 s), within its check. Runs are
+  stepped at the physics rate (50 Hz); the game updates the animator
+  every frame.
+
+**M9g3 expected states (written 2026-10-10 before the run, from the
+controller's transitions in `sn-inspect anim scene:main --states`):**
+base layer ("Base Modes") and "Death" layer, per phase of the scripts:
+- in the pod standing, walking to the hatch, after boarding, after the
+  respawn: base `Walking` (not under water, grounded); Death `New State`.
+- swimming under water (away from the pod, down to the seabed, held
+  there): base `Swim` (reached from `Walking` through its exit on
+  `is_underwater` and the entry selector).
+- at the surface (the dive's 2 s on top): base `surface swim` (`Swim`
+  exits on `on_surface`).
+- the death: Death `player_death` (the `player_death` trigger), then back
+  to `New State` after the clip (exit time 1, 0.25 s).
+- never: `Dive`, `Dive_loops`, `player_view_jump_loop` (the scripts don't
+  fall out of the water for 0.45 s), the vehicle, PDA and tool states.
 
 **Not 1:1 after M9g (planned elsewhere):** tools, the PDA and IK (with
 the tools, "After Phase E" item 1–2); the parameters the other 15 scripts
