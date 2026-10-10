@@ -6,6 +6,7 @@
 //! finds them. See `docs/formats/unity.md`.
 
 mod addressables;
+mod anim;
 mod bundle;
 mod camera;
 mod classes;
@@ -33,6 +34,14 @@ mod world_entity;
 use std::fmt;
 
 pub use addressables::{Catalog, Location};
+pub use anim::{
+    ANIMATION_CLIP, ANIMATOR, ANIMATOR_CONTROLLER, ATTR_EULER, ATTR_POSITION, ATTR_ROTATION,
+    ATTR_SCALE, AVATAR, AnimationClip, AnimationEvent, Animator, AnimatorController, Avatar,
+    BIND_TRANSFORM, BlendNode, BlendType, Condition, ConditionMode, DefaultValues, DenseClip,
+    GenericBinding, Interruption, Layer, LayerBlending, Param, ParamKind, SELECTOR_BASE,
+    SelectorState, SelectorTransition, State, StateMachine, StreamedKey, Transition, Xform,
+    name_hash,
+};
 pub use bundle::{BlockInfo, Bundle, BundleDirectory, BundleNode, Compression, write_bundle};
 pub use camera::{Camera, TAG_MAIN_CAMERA};
 pub use classes::class_name;

@@ -8,6 +8,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+sn-anim.workspace = true
 sn-dotnet.workspace = true
 sn-octree.workspace = true
 sn-world.workspace = true

@@ -1292,3 +1292,68 @@ fn vitals_and_look_data() {
     assert!((l.mouse_sensitivity - 0.15).abs() < 1e-6);
     assert_eq!((d.camera_node.1, d.camera.skin), ([0.0; 3], 0.0));
 }
+
+/// M7f4a/b: the player's and the lifepod's animators bind every property
+/// to their hierarchy and run 60 s from their defaults without NaNs and
+/// with unit quaternions (`docs/formats/animation.md`).
+#[test]
+#[ignore = "needs SUBNAUTICA_DIR pointing at a Subnautica install"]
+fn player_and_lifepod_animators_run() {
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    use sn_anim::{Animator, Program, SlotKind};
+    let Some(dir) = std::env::var_os("SUBNAUTICA_DIR") else {
+        eprintln!("SUBNAUTICA_DIR not set; skipping");
+        return;
+    };
+    let game = GameData::locate(Some(PathBuf::from(dir))).unwrap();
+    let assets = Assets::index(&game).unwrap();
+    let mut cache = HashMap::new();
+    // (scene, animator node name, slots, values, slots not in the hierarchy)
+    let expected = [
+        ("main", "player_view", 213, 710, 0),
+        ("escapepod", "Life_Pod_damaged_03", 137, 458, 0),
+    ];
+    for (scene, node_name, slots, width, missing) in expected {
+        let scene = assets.scene(scene).unwrap();
+        let (prefab, node) = scene
+            .roots
+            .iter()
+            .find_map(|p| {
+                p.nodes
+                    .iter()
+                    .position(|n| n.name == node_name && n.animator.is_some())
+                    .map(|i| (p, i))
+            })
+            .unwrap_or_else(|| panic!("{node_name}: no animator"));
+        let a = prefab.nodes[node].animator.as_ref().unwrap();
+        let set = assets
+            .animation_set(a.controller.as_ref().unwrap(), &mut cache)
+            .unwrap();
+        assert!(set.errors.is_empty(), "{:?}", set.errors);
+        let program = Arc::new(Program::new(Arc::new(set.controller.clone()), &set.clips));
+        assert_eq!(program.missing_clips, 0, "{node_name}");
+        let binding = prefab.bind_animator(node, &program, &|_| Vec::new());
+        assert_eq!(
+            (program.slots.len(), program.width, binding.missing),
+            (slots, width, missing),
+            "{node_name}"
+        );
+        let mut animator = Animator::new(program.clone(), binding.defaults);
+        for _ in 0..60 * 60 {
+            animator.update(1.0 / 60.0);
+            let pose = animator.pose();
+            assert!(pose.iter().all(|v| v.is_finite()), "{node_name}: NaN");
+            for s in program
+                .slots
+                .iter()
+                .filter(|s| s.kind == SlotKind::Rotation)
+            {
+                let q = &pose[s.offset..s.offset + 4];
+                let len = q.iter().map(|v| v * v).sum::<f32>().sqrt();
+                assert!((len - 1.0).abs() < 1e-4, "{node_name}: |q| = {len}");
+            }
+        }
+    }
+}

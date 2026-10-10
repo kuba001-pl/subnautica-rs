@@ -1282,6 +1282,8 @@ mod tests {
             colors: vec![[0.1, 0.2, 0.3, 0.4], [0.5, 0.6, 0.7, 0.8]],
             uvs: Vec::new(),
             indices: vec![0, 1, 0],
+            joints: Vec::new(),
+            weights: Vec::new(),
         };
         let bytes = vertex_bytes(&data);
         assert_eq!(bytes.len(), 2 * VERTEX_FLOATS * 4);

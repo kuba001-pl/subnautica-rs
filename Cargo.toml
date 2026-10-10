@@ -19,6 +19,7 @@ sn-unity = { path = "crates/sn-unity" }
 sn-assets = { path = "crates/sn-assets" }
 sn-dotnet = { path = "crates/sn-dotnet" }
 sn-sim = { path = "crates/sn-sim" }
+sn-anim = { path = "crates/sn-anim" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

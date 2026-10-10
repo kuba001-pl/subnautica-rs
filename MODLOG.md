@@ -2,6 +2,155 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-10 — M7f4c: animated objects in the client
+
+**What:** third step of M7f4 (`docs/DESIGN.md` § 4.4, "as built").
+- `sn-client/src/animation.rs` (new): `RigDesc` (an animator of a
+  prefab: its nodes, compiled program, slot → node, defaults, culling
+  mode, skins), the `AnimatedRig` component and the `animate` system
+  (each frame: `Animator::update`, then the animated Transforms written;
+  the game's culling modes from the parts' visibility), Unity → Bevy
+  bind pose conversion (`S·M·S`).
+- `objects.rs`: the worker compiles each controller once (shared clips)
+  and builds rigs for animators that move a Transform; parts below an
+  animator hang on their rig node; skinned meshes whose bones are all
+  in one rig are sent with bone weights (normalised, at most 256 bones)
+  and drawn with Bevy's GPU skinning and `DynamicSkinnedMeshBounds`.
+  Rigs of placeholder-spawned prefabs come along with their parts.
+- `sn-client --no-animation` (everything in its stored pose); a log line
+  per animated prefab and an `animation:` stats line every 2 s.
+- `sn-inspect anim --placed`: animators over every placed prefab.
+- New dependency: `sn-client` and `sn-assets` use `sn-anim` (our crate).
+
+**Why:** M7f4 plan; the player's body will use the same rigs.
+
+**Findings:**
+- 82 placed prefabs (9,252 placements) run an animator; their drawn
+  parts are 11,042 skinned and 109 rigid. Many animate only blend
+  shapes (the 3,299 small deco corals, the jewelled disks), the anchor
+  pods' controllers animate nothing. All placements at once would cost
+  6.7 ms per frame on one thread.
+- At the lifepod (seed 1), 58 rigs load (the pod's two hull LODs, eggs,
+  wreck doors, Precursor terminals and teleporters in the loaded
+  batches); 17 are updated per frame (the rest culled), 80–150 µs per
+  frame, worst 562 µs while loading.
+
+**Dead ends:**
+- Rig node entities without `Visibility` made Bevy warn (B0004) for
+  every mesh below them; they now carry `Visibility`.
+- The first screenshot pair (the default start, inside the pod) showed
+  no difference (1 pixel): the parts the animator moves are not in that
+  view. The outside view is used instead.
+
+**Verified (2026-10-10):**
+- `cargo test --workspace` passes (including 2 new `sn-client` tests:
+  the bind pose conversion against mirrored points, slot rotations);
+  `cargo clippy --workspace --all-targets` and `cargo fmt --check` clean.
+- `sn-client --benchmark 300` from the lifepod: mean 20.06 ms; with
+  `--no-animation` 20.21 ms (no measurable cost). No warnings.
+- Outside view (`--start -121 4.5 -44 --look -127.7 1.5 -49.7
+  --benchmark 120`, with and without `--no-animation`): the hull's 23
+  GPU-skinned meshes draw where M7f2's CPU-skinned copy did (no torn or
+  displaced geometry; differences only in the moving waves). Screenshots
+  `out/m7f4/outside-anim.png`, `outside-noanim.png`.
+- **Not checked:** motion against the game on screen (the user); the
+  animated parts inside the pod (hatch joints, storage door, panels)
+  are not visible from the views taken.
+
+## 2026-10-10 — M7f4b: the animation runtime (`sn-anim`)
+
+**What:** second step of M7f4 (`docs/DESIGN.md` § 4.4). New crate
+`crates/sn-anim` (layer 2, pure; uses `sn-unity`'s data types only):
+- `sample`: a clip's curves at a time (streamed cubic, dense linear,
+  constant).
+- `blend`: 1D, 2D simple directional and 2D freeform directional
+  weights; nested trees.
+- `Program` (a controller compiled against its clips: one slot per
+  animated property, layer masks, additive references) and `Animator`
+  (parameters, triggers, state machines with selectors, any-state
+  transitions, exit time, durations, offsets, interruptions with a
+  frozen pose, override and additive layers, skeleton masks, write
+  defaults, `Animator.Play`, layer weights).
+- `sn-assets`: `Prefab::bind_animator` (slots → nodes, default pose from
+  the hierarchy); `sn-inspect anim <target> --play <S>`.
+- Rules and what is a hypothesis: `docs/formats/animation.md` § Runtime.
+
+**Why:** the player's model and animations (Phase E, "After Phase E"
+item 3) and the creatures need the game's `Animator`.
+
+**Findings:**
+- An empty state writes nothing. The player's arm layers wait in empty
+  states at weight 1 while the base layer's idle moves the arms; with
+  defaults written there the arms stay in the stored pose.
+- The freeform trees' stored pair vectors are `(−angle, (|pᵢ| − |pⱼ|) ·
+  2/(|pᵢ| + |pⱼ|))`: gradient bands in polar space.
+- The player in its default states: "Walking" plays `player_view_idle`;
+  69 slots move (arms, fingers; up to 100° at the right hand's IK
+  target). The lifepod: 35 slots move from the stored pose into the idle
+  and closed states (hatch attach joints, storage door, wall panels).
+
+**Dead ends:**
+- First version: empty states with write defaults put the defaults back
+  on every slot of their layer, so 0 of the player's slots moved in 20 s
+  of idle although the idle clip's curves vary (173 curves). Fixed as
+  above, with a test.
+- One interruption test first assumed a zero-length transition blends;
+  it switches at once (the test was wrong, not the rule).
+
+**Verified (2026-10-10):**
+- `cargo test --workspace` passes without the game (`sn-anim`: 8 unit +
+  19 animator tests); `cargo clippy --workspace --all-targets` clean;
+  `cargo fmt --check` clean.
+- Real data: `cargo test --release -p sn-assets --test real_data --
+  --ignored player_and_lifepod_animators_run`: passes (213 slots / 710
+  values for the player, 137 / 458 for the lifepod, 0 missing; 60 s at
+  60 updates/s, no NaN, |q| = 1 within 10⁻⁴).
+- `sn-inspect anim scene:main --play 20`: no NaN, worst |q| − 1 1.2e-7,
+  about 50 µs per update; `anim scene:escapepod --play 20`: about 11 µs.
+- Not compared with the game on screen (no client yet: M7f4c).
+
+## 2026-10-10 — M7f4a: animation data, headless; M7f4 plan
+
+**What:** the M7f4 plan (`docs/DESIGN.md` § 4.4: eight steps, animation
+first; the items moved elsewhere and closed without code are listed
+there), then its first step:
+- `sn-unity::anim`: `AnimationClip`, `Avatar`, `Animator`,
+  `AnimatorController` (Unity 2019.4.36f1 layouts from UnityPy's type
+  database; each must reach the object's last byte); `name_hash`
+  (CRC-32). Round-trip tests with an encoder in the test module.
+- `sn-assets`: prefab nodes keep their `Animator` (controller, avatar)
+  and a skinned renderer's blend shape weights; `animation_set` loads a
+  controller with its clips (shared through a cache);
+  `Prefab::binding_paths`.
+- `sn-inspect anim <prefab key | scene:NAME> [--states]`.
+- `docs/formats/animation.md` (new).
+
+**Why:** the user is building the player's model and animations, which
+need M7f4's `Animator` work.
+
+**Findings** (all in `docs/formats/animation.md`):
+- 600 animators, 289 controllers, 334 avatars, 2,294 clips; **no
+  humanoid avatar** (all generic); no override controllers.
+- The streamed block is frames of keys, each a cubic up to its curve's
+  next key; continuous over 5,113,013 keys except 16 stepped ones.
+- Bindings' curve counts equal each clip's curves in every clip.
+- Binding paths and names are CRC-32: the player's 77,373 bindings and
+  the lifepod's 3,425 all match their hierarchy.
+
+**Dead ends:** a first prototype of the census in Python counted
+quaternion lengths mid-segment of up to 1 − 1/√2; that is component-wise
+interpolation, not a misread (Unity normalises), so it is not a check.
+
+**Verified (2026-10-10):**
+- `cargo test -p sn-unity` (5 new tests: clip and controller round
+  trips, streamed key errors, animator layout, CRC-32).
+- Real data: `cargo test --release -p sn-unity --test real_data
+  every_animation_object_parses -- --ignored`: 2,294 clips, 289
+  controllers, 334 avatars, 600 animators, 0 errors, 0 gaps.
+- `sn-inspect anim scene:main` and `anim scene:escapepod`: bindings
+  found 77,373 / 3,425, missing 0 (the lifepod's LOD 1 copy misses 4
+  paths that exist only on LOD 0).
+
 ## 2026-10-10 — M9c: oxygen, health, death and respawn; the game's mouse look
 
 **What:** fifth step of Phase E (`docs/DESIGN.md` § 4.3, "M9c plan" and

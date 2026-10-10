@@ -4762,9 +4762,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "sn-anim"
+version = "0.0.0"
+dependencies = [
+ "sn-unity",
+]
+
+[[package]]
 name = "sn-assets"
 version = "0.0.0"
 dependencies = [
+ "sn-anim",
  "sn-dotnet",
  "sn-install",
  "sn-sim",
@@ -4778,6 +4786,7 @@ name = "sn-client"
 version = "0.0.0"
 dependencies = [
  "bevy",
+ "sn-anim",
  "sn-assets",
  "sn-install",
  "sn-mesh",
@@ -4796,6 +4805,7 @@ version = "0.0.0"
 name = "sn-inspect"
 version = "0.0.0"
 dependencies = [
+ "sn-anim",
  "sn-assets",
  "sn-dotnet",
  "sn-install",

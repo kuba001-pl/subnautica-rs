@@ -184,7 +184,7 @@ reach them — expect the far end of this list to change.
 | **M7f1** ✅ (not compared with the game) | Scene reader and the Aurora scene: `sn-assets::Scene` (the scene's serialized file, one hierarchy per top-level object, world placements), `sn-inspect scene <name>` (class counts, top-level objects, drawn nodes, script census). The `aurora` scene drawn always (not streamed with the batches), most detailed LOD: the Aurora in the state of a new game, intact (`CrashedShipExploder`: its `disableOnExplosion`/`enableOnExplosion` objects swap 2.3–4 game days × 1,200 s + 27 s after the start; `--aurora exploded` shows the other state), and the scene's other top-level objects (Precursor prison exterior and aquarium, Lost River base, Lost River large trees: the game never streams these). Not yet: LOD levels by distance, the exterior cull manager, effects (fire, smoke, radiation). | Object counts per scene logged; real-data test of the counts and the explode lists; the Aurora visible at its place (screenshot for the user); frame time with and without it. |
 | **M7f2** ✅ | Skinned meshes (`SkinnedMeshRenderer`: 73 placed prefabs, e.g. `BrainCoral` LOD 0, and the lifepod's hull): read the renderer (materials, mesh, bones, root bone) and the mesh's bind poses and bone weights; skin on the CPU at load time in the pose the hierarchy stores (the game's `Animator` poses them; animation comes later). | Unit test of the skinning on synthetic bones; skinned prefabs counted in the log; a skinned LOD 0 has the bounds of its static LOD 1 (within a few %) on a sample. Done: the three prefabs with both match within 0.1 %; bone-less skinned renderers (blend shapes) are drawn as plain meshes; blend shapes not applied. |
 | **M7f3** ✅ (not compared with the game) | Lifepod 5: the `escapepod` scene placed as `EscapePod.ChooseRandomStart` does: `RandomStart.GetRandomStartPoint` draws x, z in ±2,048 m with y = 0 until the `validStartPointTexture` pixel there has green > 0.5 (the game's draw uses Unity's unseeded `Random`, so any valid point is the game's behaviour; ours is seeded, `--lifepod <X> <Z>` to choose); the camera starts at its player spawn point; the pod's spawned modules (`AddressablesPrefabSpawn`: fabricator, radio, medical cabinet, …) in place, on the mount points `MoveAndRotateWithTransform` puts them (stored pose). Not yet: the camera at the player's eye height (it stands at `playerSpawn`), the pod's own sky (`MarmoLifepodSky`) and lights (`LightingController`), the pod's animation, floating on the waves (`WorldForces`, `Stabilizer`; comes with physics, M9), the intro's damage effects. | Start point and the share of valid texture pixels logged; the pod and its modules visible (screenshot); the same seed gives the same start. |
-| **M7f4** | Everything M7f1–M7f3 left different from the game (recorded 2026-10-09; nothing here is 1:1 yet). **Aurora and scenes:** always the most detailed LOD (the game's `LODGroup`s switch to LOD 1/2 with distance; same for the pod); the explosion is a flag (`--aurora`), not timed from the game clock (`timeToStartCountdown` = start + 2.3–4 days × 1,200 s, swap 27 s later); `ShipExteriorCullManager`/`CullExplodedExterior` (exterior hidden from inside) and the 316 `CullingOccludee`s not ported; fire, smoke, radiation and explosion effects (particle systems, `VFXController`), sounds; scene renderers all cast sun shadows (their `m_CastShadows` not read; M8c6b). **Skinned meshes:** shown in the pose the hierarchy stores, not animated (`Animator`, e.g. the pod's `lifepod_damage` blend, creatures); blend shapes read past, not applied (e.g. `BrainCoral` LOD 0 shows its base shape); normals of bones with non-uniform scale are moved by the linear part, not its inverse transpose (Unity's GPU skinning: **hypothesis** it does the same). **Lifepod 5:** our seeded draw instead of Unity's unseeded `Random` (the point differs per run in the game anyway); fixed at y = 0 (the game floats it with `WorldForces`/`Stabilizer` around its anchor and the waves; needs physics, M9); camera at the `playerSpawn` transform, not the player's eye height or initial look direction; interior lit by the outside: the pod's own sky (`MarmoLifepodSky`, `SkyEscapePod`), its 5 lights driven by `LightingController` (red alert in the intro) and the `AtmosphereVolume` not used; intro state not shown (damage effects, fire, smoke, birds: the `Manual` spawners); spawned modules' own scripts not run (e.g. nested spawners, storage contents from `SpawnEscapePodSupplies`, the screen UI); `MoveAndRotateWithTransform` applied once, not every frame. | Each item ported or confirmed equal by a matched screenshot, number or unit test; this row emptied. |
+| **M7f4** (split into M7f4a–M7f4h, § 4.4, 2026-10-10) | Everything M7f1–M7f3 left different from the game (recorded 2026-10-09; nothing here is 1:1 yet). **Aurora and scenes:** always the most detailed LOD (the game's `LODGroup`s switch to LOD 1/2 with distance; same for the pod); the explosion is a flag (`--aurora`), not timed from the game clock (`timeToStartCountdown` = start + 2.3–4 days × 1,200 s, swap 27 s later); `ShipExteriorCullManager`/`CullExplodedExterior` (exterior hidden from inside) and the 316 `CullingOccludee`s not ported; fire, smoke, radiation and explosion effects (particle systems, `VFXController`), sounds; scene renderers all cast sun shadows (their `m_CastShadows` not read; M8c6b). **Skinned meshes:** shown in the pose the hierarchy stores, not animated (`Animator`, e.g. the pod's `lifepod_damage` blend, creatures); blend shapes read past, not applied (e.g. `BrainCoral` LOD 0 shows its base shape); normals of bones with non-uniform scale are moved by the linear part, not its inverse transpose (Unity's GPU skinning: **hypothesis** it does the same). **Lifepod 5:** our seeded draw instead of Unity's unseeded `Random` (the point differs per run in the game anyway); fixed at y = 0 (the game floats it with `WorldForces`/`Stabilizer` around its anchor and the waves; needs physics, M9); camera at the `playerSpawn` transform, not the player's eye height or initial look direction; interior lit by the outside: the pod's own sky (`MarmoLifepodSky`, `SkyEscapePod`), its 5 lights driven by `LightingController` (red alert in the intro) and the `AtmosphereVolume` not used; intro state not shown (damage effects, fire, smoke, birds: the `Manual` spawners); spawned modules' own scripts not run (e.g. nested spawners, storage contents from `SpawnEscapePodSupplies`, the screen UI); `MoveAndRotateWithTransform` applied once, not every frame. | Each item ported or confirmed equal by a matched screenshot, number or unit test; this row emptied. |
 | **M7g** | Objects whose materials are not MarmosetUBER, drawn as the game does: the occluder shells hidden, fake volumetric lights, mesh effects, triplanar rocks: see § 4.2. | See § 4.2. |
 
 ### Phase C — Being underwater
@@ -708,6 +708,123 @@ steps before it starts):
 **Honest size:** Phase E is about 9 milestones. "Subnautica 1:1" is the
 whole list above, many times that. The plan keeps each step small and
 verifiable so the game is playable early and grows from there.
+
+### 4.4 M7f4 plan (written 2026-10-10)
+
+**Why now:** the player's body, arms and the hatch cinematics ("After Phase
+E" item 3) need the game's `Animator`, so M7f4 is pulled forward (the rule
+in § 4.3: a deferred item comes back when it blocks play). M7f4 is the
+list of what M7f1–M7f3 left different from the game. It is split into the
+steps below so that each one is small and can be checked on its own. The
+animation steps come first because they unblock the player.
+
+**What the game's animation data is** (census 2026-10-10 over every
+bundle with UnityPy as the oracle; each fact goes to
+`docs/formats/animation.md`, marked):
+- 600 `Animator`s, 289 `AnimatorController`s, 334 `Avatar`s, 2,294
+  `AnimationClip`s (137 MB), 40 legacy `Animation` components (all in the
+  UI prefabs), 0 `AnimatorOverrideController`s.
+- **No humanoid rig anywhere**: every avatar's human skeleton is empty.
+  So there are no muscle clips, IK or retargeting. Every clip is
+  "generic": curves bound to a property of an object under the animator.
+- A clip keeps its curves in three blocks: streamed (keyframed cubic
+  segments), dense (sampled at a fixed rate) and constant. Bindings
+  (`m_ClipBindingConstant`) list one property per curve, or 3–4 curves for
+  a position, rotation, scale or Euler angle. Checked: in all 2,294 clips
+  the bindings' curve counts add up to the clip's curve count, and the
+  streamed data reads to its last byte. Each streamed key holds the cubic
+  `((a·dt + b)·dt + c)·dt + d` up to that curve's next key. Checked: the
+  value at the next key is equal (median gap 2·10⁻¹⁰), except at stepped
+  keys, which jump on purpose.
+- Bound properties: Transform position, rotation, scale and Euler angles
+  (319,290 + 89), blend-shape weights (1,674), light values (151), script
+  fields (185), renderer material values (32), animator parameters (78),
+  `GameObject` active (17), `RectTransform` (14).
+- Controllers use: parameters float 540, bool 987, trigger 113, int 2;
+  conditions If, IfNot, Greater, Less, Equals; layers override (369) and
+  additive (57), skeleton masks on 43; blend trees 1D (139), 2D simple
+  directional (104), 2D freeform directional (5); any-state transitions
+  (29); exit times, fixed and normalised durations, offsets (111),
+  interruption by the source (26) or the destination (49); write defaults
+  off in 2 states; 1 state machine behaviour.
+
+**Steps** (each ends with numbers, a MODLOG entry and, where it shows, a
+screenshot for the user; nothing is committed or pushed without the
+user's OK):
+
+| Step | Work | Done when |
+|---|---|---|
+| **M7f4a** ✅ | **Animation data, headless.** `sn-unity::anim`: `AnimationClip` (settings, streamed/dense/constant blocks, bindings, events), `AnimatorController` (parameters and defaults, layers, state machines, states, transitions, conditions, blend trees, selector states, the name table `m_TOS`), `Avatar` (its name table), `Animator`. Readers written from Unity 2019.4.36f1's layouts (UnityPy's type database, as for the other classes). `sn-assets`: a prefab node gets its `Animator`; the controller and its clips load on demand. `sn-inspect anim <prefab or scene>`: the animators, the controller's layers, states and parameters by name, each clip's length, loop flag and curves by kind. | Unit tests on synthetic bytes; real-data test: every clip, controller, avatar and animator in the game parses to its last byte; bindings' curve counts equal each clip's; streamed curves continuous at their keys; binding paths of the player's and the lifepod's clips found in their hierarchies (misses counted). |
+| **M7f4b** ✅ | **Animation runtime, pure:** new crate `sn-anim` (layer 2; it uses `sn-unity`'s data types and nothing else). Clip sampling (streamed cubic, dense linear, constant; loop or clamp; quaternions normalised after blending). The `Animator` update: parameters, triggers consumed by the transition that uses them, state machines with entry/exit selectors and sub-machines, any-state transitions, conditions, exit time, fixed or normalised duration, offset, interruption sources, state speed and its parameter, cycle offset; blend trees (1D, 2D simple directional, 2D freeform directional); layers in order with weight, override or additive, skeleton mask; write defaults (the values the bound properties had when the animator started). The output is one value per bound property. | Unit tests on synthetic controllers for each rule above; `sn-inspect anim <prefab> --play <seconds>` logs each layer's state changes and the pose's bounds; real-data test: the lifepod's and the player's controllers run 60 s from their defaults with no NaN and with unit quaternions. |
+| **M7f4c** ✅ (motion not compared with the game on screen) | **Client: animated objects.** Prefabs with an enabled `Animator` keep the transforms their controller binds as entities under the instance (instead of being flattened). Rigid parts follow their bone. Skinned parts use Bevy's GPU skinning, with the bones as joints. The animator runs every frame from its defaults, and the game's culling modes are honoured (always, cull transforms when invisible, cull completely). Light, material, script and active bindings are counted and logged, not applied yet. | Animators, bones and skinned parts counted in the log and stable across runs; CPU time of the animation system logged; the lifepod and a few placed animated prefabs (plants) move (screenshot or short clip for the user); frame time with and without (`--no-animation`). |
+| **M7f4d** | **Blend shapes.** `Mesh` blend shapes read (vertices, shapes, channels, full weights) instead of skipped; Bevy morph targets; weights from the renderer's `m_BlendShapeWeights`, then from animation (`blendShape.<name>` bindings). | Unit test of the reader on synthetic bytes; real-data: every mesh with shapes parses; `BrainCoral` LOD 0's bounds with its stored weights logged next to the base shape's; animated shapes counted. |
+| **M7f4e** | **Aurora on the game clock, its exterior cull, shadow flags.** `CrashedShipExploder`: `timeToStartCountdown` = start + `Random.Range(2.3, 4)` × 1,200 s (our seeded draw, `--aurora-countdown <s>` to choose), the model swap 27 s after it, on the client's game clock (`--aurora` stays as an override). `ShipExteriorCullManager`: the exploded exterior hidden while the camera is in one of its `ShipExteriorCull` volumes (every 10th frame, as the game). Renderers' `m_CastShadows` honoured (off → no sun shadow; shadows-only → shadow without colour), which is M8c6b's open item. | Countdown, swap time and cull volume count logged; real-data test of the cull volumes' read; swap seen at the logged time with `--time-scale` (screenshot pair); shadow casters counted by mode. |
+| **M7f4f** | **LOD by distance.** `LODGroup` (each level's screen-relative height, size, reference point, fade mode) and `QualitySettings` (the current level's `lodBias`, `maximumLODLevel`) read; per instance per frame the level the game would show: the group's size in world space against the screen height at the camera's distance and field of view, divided by the bias (Unity's documented rule, **hypothesis** for the exact form until checked against the game). Replaces "always LOD 0" for every prefab and the scenes. | Real-data test of the reads; levels shown per distance band logged; the Aurora at 500 m and 1,500 m (screenshots); triangle count and frame time before and after. |
+| **M7f4g** | **The lifepod's own light.** `MarmoLifepodSky`: inside the pod the global sky is the pod's anchor sky, outside the Safe Shallows one. `LightingController`: its states, multi-state skies and lights, `LerpToState`; the pod's start state and its lights' animator (`Life_Pod_lights_controller`, from M7f4b). The pod's `AtmosphereVolume` waits for M8c7b (atmosphere volumes) and is listed there. | Sky switch logged on entering and leaving; light intensities per state logged against the read values; screenshot inside the pod. |
+| **M7f4h** | **The lifepod floats.** `WorldForces` (buoyancy above and below the water, its drag), `Stabilizer` (upright torque), `EscapePod.FixedUpdate` (pull back to the anchor), a rigid body for this one object in `sn-sim` (mass, drag and angular drag read from its `Rigidbody`; no contacts). The pod's colliders and triggers move with it. The player stands on it as on a moving platform (`GroundMotor` moving-platform rules, read in M9b). `MoveAndRotateWithTransform` every frame. | Unit tests of the forces; `sn-inspect walk` still boards and leaves the pod with the pod moving; pod height and tilt over 60 s logged; the client shows it bobbing. |
+
+**As built (2026-10-10), where it differs from the plan:**
+- **M7f4a.** Every reader fails on leftover bytes, so "parses to its last
+  byte" is part of each parse. Two exit selectors in the game lead
+  nowhere (`0xFFFFFFFF`); that is valid data. `sn-inspect anim` also
+  prints the avatar and lists missing binding paths. Binding paths are
+  matched against the actual hierarchy (CRC-32 of the path); the
+  avatar's name table is not needed for that.
+- **M7f4b.** A state without a motion writes nothing (its layer lets the
+  layers below through); the plan's write-defaults rule applies only to
+  states with a motion. The game's own controller needs this: its arm
+  layers wait in empty states at weight 1 while the base layer moves the
+  arms. Our first version wrote defaults there and froze the player's
+  arms. `Animator::play` (`Animator.Play`) and layer weights are there
+  for the scripts that come later.
+- **M7f4c.** A rig is built only for animators that move a Transform:
+  those that change only blend shapes (most of the waving corals: 3,299
+  small deco corals, the jewelled disks) stay still until M7f4d. Skinned
+  meshes bend on the GPU only when every bone is in one rig; the others
+  keep M7f2's stored pose. Effect parts (glows, holograms) and lights
+  below an animator stay where the hierarchy stores them. A rig's parts take
+  their batch's shadow setting when spawned, but later switches (as the
+  batch's detail changes) do not reach them. Light, material and script bindings are counted by `sn-inspect
+  anim --placed`/`--play`, not by the client. Nested animators: the
+  inner rig does not follow the outer one (how often that happens is
+  not counted). New: `sn-inspect anim --placed` (82 placed prefabs,
+  9,252 placements with a running animator; 6.7 ms per frame if all
+  updated at once, one thread).
+
+**Moved out of M7f4 (not dropped; each one goes where its subsystem
+lives):**
+- Particle effects (fire, smoke, radiation, the explosion,
+  `VFXController`): a new milestone **M7i, particle systems**. The
+  `ParticleSystem` class has about 20 modules to read and simulate, too
+  big to be one step of M7f4.
+- Sounds: "After Phase E" item 8 (audio).
+- The intro (the damage effects, fire, the birds from the `Manual`
+  spawners, the pod's `lifepod_damage` blend driven by
+  `EscapePod.UpdateDamagedEffects`, the red-alert lighting state at the
+  start): it plays with the hatch cinematics, "After Phase E" item 3. The
+  machinery is M7f4b, M7f4g and M7i.
+- The spawned modules' own scripts (nested spawners, storage contents
+  from `SpawnEscapePodSupplies`, the screen UI): with the inventory
+  (M9d) and the PDA (item 2).
+- `CullingOccludee` (316): a speed-up that does not change the picture.
+  It joins the "later" occlusion-culling row of § 4.2.
+
+**Closed without code, with the reason written in the docs:**
+- Our seeded start point instead of Unity's unseeded `Random`. The game
+  draws a different point on every run, so any valid point is the game's
+  behaviour (M7f3, `docs/formats/entities.md`).
+- The camera at `playerSpawn` rather than at eye height: M9b put the
+  player there, and M9c confirmed the camera's place (see M9c "as built").
+- Skinned normals with non-uniform bone scale: after M7f4c, Bevy's GPU
+  skinning does what Unity's does or the difference is written down
+  (Bevy uses the joint matrix's inverse transpose; Unity's GPU skinning
+  is a **hypothesis** until checked).
+
+**Not 1:1 after M7f4 (planned elsewhere):** root motion (14 clips have a
+generic root transform; not applied until a moving object needs it, then
+with creatures); animation events (555; their receivers are game scripts
+and come with the scripts that receive them); legacy `Animation` (UI
+only, with the UI).
 
 ### Phase D — Multiplayer
 

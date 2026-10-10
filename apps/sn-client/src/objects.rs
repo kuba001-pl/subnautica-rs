@@ -20,10 +20,13 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::Instant;
 
 use bevy::asset::RenderAssetUsages;
+use bevy::camera::visibility::DynamicSkinnedMeshBounds;
 use bevy::math::Affine2;
+use bevy::mesh::skinning::{SkinnedMesh, SkinnedMeshInverseBindposes};
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, Face, TextureDimension, TextureFormat};
+use sn_anim::{Animator, Program};
 use sn_assets::{
     Assets as GameAssets, LootTable, MarmoSkies, ObjectRef, Prefab, TerrainTexture, marmo_skies,
 };
@@ -31,6 +34,7 @@ use sn_install::GameData;
 use sn_unity::{Catalog, DayNightLight, LightKind, Material, SKIES_AUTO, Shader};
 use sn_world::{BatchCoord, EntityInfo, SLOTS_COMPONENT, Transform as Placement};
 
+use crate::animation::{AnimatedRig, RigDesc, SkinDesc, bindpose_to_bevy};
 use crate::effects::{
     EffectLook, EffectMeshes, EffectPart, EffectValues, PARTICLES_TEXTURES, ParticlesValues,
 };
@@ -101,6 +105,10 @@ pub struct MeshData {
     pub(crate) colors: Vec<[f32; 4]>,
     pub(crate) uvs: Vec<[f32; 2]>,
     pub(crate) indices: Vec<u32>,
+    /// Bone indices and weights for GPU skinning (empty for still
+    /// meshes; M7f4c).
+    pub(crate) joints: Vec<[u16; 4]>,
+    pub(crate) weights: Vec<[f32; 4]>,
 }
 
 #[derive(Clone, Copy)]
@@ -238,6 +246,38 @@ struct Part {
     /// Drawn by our effect pass (`effects.rs`): `mesh` is an effect mesh id
     /// (`Update::EffectMesh`) and the material has `effect` values.
     effect: bool,
+    /// Moved by an animator (M7f4c): the prefab's rig and, for a still
+    /// mesh, the rig node it hangs on (`local` is then the identity);
+    /// for a skinned mesh, its skin in the rig.
+    rig: Option<RigPart>,
+}
+
+#[derive(Clone, Copy)]
+enum RigPart {
+    Node { rig: u16, node: u16 },
+    Skin { rig: u16, skin: u16 },
+}
+
+impl RigPart {
+    fn rig(self) -> u16 {
+        match self {
+            RigPart::Node { rig, .. } | RigPart::Skin { rig, .. } => rig,
+        }
+    }
+
+    /// The same part when the prefab's rigs come after `first` others.
+    fn shifted(self, first: u16) -> RigPart {
+        match self {
+            RigPart::Node { rig, node } => RigPart::Node {
+                rig: rig + first,
+                node,
+            },
+            RigPart::Skin { rig, skin } => RigPart::Skin {
+                rig: rig + first,
+                skin,
+            },
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -287,11 +327,21 @@ fn saved_below<'t>(
     below
 }
 
+/// A rig while a prefab's content is put together.
+struct RigBuild {
+    /// The animator's node in the prefab.
+    animator: usize,
+    /// Prefab node → rig node.
+    node_map: HashMap<usize, u16>,
+    desc: RigDesc,
+}
+
 /// What a prefab draws and lights, relative to its root.
 struct PrefabContent {
     parts: Vec<Part>,
     lights: Vec<LocalLight>,
     directional: Vec<DirectionalSource>,
+    rigs: Vec<Arc<RigDesc>>,
 }
 
 /// Prefabs spawned by placeholders inside prefabs spawned by placeholders
@@ -331,6 +381,7 @@ enum Update {
         parts: Vec<Part>,
         lights: Vec<LocalLight>,
         directional: Vec<DirectionalSource>,
+        rigs: Vec<Arc<RigDesc>>,
     },
     Batch {
         coord: BatchCoord,
@@ -402,6 +453,14 @@ struct Library {
     placeholders_spawned: usize,
     /// `placeholders_spawned` when it was last logged.
     placeholders_logged: usize,
+    /// Run the objects' animators (off with `--no-animation`; M7f4c).
+    animate: bool,
+    /// Controller → its compiled program (`None`: failed to load).
+    programs: HashMap<Key, Option<Arc<Program>>>,
+    /// Clips shared between controllers.
+    clips: HashMap<Key, Arc<sn_unity::AnimationClip>>,
+    /// Skinned meshes with their bone weights, as `meshes`.
+    skin_meshes: HashMap<(Key, usize), Option<u32>>,
 }
 
 /// How far a shader is ported (`docs/formats/materials.md`).
@@ -817,7 +876,7 @@ impl Library {
             );
         }
         let mut ids = Vec::new();
-        for (i, data) in split_geometry(&geometry).into_iter().enumerate() {
+        for (i, data) in split_geometry(&geometry, None).into_iter().enumerate() {
             let id = self.id();
             out.push(Update::EffectMesh { id, data });
             self.effect_meshes.insert((key.clone(), i), Some(id));
@@ -928,7 +987,7 @@ impl Library {
         out: &mut Vec<Update>,
     ) -> Vec<Option<u32>> {
         let mut ids = Vec::new();
-        for (i, data) in split_geometry(geometry).into_iter().enumerate() {
+        for (i, data) in split_geometry(geometry, None).into_iter().enumerate() {
             let id = self.id();
             out.push(Update::Mesh { id, data });
             self.meshes.insert((key.clone(), i), Some(id));
@@ -1023,6 +1082,7 @@ impl Library {
             parts,
             lights,
             directional,
+            rigs,
         } = self.prefab_content(prefab, out, if spawn { 0 } else { NO_SPAWN });
         let id =
             (!parts.is_empty() || !lights.is_empty() || !directional.is_empty()).then(|| self.id());
@@ -1032,9 +1092,180 @@ impl Library {
                 parts,
                 lights,
                 directional,
+                rigs,
             });
         }
         id
+    }
+
+    /// A controller compiled with its clips (cached; `None` if it failed
+    /// to load).
+    fn program(&mut self, controller: &ObjectRef, out: &mut Vec<Update>) -> Option<Arc<Program>> {
+        let key = controller.key();
+        if let Some(p) = self.programs.get(&key) {
+            return p.clone();
+        }
+        let program = match self.assets.animation_set(controller, &mut self.clips) {
+            Ok(set) => {
+                for e in &set.errors {
+                    out.push(Update::Warning(format!(
+                        "animator {}: {e}",
+                        set.controller.name
+                    )));
+                }
+                Some(Arc::new(Program::new(Arc::new(set.controller), &set.clips)))
+            }
+            Err(e) => {
+                out.push(Update::Warning(format!("animator: {e}")));
+                None
+            }
+        };
+        self.programs.insert(key, program.clone());
+        program
+    }
+
+    /// The prefab's animators that move a Transform (active, enabled, with
+    /// a controller), each with its nodes (M7f4c). Animators that only
+    /// change blend shapes or other properties are left out (M7f4d).
+    fn rigs(&mut self, prefab: &Prefab, out: &mut Vec<Update>) -> Vec<RigBuild> {
+        let mut rigs = Vec::new();
+        for (i, node) in prefab.nodes.iter().enumerate() {
+            let Some(a) = &node.animator else { continue };
+            if !node.active || !a.component.enabled {
+                continue;
+            }
+            let Some(controller) = &a.controller else {
+                continue;
+            };
+            let Some(program) = self.program(controller, out) else {
+                continue;
+            };
+            // The animator's node and everything below it (stored parents
+            // first).
+            let mut node_map: HashMap<usize, u16> = HashMap::from([(i, 0)]);
+            // A root animator's own placement is the instance's.
+            let own = if node.parent.is_some() {
+                node.local
+            } else {
+                Placement::default()
+            };
+            let mut nodes = vec![(None, own)];
+            for j in i + 1..prefab.nodes.len() {
+                let Some(parent) = prefab.nodes[j].parent else {
+                    continue;
+                };
+                let Some(&pk) = node_map.get(&parent) else {
+                    continue;
+                };
+                if nodes.len() >= usize::from(u16::MAX) {
+                    break;
+                }
+                node_map.insert(j, nodes.len() as u16);
+                nodes.push((Some(pk), prefab.nodes[j].local));
+            }
+            let binding = prefab.bind_animator(i, &program, &|_| Vec::new());
+            let slot_nodes: Vec<Option<u16>> = binding
+                .nodes
+                .iter()
+                .zip(&program.slots)
+                .map(|(n, s)| {
+                    n.filter(|_| s.kind.is_transform())
+                        .and_then(|n| node_map.get(&n).copied())
+                })
+                .collect();
+            if slot_nodes.iter().all(Option::is_none) {
+                continue;
+            }
+            let base = node
+                .parent
+                .map_or(Placement::default(), |p| prefab.nodes[p].in_prefab);
+            rigs.push(RigBuild {
+                animator: i,
+                node_map,
+                desc: RigDesc {
+                    base,
+                    nodes,
+                    name: format!("{} ({})", prefab.key, program.controller.name),
+                    program,
+                    slot_nodes,
+                    defaults: binding.defaults,
+                    culling: a.component.culling_mode,
+                    skins: Vec::new(),
+                },
+            });
+        }
+        rigs
+    }
+
+    /// A skinned node bent on the GPU by a rig that holds all its bones:
+    /// (rig, skin, sub-meshes with bone weights). `None`: drawn in its
+    /// stored pose instead (no such rig, too many bones for Bevy, bind
+    /// poses missing).
+    fn gpu_skin(
+        &mut self,
+        prefab: &Prefab,
+        node: usize,
+        rigs: &mut [RigBuild],
+        out: &mut Vec<Update>,
+    ) -> Option<(u16, u16, Vec<Option<u32>>)> {
+        let n = &prefab.nodes[node];
+        if n.bones.is_empty() || n.bones.len() > 256 {
+            return None;
+        }
+        let r = rigs.iter().position(|rig| {
+            n.bones
+                .iter()
+                .all(|b| b.is_some_and(|b| rig.node_map.contains_key(&b)))
+        })?;
+        let object = n.mesh.as_ref()?;
+        let (mesh, geometry) = match self.assets.mesh(object) {
+            Ok(x) => x,
+            Err(e) => {
+                out.push(Update::Warning(format!("mesh: {e}")));
+                return None;
+            }
+        };
+        let vertices = geometry.positions.len();
+        if mesh.bind_poses.len() < n.bones.len()
+            || geometry.bone_weights.len() != vertices
+            || geometry.bone_indices.len() != vertices
+        {
+            return None;
+        }
+        let rig = &mut rigs[r];
+        let joints: Vec<u16> = n
+            .bones
+            .iter()
+            .filter_map(|b| b.and_then(|b| rig.node_map.get(&b).copied()))
+            .collect();
+        let inverse_bindposes = mesh.bind_poses[..n.bones.len()]
+            .iter()
+            .map(bindpose_to_bevy)
+            .collect();
+        let key = object.key();
+        let ids = if self.skin_meshes.contains_key(&(key.clone(), 0)) {
+            (0..)
+                .map_while(|i| self.skin_meshes.get(&(key.clone(), i)).copied())
+                .collect()
+        } else {
+            let mut ids = Vec::new();
+            for (i, data) in split_geometry(&geometry, Some(joints.len()))
+                .into_iter()
+                .enumerate()
+            {
+                let id = self.id();
+                out.push(Update::Mesh { id, data });
+                self.skin_meshes.insert((key.clone(), i), Some(id));
+                ids.push(Some(id));
+            }
+            ids
+        };
+        let skin = rig.desc.skins.len() as u16;
+        rig.desc.skins.push(SkinDesc {
+            joints,
+            inverse_bindposes,
+        });
+        Some((r as u16, skin, ids))
     }
 
     /// A hierarchy's drawn parts and lights relative to its root, with the
@@ -1047,6 +1278,23 @@ impl Library {
         depth: usize,
     ) -> PrefabContent {
         let mut parts = Vec::new();
+        let mut rigs = if self.animate {
+            self.rigs(prefab, out)
+        } else {
+            Vec::new()
+        };
+        // Each node's nearest animator at or above it with a rig: (rig,
+        // the node in it).
+        let rig_of = |index: usize, rigs: &[RigBuild]| -> Option<(u16, u16)> {
+            let mut at = Some(index);
+            while let Some(i) = at {
+                if let Some(r) = rigs.iter().position(|r| r.animator == i) {
+                    return rigs[r].node_map.get(&index).map(|&n| (r as u16, n));
+                }
+                at = prefab.nodes[i].parent;
+            }
+            None
+        };
         for (index, node) in prefab.visible() {
             if node.layer >= 32 || self.culling_mask & (1 << node.layer) == 0 {
                 info!(
@@ -1058,20 +1306,40 @@ impl Library {
             // Other anchors (a fixed sky) are taken as the global sky.
             let biome_sky = node.sky_applier == Some(SKIES_AUTO);
             let Some(mesh) = &node.mesh else { continue };
-            // Skinned meshes come out in the prefab root's space.
-            let skinned = if node.skinned {
+            // Skinned meshes bend with an animated rig on the GPU, or come
+            // out in their stored pose in the prefab root's space.
+            let gpu = if node.skinned {
+                self.gpu_skin(prefab, index, &mut rigs, out)
+            } else {
+                None
+            };
+            let skinned = if node.skinned && gpu.is_none() {
                 self.skinned_mesh(prefab, index, out)
             } else {
                 None
             };
-            let local = if skinned.is_some() {
+            let on_node = if node.skinned {
+                None
+            } else {
+                rig_of(index, &rigs)
+            };
+            let rig = match (&gpu, on_node) {
+                (Some((rig, skin, _)), _) => Some(RigPart::Skin {
+                    rig: *rig,
+                    skin: *skin,
+                }),
+                (None, Some((rig, node))) => Some(RigPart::Node { rig, node }),
+                (None, None) => None,
+            };
+            let local = if skinned.is_some() || rig.is_some() {
                 Placement::default()
             } else {
                 node.in_prefab
             };
-            let sub_meshes = match skinned {
-                Some(ids) => ids,
-                None => self.mesh(mesh, out),
+            let sub_meshes = match (gpu, skinned) {
+                (Some((_, _, ids)), _) => ids,
+                (None, Some(ids)) => ids,
+                (None, None) => self.mesh(mesh, out),
             };
             // Effect sub-meshes come from their own copy (with vertex
             // colours), made when the first one is met.
@@ -1114,12 +1382,20 @@ impl Library {
                 } else {
                     *sub_mesh
                 };
+                // Effect parts stay where the hierarchy stores them (not
+                // animated yet).
+                let (local, rig) = if effect {
+                    (node.in_prefab, None)
+                } else {
+                    (local, rig)
+                };
                 parts.push(Part {
                     mesh: mesh_id,
                     material,
                     local,
                     biome_sky,
                     effect,
+                    rig,
                 });
             }
         }
@@ -1166,6 +1442,7 @@ impl Library {
             parts,
             lights,
             directional,
+            rigs: rigs.into_iter().map(|r| Arc::new(r.desc)).collect(),
         };
         if depth != NO_SPAWN && self.spawn_placeholders {
             self.add_placeholders(prefab, &mut content, out, depth);
@@ -1234,12 +1511,28 @@ impl Library {
                 let Some(child) = self.placeholder_content(&path, out, depth + 1) else {
                     continue;
                 };
-                // The spawned root takes the placeholder's place.
+                // The spawned root takes the placeholder's place; its rigs
+                // hang there too.
                 let at = node.in_prefab;
-                content.parts.extend(child.parts.iter().map(|p| Part {
-                    local: at.then(&p.local),
-                    ..*p
+                let first_rig = content.rigs.len() as u16;
+                content.rigs.extend(child.rigs.iter().map(|r| {
+                    Arc::new(RigDesc {
+                        base: at.then(&r.base),
+                        ..RigDesc::clone(r)
+                    })
                 }));
+                content
+                    .parts
+                    .extend(child.parts.iter().map(|p| match p.rig {
+                        Some(rig) => Part {
+                            rig: Some(rig.shifted(first_rig)),
+                            ..*p
+                        },
+                        None => Part {
+                            local: at.then(&p.local),
+                            ..*p
+                        },
+                    }));
                 content
                     .lights
                     .extend(child.lights.iter().map(|l| LocalLight {
@@ -1633,6 +1926,7 @@ fn worker(
     slot_seed: Option<u64>,
     placeholders: bool,
     scenes: Option<SceneOptions>,
+    animate: bool,
 ) {
     let start = Instant::now();
     let setup = || -> Result<Library, String> {
@@ -1664,6 +1958,10 @@ fn worker(
             spawn_placeholders: placeholders,
             placeholders_spawned: 0,
             placeholders_logged: 0,
+            animate,
+            programs: HashMap::new(),
+            clips: HashMap::new(),
+            skin_meshes: HashMap::new(),
         })
     };
     let mut library = match setup() {
@@ -1811,6 +2109,10 @@ pub struct ObjectStreamer {
     skies: SkySet,
     meshes: HashMap<u32, Handle<Mesh>>,
     prefabs: HashMap<u32, Vec<Part>>,
+    /// A prefab's animated rigs (M7f4c).
+    prefab_rigs: HashMap<u32, Vec<Arc<RigDesc>>>,
+    /// (prefab, rig, skin) → its inverse bind poses.
+    bindposes: HashMap<(u32, u16, u16), Handle<SkinnedMeshInverseBindposes>>,
     prefab_lights: HashMap<u32, Vec<LocalLight>>,
     prefab_directional: HashMap<u32, Vec<DirectionalSource>>,
     batches: HashMap<BatchCoord, BatchObjects>,
@@ -1832,12 +2134,14 @@ impl ObjectStreamer {
     /// the spawn slots with this world seed (`None`: leave them empty).
     /// `placeholders`: spawn what the objects' placeholders hold.
     /// `scenes`: load the scenes the game spawns at start (`None`: none).
+    /// `animate`: run the objects' animators (M7f4c).
     pub fn start(
         game: GameData,
         lights: bool,
         slot_seed: Option<u64>,
         placeholders: bool,
         scenes: Option<SceneOptions>,
+        animate: bool,
     ) -> ObjectStreamer {
         // The worker's asset index borrows the install for the whole run.
         let game: &'static GameData = Box::leak(Box::new(game));
@@ -1849,7 +2153,15 @@ impl ObjectStreamer {
         let (tx, rx) = channel();
         let worker_shared = shared.clone();
         std::thread::spawn(move || {
-            worker(game, worker_shared, tx, slot_seed, placeholders, scenes)
+            worker(
+                game,
+                worker_shared,
+                tx,
+                slot_seed,
+                placeholders,
+                scenes,
+                animate,
+            )
         });
         ObjectStreamer {
             shared,
@@ -1861,6 +2173,8 @@ impl ObjectStreamer {
             skies: SkySet::default(),
             meshes: HashMap::new(),
             prefabs: HashMap::new(),
+            prefab_rigs: HashMap::new(),
+            bindposes: HashMap::new(),
             prefab_lights: HashMap::new(),
             prefab_directional: HashMap::new(),
             batches: HashMap::new(),
@@ -1998,8 +2312,10 @@ fn spawn_light(commands: &mut Commands, light: &LocalLight, transform: Transform
 }
 
 /// A mesh's sub-meshes in Bevy's coordinates (z flipped, winding reversed),
-/// each with only the vertices it uses.
-fn split_geometry(geometry: &sn_unity::MeshGeometry) -> Vec<MeshData> {
+/// each with only the vertices it uses. `joints`: keep the bone weights for
+/// GPU skinning with that many bones (indices past it lose their weight;
+/// weights are normalised).
+fn split_geometry(geometry: &sn_unity::MeshGeometry, joints: Option<usize>) -> Vec<MeshData> {
     fn pick<T: Copy>(attr: &[T], n: usize, used: &[usize]) -> Vec<T> {
         if attr.len() == n {
             used.iter().map(|&v| attr[v]).collect()
@@ -2017,6 +2333,33 @@ fn split_geometry(geometry: &sn_unity::MeshGeometry) -> Vec<MeshData> {
         .map(|t| [t[0], t[1], -t[2], -t[3]])
         .collect();
     let n = positions.len();
+    let (bone_joints, bone_weights): (Vec<[u16; 4]>, Vec<[f32; 4]>) = match joints {
+        Some(count) if geometry.bone_indices.len() == n && geometry.bone_weights.len() == n => {
+            geometry
+                .bone_indices
+                .iter()
+                .zip(&geometry.bone_weights)
+                .map(|(i, w)| {
+                    let mut j = [0u16; 4];
+                    let mut wt = [0.0f32; 4];
+                    for k in 0..4 {
+                        if (i[k] as usize) < count && w[k] > 0.0 {
+                            j[k] = i[k] as u16;
+                            wt[k] = w[k];
+                        }
+                    }
+                    let sum: f32 = wt.iter().sum();
+                    if sum > 0.0 {
+                        wt.iter_mut().for_each(|x| *x /= sum);
+                    } else {
+                        wt[0] = 1.0;
+                    }
+                    (j, wt)
+                })
+                .unzip()
+        }
+        _ => (Vec::new(), Vec::new()),
+    };
     let mut meshes = Vec::new();
     for indices in &geometry.sub_meshes {
         let mut remap = vec![u32::MAX; n];
@@ -2036,6 +2379,8 @@ fn split_geometry(geometry: &sn_unity::MeshGeometry) -> Vec<MeshData> {
             tangents: pick(&tangents, n, &used),
             colors: pick(&geometry.colors, n, &used),
             uvs: pick(&geometry.uv0, n, &used),
+            joints: pick(&bone_joints, n, &used),
+            weights: pick(&bone_weights, n, &used),
             indices: local
                 .chunks_exact(3)
                 .flat_map(|t| [t[0], t[2], t[1]])
@@ -2046,11 +2391,16 @@ fn split_geometry(geometry: &sn_unity::MeshGeometry) -> Vec<MeshData> {
 }
 
 fn build_mesh(data: MeshData) -> Mesh {
-    let mut mesh = Mesh::new(
-        PrimitiveTopology::TriangleList,
-        RenderAssetUsages::RENDER_WORLD,
-    );
     let n = data.positions.len();
+    let skinned = data.joints.len() == n && data.weights.len() == n && n > 0;
+    // Skinned meshes stay in the main world too: their bounds follow the
+    // bones each frame (`DynamicSkinnedMeshBounds`).
+    let usage = if skinned {
+        RenderAssetUsages::all()
+    } else {
+        RenderAssetUsages::RENDER_WORLD
+    };
+    let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, usage);
     mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, data.positions);
     let has_normals = data.normals.len() == n;
     if has_normals {
@@ -2065,6 +2415,16 @@ fn build_mesh(data: MeshData) -> Mesh {
     mesh.insert_indices(Indices::U32(data.indices));
     if !has_normals {
         mesh.compute_smooth_normals();
+    }
+    if skinned {
+        mesh.insert_attribute(
+            Mesh::ATTRIBUTE_JOINT_INDEX,
+            bevy::mesh::VertexAttributeValues::Uint16x4(data.joints),
+        );
+        mesh.insert_attribute(Mesh::ATTRIBUTE_JOINT_WEIGHT, data.weights);
+        if let Err(e) = mesh.generate_skinned_mesh_bounds() {
+            warn!("objects: skinned mesh bounds: {e}");
+        }
     }
     mesh
 }
@@ -2191,6 +2551,7 @@ pub fn stream_objects(
     camera: Query<&Transform, With<Camera3d>>,
     mut terrain_look: Option<ResMut<TerrainLook>>,
     mut effect_meshes: ResMut<EffectMeshes>,
+    mut bindposes: ResMut<Assets<SkinnedMeshInverseBindposes>>,
     mut exit: MessageWriter<AppExit>,
 ) {
     let streamer = &mut *streamer;
@@ -2252,8 +2613,29 @@ pub fn stream_objects(
                 parts,
                 lights,
                 directional,
+                rigs,
             } => {
                 streamer.prefabs.insert(id, parts);
+                if !rigs.is_empty() {
+                    for (r, rig) in rigs.iter().enumerate() {
+                        info!(
+                            "animation: {}: {} nodes, {} of {} slots move Transforms, {} skinned meshes on the GPU, culling mode {}",
+                            rig.name,
+                            rig.nodes.len(),
+                            rig.slot_nodes.iter().flatten().count(),
+                            rig.slot_nodes.len(),
+                            rig.skins.len(),
+                            rig.culling
+                        );
+                        for (k, skin) in rig.skins.iter().enumerate() {
+                            let handle = bindposes.add(SkinnedMeshInverseBindposes::from(
+                                skin.inverse_bindposes.clone(),
+                            ));
+                            streamer.bindposes.insert((id, r as u16, k as u16), handle);
+                        }
+                    }
+                    streamer.prefab_rigs.insert(id, rigs);
+                }
                 if !lights.is_empty() {
                     streamer.prefab_lights.insert(id, lights);
                 }
@@ -2445,6 +2827,34 @@ impl ObjectStreamer {
         };
         // `SkyApplier`: the biome at the object's root.
         let biome = s.water.and_then(|w| w.biome_at(inst.transform.position));
+        // Animated rigs: a base entity (listed, so despawning it takes the
+        // rest) and the rig's nodes below it.
+        let rigs = self
+            .prefab_rigs
+            .get(&inst.prefab)
+            .cloned()
+            .unwrap_or_default();
+        let mut rig_entities: Vec<(Entity, Vec<Entity>, Vec<Entity>)> = Vec::new();
+        for rig in &rigs {
+            let base = s
+                .commands
+                .spawn((
+                    to_bevy(&inst.transform.then(&rig.base)),
+                    Visibility::default(),
+                ))
+                .id();
+            entities.push(base);
+            let mut nodes: Vec<Entity> = Vec::with_capacity(rig.nodes.len());
+            for (parent, local) in &rig.nodes {
+                let parent = parent.map_or(base, |p| nodes[usize::from(p)]);
+                nodes.push(
+                    s.commands
+                        .spawn((to_bevy(local), Visibility::default(), ChildOf(parent)))
+                        .id(),
+                );
+            }
+            rig_entities.push((base, nodes, Vec::new()));
+        }
         for part in parts {
             if part.effect {
                 let Some(look) = self
@@ -2495,6 +2905,60 @@ impl ObjectStreamer {
                     m
                 }
             };
+            if let Some(rig_part) = part.rig {
+                let r = usize::from(rig_part.rig());
+                let Some((base, nodes, drawn)) = rig_entities.get_mut(r) else {
+                    continue;
+                };
+                let entity = match rig_part {
+                    RigPart::Node { node, .. } => {
+                        let Some(&parent) = nodes.get(usize::from(node)) else {
+                            continue;
+                        };
+                        s.commands
+                            .spawn((
+                                Mesh3d(mesh.clone()),
+                                MeshMaterial3d(material.clone()),
+                                Transform::IDENTITY,
+                                ChildOf(parent),
+                            ))
+                            .id()
+                    }
+                    RigPart::Skin { skin, .. } => {
+                        let (Some(desc), Some(handle)) = (
+                            rigs[r].skins.get(usize::from(skin)),
+                            self.bindposes.get(&(inst.prefab, rig_part.rig(), skin)),
+                        ) else {
+                            continue;
+                        };
+                        let joints = desc
+                            .joints
+                            .iter()
+                            .filter_map(|&j| nodes.get(usize::from(j)).copied())
+                            .collect();
+                        s.commands
+                            .spawn((
+                                Mesh3d(mesh.clone()),
+                                MeshMaterial3d(material.clone()),
+                                Transform::IDENTITY,
+                                ChildOf(*base),
+                                SkinnedMesh {
+                                    inverse_bindposes: handle.clone(),
+                                    joints,
+                                },
+                                DynamicSkinnedMeshBounds,
+                            ))
+                            .id()
+                    }
+                };
+                if !casting {
+                    s.commands
+                        .entity(entity)
+                        .insert(bevy::light::NotShadowCaster);
+                }
+                drawn.push(entity);
+                continue;
+            }
             let world = inst.transform.then(&part.local);
             let mut entity = s.commands.spawn((
                 Mesh3d(mesh.clone()),
@@ -2505,6 +2969,20 @@ impl ObjectStreamer {
                 entity.insert(bevy::light::NotShadowCaster);
             }
             entities.push(entity.id());
+        }
+        // Each rig's animator, on its base.
+        for (rig, (base, nodes, drawn)) in rigs.iter().zip(rig_entities) {
+            let slots = rig
+                .slot_nodes
+                .iter()
+                .map(|n| n.and_then(|n| nodes.get(usize::from(n)).copied()))
+                .collect();
+            s.commands.entity(base).insert(AnimatedRig {
+                animator: Animator::new(rig.program.clone(), rig.defaults.clone()),
+                slots,
+                culling: rig.culling,
+                parts: drawn,
+            });
         }
         let lights = self.prefab_lights.get(&inst.prefab).filter(|_| self.lights);
         for light in lights.into_iter().flatten() {

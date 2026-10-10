@@ -3,6 +3,7 @@
 //! scenes) and puts you in it as the player (M9b), or lets you fly around
 //! with `--free-cam`.
 
+mod animation;
 mod effects;
 mod game_light;
 mod grass_look;
@@ -66,6 +67,8 @@ Usage: sn-client [--game-dir <PATH>] [--start <X> <Y> <Z>] [--look <X> <Y> <Z>]
   --no-placeholders  don't spawn what the objects' placeholders hold (the
                  cache doors, key terminals, ion crystals; for comparisons)
   --no-grass     no terrain grass (for comparisons)
+  --no-animation the objects' animators off: everything in its stored pose
+                 (for comparisons)
   --no-scenes    without the scenes the game spawns at start (the Aurora,
                  the Precursor bases it holds)
   --aurora       intact | exploded: the Aurora before its explosion (default,
@@ -123,6 +126,7 @@ struct Args {
     slot_seed: Option<u64>,
     no_placeholders: bool,
     no_grass: bool,
+    no_animation: bool,
     /// `None`: no scenes.
     scenes: Option<SceneOptions>,
     fog_unit: f32,
@@ -155,6 +159,7 @@ fn parse_args() -> Result<Args, String> {
         slot_seed: Some(1),
         no_placeholders: false,
         no_grass: false,
+        no_animation: false,
         scenes: Some(SceneOptions {
             aurora_exploded: false,
             lifepod: None,
@@ -215,6 +220,7 @@ fn parse_args() -> Result<Args, String> {
             "--no-slots" => args.slot_seed = None,
             "--no-placeholders" => args.no_placeholders = true,
             "--no-grass" => args.no_grass = true,
+            "--no-animation" => args.no_animation = true,
             "--no-scenes" => args.scenes = None,
             "--aurora" => {
                 let exploded = match it.next().map(String::as_str) {
@@ -591,7 +597,10 @@ fn main() -> AppExit {
                     args.slot_seed,
                     !args.no_placeholders,
                     args.scenes,
+                    !args.no_animation,
                 ));
+                app.init_resource::<animation::AnimationStats>()
+                    .add_systems(Update, animation::animate.after(objects::stream_objects));
             }
             Err(e) => {
                 eprintln!("error: {e}");
@@ -803,6 +812,7 @@ struct SpawnedLights<'w, 's> {
 }
 
 /// Logs frame rate, streaming state and memory every 2 seconds.
+#[allow(clippy::too_many_arguments)] // a Bevy system: one parameter per resource
 fn log_stats(
     time: Res<Time>,
     mut last: Local<Duration>,
@@ -811,6 +821,7 @@ fn log_stats(
     objects: Option<Res<ObjectStreamer>>,
     camera: Query<&Transform, With<Camera3d>>,
     lights: SpawnedLights,
+    animation: Option<Res<animation::AnimationStats>>,
 ) {
     if time.elapsed() - *last < Duration::from_secs(2) {
         return;
@@ -859,6 +870,12 @@ fn log_stats(
             "objects: {} MarmosetUBER materials ({} with specular maps, {} with glow maps); made per sky: {:?}",
             o.uber[0], o.uber[1], o.uber[2], o.per_sky
         );
+        if let Some(a) = animation {
+            info!(
+                "animation: {} animators, {} updated, {} moved their Transforms in the last frame; {:.0} µs (worst {:.0} µs)",
+                a.rigs, a.updated, a.applied, a.micros, a.worst_micros
+            );
+        }
         info!(
             "objects: {} point lights, {} spot lights, {} directional lights (directions {:?}) spawned",
             lights.point.iter().count(),

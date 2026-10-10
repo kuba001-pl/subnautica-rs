@@ -9,6 +9,7 @@
 //!
 //! Read-only: everything comes from the player's install via `sn-install`.
 
+mod anim;
 mod code;
 mod collision;
 mod collision_world;
@@ -28,6 +29,7 @@ use std::sync::{Arc, Mutex};
 use sn_install::GameData;
 use sn_unity::{Bundle, BundleDirectory, ObjectInfo, PPtr, SerializedFile};
 
+pub use anim::{AnimationSet, AnimatorBinding};
 pub use code::{
     GAME_ASSEMBLY, GameCode, PlayerCode, TechDefaults, game_code, player_code, read_assembly,
 };
@@ -42,7 +44,7 @@ pub use gameplay::{
     physics_settings, player_data, tech_data,
 };
 pub use marmo::{BiomeSky, MarmoSkies, marmo_skies};
-pub use prefab::{PlaceholderGroup, Prefab, PrefabNode, VolumetricGlow};
+pub use prefab::{NodeAnimator, PlaceholderGroup, Prefab, PrefabNode, VolumetricGlow};
 pub use scene::{CinematicTrigger, DiveHatch, LIGHTMAPPED_PREFAB, Scene, SceneSpawn};
 pub use skin::{Mat4, skin};
 pub use slots::{LootTable, entity_infos, loot_table, parse_loot_table};

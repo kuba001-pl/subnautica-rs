@@ -1,6 +1,7 @@
 //! `sn-inspect`: headless command-line tool to inspect and validate the data in
 //! a Subnautica install. Reads the game folder, never writes to it.
 
+mod anim;
 mod biomes;
 mod code;
 mod collision;
@@ -98,6 +99,15 @@ Commands:
                          counts, top-level objects (with their hierarchy to
                          DEPTH), what is drawn, scripts (with the bytes of
                          each MonoBehaviour of script CLASS)
+  anim <KEY | scene:NAME> [--states | --play <S>]
+                         M7f4: the animators of a prefab or of a scene's
+                         top-level objects: controller layers, parameters
+                         (--states: every state, its motion, transitions),
+                         clips, and their bindings found in the hierarchy;
+                         --play: run each from its defaults for S seconds
+                         (transitions, NaNs, how far things move, cost)
+  anim --placed          Animators of every placed prefab: placements,
+                         controllers, culling modes, cost per update
   scene --lifepod [--seed <N>]
                          Lifepod 5 in a new game with world seed N (default
                          1): start point, player spawn, spawned modules
@@ -232,6 +242,19 @@ fn run(mut args: Vec<String>) -> Result<ExitCode> {
         ["prefab", "--placed", "--oracle"] => prefab::placed(&game, true),
         ["prefab", key, "--props"] => prefab::props(&game, key),
         ["prefab", key] => prefab::one(&game, key),
+        ["anim", "--placed"] => anim::placed(&game),
+        ["anim", target] => anim::run(&game, target, false, None),
+        ["anim", target, "--states"] => anim::run(&game, target, true, None),
+        ["anim", target, "--play", seconds] => anim::run(
+            &game,
+            target,
+            false,
+            Some(
+                seconds
+                    .parse()
+                    .map_err(|_| format!("{seconds:?} is not a number"))?,
+            ),
+        ),
         ["scene", "--startup"] => scene::startup(&game),
         ["scene", "--lifepod"] => scene::lifepod(&game, seed),
         ["walk"] => walk::run(&game, seed),

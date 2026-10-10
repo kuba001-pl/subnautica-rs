@@ -99,7 +99,10 @@ holograms and the cache doors' force fields with the game's decoded effect
 shader (scrolling textures, soft edges, deformation, refraction); the
 objects the game spawns from prefabs' placeholders, e.g. the cache doors,
 key terminals and pedestal crystals; none of these compared with the game
-on screen yet). Flying from the lifepod
+on screen yet); the game's animators on objects (M7f4: its own
+controllers, transitions and layers run every frame; animated Transforms
+move, skinned meshes bend on the GPU; e.g. Lifepod 5's hull, eggs,
+Precursor terminals; not compared with the game on screen yet). Flying from the lifepod
   to the crater edge
   keeps memory under 1.6 GiB, at about 220 fps on average on an RTX 3080
   (about 100 fps in the dense start area).
@@ -115,8 +118,8 @@ detail, fire and smoke; terrain grass
 beyond ~100 m, and grass tufts in the game's exact spots (the amount and
 spread follow its rules; our own random numbers); for world objects: reflections of the biome
 sky's cube map, cave/interior skies chosen by atmosphere volumes,
-animation (waving plants; skinned meshes are drawn in their stored pose,
-blend shapes not applied), objects on shaders other than the game's main
+blend shapes (still and animated, so most waving corals stay still),
+animated lights, materials and script values, objects on shaders other than the game's main
 object shader (Lost River brine, sand and lava falls and other effect
 meshes not yet decoded are flat, Safe Shallows triplanar rocks white;
 `docs/formats/materials.md`), creatures (including the

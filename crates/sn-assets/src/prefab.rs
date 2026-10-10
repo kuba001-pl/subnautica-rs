@@ -3,9 +3,9 @@
 //! `docs/formats/unity.md`.
 
 use sn_unity::{
-    AssetBundleManifest, Catalog, DayNightLight, GameObject, Light, Location, LodGroup, Mesh,
-    MeshFilter, MeshGeometry, MeshRenderer, PrefabPlaceholder, PrefabPlaceholdersGroup,
-    SkinnedMeshRenderer, SkyApplier, TransformNode, VfxVolumetricLight,
+    ANIMATOR, Animator, AssetBundleManifest, Catalog, DayNightLight, GameObject, Light, Location,
+    LodGroup, Mesh, MeshFilter, MeshGeometry, MeshRenderer, PrefabPlaceholder,
+    PrefabPlaceholdersGroup, SkinnedMeshRenderer, SkyApplier, TransformNode, VfxVolumetricLight,
 };
 use sn_world::Transform;
 
@@ -70,6 +70,11 @@ pub struct PrefabNode {
     /// The `prefabClassId` of a `PrefabPlaceholder` on this node: the game
     /// spawns that prefab here (`PlaceholderGroup`).
     pub placeholder: Option<String>,
+    /// The node's `Animator` (M7f4), with its controller and avatar.
+    pub animator: Option<NodeAnimator>,
+    /// A skinned renderer's stored blend shape weights (0–100), one per
+    /// blend shape channel of its mesh.
+    pub blend_shape_weights: Vec<f32>,
 }
 
 /// A `PrefabPlaceholdersGroup`: on `Start` (the first time the prefab is
@@ -402,6 +407,8 @@ impl Assets<'_> {
                     day_night_light: n.day_night_light,
                     volumetric_light: n.volumetric_light,
                     placeholder: n.placeholder,
+                    animator: n.animator,
+                    blend_shape_weights: n.blend_shape_weights,
                 })
                 .collect(),
         };
@@ -462,6 +469,8 @@ impl Assets<'_> {
         let mut day_night_light = None;
         let mut placeholder = None;
         let mut bone_keys = Vec::new();
+        let mut animator = None;
+        let mut blend_shape_weights = Vec::new();
         let index = prefab.nodes.len();
         for component in &go.components {
             let Some(c) = self.resolve(file, *component)? else {
@@ -493,6 +502,7 @@ impl Assets<'_> {
                         .map_err(|e| format!("SkinnedMeshRenderer {}: {e}", c.path_id))?;
                     skinned = true;
                     renderer_enabled = r.renderer.enabled;
+                    blend_shape_weights = r.blend_shape_weights.clone();
                     mesh = self.resolve(file, r.mesh)?;
                     materials.clear();
                     for m in r.renderer.materials {
@@ -546,6 +556,15 @@ impl Assets<'_> {
                     }
                     _ => {}
                 },
+                ANIMATOR => {
+                    let a = Animator::parse(data, big_endian)
+                        .map_err(|e| format!("Animator {}: {e}", c.path_id))?;
+                    animator = Some(NodeAnimator {
+                        controller: self.resolve(file, a.controller)?,
+                        avatar: self.resolve(file, a.avatar)?,
+                        component: a,
+                    });
+                }
                 LOD_GROUP => {
                     let g = LodGroup::parse(data, big_endian)
                         .map_err(|e| format!("LODGroup {}: {e}", c.path_id))?;
@@ -588,6 +607,8 @@ impl Assets<'_> {
             day_night_light,
             volumetric_light: None,
             placeholder,
+            animator,
+            blend_shape_weights,
         });
         for child in &transform.children {
             let Some(t) = self.resolve(file, *child)? else {
@@ -638,6 +659,14 @@ impl Assets<'_> {
     }
 }
 
+/// An `Animator` on a node, with what it references.
+#[derive(Clone)]
+pub struct NodeAnimator {
+    pub component: Animator,
+    pub controller: Option<ObjectRef>,
+    pub avatar: Option<ObjectRef>,
+}
+
 /// A node while the hierarchy is being read (keeps the object key for LOD
 /// matching).
 struct BuildingNode {
@@ -660,6 +689,8 @@ struct BuildingNode {
     day_night_light: Option<DayNightLight>,
     volumetric_light: Option<VolumetricGlow>,
     placeholder: Option<String>,
+    animator: Option<NodeAnimator>,
+    blend_shape_weights: Vec<f32>,
 }
 
 struct Building {
