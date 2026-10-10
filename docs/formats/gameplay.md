@@ -113,8 +113,8 @@ are not `[NonSerialized]`, `static`, `const` or properties):
     drag (swim 2.5 / 2), accelerations (water 20, ground 45, air 5), jump
     height 2.
 - `GroundMotor`'s own fields: § Player movement (M9b).
-- Not read yet: `Survival` (food and water), the `Player` fields after
-  `guiHand`. `OxygenManager` has no serialized number (its rate is code
+- Not read yet: `Survival` (food and water). The `Player` fields after
+  `guiHand`: read in M9g1 (§ The player's body). `OxygenManager` has no serialized number (its rate is code
   only, § Oxygen, health and death).
 
 ## Colliders (on placed prefabs)
@@ -312,6 +312,75 @@ are ported in `sn-sim::vitals`.
   as raw input counts, as Bevy's `AccumulatedMouseMotion` does, so the
   same physical movement turns the view by the same angle. Not checked
   side by side.
+
+## The player's body (M9g1)
+
+Reader: `sn_unity::PlayerFields` (now every field), `ArmsController`;
+`Assets::player_body` (`crates/sn-assets/src/player_body.rs`). Tool:
+`sn-inspect player --body`. Test: `real_data.rs::player_body`.
+
+- **Confirmed (parser, real data):** `Player` reads to its last byte. After
+  `guiHand` come `infectedMixin`, two `AnimationCurve`s
+  (`infectionRevealCurve`, `infectionCureCurve`), `infectionRevealSound`
+  and `leftHandBone`. Its `Event<T>` and `MonitoredValue<T>` fields are
+  generic classes, which Unity 2019.4 does not serialize, so they are not
+  in the data. `ArmsController` reads to its last byte too.
+- **Confirmed (scene, `sn-inspect player --body`):** the body is the
+  `Player` object's own hierarchy (134 nodes; 27 renderers, 25 of them
+  skinned, the suits on layer 8, which the main camera's mask includes).
+  `Player.equipmentModels` has 3 slots: `Body` (a default model and 4
+  models for 3 suits: the radiation suit has two), `Gloves` (a default
+  and 2) and `Foots` (no default, 3 fin models). Every model reference
+  finds a node.
+- **Confirmed (code):** `Player.Start` calls `EquipmentChanged` with
+  nothing equipped, so a new game shows each slot's default model and
+  hides every other model (the stored scene has several suits active).
+  The rule: a model is active when its tech type equals the slot's
+  (`Equipment.GetTechTypeInSlot`, `TechType.None` = 0 when empty); the
+  default is active when no model matched. `StartHideGlovesFor` (the
+  infection reveal) hides the gloves for 12 s: not ported (story).
+- **Confirmed (real data):** a new game draws 3 renderers: the dive
+  suit's body, hands and head, all `MarmosetUBER` (4 sub-meshes), all
+  skinned. The head (`Player.head`) is stored with `m_CastShadows`
+  "shadows only"; `SetHeadVisible(true)` (Cyclops and scanner room
+  cameras only) makes it drawn. Hidden renderers use other shaders too
+  (`Legacy Shaders/Transparent/Diffuse` on the radiation helmet glass,
+  `UWE/SIG Alpha Border`, `UWE/SIG` and `Legacy Shaders/Diffuse` on the
+  inactive scuba parts and `player_head`); they don't show in a new game.
+- **Confirmed (real data):** `MainCameraControl.viewModel` is `body`, at
+  the player's origin with no rotation, as are `camRoot` (the
+  `MainCameraControl`) and `player_view` (the animator, with the
+  `ArmsController`). `cameraUPTransform` is `camOffset`, 0.063 m above and
+  0.15 m behind `camRoot` in the player's axes: looking up turns about
+  that point. How the drawn camera (`PlayerCameras/MainCamera`, a
+  separate top-level object) follows the player was not found in the
+  code yet (searched: `SNCameraRoot`, `MainCameraControl`, `Player`,
+  `CameraToPlayerManager`): M9g2.
+- **Confirmed (real data):** `ArmsController`: `smoothSpeedUnderWater`
+  10, `smoothSpeedAboveWater` 15 (the code's initial values are 4 and 8;
+  the scene's count), `turnAnimationDampTime` 0 (so `view_turn` is set
+  undamped), `ikToggleTime` 0 (IK weights jump to 0 or 1). The dive scan
+  interval (0.5 s) is a private field: code only.
+- **Confirmed (code), the animator's parameters:** of the controller's
+  201, the rules M9g ports set 17 every frame with values that change in
+  play (`ArmsController.Update`, `SetPlayerSpeedParameters`,
+  `UpdateDiving`, the `on_surface` rule of `InstallAnimationRules`;
+  `Player.Start`: `vr_active`; `Player.OnKill`: the three death triggers
+  by damage type). The same scripts set 12 more every frame to false
+  while there is no tool, PDA, builder, vehicle, piloting, Bleeder or
+  grab/bash by a creature. The other 172 stay at their defaults until
+  their item: 48 `holding_*` (`PlayerTool.animToolName`: the held
+  tool's tech type, lower case), the cinematics (set by name from the
+  data: `PlayerCinematicController.animParam` and
+  `playerViewAnimationName`), the PDA, vehicles, bases, creatures and the
+  story. Two death triggers (`player_death_choke`, `player_death_drown`)
+  and a few others (`swimming_fast`, `is_punching`, `chestAim_*`) are
+  named by no string in the decompiled code; they may be set from data
+  or not at all (**not checked**). `using_mechsuit`, which
+  `InstallAnimationRules` sets, is not a parameter of this controller
+  (`SafeAnimator` ignores it). The lists are `RULE_PARAMETERS` and
+  `FIXED_PARAMETERS` in `player_body.rs`; the test checks each is in the
+  controller.
 
 ## The Aurora's explosion (M7f4e)
 

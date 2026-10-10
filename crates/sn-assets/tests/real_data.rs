@@ -1168,7 +1168,7 @@ fn player_and_pda_data() {
     let game = GameData::locate(Some(PathBuf::from(dir))).unwrap();
     let assets = Assets::index(&game).unwrap();
     let d = sn_assets::player_data(&assets).unwrap();
-    assert_eq!(d.player.equipment_slots.len(), 3);
+    assert_eq!(d.player.equipment_models.len(), 3);
     assert_eq!(d.player.player_sphere_radius, 0.5);
     assert_eq!(
         (
@@ -1581,4 +1581,83 @@ fn lifepod_sky_and_lighting_controller() {
     let changed = pod.stop_pod_intro(&assets).unwrap();
     eprintln!("stop_pod_intro: {changed:?}");
     assert_eq!(changed.len(), 2);
+}
+
+/// M9g1: the player's body in the main scene: the equipment rule's slots
+/// and what a new game draws, the head drawn only in shadows, the camera's
+/// nodes, `ArmsController`, and every parameter the ported rules set is in
+/// the player's controller (`docs/formats/gameplay.md` § The player's body).
+#[test]
+#[ignore = "needs SUBNAUTICA_DIR pointing at a Subnautica install"]
+fn player_body() {
+    let Some(dir) = std::env::var_os("SUBNAUTICA_DIR") else {
+        eprintln!("SUBNAUTICA_DIR not set; skipping");
+        return;
+    };
+    let game = GameData::locate(Some(PathBuf::from(dir))).unwrap();
+    let assets = Assets::index(&game).unwrap();
+    let mut body = assets.player_body().unwrap();
+    assert_eq!(body.prefab.nodes.len(), 134);
+    let models: Vec<usize> = body.slots.iter().map(|s| s.models.len()).collect();
+    assert_eq!(models, vec![4, 2, 3]);
+    assert!(
+        body.slots
+            .iter()
+            .flat_map(|s| &s.models)
+            .all(|m| m.1.is_some())
+    );
+    // A new game: the defaults of two slots, nothing on the feet.
+    let defaults: Vec<bool> = body
+        .slots
+        .iter()
+        .map(|s| s.default_node.is_some())
+        .collect();
+    assert_eq!(defaults, vec![true, true, false]);
+    let drawn: Vec<usize> = body.prefab.drawn().map(|(i, _)| i).collect();
+    assert_eq!(drawn.len(), 3);
+    assert!(drawn.contains(&body.head_node));
+    assert!(drawn.iter().all(|&i| body.prefab.nodes[i].skinned));
+    let head = &body.prefab.nodes[body.head_node];
+    assert_eq!(head.cast_shadows, sn_assets::SHADOWS_ONLY);
+    // Every drawn sub-mesh is MarmosetUBER.
+    for &i in &drawn {
+        for m in body.prefab.nodes[i].materials.iter().flatten() {
+            assert_eq!(assets.shader_name(m).unwrap(), "MarmosetUBER");
+        }
+    }
+    // The view model, the camera and the animator sit at the player's
+    // origin; the look-up pivot does not.
+    for n in [body.view_model_node, body.camera_node, body.animator_node] {
+        assert_eq!(body.prefab.nodes[n].in_prefab.position, [0.0; 3]);
+    }
+    let up = body.prefab.nodes[body.camera_up_node].in_prefab.position;
+    assert!(
+        (up[1] - 0.063).abs() < 1e-3 && (up[2] + 0.15).abs() < 1e-3,
+        "{up:?}"
+    );
+    let a = &body.arms;
+    assert_eq!(
+        (
+            a.smooth_speed_under_water,
+            a.smooth_speed_above_water,
+            a.turn_animation_damp_time,
+            a.ik_toggle_time
+        ),
+        (10.0, 15.0, 0.0, 0.0)
+    );
+    let controller = assets.animator_controller(&body.controller).unwrap();
+    assert_eq!(controller.params.len(), 201);
+    for name in sn_assets::RULE_PARAMETERS
+        .iter()
+        .chain(sn_assets::FIXED_PARAMETERS)
+    {
+        let id = sn_unity::name_hash(name);
+        assert!(controller.params.iter().any(|p| p.id == id), "{name}");
+    }
+    // Equipping the first body model hides the default and shows it.
+    let (tech, node) = body.slots[0].models[0];
+    let default = body.slots[0].default_node.unwrap();
+    body.equip(|s| if s == "Body" { tech } else { 0 });
+    assert!(body.prefab.nodes[node.unwrap()].active);
+    assert!(!body.prefab.nodes[default].active);
 }

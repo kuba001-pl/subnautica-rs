@@ -16,6 +16,7 @@ mod collision_world;
 mod gameplay;
 mod lifepod_light;
 mod marmo;
+mod player_body;
 mod prefab;
 mod scene;
 mod skin;
@@ -47,6 +48,9 @@ pub use gameplay::{
 };
 pub use lifepod_light::{ControlledLight, LifepodLighting};
 pub use marmo::{BiomeSky, MarmoSkies, marmo_skies};
+pub use player_body::{
+    EquipmentSlot, FIXED_PARAMETERS, PlayerBody, RULE_PARAMETERS, TECH_TYPE_NONE, equipment_changes,
+};
 pub use prefab::{
     CullBox, ExteriorCull, NodeAnimator, PlaceholderGroup, Prefab, PrefabLodGroup, PrefabNode,
     SHADOWS_OFF, SHADOWS_ON, SHADOWS_ONLY, SHADOWS_TWO_SIDED, VolumetricGlow, WorldBox,

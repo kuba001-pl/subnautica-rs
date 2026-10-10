@@ -46,6 +46,10 @@ Tested on Windows 11 with game build 10 (Steam):
   starting blueprints and unlocks (`PDAData`) from the main scene
   (`sn-inspect techdata`, `sn-inspect player`), and every collider of the
   placed prefabs (`sn-inspect prefab --colliders`).
+- Reading the player's body (headless, not drawn yet): the suit models
+  the game shows in a new game, the head (drawn only in shadows), the
+  camera's nodes and the arms' animation numbers (`sn-inspect player
+  --body`).
 - Reading what the game keeps only in its code, from the player's own
   `Assembly-CSharp.dll` with our own .NET reader (`sn-inspect code`): all
   793 tech type names, the 7 crafting menus (159 nodes; `--trees` prints

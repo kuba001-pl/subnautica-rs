@@ -155,6 +155,10 @@ Commands:
                          prefab → tech type map (EntTechData), with checks
   player                 The player's numbers from the main scene (oxygen,
                          health, motors, speeds) and PDAData (unlocks)
+  player --body          M9g1: the player's body: suit models by the
+                         equipment rule, drawn renderers and their shaders,
+                         the head, the camera's nodes, ArmsController, the
+                         animator's parameters by who sets them
   orient <X> <Y> <Z>     Score candidate child/octree orders using a batch and
                          its +X/+Y/+Z neighbours (default batch: 12 18 12)
 ";
@@ -302,6 +306,7 @@ fn run(mut args: Vec<String>) -> Result<ExitCode> {
         ["code", "--il", ty, method] => code::il(&game, ty, method),
         ["techdata"] => gameplay::techdata(&game),
         ["player"] => gameplay::player(&game),
+        ["player", "--body"] => gameplay::player_body(&game),
         ["orient"] => orient::run(&game, BatchCoord::new(12, 18, 12)),
         ["orient", x, y, z] => orient::run(&game, parse_coord(x, y, z)?),
         _ => Err(format!(

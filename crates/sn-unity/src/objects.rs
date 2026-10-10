@@ -24,6 +24,12 @@ impl PPtr {
             path_id: r.i64()?,
         })
     }
+
+    /// A component's GameObject: every `Component` (Transform, renderers,
+    /// scripts, …) starts with its `m_GameObject` reference.
+    pub fn component_game_object(data: &[u8], big_endian: bool) -> Result<PPtr> {
+        PPtr::read(&mut Reader::new(data, big_endian))
+    }
 }
 
 impl Reader<'_> {

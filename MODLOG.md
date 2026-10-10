@@ -2,6 +2,47 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-10 — M9g1: the player's body, headless
+
+**What:** first step of M9g (`docs/DESIGN.md` § 4.3, "M9g plan" and "as
+built").
+- `sn-unity`: `PlayerFields` reads every field (new: `equipment_models`
+  with `EquipmentType`/`EquipmentModel`, `head`, `cam_root`,
+  `arms_controller`, `player_animator`, `left_hand_bone`; replaces
+  `equipment_slots`) and fails on leftover bytes; new `ArmsController`;
+  `MainCameraControl::view_model`; `PPtr::component_game_object`.
+- `sn-assets` (`player_body.rs`, new): `Assets::player_body`,
+  `PlayerBody::equip` and `equipment_changes` (`Player.EquipmentChanged`),
+  `RULE_PARAMETERS` / `FIXED_PARAMETERS`, `Assets::shader_name`.
+- `sn-inspect player --body`.
+- Docs: `docs/formats/gameplay.md` § The player's body; DESIGN row and
+  "as built"; README.
+- No new dependency.
+
+**Why:** M9g needs the player's model, which suit shows, the head, the
+camera's nodes and the animator's parameter rules before the rules
+(M9g2) and the client (M9g4).
+
+**How verified:**
+- `cargo test --workspace`: passes (new: `player_fields` extended,
+  `arms_controller`, `main_camera_control` checks `view_model`, three
+  `player_body` tests of the equipment rule).
+- `cargo clippy --workspace --all-targets -- -D warnings`: clean.
+- `SUBNAUTICA_DIR=... cargo test -p sn-assets --test real_data -- --ignored
+  player_`: 4 passed (new `player_body`: 134 nodes, slots 4 / 2 / 3, 3
+  drawn renderers all MarmosetUBER, head "shadows only", view model and
+  camera at the origin, look-up pivot at (0, 0.063, -0.15), arms 10 / 15 /
+  0 / 0, 201 parameters with all 29 of ours present, equipping a body
+  model swaps it with the default).
+- `sn-inspect player --body`: errors 0, 1.2 s.
+
+**Found:** the scene's `ArmsController` smoothing (10 / 15) differs from
+the code's initial values (4 / 8). `cameraUPTransform` is not at the
+camera's origin (M9c assumed the eye at `camRoot`; M9g2 measures it).
+Dead end: searching the decompiled `SNCameraRoot`, `MainCameraControl`,
+`Player` and `CameraToPlayerManager` did not show how
+`PlayerCameras/MainCamera` follows the player.
+
 ## 2026-10-10 — Plan: M9g, the player's body; M7f4h moved after M11
 
 **What:** `docs/DESIGN.md` only. New M9g row in Phase E and "M9g plan"

@@ -108,6 +108,199 @@ pub fn techdata(game: &GameData) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
+/// `player --body` (M9g1): the player's body in the main scene: the
+/// equipment rule's slots and what it shows in a new game, the drawn
+/// renderers (shadow mode, shaders), the head, the camera's nodes,
+/// `ArmsController`'s numbers and the animator's parameters by who sets
+/// them (`docs/formats/gameplay.md` § The player's body).
+pub fn player_body(game: &GameData) -> Result<ExitCode> {
+    let start = Instant::now();
+    let assets = Assets::index(game)?;
+    let code = sn_assets::game_code(&sn_assets::read_assembly(game)?)?;
+    let body = assets.player_body()?;
+    let nodes = &body.prefab.nodes;
+    let name = |n: Option<usize>| n.map_or("(null)".to_string(), |n| nodes[n].name.clone());
+    let tech = |t: i32| {
+        code.tech_name(t)
+            .map_or_else(|| format!("#{t}"), |s| s.to_string())
+    };
+    let mut errors = 0;
+
+    println!("Player hierarchy: {} nodes", nodes.len());
+    println!("equipment slots (Player.equipmentModels):");
+    for s in &body.slots {
+        println!("  {:?}: default {}", s.slot, name(s.default_node));
+        for &(t, n) in &s.models {
+            println!("    {} -> {}", tech(t), name(n));
+        }
+    }
+
+    let shadow = |m: u8| match m {
+        sn_assets::SHADOWS_OFF => "off",
+        sn_assets::SHADOWS_ON => "on",
+        sn_assets::SHADOWS_TWO_SIDED => "two-sided",
+        sn_assets::SHADOWS_ONLY => "shadows only",
+        _ => "?",
+    };
+    let renderers: Vec<usize> = nodes
+        .iter()
+        .enumerate()
+        .filter(|(_, n)| n.mesh.is_some())
+        .map(|(i, _)| i)
+        .collect();
+    let drawn: Vec<usize> = body.prefab.drawn().map(|(i, _)| i).collect();
+    println!(
+        "renderers: {} with a mesh; drawn in a new game (active, enabled): {}",
+        renderers.len(),
+        drawn.len()
+    );
+    let mut shaders = BTreeMap::<String, usize>::new();
+    for &i in &renderers {
+        let n = &nodes[i];
+        let mut mats = Vec::new();
+        for m in n.materials.iter() {
+            match m {
+                Some(m) => match assets.shader_name(m) {
+                    Ok(s) => {
+                        if drawn.contains(&i) {
+                            *shaders.entry(s.clone()).or_default() += 1;
+                        }
+                        mats.push(s);
+                    }
+                    Err(e) => {
+                        errors += 1;
+                        mats.push(format!("error: {e}"));
+                    }
+                },
+                None => mats.push("(none)".into()),
+            }
+        }
+        println!(
+            "  {:<40} {} {}, layer {}, shadows {}, shaders {:?}",
+            n.name,
+            if drawn.contains(&i) {
+                "drawn "
+            } else {
+                "hidden"
+            },
+            if n.skinned { "skinned" } else { "static" },
+            n.layer,
+            shadow(n.cast_shadows),
+            mats
+        );
+    }
+    println!("shaders of the drawn renderers (sub-meshes):");
+    for (s, c) in &shaders {
+        println!("  {c:>3}  {s}");
+    }
+
+    let head = &nodes[body.head_node];
+    println!(
+        "head (Player.head): {}, stored shadow mode {}, {}",
+        head.name,
+        shadow(head.cast_shadows),
+        if drawn.contains(&body.head_node) {
+            "drawn"
+        } else {
+            "hidden"
+        }
+    );
+    // `in_prefab`: relative to the Player object, in its own axes.
+    let p = |i: usize| {
+        let t = &nodes[i].in_prefab;
+        format!(
+            "{} (in the Player's axes: position {:.3} {:.3} {:.3}, rotation {:.3} {:.3} {:.3} {:.3})",
+            nodes[i].name,
+            t.position[0],
+            t.position[1],
+            t.position[2],
+            t.rotation[0],
+            t.rotation[1],
+            t.rotation[2],
+            t.rotation[3]
+        )
+    };
+    println!(
+        "view model (MainCameraControl.viewModel): {}",
+        p(body.view_model_node)
+    );
+    println!("camera (MainCameraControl): {}", p(body.camera_node));
+    println!("cameraUPTransform: {}", p(body.camera_up_node));
+    println!("animator: {}", p(body.animator_node));
+
+    let a = &body.arms;
+    println!("ArmsController:");
+    println!("  smoothSpeedUnderWater:  {}", a.smooth_speed_under_water);
+    println!("  smoothSpeedAboveWater:  {}", a.smooth_speed_above_water);
+    println!("  turnAnimationDampTime:  {}", a.turn_animation_damp_time);
+    println!("  ikToggleTime:           {}", a.ik_toggle_time);
+
+    let controller = assets.animator_controller(&body.controller)?;
+    let params: Vec<String> = controller
+        .params
+        .iter()
+        .map(|p| {
+            controller
+                .name_of(p.id)
+                .map_or_else(|| format!("#{}", p.id), str::to_string)
+        })
+        .collect();
+    let has = |n: &str| params.iter().any(|p| p == n);
+    println!(
+        "animator parameters ({:?}): {}",
+        controller.name,
+        params.len()
+    );
+    for (what, list) in [
+        ("set by a rule M9g ports", sn_assets::RULE_PARAMETERS),
+        (
+            "set to a fixed value with empty hands (ported as that value)",
+            sn_assets::FIXED_PARAMETERS,
+        ),
+    ] {
+        let missing: Vec<&str> = list.iter().copied().filter(|n| !has(n)).collect();
+        println!(
+            "  {what}: {} ({} not in the controller{})",
+            list.len() - missing.len(),
+            missing.len(),
+            if missing.is_empty() {
+                String::new()
+            } else {
+                format!(": {missing:?}")
+            }
+        );
+        errors += missing.len();
+    }
+    let rest: Vec<&String> = params
+        .iter()
+        .filter(|p| {
+            !sn_assets::RULE_PARAMETERS.contains(&p.as_str())
+                && !sn_assets::FIXED_PARAMETERS.contains(&p.as_str())
+        })
+        .collect();
+    let holding = rest.iter().filter(|p| p.starts_with("holding_")).count();
+    println!(
+        "  left at their defaults until their item: {} ({} of them holding_*)",
+        rest.len(),
+        holding
+    );
+    println!(
+        "    {}",
+        rest.iter()
+            .filter(|p| !p.starts_with("holding_"))
+            .map(|p| p.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    println!("errors: {errors}");
+    println!("time: {:.1} s", start.elapsed().as_secs_f64());
+    Ok(if errors == 0 {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    })
+}
+
 /// `player`: the player's numbers from the main scene, and `PDAData`.
 pub fn player(game: &GameData) -> Result<ExitCode> {
     let start = Instant::now();
@@ -115,7 +308,13 @@ pub fn player(game: &GameData) -> Result<ExitCode> {
     let d = sn_assets::player_data(&assets)?;
     let p = &d.player;
     println!("Player:");
-    println!("  equipment slots:            {:?}", p.equipment_slots);
+    println!(
+        "  equipment slots:            {:?}",
+        p.equipment_models
+            .iter()
+            .map(|e| e.slot.as_str())
+            .collect::<Vec<_>>()
+    );
     println!("  movementSpeed:              {}", p.movement_speed);
     println!("  depthLevel:                 {}", p.depth_level);
     println!("  playerSphereRadius:         {}", p.player_sphere_radius);

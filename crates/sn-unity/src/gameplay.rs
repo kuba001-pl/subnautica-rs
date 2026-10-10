@@ -270,15 +270,46 @@ fn skip_gui_style(r: &mut Reader) -> Result<()> {
     r.align(4)
 }
 
-/// The `Player` script's numbers. The parser stops after `guiHand`; the
-/// fields after it (events, curves) are not read.
+/// `Player.EquipmentModel`: the model shown while `tech_type` is in the
+/// slot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EquipmentModel {
+    pub tech_type: i32,
+    /// A GameObject.
+    pub model: PPtr,
+}
+
+/// `Player.EquipmentType`: an equipment slot's models
+/// (`Player.EquipmentChanged`: the model whose tech type is in the slot is
+/// active, the others not; `default_model` is active when none matched).
+#[derive(Clone, Debug, PartialEq)]
+pub struct EquipmentType {
+    pub slot: String,
+    /// A GameObject, or null.
+    pub default_model: PPtr,
+    pub equipment: Vec<EquipmentModel>,
+}
+
+/// The `Player` script's numbers and the parts of the body it points at.
+/// Every serialized field is read (M9g1); its `Event<T>` and
+/// `MonitoredValue<T>` fields are generic, which Unity 2019.4 does not
+/// serialize.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PlayerFields {
-    /// `equipmentModels`: slot names, in order.
-    pub equipment_slots: Vec<String>,
+    /// `equipmentModels`, in order.
+    pub equipment_models: Vec<EquipmentType>,
     pub movement_speed: f32,
     pub depth_level: f32,
+    /// `head`: a SkinnedMeshRenderer, drawn only in shadows in first
+    /// person (`SetHeadVisible`).
+    pub head: PPtr,
     pub player_sphere_radius: f32,
+    /// `camRoot` (an `SNCameraRoot`).
+    pub cam_root: PPtr,
+    /// `armsController` (an `ArmsController`).
+    pub arms_controller: PPtr,
+    /// `playerAnimator` (an `Animator`).
+    pub player_animator: PPtr,
     pub crush_depth: f32,
     pub pda_data: PPtr,
     /// Seconds before passing out with no oxygen.
@@ -290,6 +321,8 @@ pub struct PlayerFields {
     pub rigid_body: PPtr,
     /// `diveGoal`.
     pub dive_goal: StoryGoal,
+    /// `leftHandBone` (a Transform).
+    pub left_hand_bone: PPtr,
 }
 
 impl PlayerFields {
@@ -298,24 +331,38 @@ impl PlayerFields {
         PPtr::read(&mut r)?; // currentMountedVehicle
         PPtr::read(&mut r)?; // jumpSound
         let n = r.count(20)?;
-        let mut equipment_slots = Vec::with_capacity(n);
+        let mut equipment_models = Vec::with_capacity(n);
         for _ in 0..n {
-            equipment_slots.push(r.aligned_string()?);
-            PPtr::read(&mut r)?; // defaultModel
+            let slot = r.aligned_string()?;
+            let default_model = PPtr::read(&mut r)?;
             let models = r.count(16)?;
+            let mut equipment = Vec::with_capacity(models);
             for _ in 0..models {
-                r.i32()?; // techType
-                PPtr::read(&mut r)?; // model
+                equipment.push(EquipmentModel {
+                    tech_type: r.i32()?,
+                    model: PPtr::read(&mut r)?,
+                });
             }
+            equipment_models.push(EquipmentType {
+                slot,
+                default_model,
+                equipment,
+            });
         }
         let movement_speed = r.f32()?;
         let depth_level = r.f32()?;
-        PPtr::read(&mut r)?; // head
+        let head = PPtr::read(&mut r)?;
         let player_sphere_radius = r.f32()?;
-        // camRoot … oxygenMgr
-        for _ in 0..11 {
+        let cam_root = PPtr::read(&mut r)?;
+        // camAnchor, surfaceFXSpawn, temperatureDamage, scubaMaskModelSpawn,
+        // fpParticleEmissionPoint, pda
+        for _ in 0..6 {
             PPtr::read(&mut r)?;
         }
+        let arms_controller = PPtr::read(&mut r)?;
+        let player_animator = PPtr::read(&mut r)?;
+        PPtr::read(&mut r)?; // playerArrowTransform
+        PPtr::read(&mut r)?; // oxygenMgr
         skip_gui_style(&mut r)?; // textStyle
         let crush_depth = r.f32()?;
         let pda_data = PPtr::read(&mut r)?;
@@ -337,11 +384,21 @@ impl PlayerFields {
             goal_type: r.i32()?,
         };
         PPtr::read(&mut r)?; // guiHand
+        PPtr::read(&mut r)?; // infectedMixin
+        AnimationCurve::read(&mut r)?; // infectionRevealCurve
+        AnimationCurve::read(&mut r)?; // infectionCureCurve
+        PPtr::read(&mut r)?; // infectionRevealSound
+        let left_hand_bone = PPtr::read(&mut r)?;
+        at_end(&r, data)?;
         Ok(PlayerFields {
-            equipment_slots,
+            equipment_models,
             movement_speed,
             depth_level,
+            head,
             player_sphere_radius,
+            cam_root,
+            arms_controller,
+            player_animator,
             crush_depth,
             pda_data,
             suffocation_time,
@@ -350,7 +407,57 @@ impl PlayerFields {
             ground_motor,
             rigid_body,
             dive_goal,
+            left_hand_bone,
         })
+    }
+}
+
+/// `ArmsController` on the player's `player_view` (M9g1): the numbers of
+/// its animation rules. Every serialized field.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ArmsController {
+    /// `smoothSpeedUnderWater` / `smoothSpeedAboveWater`: the rate of the
+    /// `Vector3.Slerp` that smooths the velocity given to the animator
+    /// (× `Time.deltaTime`).
+    pub smooth_speed_under_water: f32,
+    pub smooth_speed_above_water: f32,
+    /// `turnAnimationDampTime`: the damp time of `view_turn`.
+    pub turn_animation_damp_time: f32,
+    pub left_aim_ik_transform: PPtr,
+    pub right_aim_ik_transform: PPtr,
+    pub look_target_transform: PPtr,
+    pub attached_left_hand_target: PPtr,
+    pub left_hand_elbow: PPtr,
+    pub bleeder_attack_target: PPtr,
+    /// `ikToggleTime`: seconds for the hands' IK weights to reach 0 or 1.
+    pub ik_toggle_time: f32,
+    pub left_hand_attach: PPtr,
+    pub right_hand_attach: PPtr,
+    pub left_hand: PPtr,
+    pub right_hand: PPtr,
+}
+
+impl ArmsController {
+    pub fn parse(data: &[u8], big_endian: bool) -> Result<ArmsController> {
+        let mut r = fields(data, big_endian)?;
+        let a = ArmsController {
+            smooth_speed_under_water: r.f32()?,
+            smooth_speed_above_water: r.f32()?,
+            turn_animation_damp_time: r.f32()?,
+            left_aim_ik_transform: PPtr::read(&mut r)?,
+            right_aim_ik_transform: PPtr::read(&mut r)?,
+            look_target_transform: PPtr::read(&mut r)?,
+            attached_left_hand_target: PPtr::read(&mut r)?,
+            left_hand_elbow: PPtr::read(&mut r)?,
+            bleeder_attack_target: PPtr::read(&mut r)?,
+            ik_toggle_time: r.f32()?,
+            left_hand_attach: PPtr::read(&mut r)?,
+            right_hand_attach: PPtr::read(&mut r)?,
+            left_hand: PPtr::read(&mut r)?,
+            right_hand: PPtr::read(&mut r)?,
+        };
+        at_end(&r, data)?;
+        Ok(a)
     }
 }
 
@@ -418,6 +525,9 @@ pub struct MainCameraControl {
     pub mouse_look_enabled: bool,
     /// `skin`: the camera sits this far below its parent.
     pub skin: f32,
+    /// `viewModel`: the Transform turned by the camera's yaw and moved by
+    /// its bob (M9g).
+    pub view_model: PPtr,
     pub max_view_model_rotation: f32,
     pub max_view_model_movement: f32,
     pub camera_tilt_mod: f32,
@@ -440,7 +550,7 @@ impl MainCameraControl {
             r.f32()?; // rotationY, rotationX, camRotationX, camRotationY
         }
         let skin = r.f32()?;
-        PPtr::read(&mut r)?; // viewModel
+        let view_model = PPtr::read(&mut r)?;
         r.vector3()?; // cameraAngleMotion
         let max_view_model_rotation = r.f32()?;
         let max_view_model_movement = r.f32()?;
@@ -459,6 +569,7 @@ impl MainCameraControl {
             maximum_y,
             mouse_look_enabled,
             skin,
+            view_model,
             max_view_model_rotation,
             max_view_model_movement,
             camera_tilt_mod,
@@ -1246,6 +1357,16 @@ mod tests {
         w.pptr(0, 45).pptr(0, 46);
         w.f32(0.0).string("Dive").i32(3);
         w.pptr(0, 47);
+        // infectedMixin, two AnimationCurves (one key, none), the reveal
+        // sound, leftHandBone
+        w.pptr(0, 48);
+        w.i32(1);
+        for v in [0.0, 1.0, 0.0, 0.0] {
+            w.f32(v);
+        }
+        w.i32(0).f32(0.33).f32(0.33).i32(2).i32(2).i32(4);
+        w.i32(0).i32(2).i32(2).i32(4);
+        w.pptr(0, 49).pptr(0, 50);
         w.0
     }
 
@@ -1253,7 +1374,38 @@ mod tests {
     fn player_fields() {
         let data = player_sample();
         let p = PlayerFields::parse(&data, false).unwrap();
-        assert_eq!(p.equipment_slots, vec!["Body", "Head"]);
+        assert_eq!(
+            p.equipment_models,
+            vec![
+                EquipmentType {
+                    slot: "Body".into(),
+                    default_model: PPtr {
+                        file_id: 0,
+                        path_id: 4
+                    },
+                    equipment: vec![EquipmentModel {
+                        tech_type: 9,
+                        model: PPtr {
+                            file_id: 0,
+                            path_id: 5
+                        }
+                    }],
+                },
+                EquipmentType {
+                    slot: "Head".into(),
+                    default_model: PPtr {
+                        file_id: 0,
+                        path_id: 0
+                    },
+                    equipment: vec![],
+                },
+            ]
+        );
+        assert_eq!(p.head.path_id, 6);
+        assert_eq!(p.cam_root.path_id, 10);
+        assert_eq!(p.arms_controller.path_id, 17);
+        assert_eq!(p.player_animator.path_id, 18);
+        assert_eq!(p.left_hand_bone.path_id, 50);
         assert_eq!((p.movement_speed, p.depth_level), (1.0, 2.0));
         assert_eq!(p.player_sphere_radius, 0.5);
         assert_eq!(p.crush_depth, -1.0);
@@ -1273,6 +1425,39 @@ mod tests {
         assert_eq!(p.rigid_body.path_id, 44);
         assert_eq!(p.dive_goal.key, "Dive");
         robust(&data, |d| PlayerFields::parse(d, false));
+        // A byte more is an error: the layout is checked to the end.
+        let mut longer = data.clone();
+        longer.extend_from_slice(&[0; 4]);
+        assert!(PlayerFields::parse(&longer, false).is_err());
+    }
+
+    #[test]
+    fn arms_controller() {
+        let mut w = W::behaviour();
+        w.f32(4.0).f32(8.0).f32(0.1);
+        for i in 0..6 {
+            w.pptr(0, 20 + i);
+        }
+        w.f32(0.5);
+        for i in 0..4 {
+            w.pptr(0, 30 + i);
+        }
+        let a = ArmsController::parse(&w.0, false).unwrap();
+        assert_eq!(
+            (
+                a.smooth_speed_under_water,
+                a.smooth_speed_above_water,
+                a.turn_animation_damp_time,
+                a.ik_toggle_time
+            ),
+            (4.0, 8.0, 0.1, 0.5)
+        );
+        assert_eq!(a.look_target_transform.path_id, 22);
+        assert_eq!(a.bleeder_attack_target.path_id, 25);
+        assert_eq!(a.right_hand.path_id, 33);
+        robust(&w.0, |d| ArmsController::parse(d, false));
+        w.u8(0);
+        assert!(ArmsController::parse(&w.0, false).is_err());
     }
 
     #[test]
@@ -1288,6 +1473,7 @@ mod tests {
         assert_eq!((c.minimum_y, c.maximum_y, c.skin), (-87.0, 87.0, 0.0));
         assert!(c.mouse_look_enabled);
         assert_eq!(c.camera_up_transform.path_id, 7);
+        assert_eq!(c.view_model.path_id, 5);
         robust(&w.0, |d| MainCameraControl::parse(d, false));
         // A byte more is an error: the layout is checked to the end.
         w.u8(0);

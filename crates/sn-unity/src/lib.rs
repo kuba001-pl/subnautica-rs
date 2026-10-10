@@ -55,11 +55,11 @@ pub use collider::{
     BOX_COLLIDER, CAPSULE_COLLIDER, Collider, ColliderShape, MESH_COLLIDER, SPHERE_COLLIDER,
 };
 pub use gameplay::{
-    AnalysisTech, BreakableResource, CinematicModeTrigger, CompoundTech, EncyclopediaEntry,
-    EntTechEntry, EscapePodFirstUse, GroundMotor, LiveMixin, LiveMixinData, LogEntry,
-    MainCameraControl, Oxygen, PdaData, PersistentCall, PlayerCinematicController,
-    PlayerController, PlayerFields, PlayerMotor, RandomPrefab, ScannerEntry, StoryGoal,
-    UnderwaterMotor, UseableDiveHatch, parse_ent_tech_data,
+    AnalysisTech, ArmsController, BreakableResource, CinematicModeTrigger, CompoundTech,
+    EncyclopediaEntry, EntTechEntry, EquipmentModel, EquipmentType, EscapePodFirstUse, GroundMotor,
+    LiveMixin, LiveMixinData, LogEntry, MainCameraControl, Oxygen, PdaData, PersistentCall,
+    PlayerCinematicController, PlayerController, PlayerFields, PlayerMotor, RandomPrefab,
+    ScannerEntry, StoryGoal, UnderwaterMotor, UseableDiveHatch, parse_ent_tech_data,
 };
 pub use light::{
     BAKE_BAKED, BAKE_MIXED, BAKE_REALTIME, DayNightLight, Light, LightKind, ShadowKind,

@@ -757,11 +757,31 @@ user's OK):
 
 | Step | Work | Done when |
 |---|---|---|
-| **M9g1** | **Data, headless.** `sn-unity`: the rest of `Player` (`equipmentModels`, `head`, `playerAnimator` and the fields between), `ArmsController` (smoothing speeds, `turnAnimationDampTime`, `ikToggleTime`, dive scan interval, …), `MainCameraControl`'s `viewModel` and bob/tilt fields if M9c did not keep them. `sn-assets`: the player's body (its prefab nodes from the `main` scene, the active models for an equipment set, the head node, the body renderers' shadow modes and shaders). `sn-inspect player --body`. In `gameplay.md`, each of the controller's 201 parameters marked: set by a rule ported here, left at its default with empty hands, or later (the script named). | Unit tests of the readers on synthetic bytes; real-data test of the reads; the models active in a new game logged; no parameter left unmarked; shaders of the body listed (unported ones logged, as § 4.2). |
+| **M9g1** ✅ (2026-10-10; see "as built") | **Data, headless.** `sn-unity`: the rest of `Player` (`equipmentModels`, `head`, `playerAnimator` and the fields between), `ArmsController` (smoothing speeds, `turnAnimationDampTime`, `ikToggleTime`, dive scan interval, …), `MainCameraControl`'s `viewModel` and bob/tilt fields if M9c did not keep them. `sn-assets`: the player's body (its prefab nodes from the `main` scene, the active models for an equipment set, the head node, the body renderers' shadow modes and shaders). `sn-inspect player --body`. In `gameplay.md`, each of the controller's 201 parameters marked: set by a rule ported here, left at its default with empty hands, or later (the script named). | Unit tests of the readers on synthetic bytes; real-data test of the reads; the models active in a new game logged; no parameter left unmarked; shaders of the body listed (unported ones logged, as § 4.2). |
 | **M9g2** | **Rules, pure.** `sn-sim::body`: `ArmsController`'s empty-hand rules (relative velocity, smoothing, the parameters above, `UpdateDiving` with `collide`'s ray) and the view model's transform (yaw, swim bob, landing bob, step amount, strafe tilt, the look-up pivot); output a list of parameter values and the view model's local transform. `sn-anim`: `set_float_damped` (Unity's damped `SetFloat`: its exact formula is a **hypothesis** until compared). | Unit tests: speeds and smoothing on known inputs, the dive flags, the bobs' ranges, the damped set's step response. |
 | **M9g3** | **Scripted check, headless.** `sn-inspect walk` and `dive` run the player's animator with these rules: each layer's state changes per phase (in the pod, walking, leaving, swimming, diving, at the surface, death, respawn). | Each phase reaches its states (names logged, the expected ones written in the plan before the run); no NaN, unit quaternions; cost per step logged. |
 | **M9g4** | **Client.** The `Player` hierarchy spawned from the `main` scene (equipment rule, camera culling mask), its root at the simulated player, the view model's transform each frame, the animator each frame with the rules (a rig as M7f4c, GPU skinning). "Shadows only" drawn as the game does (render layer seen by the sun, not the camera), for the head and for the M7f4e renderer. The camera's near plane from `MainCamera` (read in M7g1). `--third-person`: a debug orbit camera that shows the head (also what remote players will look like). | Body nodes, bones and active models counted in the log; head drawn only in the shadow pass (counted); CPU time of the body logged; screenshots in first person (looking down, swimming) and third person for the user. |
 | **M9g5** | **Cinematics.** The hatches as the game plays them (`PlayerCinematicController`: the player's animator state, the pod's hatch layer, the end at the animation's last frame), replacing M9b's end points (and the VR-only stand-ins); the death animation by damage type. Can come after M10 if the user prefers (cinematics then also need syncing). | `walk` boards and leaves with the cinematic, end poses logged next to M9b's end points; screenshots. |
+
+**As built (2026-10-10), where it differs from the plan:**
+- **M9g1.** Built as planned. `PlayerFields` now reads every field
+  (equipment models, `head`, `camRoot`, `armsController`,
+  `playerAnimator`, `leftHandBone`) and fails on leftover bytes;
+  `ArmsController` too; `MainCameraControl` keeps `viewModel`.
+  `Assets::player_body`: the `Player` hierarchy with the equipment rule
+  (`equipment_changes`, unit-tested) applied for a new game, the head,
+  view model, camera and look-up nodes, the animator and its controller.
+  Numbers (`sn-inspect player --body`, real-data test `player_body`): 134
+  nodes, 3 slots (4 / 2 / 3 models), 3 renderers drawn in a new game (dive
+  suit body, hands, head; all MarmosetUBER, so nothing new to port for
+  the look), the head stored as "shadows only" (confirmed); `ArmsController`
+  smoothing 10 / 15 (scene) where the code says 4 / 8, damp time 0, IK
+  toggle 0. Parameters: 17 by ported rules, 12 fixed with empty hands, 172
+  at their defaults until their item (§ The player's body in
+  `gameplay.md`). New for M9g2: `cameraUPTransform` (`camOffset`) sits
+  0.063 m up and 0.15 m back from `camRoot`, so looking up moves the eye
+  around that point; how the drawn camera (`PlayerCameras`) follows the
+  player was not found in the code yet.
 
 **Not 1:1 after M9g (planned elsewhere):** tools, the PDA and IK (with
 the tools, "After Phase E" item 1–2); the parameters the other 15 scripts
