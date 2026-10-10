@@ -184,7 +184,7 @@ reach them — expect the far end of this list to change.
 | **M7f1** ✅ (not compared with the game) | Scene reader and the Aurora scene: `sn-assets::Scene` (the scene's serialized file, one hierarchy per top-level object, world placements), `sn-inspect scene <name>` (class counts, top-level objects, drawn nodes, script census). The `aurora` scene drawn always (not streamed with the batches), most detailed LOD: the Aurora in the state of a new game, intact (`CrashedShipExploder`: its `disableOnExplosion`/`enableOnExplosion` objects swap 2.3–4 game days × 1,200 s + 27 s after the start; `--aurora exploded` shows the other state), and the scene's other top-level objects (Precursor prison exterior and aquarium, Lost River base, Lost River large trees: the game never streams these). Not yet: LOD levels by distance, the exterior cull manager, effects (fire, smoke, radiation). | Object counts per scene logged; real-data test of the counts and the explode lists; the Aurora visible at its place (screenshot for the user); frame time with and without it. |
 | **M7f2** ✅ | Skinned meshes (`SkinnedMeshRenderer`: 73 placed prefabs, e.g. `BrainCoral` LOD 0, and the lifepod's hull): read the renderer (materials, mesh, bones, root bone) and the mesh's bind poses and bone weights; skin on the CPU at load time in the pose the hierarchy stores (the game's `Animator` poses them; animation comes later). | Unit test of the skinning on synthetic bones; skinned prefabs counted in the log; a skinned LOD 0 has the bounds of its static LOD 1 (within a few %) on a sample. Done: the three prefabs with both match within 0.1 %; bone-less skinned renderers (blend shapes) are drawn as plain meshes; blend shapes not applied. |
 | **M7f3** ✅ (not compared with the game) | Lifepod 5: the `escapepod` scene placed as `EscapePod.ChooseRandomStart` does: `RandomStart.GetRandomStartPoint` draws x, z in ±2,048 m with y = 0 until the `validStartPointTexture` pixel there has green > 0.5 (the game's draw uses Unity's unseeded `Random`, so any valid point is the game's behaviour; ours is seeded, `--lifepod <X> <Z>` to choose); the camera starts at its player spawn point; the pod's spawned modules (`AddressablesPrefabSpawn`: fabricator, radio, medical cabinet, …) in place, on the mount points `MoveAndRotateWithTransform` puts them (stored pose). Not yet: the camera at the player's eye height (it stands at `playerSpawn`), the pod's own sky (`MarmoLifepodSky`) and lights (`LightingController`), the pod's animation, floating on the waves (`WorldForces`, `Stabilizer`; comes with physics, M9), the intro's damage effects. | Start point and the share of valid texture pixels logged; the pod and its modules visible (screenshot); the same seed gives the same start. |
-| **M7f4** (split into M7f4a–M7f4h, § 4.4, 2026-10-10) | Everything M7f1–M7f3 left different from the game (recorded 2026-10-09; nothing here is 1:1 yet). **Aurora and scenes:** levels of detail switch by distance as the game's `LODGroup`s (M7f4f; the rule is Unity's documented one, a hypothesis until compared); the explosion now runs on the game clock and the exterior cull is ported (M7f4e; the sun and sky do not follow the clock yet); the 316 `CullingOccludee`s not ported; fire, smoke, radiation and explosion effects (particle systems, `VFXController`), sounds. **Skinned meshes:** shown in the pose the hierarchy stores, not animated (`Animator`, e.g. the pod's `lifepod_damage` blend, creatures); blend shapes read past, not applied (e.g. `BrainCoral` LOD 0 shows its base shape); normals of bones with non-uniform scale are moved by the linear part, not its inverse transpose (Unity's GPU skinning: **hypothesis** it does the same). **Lifepod 5:** our seeded draw instead of Unity's unseeded `Random` (the point differs per run in the game anyway); fixed at y = 0 (the game floats it with `WorldForces`/`Stabilizer` around its anchor and the waves; needs physics, M9); camera at the `playerSpawn` transform, not the player's eye height or initial look direction; interior lit by the outside: the pod's own sky (`MarmoLifepodSky`, `SkyEscapePod`), its 5 lights driven by `LightingController` (red alert in the intro) and the `AtmosphereVolume` not used; intro state not shown (damage effects, fire, smoke, birds: the `Manual` spawners); spawned modules' own scripts not run (e.g. nested spawners, storage contents from `SpawnEscapePodSupplies`, the screen UI); `MoveAndRotateWithTransform` applied once, not every frame. | Each item ported or confirmed equal by a matched screenshot, number or unit test; this row emptied. |
+| **M7f4** (split into M7f4a–M7f4h, § 4.4, 2026-10-10) | Everything M7f1–M7f3 left different from the game (recorded 2026-10-09; nothing here is 1:1 yet). **Aurora and scenes:** levels of detail switch by distance as the game's `LODGroup`s (M7f4f; the rule is Unity's documented one, a hypothesis until compared); the explosion now runs on the game clock and the exterior cull is ported (M7f4e; the sun and sky do not follow the clock yet); the 316 `CullingOccludee`s not ported; fire, smoke, radiation and explosion effects (particle systems, `VFXController`), sounds. **Skinned meshes:** shown in the pose the hierarchy stores, not animated (`Animator`, e.g. the pod's `lifepod_damage` blend, creatures); blend shapes read past, not applied (e.g. `BrainCoral` LOD 0 shows its base shape); normals of bones with non-uniform scale are moved by the linear part, not its inverse transpose (Unity's GPU skinning: **hypothesis** it does the same). **Lifepod 5:** our seeded draw instead of Unity's unseeded `Random` (the point differs per run in the game anyway); fixed at y = 0 (the game floats it with `WorldForces`/`Stabilizer` around its anchor and the waves; needs physics, M9); camera at the `playerSpawn` transform, not the player's eye height or initial look direction; the pod's own sky and its lights by state (`MarmoLifepodSky`, `LightingController`) done in M7f4g; its `AtmosphereVolume` not used (M8c7b); intro state not shown (damage effects, fire, smoke, birds: the `Manual` spawners); spawned modules' own scripts not run (e.g. nested spawners, storage contents from `SpawnEscapePodSupplies`, the screen UI); `MoveAndRotateWithTransform` applied once, not every frame. | Each item ported or confirmed equal by a matched screenshot, number or unit test; this row emptied. |
 | **M7g** | Objects whose materials are not MarmosetUBER, drawn as the game does: the occluder shells hidden, fake volumetric lights, mesh effects, triplanar rocks: see § 4.2. | See § 4.2. |
 
 ### Phase C — Being underwater
@@ -242,7 +242,7 @@ and a MODLOG entry; nothing is pushed without the user's OK):
 | **M4b** | The game's own streaming distances: the terrain clipmap of `clipmaps-high.json` (the user's "Detail" High; 5 levels, `chunksPerSide` 7/7/7/8/1 of 16-voxel chunks, level scale and ring placement to read from the Voxeland clipmap code), entity cell level *n* awake with clipmap level *n* (`entities` on for levels 0–3), terrain casting sun shadows at levels 0–1 only (`castShadows`), `maxBlockTypes` 32/8/2/1/1. Replaces our own LOD ranges (100/260/600/1200 m). This decides which objects and lights exist around the camera, so it comes before the shadowed lights. | Ring extents per level logged and equal to the game's formula; entity and light counts at the lifepod logged before/after; frame time A/B. |
 | **M8e4** | The 24 shadowed lights (cube/spot shadow maps, the game's resolution and bias), and the one placed spot light with its own cookie (it is also shadowed; drawn with the default cookie for now). | Screenshot of a shadowed local light; GPU time logged. |
 | **M8d1** | Bloom and lens dirt as the game's post stack does them (`default_Post-FXProfile`: intensity 0.2, threshold 0.9, soft knee 0.55, radius 5.5, dirt 5); ambient occlusion with the profile's settings. | Matched screenshots by night (glowing coral) and day; GPU time per effect. |
-| **M8c7b** | Specular cube reflections (load the skies' cube maps), atmosphere volumes in the biome lookup (cave and wreck skies), other `SkyApplier` anchors. | Cube maps loaded and counted; skies per object in a cave logged; matched screenshot of a shiny object. |
+| **M8c7b** | Specular cube reflections (load the skies' cube maps), atmosphere volumes in the biome lookup (cave and wreck skies), other `SkyApplier` anchors, `_UwePowerLoss` (bases' and the lifepod's `emissiveFromPower` appliers, from M7f4g). | Cube maps loaded and counted; skies per object in a cave logged; matched screenshot of a shiny object. |
 | **M8c6b** | Sun shadows of terrain, rocks, coral and plants exactly as the game: read each renderer's `m_CastShadows`/`m_ReceiveShadows` (`MeshRenderer`) and honour them (`m_CastShadows` off: done in M7f4e; shadows-only and `m_ReceiveShadows` open); find whether and how the game's terrain (Voxeland chunks) casts and receives; alpha-clipped leaves cast cut-out shadows; the game's bias/normal bias (0.45/0.4) and Unity's soft-shadow filter; the 50 m shadow distance and cascade splits (done). | Counts of casting/non-casting renderers logged and equal to UnityPy on a sample of prefabs; terrain shadow settings documented; matched screenshots of a rock's shadow and a kelp shadow; GPU/CPU cost logged. |
 | **M8f** | Per-pixel water settings (the game's volume around the camera) for fog and lighting; the water clip map. | Screenshot across a biome border; numbers logged. |
 | **M8g** | Calibration: matched screenshots (same place, time, settings) with the game at the lifepod, a glowing-coral spot at night, the Kelp Forest, a cave, a wreck; differences measured (mean colour per region) and listed. | Every listed difference explained or fixed. |
@@ -760,7 +760,7 @@ user's OK):
 | **M7f4d** ✅ (motion not compared with the game on screen) | **Blend shapes.** `Mesh` blend shapes read (vertices, shapes, channels, full weights) instead of skipped; Bevy morph targets; weights from the renderer's `m_BlendShapeWeights`, then from animation (`blendShape.<name>` bindings). | Unit test of the reader on synthetic bytes; real-data: every mesh with shapes parses; `BrainCoral` LOD 0's bounds with its stored weights logged next to the base shape's; animated shapes counted. |
 | **M7f4e** ✅ (2026-10-10; see "as built") | **Aurora on the game clock, its exterior cull, shadow flags.** `CrashedShipExploder`: `timeToStartCountdown` = start + `Random.Range(2.3, 4)` × 1,200 s (our seeded draw, `--aurora-countdown <s>` to choose), the model swap 27 s after it, on the client's game clock (`--aurora` stays as an override). `ShipExteriorCullManager`: the exploded exterior hidden while the camera is in one of its `ShipExteriorCull` volumes (every 10th frame, as the game). Renderers' `m_CastShadows` honoured (off → no sun shadow; shadows-only → shadow without colour), which is M8c6b's open item. | Countdown, swap time and cull volume count logged; real-data test of the cull volumes' read; swap seen at the logged time with `--time-scale` (screenshot pair); shadow casters counted by mode. |
 | **M7f4f** ✅ (2026-10-10; see "as built") | **LOD by distance.** `LODGroup` (each level's screen-relative height, size, reference point, fade mode) and `QualitySettings` (the current level's `lodBias`, `maximumLODLevel`) read; per instance per frame the level the game would show: the group's size in world space against the screen height at the camera's distance and field of view, divided by the bias (Unity's documented rule, **hypothesis** for the exact form until checked against the game). Replaces "always LOD 0" for every prefab and the scenes. | Real-data test of the reads; levels shown per distance band logged; the Aurora at 500 m and 1,500 m (screenshots); triangle count and frame time before and after. |
-| **M7f4g** | **The lifepod's own light.** `MarmoLifepodSky`: inside the pod the global sky is the pod's anchor sky, outside the Safe Shallows one. `LightingController`: its states, multi-state skies and lights, `LerpToState`; the pod's start state and its lights' animator (`Life_Pod_lights_controller`, from M7f4b). The pod's `AtmosphereVolume` waits for M8c7b (atmosphere volumes) and is listed there. | Sky switch logged on entering and leaving; light intensities per state logged against the read values; screenshot inside the pod. |
+| **M7f4g** ✅ (2026-10-10; see "as built"; not compared with the game on screen) | **The lifepod's own light.** `MarmoLifepodSky`: inside the pod the global sky is the pod's anchor sky, outside the Safe Shallows one. `LightingController`: its states, multi-state skies and lights, `LerpToState`; the pod's start state and its lights' animator (`Life_Pod_lights_controller`, from M7f4b). The pod's `AtmosphereVolume` waits for M8c7b (atmosphere volumes) and is listed there. | Sky switch logged on entering and leaving; light intensities per state logged against the read values; screenshot inside the pod. |
 | **M7f4h** | **The lifepod floats.** `WorldForces` (buoyancy above and below the water, its drag), `Stabilizer` (upright torque), `EscapePod.FixedUpdate` (pull back to the anchor), a rigid body for this one object in `sn-sim` (mass, drag and angular drag read from its `Rigidbody`; no contacts). The pod's colliders and triggers move with it. The player stands on it as on a moving platform (`GroundMotor` moving-platform rules, read in M9b). `MoveAndRotateWithTransform` every frame. | Unit tests of the forces; `sn-inspect walk` still boards and leaves the pod with the pod moving; pod height and tilt over 60 s logged; the client shows it bobbing. |
 
 **As built (2026-10-10), where it differs from the plan:**
@@ -896,6 +896,39 @@ user's OK):
   - Placeholder-spawned and spawn-slot objects use the same rule; their
     cell-level streaming ranges (our own, M4b) still decide which exist.
 
+- **M7f4g.** Built as planned below. Numbers: the controller's values
+  logged equal to the read ones in each state (`--lifepod-state`);
+  Damaged (default) sky master 2.5, diffuse 0.8, specular 1, lamps off;
+  Danger 0.8 / 0.5 / 3, the two red spots at 1.25 and the red point at
+  0.22, on; Operational 10 / 2 / 1.5, lamps off. At the start the global
+  sky becomes `SkyEscapePod` (161 materials relit, 0.05 ms CPU); flying
+  out past 15 m switches it back to `SkySafeShallows` (842 materials
+  relit, 0.36 ms). 7 materials use the pod sky through the modules'
+  appliers. Skipping the intro disables `EscapePodLights`' animator and
+  `HatchLight` (`Scene::stop_pod_intro`). Found in the game's code: a
+  `LerpToState(s, 5)` from another script becomes a 1 s fade on the next
+  frame (`docs/formats/gameplay.md`). Frame time
+  from the lifepod, alternating runs of the committed M7f4f build and
+  this one while the machine was busy (other programs at 27–40 % CPU):
+  M7f4f 46.7 and 45.0 ms, M7f4g 43.0 and 29.6 ms; no slowdown measurable
+  at that noise (the M7f4f build measured 25.0 ms on a quiet machine).
+
+  **Not 1:1 after M7f4g:**
+  - `_UwePowerLoss` not drawn (our object shader lacks it): equal in the
+    default Damaged state (emissive 1 → loss 0); in Operational the game
+    sets loss 1 on the renderers of `emissiveFromPower` appliers below
+    the pod (whether the modules have any: not counted). Added to M8c7b.
+  - With the fly camera there is no player: "in the pod" is the start at
+    its spawn until 15 m away; re-entering needs the player (`--free-cam`
+    off, through a hatch).
+  - Appliers with anchor BaseInterior/BaseGlass below the pod would take
+    its sky in the game; ours take the global sky (none found in the pod's
+    modules; not counted across all prefabs).
+  - The intro itself (sky curve, lights animator, Danger state while the
+    fire burns) is not played: "After Phase E" item 3.
+  - Not compared with the game on screen (a screenshot pair inside the
+    pod in the Damaged state would settle the look).
+
 **M7f4f plan (written 2026-10-10, before the code):**
 - Data: `LODGroup` read fully (local reference point, size, fade mode,
   cross-fading, each level's height and fade width). `QualitySettings`
@@ -925,6 +958,75 @@ user's OK):
   instant (counted).
 - Done when: as the step's row; also entity count and frame time before
   and after, and the levels shown per distance band logged.
+
+**M7f4g plan (written 2026-10-10, before the code):**
+- What the game does (from its classes, `out/decompiled`, read only):
+  - `MarmoLifepodSky` on the pod: when `Player.escapePod` changes, the
+    global Marmoset sky becomes the pod's `anchorSky` (inside) or
+    `MarmoSkies.GetSky(SafeShallow)` (outside). The escapepod scene has
+    **no** `SkyApplier`, so the hull and interior use the global sky; so
+    does every renderer in the world without a `SkyApplier` while the
+    player is inside.
+  - `SkyApplier.GetEnvironment`: an applier with a `MarmoLifepodSky` among
+    its parents takes that `anchorSky` (anchors Auto, BaseInterior,
+    BaseGlass). The pod's spawned modules are its children
+    (`PrefabSpawnBase` spawns under its own transform), and
+    `EscapePod.ForceSkyApplier` re-sends the environment after 0.5 s: their
+    appliers take the pod's sky, wherever the player is.
+  - `Player.escapePod`: true at the start of a new game
+    (`EscapePod.Awake`), set and cleared by the hatches
+    (`EnterExitHelper`), cleared beyond 15 m from the pod
+    (`Player.ValidateEscapePod`). Ours: `sn-sim`'s `in_pod` (M9b) has
+    these rules already.
+  - `LightingController` (state, `fadeDuration`, `skies[]`: a sky with
+    master/diffuse/specular intensity per state, `lights[]`: a light with
+    an intensity per state, an emissive intensity per state →
+    `_UwePowerLoss = 1 − i` on registered appliers' renderers). `Update`:
+    a state change starts `LerpToState(state, fadeDuration)` from the
+    current values; `Timer` linear over the time, then a snap.
+    `MultiStatesLight` switches the light's GameObject on when its
+    intensity is above 0, off at 0.
+  - The pod's stored values (read with our reader, dumped with UnityPy
+    for the bytes): state 0, fade 1 s; one sky (= `anchorSky` = the
+    cinematic's `interiorSky`) master 10 / 0.8 / 2.5, diffuse 2 / 0.5 /
+    0.8, specular 1.5 / 3 / 1 for Operational / Danger / Damaged; three
+    lights (two red spots, one red point) 0 / 1.25 / 0, 0 / 1.25 / 0,
+    0 / 0.22 / 0; emissive 0 / 1 / 1.
+  - The state in a new game: the intro snaps 0, then 1 (Danger, red
+    alert) when the pod is damaged, then lerps to 2 (Damaged) in 5 s when
+    the player puts out the fire; **skipping** the intro
+    (`StopIntroCinematic(interrupted)`) snaps to 2. Both end in 2 until
+    the pod is repaired (`LerpToState(0, 5)`). The cinematic's `StopAll`
+    disables the lights animator (`Life_Pod_lights_controller`; its idle
+    state has no motion, so nothing it wrote stays).
+- Data: `sn-unity` readers for `LightingController` and
+  `MarmoLifepodSky`; `sn-assets::Scene::lifepod_lighting`: the anchor
+  sky (`MarmoSky` and its world rotation), the controller with its lights
+  (colour, range, type, world placement); real-data test of the numbers
+  above.
+- Logic: `sn-sim::lighting`, the controller as a pure state machine
+  (`SnapToState`, `LerpToState`, `Timer`, `Update`; the sky's and lights'
+  current values out). Unit tests.
+- Client: the pod's sky joins the sky set. Materials are made per sky as
+  before, plus two dynamic keys: "global" (parts without an applier) and
+  "pod" (applier parts of the pod's spawned modules); when the player's
+  `in_pod` changes or the controller moves the pod sky's intensities, the
+  materials under those keys are relit in place (`apply_sky`). The
+  controller's lights are spawned as local lights, shown while their
+  intensity is above 0. The lights animator is not run. New flag
+  `--lifepod-state operational | danger | damaged` (default damaged, the
+  state after the intro, played or skipped). With `--free-cam` there is
+  no player: in the pod at the start, out beyond 15 m from the pod (the
+  game's rule for leaving without the hatch); entering then is not
+  possible.
+- Not in this step: `_UwePowerLoss` (our shader has no such input; with
+  the default state's emissive 1 it is 0, so equal; other states differ,
+  listed); the pod's `AtmosphereVolume` (M8c7b); the intro's sky curve
+  (`EscapePodCinematicControl.skyIntensityCurve`, with the intro).
+- Done when: as the step's row; the sky switch logged when leaving
+  (`--flythrough` out of the pod) and at the start; light intensities per
+  state logged equal to the read values; screenshots inside the pod for
+  each state; the cost of a relight logged.
 
 **Moved out of M7f4 (not dropped; each one goes where its subsystem
 lives):**

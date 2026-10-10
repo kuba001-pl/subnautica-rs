@@ -109,7 +109,11 @@ brain corals and jewelled disks; not compared with the game on screen
 yet); objects and scenes switch between their levels of detail by
 distance with the game's `LODGroup`s, its High quality `lodBias` and its
 60° field of view (`--no-lod`, `--fov`; Unity's documented rule, not
-compared with the game on screen yet). Flying from the lifepod
+compared with the game on screen yet); Lifepod 5's own light: its sky
+lights the pod (and, while you are inside, everything without a sky of its
+own) and its lighting states set the sky and the red-alert lamps
+(`--lifepod-state`, default damaged as after the intro; not compared with
+the game on screen yet). Flying from the lifepod
   to the crater edge
   keeps memory under 1.6 GiB, at about 220 fps on average on an RTX 3080
   (about 100 fps in the dense start area).
@@ -118,8 +122,8 @@ compared with the game on screen yet). Flying from the lifepod
 
 The water clip map (no water inside the lifepod and bases,
 shore foam); water settings per pixel (the
-camera's are used everywhere); Lifepod 5's own interior light and sky,
-floating on the waves; the sun and sky following the running game clock;
+camera's are used everywhere); Lifepod 5 floating on the waves, its
+intro, and its modules' emission by power state; the sun and sky following the running game clock;
 the Aurora's explosion effects, sounds and warnings, fire and smoke;
 the player's saved detail level and field-of-view options (High and 60°
 assumed); terrain grass

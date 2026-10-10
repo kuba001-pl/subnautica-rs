@@ -111,6 +111,12 @@ pub struct Start {
 }
 
 impl PlayerSim {
+    /// `Player.escapePod`: the player is in the lifepod (`None` until the
+    /// player exists).
+    pub fn in_pod(&self) -> Option<bool> {
+        self.state.as_ref().map(|s| s.player.in_pod)
+    }
+
     pub fn start(game: GameData, start: Start) -> PlayerSim {
         let (to_worker, rx) = channel();
         let (tx, from_worker) = channel();

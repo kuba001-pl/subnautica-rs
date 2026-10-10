@@ -1,9 +1,10 @@
 //! Object readers on bytes built in code (Unity 2019.4 layouts).
 
 use sn_unity::{
-    AutoLoadScene, CrashedShipExploder, LodGroup, Material, MonoBehaviourHeader, PPtr,
-    ShipExteriorCullManager, Texture2D, TextureFormat, parse_additional_scenes,
-    parse_autoload_scenes, parse_ship_exterior_cull,
+    AutoLoadScene, CrashedShipExploder, EscapePodCinematicControl, LightingController, LodGroup,
+    Material, MonoBehaviourHeader, PPtr, ShipExteriorCullManager, Texture2D, TextureFormat,
+    parse_additional_scenes, parse_autoload_scenes, parse_marmo_lifepod_sky,
+    parse_ship_exterior_cull,
 };
 
 /// Little-endian writer with Unity's 4-byte alignment for strings and bools.
@@ -263,6 +264,66 @@ fn crashed_ship_exploder() {
     assert_eq!(e.exploded_exterior, p(13));
     for len in 0..b.0.len() - 4 {
         assert!(CrashedShipExploder::parse(&b.0[..len], false).is_err());
+    }
+}
+
+#[test]
+fn lighting_controller_and_lifepod_sky() {
+    let mut b = behaviour();
+    b.i32(2).f32(1.5); // state, fade duration
+    b.i32(1).pptr(0, 20); // one sky
+    b.i32(3).f32(10.0).f32(0.8).f32(2.5);
+    b.i32(3).f32(2.0).f32(0.5).f32(0.8);
+    b.i32(2).f32(1.5).f32(3.0);
+    b.i32(2).pptr(0, 21).i32(3).f32(0.0).f32(1.25).f32(0.0); // two lights
+    b.pptr(0, 22).i32(0);
+    b.i32(3).f32(0.0).f32(1.0).f32(1.0); // emissive
+    let c = LightingController::parse(&b.0, false).unwrap();
+    assert_eq!((c.state, c.fade_duration), (2, 1.5));
+    assert_eq!(c.skies.len(), 1);
+    assert_eq!(c.skies[0].sky.path_id, 20);
+    assert_eq!(c.skies[0].master, [10.0, 0.8, 2.5]);
+    assert_eq!(c.skies[0].diffuse, [2.0, 0.5, 0.8]);
+    assert_eq!(c.skies[0].specular, [1.5, 3.0]);
+    assert_eq!(c.lights.len(), 2);
+    assert_eq!(c.lights[0].light.path_id, 21);
+    assert_eq!(c.lights[0].intensities, [0.0, 1.25, 0.0]);
+    assert!(c.lights[1].intensities.is_empty());
+    assert_eq!(c.emissive, [0.0, 1.0, 1.0]);
+    for len in 0..b.0.len() {
+        assert!(LightingController::parse(&b.0[..len], false).is_err());
+    }
+    // An implausible count is an error, not an allocation.
+    let mut b = behaviour();
+    b.i32(0).f32(1.0).i32(1 << 30);
+    assert!(LightingController::parse(&b.0, false).is_err());
+
+    let mut b = behaviour();
+    b.pptr(0, 1).pptr(0, 2).pptr(0, 3).pptr(0, 632);
+    b.i32(2); // two keys: time, value, slopes, weighted mode, weights
+    for (t, v) in [(0.0, 10.0), (10.5, 0.5)] {
+        b.f32(t).f32(v).f32(0.0).f32(0.0).i32(0).f32(0.33).f32(0.33);
+    }
+    b.i32(2).i32(2).i32(0); // pre and post infinity, rotation order
+    b.pptr(0, 565).pptr(0, 32).f32(0.0).u8a(0);
+    let c = EscapePodCinematicControl::parse(&b.0, false).unwrap();
+    assert_eq!(c.lighting_control.path_id, 3);
+    assert_eq!(c.interior_sky.path_id, 632);
+    assert_eq!(c.sky_intensity_curve.keys.len(), 2);
+    assert_eq!(c.sky_intensity_curve.evaluate(20.0), 0.5);
+    assert_eq!(
+        (c.lights_animator.path_id, c.hatch_light.path_id),
+        (565, 32)
+    );
+    for len in 0..b.0.len() - 8 {
+        assert!(EscapePodCinematicControl::parse(&b.0[..len], false).is_err());
+    }
+
+    let mut b = behaviour();
+    b.pptr(0, 632);
+    assert_eq!(parse_marmo_lifepod_sky(&b.0, false).unwrap().path_id, 632);
+    for len in 0..b.0.len() {
+        assert!(parse_marmo_lifepod_sky(&b.0[..len], false).is_err());
     }
 }
 

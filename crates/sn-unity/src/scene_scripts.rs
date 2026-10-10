@@ -1,11 +1,13 @@
 //! The game's MonoBehaviours that decide which scenes are loaded and in
 //! what state (fields in declaration order, Unity 2019.4 serialization):
-//! `MainGameController`, `LightmappedPrefabs`, `CrashedShipExploder`.
+//! `MainGameController`, `LightmappedPrefabs`, `CrashedShipExploder`,
+//! the lifepod's `LightingController` and `MarmoLifepodSky`.
 //! See `docs/formats/unity.md` § Scenes.
 
 use crate::Result;
 use crate::objects::{MonoBehaviourHeader, PPtr};
 use crate::reader::Reader;
+use crate::water_surface::AnimationCurve;
 
 fn fields<'a>(data: &'a [u8], big_endian: bool) -> Result<Reader<'a>> {
     let header = MonoBehaviourHeader::parse(data, big_endian)?;
@@ -123,6 +125,116 @@ impl EscapePod {
         Ok(EscapePod {
             bottom_hatch_entrance: PPtr::read(&mut r)?,
             player_spawn: PPtr::read(&mut r)?,
+        })
+    }
+}
+
+/// `MarmoLifepodSky.anchorSky`: the `mset.Sky` that is the global sky
+/// while the player is in the pod, and the sky of the appliers below it.
+pub fn parse_marmo_lifepod_sky(data: &[u8], big_endian: bool) -> Result<PPtr> {
+    let mut r = fields(data, big_endian)?;
+    PPtr::read(&mut r)
+}
+
+fn floats(r: &mut Reader) -> Result<Vec<f32>> {
+    let n = r.count(4)?;
+    (0..n).map(|_| r.f32()).collect()
+}
+
+/// `LightingController.MultiStatesSky`: a sky's intensities per state.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MultiStatesSky {
+    pub sky: PPtr,
+    pub master: Vec<f32>,
+    pub diffuse: Vec<f32>,
+    pub specular: Vec<f32>,
+}
+
+/// `MultiStatesLight`: a light's intensity per state.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MultiStatesLight {
+    pub light: PPtr,
+    pub intensities: Vec<f32>,
+}
+
+/// `LightingController`: lighting states (0 Operational, 1 Danger, 2
+/// Damaged) of the skies, lights and emissive renderers it controls.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LightingController {
+    /// The state it starts in (`LightingState`).
+    pub state: i32,
+    /// Seconds of a `LerpToState` without a time.
+    pub fade_duration: f32,
+    pub skies: Vec<MultiStatesSky>,
+    pub lights: Vec<MultiStatesLight>,
+    /// `MultiStatesEmissive.intensities`: `_UwePowerLoss = 1 − i` on the
+    /// renderers of appliers with `emissiveFromPower`.
+    pub emissive: Vec<f32>,
+}
+
+impl LightingController {
+    pub fn parse(data: &[u8], big_endian: bool) -> Result<LightingController> {
+        let mut r = fields(data, big_endian)?;
+        let state = r.i32()?;
+        let fade_duration = r.f32()?;
+        let n = r.count(24)?;
+        let mut skies = Vec::with_capacity(n);
+        for _ in 0..n {
+            skies.push(MultiStatesSky {
+                sky: PPtr::read(&mut r)?,
+                master: floats(&mut r)?,
+                diffuse: floats(&mut r)?,
+                specular: floats(&mut r)?,
+            });
+        }
+        let n = r.count(16)?;
+        let mut lights = Vec::with_capacity(n);
+        for _ in 0..n {
+            lights.push(MultiStatesLight {
+                light: PPtr::read(&mut r)?,
+                intensities: floats(&mut r)?,
+            });
+        }
+        let emissive = floats(&mut r)?;
+        Ok(LightingController {
+            state,
+            fade_duration,
+            skies,
+            lights,
+            emissive,
+        })
+    }
+}
+
+/// `EscapePodCinematicControl`: the intro's control of the pod's lights.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EscapePodCinematicControl {
+    pub lighting_control: PPtr,
+    pub interior_sky: PPtr,
+    /// The interior sky's master intensity over the explosion (intro only).
+    pub sky_intensity_curve: AnimationCurve,
+    /// Disabled by `StopAll` (the intro ends or is skipped).
+    pub lights_animator: PPtr,
+    /// Deactivated by `StopAll`.
+    pub hatch_light: PPtr,
+}
+
+impl EscapePodCinematicControl {
+    pub fn parse(data: &[u8], big_endian: bool) -> Result<EscapePodCinematicControl> {
+        let mut r = fields(data, big_endian)?;
+        PPtr::read(&mut r)?; // escape pod
+        PPtr::read(&mut r)?; // intro effects
+        let lighting_control = PPtr::read(&mut r)?;
+        let interior_sky = PPtr::read(&mut r)?;
+        let sky_intensity_curve = AnimationCurve::read(&mut r)?;
+        let lights_animator = PPtr::read(&mut r)?;
+        let hatch_light = PPtr::read(&mut r)?;
+        Ok(EscapePodCinematicControl {
+            lighting_control,
+            interior_sky,
+            sky_intensity_curve,
+            lights_animator,
+            hatch_light,
         })
     }
 }

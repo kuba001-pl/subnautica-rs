@@ -1498,3 +1498,87 @@ fn blend_shape_clamp_and_brain_coral() {
     assert_eq!(n.lod, Some(0));
     assert!(n.blend_shape_weights.iter().all(|&w| w == 0.0));
 }
+
+#[test]
+#[ignore = "needs SUBNAUTICA_DIR pointing at a Subnautica install"]
+fn lifepod_sky_and_lighting_controller() {
+    let Some(dir) = std::env::var_os("SUBNAUTICA_DIR") else {
+        eprintln!("SUBNAUTICA_DIR not set; skipping");
+        return;
+    };
+    let game = GameData::locate(Some(PathBuf::from(dir))).unwrap();
+    let assets = Assets::index(&game).unwrap();
+    let mut pod = assets.scene("escapepod").unwrap();
+    assert!(pod.spawn_lightmapped_prefab());
+    pod.place_escape_pod(&assets, [100.0, 0.0, 200.0]).unwrap();
+    let l = pod.lifepod_lighting(&assets).unwrap().unwrap();
+    let s = &l.sky.sky;
+    eprintln!(
+        "anchor sky {:?}: master {} diff {} spec {} sky {} cam {} affected {} outdoors {} rotation {:?}",
+        l.sky.name,
+        s.master_intensity,
+        s.diff_intensity,
+        s.spec_intensity,
+        s.sky_intensity,
+        s.cam_exposure,
+        s.affected_by_day_night,
+        s.outdoors,
+        l.sky.rotation
+    );
+    let c = &l.controller;
+    eprintln!(
+        "controller: state {} fade {} emissive {:?}",
+        c.state, c.fade_duration, c.emissive
+    );
+    for li in &l.lights {
+        eprintln!(
+            "light {:?} on node active_self {}: {:?} colour {:?} range {} angle {} at {:?}, per state {:?}",
+            pod.roots[li.node.0].nodes[li.node.1].name,
+            pod.roots[li.node.0].nodes[li.node.1].active_self,
+            li.light.kind,
+            li.light.color,
+            li.light.range,
+            li.light.spot_angle,
+            li.world.position,
+            li.intensities
+        );
+    }
+    // The stored values (docs/formats/gameplay.md § The lifepod's light).
+    // The sky stores the Operational state's intensities.
+    assert_eq!(l.sky.name, "SkyEscapePod");
+    assert_eq!(
+        (s.master_intensity, s.diff_intensity, s.spec_intensity),
+        (10.0, 2.0, 1.5)
+    );
+    assert!(!s.affected_by_day_night);
+    assert_eq!((c.state, c.fade_duration), (0, 1.0));
+    assert_eq!(l.controls_anchor, [true]);
+    assert_eq!(c.skies[0].master, [10.0, 0.8, 2.5]);
+    assert_eq!(c.skies[0].diffuse, [2.0, 0.5, 0.8]);
+    assert_eq!(c.skies[0].specular, [1.5, 3.0, 1.0]);
+    assert_eq!(c.emissive, [0.0, 1.0, 1.0]);
+    assert_eq!((l.lights.len(), l.missing_lights), (3, 0));
+    let per_state: Vec<_> = l.lights.iter().map(|x| x.intensities.clone()).collect();
+    assert_eq!(
+        per_state,
+        [[0.0, 1.25, 0.0], [0.0, 1.25, 0.0], [0.0, 0.22, 0.0]]
+    );
+    // Their GameObjects start off (`MultiStatesLight` switches them on).
+    assert!(
+        l.lights
+            .iter()
+            .all(|x| !pod.roots[x.node.0].nodes[x.node.1].active_self)
+    );
+    // The lights are inside the pod (radius ~3 m).
+    for x in &l.lights {
+        let p = x.world.position;
+        assert!(
+            (p[0] - 100.0).hypot(p[2] - 200.0) < 3.0 && (-1.0..5.0).contains(&p[1]),
+            "{p:?}"
+        );
+    }
+    // Skipping the intro: the lights animator off, the hatch light off.
+    let changed = pod.stop_pod_intro(&assets).unwrap();
+    eprintln!("stop_pod_intro: {changed:?}");
+    assert_eq!(changed.len(), 2);
+}

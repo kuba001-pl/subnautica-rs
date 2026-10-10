@@ -14,6 +14,7 @@ mod code;
 mod collision;
 mod collision_world;
 mod gameplay;
+mod lifepod_light;
 mod marmo;
 mod prefab;
 mod scene;
@@ -44,6 +45,7 @@ pub use gameplay::{
     Ingredient, PhysicsSettings, PlayerData, TechData, TechEntry, ent_tech_data, parse_tech_data,
     physics_settings, player_data, tech_data,
 };
+pub use lifepod_light::{ControlledLight, LifepodLighting};
 pub use marmo::{BiomeSky, MarmoSkies, marmo_skies};
 pub use prefab::{
     CullBox, ExteriorCull, NodeAnimator, PlaceholderGroup, Prefab, PrefabLodGroup, PrefabNode,

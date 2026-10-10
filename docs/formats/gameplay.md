@@ -381,6 +381,74 @@ are ported in `sn-sim::vitals`.
   shadow map; the shadows-only one is drawn as a normal renderer (not
   1:1).
 
+## The lifepod's light (M7f4g)
+
+- **Confirmed (code):** `MarmoLifepodSky` (on the pod) listens to
+  `Player.escapePod`: true → `SkyManager.GlobalSky = anchorSky`, false →
+  `MarmoSkies.GetSky(SafeShallow)`. The escapepod scene has **no**
+  `SkyApplier`, so the pod's hull and interior are lit by the global
+  sky, as is every renderer in the world without an applier: while the
+  player is inside, they all take the pod's sky.
+- **Confirmed (code):** a `SkyApplier` with anchor Auto, BaseInterior or
+  BaseGlass and a `MarmoLifepodSky` among its parents takes that
+  `anchorSky` (`GetEnvironment`, `GetSkyForEnvironment`). The modules the
+  pod spawns are its children (`PrefabSpawnBase` spawns under its own
+  Transform unless `attachToParent` is set), and `EscapePod.Start`
+  re-sends the environment to them after 0.5 s (`ForceSkyApplier`).
+- **Confirmed (code):** `Player.escapePod` is set by `EscapePod.Awake` in
+  a new game and by `RespawnPlayer`, set and cleared by the hatches
+  (`EnterExitHelper`, `isForEscapePod`), and cleared when the player is
+  more than `escapePodRadius` (15 m) from the pod
+  (`ValidateEscapePod`).
+- **Confirmed (code):** `LightingController`: `state`, `fadeDuration`,
+  `skies[]` (`MultiStatesSky`: an `mset.Sky` and its master, diffuse and
+  specular intensity per state), `lights[]` (`MultiStatesLight`: a `Light`
+  and its intensity per state; its GameObject is switched on when the
+  intensity is above 0 and off at exactly 0), `emissiveController`
+  (`MultiStatesEmissive`: an intensity per state, `_UwePowerLoss =
+  clamp01(1 − i)` on the renderers of appliers with `emissiveFromPower`
+  below it). `SnapToState` sets the values; `LerpToState(s, t)` fades
+  linearly from the current values over `t` seconds, then snaps.
+- **Confirmed (code), a quirk:** `Update` compares `state` with
+  `prevState`, which only `Update` sets; when they differ it calls
+  `LerpToState(state)` with `fadeDuration`. So a `LerpToState(s, 5)` from
+  another script (`EscapePod`, `IntroLifepodDirector`) is restarted on the
+  next frame as a `fadeDuration` fade (1 s for the pod) from the values
+  reached. Our port does the same (unit test).
+- **Confirmed (parser, real data, bytes checked with UnityPy):** the
+  pod's controller stores state 0 (Operational) and a fade of 1 s; one
+  sky, the `anchorSky` (`SkyEscapePod`, also the cinematic's
+  `interiorSky`); per state Operational / Danger / Damaged: master 10 /
+  0.8 / 2.5, diffuse 2 / 0.5 / 0.8, specular 1.5 / 3 / 1; three lights
+  (`SoptLight_Red` ×2: spot, range 8 m, 120°, intensity 0 / 1.25 / 0;
+  `PointLight_RedAmbient`: point, range 6 m, 0 / 0.22 / 0), their
+  GameObjects inactive as stored; emissive 0 / 1 / 1. The sky stores the
+  Operational values (master 10, diffuse 2, specular 1.5), is not
+  affected by the day (`_AffectedByDayNightCycle` 0, so it adds its own
+  ambient), and is turned 90° about y.
+- **Confirmed (code):** a new game with the intro: `OnIntroStart` snaps
+  to 0; the explosion drives the sky's master intensity by
+  `skyIntensityCurve` and runs the lights animator
+  (`Life_Pod_lights_controller`, bool `aurora_exploding`); `OnDamagedPod`
+  snaps to 1 (red alert) and disables the animator;
+  `ConcludeIntroSequence` (the fire is out) lerps to 2. Skipping the
+  intro (`StopIntroCinematic(interrupted)`) runs `StopAll` (snap to 1,
+  animator off, `HatchLight` off) and then snaps to 2. Both end in state
+  2 (Damaged) until the pod is repaired (`UpdateDamagedEffects`: health
+  above 99 % → `LerpToState(0, 5)`). Without the intro (a mode that
+  spawns starting items) nothing changes the stored state 0.
+- **Confirmed (code):** the lights animator's idle state has no motion
+  (and "no write defaults"), so disabling it changes no values.
+- **Ours:** the client starts in state 2 (`--lifepod-state` to choose),
+  the pod's sky set by the controller every frame, the global sky's
+  materials relit when `in_pod` changes, the three lights driven by the
+  controller. With the fly camera (no player): in the pod at its spawn,
+  out beyond 15 m (the game's rule for leaving without the hatch).
+  **Not ported:** `_UwePowerLoss` (our object shader has no such input;
+  equal in the default state, where the emissive intensity is 1); the
+  pod's `AtmosphereVolume` (M8c7b); the intro's sky curve and animator
+  (with the intro).
+
 ## Pick-ups and outcrops
 
 - **Confirmed (census):** `Pickupable` is on 50 placed prefabs (23,832

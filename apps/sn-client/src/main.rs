@@ -9,6 +9,7 @@ mod effects;
 mod game_light;
 mod grass_look;
 mod hud;
+mod lifepod_light;
 mod object_look;
 mod objects;
 mod player;
@@ -85,6 +86,9 @@ Usage: sn-client [--game-dir <PATH>] [--start <X> <Y> <Z>] [--look <X> <Y> <Z>]
                  and the Aurora's countdown (default 1; the game draws anew
                  in every new game)
   --lifepod      <X> <Z>: put Lifepod 5 there instead (Unity world metres)
+  --lifepod-state  operational | danger | damaged: the pod's lighting state
+                 (default damaged: a new game's after the intro, played or
+                 skipped, until the pod is repaired)
   --fog-unit     scale on the game's light values (calibration; default 1:
                  one game light unit = 1.0 in the image, as in Unity)
   --color-grading  off | neutral | aces: the game's option of that name
@@ -159,6 +163,8 @@ struct Args {
     aurora_countdown: Option<f32>,
     /// `--free-cam`: the fly camera instead of the player.
     free_cam: bool,
+    /// `--lifepod-state`: the pod's `LightingController` state.
+    lifepod_state: usize,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -182,7 +188,10 @@ fn parse_args() -> Result<Args, String> {
         no_animation: false,
         no_lod: false,
         fov: None,
-        scenes: Some(SceneOptions { lifepod: None }),
+        scenes: Some(SceneOptions {
+            lifepod: None,
+            lifepod_state: sn_sim::lighting::DAMAGED,
+        }),
         fog_unit: 1.0,
         color_grading: ColorGrading::Off,
         no_water_fog: false,
@@ -194,6 +203,7 @@ fn parse_args() -> Result<Args, String> {
         aurora_held: None,
         aurora_countdown: None,
         free_cam: false,
+        lifepod_state: sn_sim::lighting::DAMAGED,
     };
     let raw: Vec<String> = std::env::args().skip(1).collect();
     let mut it = raw.iter();
@@ -264,6 +274,14 @@ fn parse_args() -> Result<Args, String> {
                     Some("medium") => WaterQuality::Medium,
                     Some("high") => WaterQuality::High,
                     _ => return Err("--water-quality takes medium or high".into()),
+                }
+            }
+            "--lifepod-state" => {
+                args.lifepod_state = match it.next().map(String::as_str) {
+                    Some("operational") => sn_sim::lighting::OPERATIONAL,
+                    Some("danger") => sn_sim::lighting::DANGER,
+                    Some("damaged") => sn_sim::lighting::DAMAGED,
+                    _ => return Err("--lifepod-state takes operational, danger or damaged".into()),
                 }
             }
             "--gpu-timings" => args.gpu_timings = true,
@@ -448,6 +466,7 @@ fn main() -> AppExit {
         match lifepod_start(args.game_dir.clone(), args.lifepod_seed, args.lifepod) {
             Ok((point, spawn)) => {
                 options.lifepod = Some(point);
+                options.lifepod_state = args.lifepod_state;
                 if !args.start_given {
                     args.start = Vec3::from(spawn.position);
                     if args.look.is_none() {
@@ -655,6 +674,16 @@ fn main() -> AppExit {
                             countdown: args.aurora_countdown,
                         },
                     };
+                    // With the fly camera there is no player: in the pod
+                    // when starting at its spawn point.
+                    let free_cam_in_pod = !play && !args.start_given;
+                    app.insert_resource(lifepod_light::FreeCamInPod(free_cam_in_pod))
+                        .add_systems(
+                            Update,
+                            lifepod_light::update
+                                .after(objects::stream_objects)
+                                .after(player::update),
+                        );
                     app.insert_resource(aurora::AuroraState::new(start))
                         .add_systems(
                             Update,

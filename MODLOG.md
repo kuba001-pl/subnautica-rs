@@ -2,6 +2,76 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-10 — M7f4g: Lifepod 5's own light
+
+**What:** seventh step of M7f4 (`docs/DESIGN.md` § 4.4, plan and "as
+built").
+- `sn-unity`: readers for `LightingController` (with `MultiStatesSky`,
+  `MultiStatesLight`), `MarmoLifepodSky.anchorSky` and
+  `EscapePodCinematicControl` (its lights animator, hatch light, sky
+  curve).
+- `sn-assets` (`lifepod_light.rs`, new): `Scene::lifepod_lighting` (the
+  anchor sky with its world rotation, the controller, its lights with
+  world placements) and `Scene::stop_pod_intro` (what `StopAll` switches
+  off).
+- `sn-sim::lighting` (new): the game's `LightingController` as a pure
+  state machine (`Timer`, `SnapToState`, `LerpToState`, `Update`).
+- `sn-client`: sky keys `Fixed | Global | Pod` for the per-sky materials;
+  `Global` and `Pod` materials (and the grass) relit in place when the
+  player's `in_pod` changes or the controller moves the pod sky;
+  `lifepod_light.rs` (new) runs the controller every frame, follows
+  `in_pod` (fly camera: in at the start, out past 15 m) and drives the
+  three red lamps. The pod's spawned modules take the pod's sky. Flag
+  `--lifepod-state operational | danger | damaged` (default damaged).
+  `PlayerSim::in_pod`.
+- Docs: `docs/formats/gameplay.md` § The lifepod's light; DESIGN plan,
+  "as built", not-1:1 list, `_UwePowerLoss` added to M8c7b; README.
+- No new dependency.
+
+**Why:** M7f4 plan (the pod's interior was lit by the outside sky; its
+lights and lighting states were not read).
+
+**Findings:**
+- The escapepod scene has no `SkyApplier`: the pod is lit by the global
+  sky, which `MarmoLifepodSky` makes the pod's own while the player is
+  inside (and then everything without an applier takes it).
+- Stored: state Operational, fade 1 s; sky `SkyEscapePod` master /
+  diffuse / specular 10 / 2 / 1.5 (= Operational), per state 10 / 0.8 /
+  2.5, 2 / 0.5 / 0.8, 1.5 / 3 / 1; two red spots 0 / 1.25 / 0, a red point
+  0 / 0.22 / 0; emissive 0 / 1 / 1.
+- A new game ends the intro, played or skipped, in state 2 (Damaged).
+- Quirk in the game's code: `LerpToState(s, 5)` from another script
+  becomes a `fadeDuration` (1 s) fade on the next frame (`Update` restarts
+  it because `prevState` differs).
+
+**Dead ends:**
+- The first benchmark showed 42.9 ms against M7f4f's 25.0 ms. It was the
+  machine: other programs used 27–40 % CPU, and the committed M7f4f build
+  run alternately measured 46.7 and 45.0 ms against this build's 43.0
+  and 29.6 ms. Built in a scratch worktree under `out/` (removed after).
+- The first log only printed while a fade was running, so the settled
+  values were never logged; now logged once settled.
+
+**Verified (2026-10-10):**
+- `cargo test --workspace` passes (new: 7 `sn_sim::lighting` tests,
+  `lighting_controller_and_lifepod_sky` in `sn-unity/tests/objects.rs`);
+  `cargo clippy --workspace --all-targets` and `cargo fmt --all --check`
+  clean.
+- Real data (`--ignored`): 28 tests in `sn-assets` pass, new
+  `lifepod_sky_and_lighting_controller`.
+- `sn-client --benchmark 300` (default): global sky `SkyEscapePod` at the
+  start (161 materials relit in 0.05 ms), sky settled at 2.5 / 0.8 / 1,
+  lamps off. `--lifepod-state danger`: 0.8 / 0.5 / 3, lamps on at 1.25,
+  1.25, 0.22; `operational`: 10 / 2 / 1.5, lamps off. Screenshots
+  `out/m7f4g-{damaged,danger,operational}.png` differ as expected (red
+  lamps in Danger, dim in Damaged, bright in Operational).
+- `--flythrough -127.7 2 -10` out of the pod: "player out of the pod:
+  global sky SkySafeShallows (842 materials relit in 0.36 ms)".
+- Entering through a hatch with the player: not tested in the client
+  (same code path as the start; the hatch's `in_pod` is unit-tested in
+  `sn-sim`).
+- Not compared with the game on screen.
+
 ## 2026-10-10 — M7f4f: levels of detail by distance, the game's field of view
 
 **What:** sixth step of M7f4 (`docs/DESIGN.md` § 4.4, "as built").

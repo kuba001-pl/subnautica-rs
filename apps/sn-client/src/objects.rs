@@ -30,8 +30,8 @@ use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, Face, TextureDimension, TextureFormat};
 use sn_anim::{Animator, Program, SlotKind};
 use sn_assets::{
-    Assets as GameAssets, AuroraShow, LootTable, MarmoSkies, ObjectRef, Prefab, SHADOWS_OFF,
-    TerrainTexture, marmo_skies,
+    Assets as GameAssets, AuroraShow, BiomeSky, LootTable, MarmoSkies, ObjectRef, Prefab,
+    SHADOWS_OFF, TerrainTexture, marmo_skies,
 };
 use sn_install::GameData;
 use sn_unity::{Catalog, DayNightLight, LightKind, Material, SKIES_AUTO, Shader};
@@ -173,51 +173,92 @@ pub(crate) struct SkyLook {
     sh: [[f32; 3]; 9],
 }
 
+/// Which sky a material is made with (no sky known: Marmoset's defaults).
+/// `Global` and `Pod` change at run time (M7f4g): their materials are
+/// relit in place.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum SkyKey {
+    /// One of the biome skies.
+    Fixed(usize),
+    /// `SkyManager.GlobalSky`: Safe Shallows, or the lifepod's sky while
+    /// the player is in the pod (`MarmoLifepodSky`).
+    Global,
+    /// The lifepod's sky (`anchorSky`, its intensities set by the pod's
+    /// `LightingController`), for appliers below the pod.
+    Pod,
+}
+
+impl SkyLook {
+    pub(crate) fn new(s: &BiomeSky) -> SkyLook {
+        SkyLook {
+            exposure: s.sky.exposure(),
+            rotation: s.rotation,
+            affected: s.sky.affected_by_day_night,
+            outdoors: s.sky.outdoors,
+            sh: s.sky.sh_buffer(),
+        }
+    }
+}
+
 /// The skies objects are lit with, as the main thread needs them.
 #[derive(Default)]
 struct SkySet {
     looks: Vec<SkyLook>,
     skies: MarmoSkies,
+    /// The lifepod's sky now (M7f4g).
+    pod: Option<SkyLook>,
+    /// The player is in the pod: the global sky is the pod's.
+    in_pod: bool,
 }
 
 impl SkySet {
     fn new(skies: MarmoSkies) -> SkySet {
-        let looks = skies
-            .skies
-            .iter()
-            .map(|s| SkyLook {
-                exposure: s.sky.exposure(),
-                rotation: s.rotation,
-                affected: s.sky.affected_by_day_night,
-                outdoors: s.sky.outdoors,
-                sh: s.sky.sh_buffer(),
-            })
-            .collect();
-        SkySet { looks, skies }
+        let looks = skies.skies.iter().map(SkyLook::new).collect();
+        SkySet {
+            looks,
+            skies,
+            pod: None,
+            in_pod: false,
+        }
     }
 
-    /// The sky of a part: the biome's at the object for parts a
-    /// `SkyApplier` covers, else the global one (`None`: no sky known).
-    fn pick(&self, biome_sky: bool, biome: Option<&str>) -> Option<usize> {
-        if biome_sky {
-            self.skies.for_biome(biome).or(self.skies.global)
+    /// The sky of a part: for parts a `SkyApplier` covers, the pod's below
+    /// the pod, else the biome's at the object; else the global one.
+    fn pick(&self, biome_sky: bool, biome: Option<&str>, pod_sky: bool) -> SkyKey {
+        if biome_sky && pod_sky {
+            SkyKey::Pod
+        } else if biome_sky {
+            match self.skies.for_biome(biome) {
+                Some(i) => SkyKey::Fixed(i),
+                None => SkyKey::Global,
+            }
         } else {
-            self.skies.global
+            SkyKey::Global
+        }
+    }
+
+    /// The values of a sky key now.
+    fn look(&self, key: SkyKey) -> Option<&SkyLook> {
+        match key {
+            SkyKey::Fixed(i) => self.looks.get(i),
+            SkyKey::Global if self.in_pod => self.pod.as_ref(),
+            SkyKey::Global => self.skies.global.and_then(|i| self.looks.get(i)),
+            SkyKey::Pod => self.pod.as_ref(),
         }
     }
 }
 
 /// A point or spot light of a prefab, placed relative to the prefab root.
 #[derive(Clone, Copy)]
-struct LocalLight {
-    spot: bool,
+pub(crate) struct LocalLight {
+    pub(crate) spot: bool,
     /// Unity's `_LightColor`: `linear(colour × intensity)` (the game's
     /// `m_LightsUseLinearIntensity` is off).
-    color: [f32; 3],
-    range: f32,
+    pub(crate) color: [f32; 3],
+    pub(crate) range: f32,
     /// Full cone angle, degrees (spots).
-    spot_angle: f32,
-    local: Placement,
+    pub(crate) spot_angle: f32,
+    pub(crate) local: Placement,
 }
 
 /// A directional light of a prefab (the atmosphere volumes' "Bounce"
@@ -396,6 +437,8 @@ struct Instance {
     transform: Placement,
     /// Spawned by a spawn slot (not placed in the cells).
     from_slot: bool,
+    /// Below Lifepod 5 (its spawned modules): appliers take the pod's sky.
+    pod_sky: bool,
 }
 
 /// Which scenes the worker loads, and their state.
@@ -403,6 +446,8 @@ struct Instance {
 pub struct SceneOptions {
     /// Where Lifepod 5 starts (`None`: no lifepod).
     pub lifepod: Option<[f32; 3]>,
+    /// The pod's lighting state (M7f4g, `sn_sim::lighting`).
+    pub lifepod_state: usize,
 }
 
 /// What the worker fills spawn slots with.
@@ -519,6 +564,8 @@ enum Update {
         instances: Vec<Instance>,
         shows: Vec<AuroraShow>,
         aurora: Option<AuroraData>,
+        /// Lifepod 5's sky, lighting controller and lights (M7f4g).
+        lifepod: Option<Box<crate::lifepod_light::PodLightData>>,
         ms: f32,
     },
     Ready {
@@ -1975,6 +2022,7 @@ impl Library {
                     prefab: id,
                     transform,
                     from_slot: false,
+                    pod_sky: true,
                 });
                 spawned.push(s.name.clone());
             }
@@ -2058,15 +2106,27 @@ impl Library {
                             prefab,
                             transform: g.prefab.nodes[0].local,
                             from_slot: false,
+                            pod_sky: false,
                         });
                         shows.push(g.show);
                     }
                 }
             }
+            let mut lifepod = None;
             if let (true, Some(point)) = (is_pod, options.lifepod) {
                 match self.place_pod(&mut scene, point, &mut instances, out) {
                     Ok(summary) => state = summary,
                     Err(e) => out.push(Update::Warning(format!("lifepod: {e}"))),
+                }
+                match crate::lifepod_light::PodLightData::read(
+                    &self.assets,
+                    &mut scene,
+                    point,
+                    options.lifepod_state,
+                ) {
+                    Ok(Some(data)) => lifepod = Some(Box::new(data)),
+                    Ok(None) => out.push(Update::Warning("lifepod: no lighting controller".into())),
+                    Err(e) => out.push(Update::Warning(format!("lifepod light: {e}"))),
                 }
             }
             let mut drawn: usize = groups
@@ -2082,6 +2142,7 @@ impl Library {
                         prefab,
                         transform: root.nodes[0].local,
                         from_slot: false,
+                        pod_sky: false,
                     });
                 }
             }
@@ -2098,6 +2159,7 @@ impl Library {
                 instances,
                 shows,
                 aurora,
+                lifepod,
                 ms: start.elapsed().as_secs_f32() * 1000.0,
             });
         }
@@ -2160,6 +2222,7 @@ impl Library {
                     prefab,
                     transform,
                     from_slot: true,
+                    pod_sky: false,
                 });
             }
         }
@@ -2197,6 +2260,7 @@ impl Library {
                                 prefab,
                                 transform,
                                 from_slot: false,
+                                pod_sky: false,
                             });
                         }
                     }
@@ -2232,6 +2296,7 @@ impl Library {
                             prefab,
                             transform,
                             from_slot: false,
+                            pod_sky: false,
                         });
                     }
                 }
@@ -2538,7 +2603,7 @@ pub struct ObjectStreamer {
     /// Materials as the worker described them, made per sky on first use.
     material_descs: HashMap<u32, MaterialDesc>,
     /// (material, sky) → material.
-    materials: HashMap<(u32, Option<usize>), Handle<ObjectMaterial>>,
+    materials: HashMap<(u32, SkyKey), Handle<ObjectMaterial>>,
     skies: SkySet,
     meshes: HashMap<u32, Handle<Mesh>>,
     prefabs: HashMap<u32, Vec<Part>>,
@@ -2651,9 +2716,16 @@ impl ObjectStreamer {
         }
         let mut per_sky: HashMap<String, usize> = HashMap::new();
         for (_, sky) in self.materials.keys() {
-            let name = sky
-                .and_then(|i| self.skies.skies.skies.get(i))
-                .map_or("none", |s| s.name.as_str());
+            let name = match *sky {
+                SkyKey::Fixed(i) => self
+                    .skies
+                    .skies
+                    .skies
+                    .get(i)
+                    .map_or("none", |s| s.name.as_str()),
+                SkyKey::Global => "(global)",
+                SkyKey::Pod => "(lifepod)",
+            };
             *per_sky.entry(name.to_string()).or_default() += 1;
         }
         s.per_sky = per_sky.into_iter().collect();
@@ -2702,7 +2774,7 @@ impl Drop for ObjectStreamer {
     }
 }
 
-fn to_bevy(t: &Placement) -> Transform {
+pub(crate) fn to_bevy(t: &Placement) -> Transform {
     let [x, y, z] = t.position;
     let [qx, qy, qz, qw] = t.rotation;
     Transform {
@@ -2717,7 +2789,11 @@ fn to_bevy(t: &Placement) -> Transform {
 /// the clustered lights and apply the game's formula (`game_light.wgsl`).
 /// Bevy stores colour × intensity ÷ 4π, so intensity 4π keeps the game's
 /// `_LightColor` unchanged. Shadows: not yet (M8e4).
-fn spawn_light(commands: &mut Commands, light: &LocalLight, transform: Transform) -> Entity {
+pub(crate) fn spawn_light(
+    commands: &mut Commands,
+    light: &LocalLight,
+    transform: Transform,
+) -> Entity {
     let [r, g, b] = light.color;
     let color = Color::linear_rgb(r, g, b);
     let intensity = 4.0 * std::f32::consts::PI;
@@ -3177,9 +3253,16 @@ pub fn stream_objects(
                 instances,
                 shows,
                 aurora,
+                lifepod,
                 ms,
             } => {
                 info!("objects: {summary} ({ms:.0} ms)");
+                if let Some(data) = lifepod {
+                    // Before the scene's parts are spawned: they are made
+                    // with the pod's sky.
+                    streamer.skies.pod = Some(data.look());
+                    commands.insert_resource(crate::lifepod_light::PodLight::new(*data));
+                }
                 streamer.scenes.push(SceneObjects {
                     instances,
                     shows,
@@ -3476,6 +3559,82 @@ struct Spawner<'a, 'w, 's> {
 }
 
 impl ObjectStreamer {
+    /// The lifepod's sky now (M7f4g): relights the materials made with it,
+    /// and the global ones while the player is in the pod. Returns how
+    /// many materials were relit.
+    pub(crate) fn set_pod_sky(
+        &mut self,
+        look: SkyLook,
+        materials: &mut Assets<ObjectMaterial>,
+        terrain_look: Option<&mut TerrainLook>,
+    ) -> usize {
+        self.skies.pod = Some(look);
+        let mut n = self.relight(SkyKey::Pod, materials);
+        if self.skies.in_pod {
+            n += self.relight_global(materials, terrain_look);
+        }
+        n
+    }
+
+    /// The player went in or out of the pod (`MarmoLifepodSky`): the global
+    /// sky's materials are relit. Returns how many.
+    pub(crate) fn set_in_pod(
+        &mut self,
+        in_pod: bool,
+        materials: &mut Assets<ObjectMaterial>,
+        terrain_look: Option<&mut TerrainLook>,
+    ) -> usize {
+        if self.skies.in_pod == in_pod {
+            return 0;
+        }
+        self.skies.in_pod = in_pod;
+        self.relight_global(materials, terrain_look)
+    }
+
+    /// Whether the objects' point and spot lights are spawned
+    /// (`--no-local-lights` off).
+    pub(crate) fn lights_enabled(&self) -> bool {
+        self.lights
+    }
+
+    /// The global sky's name now.
+    pub(crate) fn global_sky_name(&self, pod: &str) -> String {
+        if self.skies.in_pod {
+            return pod.to_string();
+        }
+        self.skies
+            .skies
+            .global
+            .and_then(|i| self.skies.skies.skies.get(i))
+            .map_or_else(|| "none".to_string(), |s| s.name.clone())
+    }
+
+    fn relight_global(
+        &mut self,
+        materials: &mut Assets<ObjectMaterial>,
+        terrain_look: Option<&mut TerrainLook>,
+    ) -> usize {
+        // Terrain grass has no `SkyApplier`: the global sky too.
+        if let Some(t) = terrain_look {
+            t.set_global_sky(self.skies.look(SkyKey::Global), materials);
+        }
+        self.relight(SkyKey::Global, materials)
+    }
+
+    fn relight(&mut self, key: SkyKey, materials: &mut Assets<ObjectMaterial>) -> usize {
+        let look = self.skies.look(key).copied();
+        let mut n = 0;
+        for ((_, k), handle) in &self.materials {
+            if *k == key
+                && let Some(mut m) = materials.get_mut(handle)
+            {
+                apply_sky(&mut m.extension.params, look.as_ref());
+                n += 1;
+            }
+        }
+        n
+    }
+
     /// The Aurora scene once it is spawned: its data and its parts that
     /// show only in some states, with their entities.
     pub fn aurora(&self) -> Option<(AuroraData, AuroraParts<'_>)> {
@@ -3565,7 +3724,7 @@ impl ObjectStreamer {
                 entities.push(entity);
                 continue;
             }
-            let sky = self.skies.pick(part.biome_sky, biome);
+            let sky = self.skies.pick(part.biome_sky, biome, inst.pod_sky);
             let Some(mesh) = self.meshes.get(&part.mesh) else {
                 continue;
             };
@@ -3575,7 +3734,7 @@ impl ObjectStreamer {
                     let Some(desc) = self.material_descs.get(&part.material) else {
                         continue;
                     };
-                    let look = sky.and_then(|i| self.skies.looks.get(i));
+                    let look = self.skies.look(sky);
                     let m = s.materials.add(object_material(
                         desc,
                         look,
