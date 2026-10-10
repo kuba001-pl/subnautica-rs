@@ -159,20 +159,28 @@ impl Cinematic {
     }
 
     /// `OnPlayerCinematicModeEnd` at `time` (the pod clip's end event).
-    /// Ignored when not running (or already moving out with no change:
-    /// the game's second call in a frame re-puts the player on the node
-    /// and restarts the move out; ported as is).
-    pub fn end_event(&mut self, time: f64, animated: Pose, cam_anchor: Pose) -> CinematicFrame {
+    /// `None` when no cinematic runs: the game returns at once
+    /// (`!cinematicModeActive`), so nothing is to be applied. The
+    /// first-use clips fire the event on two layers in one frame; after a
+    /// first call that ended the cinematic, the second must not put the
+    /// player back on the node (its yaw would then stay on the player's
+    /// transform on top of the look given back). While moving out, the
+    /// game's second call re-puts the player on the node and restarts the
+    /// move out; ported as is.
+    pub fn end_event(
+        &mut self,
+        time: f64,
+        animated: Pose,
+        cam_anchor: Pose,
+    ) -> Option<CinematicFrame> {
+        if !self.active {
+            return None;
+        }
         let mut frame = CinematicFrame {
             player: animated,
             camera_root: Some(Pose::new(cam_anchor.position, animated.rotation)),
             signals: vec![Signal::Play(false)],
         };
-        if !self.active {
-            frame.signals.clear();
-            frame.camera_root = None;
-            return frame;
-        }
         if self.params.end.is_some() {
             self.phase = Phase::Out;
             self.since = time;
@@ -185,7 +193,7 @@ impl Cinematic {
         // (controls back) comes first in the no-end-point case, as
         // `EndCinematicMode` runs before the `SendMessage`.
         frame.signals.push(Signal::TriggerEnd);
-        frame
+        Some(frame)
     }
 }
 
@@ -382,16 +390,16 @@ mod tests {
         let (mut c, _) = Cinematic::start(params(None), 0.0, start, start, node);
         c.late_update(0.3, start, node, node);
         let last = pose(0.0, 5.0, 1.0, 30.0);
-        let f = c.end_event(2.0, last, last);
+        let f = c.end_event(2.0, last, last).unwrap();
         assert_eq!(f.player, last);
         assert_eq!(
             f.signals,
             vec![Signal::Play(false), Signal::Ended, Signal::TriggerEnd]
         );
         assert!(!c.active);
-        // A second end event in the same frame (two layers): nothing.
-        let f = c.end_event(2.0, last, last);
-        assert!(f.signals.is_empty());
+        // A second end event in the same frame (two layers): nothing to
+        // apply.
+        assert!(c.end_event(2.0, last, last).is_none());
     }
 
     #[test]
@@ -401,7 +409,7 @@ mod tests {
         let end = pose(4.0, 2.0, 0.0, 0.0);
         let (mut c, _) = Cinematic::start(params(Some(end)), 0.0, start, start, node);
         c.late_update(0.3, start, node, node);
-        let f = c.end_event(2.0, node, node);
+        let f = c.end_event(2.0, node, node).unwrap();
         assert_eq!(f.signals, vec![Signal::Play(false), Signal::TriggerEnd]);
         assert_eq!(c.phase, Phase::Out);
         let f = c.late_update(2.125, node, node, node);
@@ -476,7 +484,7 @@ mod tests {
         // The end: out of the pod, the first use handed over, controls
         // and the look (the node's yaw) back.
         let last = pose(0.0, -1.2, 0.0, 200.0);
-        let f = run.cinematic.end_event(2.0, last, last);
+        let f = run.cinematic.end_event(2.0, last, last).unwrap();
         assert!(f.signals.contains(&Signal::TriggerEnd));
         let switched = hatches.finish(run.trigger, &mut player);
         assert_eq!(switched, vec![(1, false), (0, true)]);
@@ -486,6 +494,16 @@ mod tests {
         assert_eq!(player.position, last.position);
         assert!((look.rotation_x - 200.0).abs() < 1e-9 && look.rotation_y.abs() < 1e-9);
         assert!(player.rotation.dot(Q::IDENTITY).abs() > 1.0 - 1e-12);
+        // The clip's second end event in the same frame (a first-use clip
+        // fires it on two layers) and the late update after it leave the
+        // player as it is: the yaw stays in the look only.
+        assert!(run.cinematic.end_event(2.0, last, last).is_none());
+        let f =
+            run.cinematic
+                .late_update(2.0, Pose::new(player.position, player.rotation), last, last);
+        apply(&f, &mut player, &mut look, &p, -87.0, 87.0);
+        assert!(player.rotation.dot(Q::IDENTITY).abs() > 1.0 - 1e-12);
+        assert!((look.rotation_x - 200.0).abs() < 1e-9);
     }
 
     #[test]

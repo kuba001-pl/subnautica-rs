@@ -91,6 +91,9 @@ pub(crate) struct HatchDone {
     pub(crate) used_end: Option<V3>,
     /// Oxygen at the start and at the end (if the vitals run).
     pub(crate) oxygen: Option<(f64, f64)>,
+    /// The yaw left on the player's transform at the end, degrees (the
+    /// look takes it back: it must be 0).
+    pub(crate) yaw_left: f64,
 }
 
 impl Run<'_, '_> {
@@ -274,9 +277,10 @@ impl Run<'_, '_> {
         for _ in 0..ends {
             if forwarded {
                 let anchor = self.body.cam_anchor(self.player_pose());
-                let f = h.run.cinematic.end_event(t, animated, anchor);
-                self.put(&f, &mut h);
-                frames.push(f);
+                if let Some(f) = h.run.cinematic.end_event(t, animated, anchor) {
+                    self.put(&f, &mut h);
+                    frames.push(f);
+                }
             }
         }
         let anchor = self.body.cam_anchor(self.player_pose());
@@ -300,6 +304,10 @@ impl Run<'_, '_> {
                 stored_end: self.hatches.triggers[i].end,
                 used_end: self.hatches.triggers[i].cinematic.end.map(|e| e.position),
                 oxygen: h.oxygen.zip(self.vitals.as_ref().map(|(_, v)| v.oxygen)),
+                yaw_left: {
+                    let y = self.player.rotation.to_euler().y.rem_euclid(360.0);
+                    y.min(360.0 - y)
+                },
             };
             self.log(&format!(
                 "cinematic of {:?} ended after {:.2} s",
@@ -678,9 +686,10 @@ pub(crate) fn check_hatches(r: &Run) -> bool {
         let in_range = range.is_some_and(|&(_, lo, hi)| (lo..=hi).contains(&h.seconds));
         let end_ok = h.used_end.is_none_or(|e| (e - h.end).length() < 1e-3);
         let oxygen_ok = h.oxygen.is_none_or(|(a, b)| a == b);
+        let yaw_ok = h.yaw_left < 1e-6;
         let fmt = |v: V3| format!("({:.2}, {:.2}, {:.2})", v.x, v.y, v.z);
         println!(
-            "check: hatch {:?} took {:.2} s (expected {}): {}; ended at {}, M9b's end point {} ({}); end point used {}: {}; oxygen {}: {}",
+            "check: hatch {:?} took {:.2} s (expected {}): {}; ended at {}, M9b's end point {} ({}); end point used {}: {}; oxygen {}: {}; yaw left on the player {:.3}°: {}",
             h.name,
             h.seconds,
             range.map_or("no range".into(), |&(_, lo, hi)| format!("{lo}–{hi} s")),
@@ -696,8 +705,10 @@ pub(crate) fn check_hatches(r: &Run) -> bool {
             h.oxygen
                 .map_or("not run".into(), |(a, b)| format!("{a:.2} → {b:.2}")),
             if oxygen_ok { "ok" } else { "FAILED" },
+            h.yaw_left,
+            if yaw_ok { "ok" } else { "FAILED" },
         );
-        ok &= in_range && end_ok && oxygen_ok;
+        ok &= in_range && end_ok && oxygen_ok && yaw_ok;
     }
     ok
 }

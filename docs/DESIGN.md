@@ -1,8 +1,8 @@
 # subnautica-rs — Design
 
 Status (2026-10-10): **Phases A–B done up to M7f4g**, Phase C as first
-passes (§ 4), **Phase E up to M9c and M9g4** (§ 4.3). Next: **M9g5 (a–e), the
-hatch cinematics** (§ 4.3, plan below M9c's), then M10. M7f4h moved after M11. Each
+passes (§ 4), **Phase E up to M9c and M9g** (the player's body and the
+hatch cinematics; § 4.3). Next: **M10**. M7f4h moved after M11. Each
 row's own mark says what is done; everything else is a plan, not code.
 
 ## 1. Goal
@@ -405,7 +405,7 @@ understand it, then write our own.
 | **M9a** ✅ | **Done 2026-10-10** (MODLOG; facts in `docs/formats/gameplay.md` § Collision; plan below). `sn-sim::collide` passes 12 unit tests. `sn-inspect swim` reaches the Kelp Forest from the lifepod for seeds 1–5: 0 penetrations, smallest gap ≥ 5.1 mm, 1,860–3,693 contacts, about 21–31 µs mean and 60–120 µs p99 per step. The client doesn't use it yet (M9b). Plan as written: Collision: a kinematic capsule swept against triangles. Terrain from the LOD 0 meshes already built around the camera; objects from their prefabs' colliders (box, sphere, capsule, mesh; read in `sn-unity`). Our own sweep in `sn-sim`, no physics engine yet (§ 3.3's physics decision waits for rigid bodies: floating lifepod, dropped items). | Unit tests of the sweep on synthetic meshes (slide, corner, thin wall); a scripted swim lifepod → Kelp Forest logs 0 penetrations and the contacts; cost per frame logged. |
 | **M9b** ✅ | **Done 2026-10-10** (MODLOG; facts in `docs/formats/gameplay.md` § Player movement; plan and "as built" below). `sn-inspect walk`: pod → hatch → 10 s swim (71 m) → back in, 0 penetrations, 0 surfaces passed through; speeds 3.5 walking and 7.22 swimming against 3.5 and 7.6 read (7.22 is 7.6 after one step of drag 2.5). Layer 19 hits all layers but 9; every loaded collider is on layer 0 (none dropped yet). 46 pod and module colliders; placeholder spawns 10–216 per run. Colliders are one-sided, as PhysX's (source read; winding measured). The client plays as the player by default. Keyboard and mouse play are not tested by the agent. Plan as written: Player: first-person camera at eye height, swimming, walking with gravity in the lifepod and above water, the lifepod hatch. Speeds from the player's serialized fields (P0). The fly camera stays as `--free-cam`. Collision gaps left by M9a that matter here: (1) read the physics layer collision matrix (`PhysicsManager`) and collide only with the layers the player's capsule hits; (2) colliders of the lifepod's spawned modules (fabricator, radio, …) and of what placeholders spawn (M7h), so walking inside the pod hits them; (3) find out whether the game's terrain and mesh colliders block from one side or both, and match it. | Movement rules unit-tested; speeds logged next to the values read; scripted run lifepod → water → lifepod (positions logged); the layer matrix logged and the colliders kept/dropped by layer counted; lifepod module and placeholder colliders counted in the run; one- vs two-sided recorded in `docs/formats/gameplay.md` with how it was checked. |
 | **M9c** ✅ | **Done 2026-10-10** (MODLOG; facts in `docs/formats/gameplay.md` § Oxygen, health and death and § Mouse look; plan and "as built" below). `sn-sim::vitals` and `look` pass 14 unit tests; `sn-inspect dive` seeds 1–5: oxygen 0 at 42.26 s under water, death 8.02 s later, respawn in the pod 5.02 s, restore 1.02 s, controls 1.02 s; oxygen within one breath of the read rate; refill 0.56–0.74 s from surfacing; 0 penetrations. Look: 0.1125° per mouse count (sensitivity 0.15 from the DLL), pitch ±87° (scene; the code says ±80). The HUD and the look in play are not tested by the agent. Plan as written: Oxygen, health, depth: drain under water, refill at the surface and in the lifepod, suffocation → respawn in the lifepod, with the game's numbers. A minimal HUD of our own (bars and numbers; the game's UI sprites later). Also the mouse look as the game's (`MainCameraControl`: sensitivity, pitch limits, smoothing, read from its serialized fields and settings defaults), replacing our own values from M9b. | Rules unit-tested; a scripted dive logs oxygen over time against the values read; the look's values logged next to the ones read, its limits unit-tested. |
-| **M9g** | **The player's body** (plan written 2026-10-10, below M9c's; split into M9g1–M9g5): the game's player model from the `main` scene with the suit the equipment rule picks, its animator driven by the game's parameter rules (`ArmsController`, `Player`), the view model's turn and bob (`MainCameraControl`), the head drawn only in shadows in first person; then the hatch cinematics and death animation. Pulls forward "After Phase E" item 3 (all but tools/IK). Before M10 so remote players are drawn as bodies. | Each step's own list in the plan. |
+| **M9g** ✅ (2026-10-10, M9g1–M9g5e; not compared with the game on screen) | **The player's body** (plan written 2026-10-10, below M9c's; split into M9g1–M9g5): the game's player model from the `main` scene with the suit the equipment rule picks, its animator driven by the game's parameter rules (`ArmsController`, `Player`), the view model's turn and bob (`MainCameraControl`), the head drawn only in shadows in first person; then the hatch cinematics and death animation. Pulls forward "After Phase E" item 3 (all but tools/IK). Before M10 so remote players are drawn as bodies. | Each step's own list in the plan. |
 | **M10** | Multiplayer as planned (Phase D): `sn-protocol`, `sn-net`, `sn-server`, handshake with the build check, join, player sync (remote players drawn with M9g's body, animated by the same rules from synced state). From here solo play also runs against an in-process server (§ 3.1, principle 5), so items and crafting below are written server-authoritative once. | M10's own row. |
 | **M9d** | Pick up and inventory: `Pickupable` objects within reach, outcrops break into their resource (`BreakableResource`), inventory of the game's size, item sizes from TechData; picked objects gone for every player (server state keyed by entity id and slot seed). | Inventory rules unit-tested; a scripted pick-up logs item counts; the object's drawn count −1 on both clients. |
 | **M9e** | Crafting at the lifepod's fabricator: the menu from P1's tree, recipes and times from TechData, starting blueprints from `PDAData`; item names from the language files. | Crafting rules unit-tested on synthetic recipes; one real recipe crafted in a scripted run (counts before/after logged); menu node count equal to P1's. |
@@ -763,7 +763,7 @@ user's OK):
 | **M9g2** ✅ (2026-10-10; see "as built") | **Rules, pure.** `sn-sim::body`: `ArmsController`'s empty-hand rules (relative velocity, smoothing, the parameters above, `UpdateDiving` with `collide`'s ray) and the view model's transform (yaw, swim bob, landing bob, step amount, strafe tilt, the look-up pivot); output a list of parameter values and the view model's local transform. `sn-anim`: `set_float_damped` (Unity's damped `SetFloat`: its exact formula is a **hypothesis** until compared). | Unit tests: speeds and smoothing on known inputs, the dive flags, the bobs' ranges, the damped set's step response. |
 | **M9g3** ✅ (2026-10-10; see "as built") | **Scripted check, headless.** `sn-inspect walk` and `dive` run the player's animator with these rules: each layer's state changes per phase (in the pod, walking, leaving, swimming, diving, at the surface, death, respawn). | Each phase reaches its states (names logged, the expected ones written in the plan before the run); no NaN, unit quaternions; cost per step logged. |
 | **M9g4** ✅ (2026-10-10; see "as built") | **Client.** The `Player` hierarchy spawned from the `main` scene (equipment rule, camera culling mask), its root at the simulated player, the view model's transform each frame, the animator each frame with the rules (a rig as M7f4c, GPU skinning). "Shadows only" drawn as the game does (render layer seen by the sun, not the camera), for the head and for the M7f4e renderer. The camera's near plane from `MainCamera` (read in M7g1). `--third-person`: a debug orbit camera that shows the head (also what remote players will look like). | Body nodes, bones and active models counted in the log; head drawn only in the shadow pass (counted); CPU time of the body logged; screenshots in first person (looking down, swimming) and third person for the user. |
-| **M9g5** | **Cinematics.** The hatches as the game plays them (`PlayerCinematicController`: the player's animator state, the pod's hatch layer, the end at the animation's last frame), replacing M9b's end points (and the VR-only stand-ins); the death animation by damage type. Started 2026-10-10 (the user's choice, before M10); split into M9g5a–e, plan "M9g5 plan" below. | `walk` boards and leaves with the cinematic, end poses logged next to M9b's end points; screenshots. |
+| **M9g5** ✅ (2026-10-10; see "M9g5 as built") | **Cinematics.** The hatches as the game plays them (`PlayerCinematicController`: the player's animator state, the pod's hatch layer, the end at the animation's last frame), replacing M9b's end points (and the VR-only stand-ins); the death animation by damage type. Started 2026-10-10 (the user's choice, before M10); split into M9g5a–e, plan "M9g5 plan" below. | `walk` boards and leaves with the cinematic, end poses logged next to M9b's end points; screenshots. |
 
 **As built (2026-10-10), where it differs from the plan:**
 - **M9g1.** Built as planned. `PlayerFields` now reads every field
@@ -928,7 +928,7 @@ escapepod --cinematics` and the decompiled classes; to go to
 | **M9g5b** ✅ (2026-10-10; see "as built") | **Events and node poses, pure.** `sn-anim`: animation events fired by an update (each playing clip with weight > 0, times crossed in (previous, now], loops counted; **hypothesis** for Unity's exact rule, written in `animation.md`); a node's placement from a pose (`sn-assets`, the rig's local chain with the animated slots). | Unit tests: events at the end of a non-looping clip, across a loop, during a transition; a node's placement against hand-computed chains. |
 | **M9g5c** ✅ (2026-10-10; see "as built") | **Rules, pure.** `sn-sim::cinematic`: the controller's states (In / Update / Out, lerp and slerp, the parameters set when the game sets them), started and ended as above; the player gets a rotation (yaw and tilt) and `Player.UpdateRotation`; `MainCameraControl.cinematicMode` on and off (look ↔ rotation); `Hatches::use_trigger` starts a cinematic instead of teleporting, the start/end calls at their time; the death head camera. | Unit tests with a synthetic animated node: in/out timing, end at the animation's last frame vs the end point, look after the end, no second cinematic while one runs. |
 | **M9g5d** ✅ (2026-10-10; see "as built") | **Scripted check, headless.** `walk` and `dive` run the pod's animator and the cinematics; the player's states (`escapepod_*`) per phase. Expected values written here before the run. | Each hatch use takes its clip length + 0.25 s (+ 0.25 s out); end poses logged next to M9b's end points; 0 penetrations after; the expected states reached; seeds 1–5. |
-| **M9g5e** | **Client.** The drawn pod's animators get the same parameters (the hatch opens), the player and camera follow `cin_target`, the body plays its hatch animation, the head camera at death. | Cinematic duration and end pose logged; screenshots mid-hatch (first and third person) and during death for the user. |
+| **M9g5e** ✅ (2026-10-10; see "as built"; not compared with the game on screen) | **Client.** The drawn pod's animators get the same parameters (the hatch opens), the player and camera follow `cin_target`, the body plays its hatch animation, the head camera at death. | Cinematic duration and end pose logged; screenshots mid-hatch (first and third person) and during death for the user. |
 
 **M9g5 as built:**
 - **M9g5a.** Built as planned. `sn-unity`: `CinematicEndForward`
@@ -984,6 +984,55 @@ escapepod --cinematics` and the decompiled classes; to go to
   state checks match phase names exactly (a prefix match let "hatch
   bot_out_trigger" take the first-use hatch's states too). The client
   still teleports (M9g5e).
+- **M9g5e.** The client's player system runs the hatches as the scripts
+  do: its own copies of the pod's animator (`PodCinematics`) and the
+  player's (`Assets::player_animation`, now shared with `sn-inspect`'s
+  `BodyRun`), `Hatches::begin` / `finish`, the end events and the late
+  update every physics step, the player's rotation (`apply`,
+  `ease_tilt`), the camera at the cinematic's `camRoot` or, after a
+  death, on the head camera bone (`Body::camera`, `view_model` for any
+  player rotation). The drawn rigs get the same parameters: the player's
+  through `BodyDrive::player_values`, every drawn rig of the pod's
+  controller through `pod_values`. Debug flags `--use-hatch SECONDS`
+  (aim at the nearest usable hatch and use it through the hand's ray)
+  and `--kill SECONDS` (full health as damage). Numbers from the client
+  (lifepod seed 1): the nearest hatch from the spawn is the top
+  first-use exit ("ClimbLadder"): used from 1.37–1.48 m, ended after
+  8.72 s on the pod's roof (y 5.73, out of the pod) = 0.26 + 0.02 +
+  8.18 + 0.26 s (its end point is not VR-only, so it moves out to it);
+  the first-use swap ran twice in the end frame, because the clip fires
+  its end event on two layers and the game's controller handles both
+  (`onCinematicModeEndCall` only guards re-entry; read in the code). The
+  death camera: the head camera bone 0.10–0.12 m above and 0.13–0.15 m
+  beside the player's transform during the 5 s before the respawn (the
+  death clip is under a second; the Death layer then returns to its
+  empty state); `MoveToRespawn`, `Restored`, `ControlsBack` as in M9c.
+  Screenshots for the user: `out/m9g5e-hatch-mid.png` (hands on the
+  hatch rim, the sky through it), `out/m9g5e-hatch-third.png` (the body
+  on the ladder in the hatch), `out/m9g5e-hatch-end.png` (on the roof,
+  the Aurora ahead), `out/m9g5e-death.png`. The drawn rigs run per
+  frame and our copies per frame (player) and per physics step (pod), so
+  the drawn hatch can be a frame apart from the one that moves the
+  player (not measured). Keyboard use of the hatches: not tested by the
+  agent.
+  **Two bugs the user found playing it (fixed 2026-10-10):** (1) after
+  the bottom hatch the controls "bugged out": the first-use clip's second
+  end event in the same step put the player back on the animated node,
+  leaving its yaw (270°) on the player's transform on top of the look
+  (`Cinematic::end_event` now returns `None` when no cinematic runs, as
+  the game's early return; unit test tightened; the scripts check the
+  yaw left after each hatch); (2) after the top hatch's second (normal)
+  exit the player was stuck: the animation ends 0.30 m inside the roof
+  and our walking motor did not separate overlaps (it now pushes out as
+  the swimming motor does, Unity's `CharacterController` overlap
+  recovery, **hypothesis** in `gameplay.md`; unit test
+  `walking_pushes_out_of_an_overlap`, which fails without it). Debug
+  flags for reproducing such cases: `--use-hatch S1,S2,…` (walks to the
+  nearest usable hatch, side-stepping when blocked, and uses it through
+  the hand's ray, or directly after 2 s if the ray cannot reach it, which
+  happens on the roof above `top_in`), `--hatch-name TEXT`,
+  `--hold-forward S`; with them, the player is traced every physics step
+  for 3 s after each cinematic (position, motor, gap, rotation, look).
 
 **M9g5d expected values (written 2026-10-10 before the run, from the
 M9g5a/b data and the player's controller, `sn-inspect anim scene:main

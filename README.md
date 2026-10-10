@@ -65,9 +65,14 @@ Tested on Windows 11 with game build 10 (Steam):
   penetrations, at about 13–19 µs per step.
 - The player, with the game's numbers: walking with gravity, steps and
   slopes in the lifepod and on land; swimming with the game's speeds,
-  drag and surface rules. The lifepod's hatches take the player in and
-  out. `sn-inspect walk` runs pod → water → pod headless with 0
-  penetrations. In `sn-client` you are the player (the fly camera is
+  drag and surface rules. The lifepod's hatches play the game's
+  cinematics: the hatch opens, the body climbs with the pod's animation,
+  and the camera follows the game's anchor (`sn-inspect walk`/`dive`
+  check the durations on seeds 1–5; in `sn-client` press E at a hatch, or
+  `--use-hatch SECONDS[,SECONDS…]` to have it done, `--hatch-name` to
+  pick which, `--hold-forward SECONDS` to walk on afterwards). After a death the camera
+  follows the head (`--kill SECONDS` to see it). `sn-inspect walk` runs
+  pod → water → pod headless with 0 penetrations. In `sn-client` you are the player (the fly camera is
   `--free-cam`). Playing it with keyboard and mouse is not tested by the
   agent.
 - Oxygen, suffocation, health, death and respawn in the lifepod, with
@@ -146,7 +151,7 @@ animated lights, materials and script values, objects on shaders other than the 
 object shader (Lost River brine, sand and lava falls and other effect
 meshes not yet decoded are flat, Safe Shallows triplanar rocks white;
 `docs/formats/materials.md`), creatures (including the
-~100,000 the spawn slots would add); the hatch cinematics, tools, the PDA and IK, tanks and fins changing
+~100,000 the spawn slots would add); the intro cinematic, tools, the PDA and IK, tanks and fins changing
 speeds, the game's own HUD and damage effects; audio,
 multiplayer.
 Linux/macOS: not tested.

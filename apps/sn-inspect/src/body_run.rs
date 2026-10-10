@@ -4,7 +4,7 @@
 //! are collected per phase of the script and checked against the ones
 //! written in `docs/DESIGN.md` ("M9g3 expected states") before the run.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -51,44 +51,12 @@ impl BodyRun {
     pub(crate) fn new(assets: &Assets, ocean_level: f32) -> Result<BodyRun> {
         let body = assets.player_body()?;
         let params = body.body_params(ocean_level);
-        let look_limits = (
-            f64::from(body.camera.minimum_y),
-            f64::from(body.camera.maximum_y),
-        );
-        let mut cache = HashMap::new();
-        let set = assets.animation_set(&body.controller, &mut cache)?;
-        if !set.errors.is_empty() {
-            return Err(format!("player animation: {:?}", set.errors));
-        }
-        let controller = Arc::new(set.controller.clone());
-        let program = Arc::new(Program::new(controller.clone(), &set.clips));
-        let binding = body
-            .prefab
-            .bind_animator(body.animator_node, &program, &|_| Vec::new());
-        if binding.missing > 0 {
-            return Err(format!(
-                "player animator: {} slots not in the hierarchy",
-                binding.missing
-            ));
-        }
-        let posed = |node: usize, what: &str| {
-            body.prefab
-                .posed_node(node, &program, &binding)
-                .ok_or_else(|| format!("player: {what} not in the hierarchy"))
-        };
-        let cam_anchor = posed(body.cam_anchor_node, "camAnchor")?;
-        let head_camera = posed(body.head_camera_node, "headCameraBone")?;
-        // The posed chains start below the player's root and pass through
-        // the view model, which must be stored at the root's origin (the
-        // client and the rules put the view model there each frame).
-        let vm = &body.prefab.nodes[body.view_model_node];
-        if vm.parent != Some(0)
-            || vm.local.position != [0.0; 3]
-            || vm.local.rotation != [0.0, 0.0, 0.0, 1.0]
-        {
-            return Err("player: the view model is not at the player's origin".into());
-        }
-        let animator = Animator::new(program.clone(), binding.defaults);
+        let pa = assets.player_animation(&body)?;
+        let look_limits = pa.look_limits;
+        let animator = pa.animator();
+        let program = pa.program.clone();
+        let controller = program.controller.clone();
+        let (cam_anchor, head_camera) = (pa.cam_anchor, pa.head_camera);
         let layers = controller
             .layers
             .iter()

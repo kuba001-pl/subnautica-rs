@@ -2,6 +2,99 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-10 — Fix: controls after the bottom hatch, stuck after the top hatch
+
+**What:** two bugs the user found playing M9g5e (not yet committed).
+- `sn-sim::cinematic`: `Cinematic::end_event` returns `None` when no
+  cinematic runs (the game's early return). A first-use clip fires its
+  end event on two layers in one step; the second call put the player
+  back on the animated node, so the node's yaw (270° at the bottom
+  exit) stayed on the player's transform while the look had taken it
+  back: the view turned twice and W no longer moved where the camera
+  looked. Callers in the client and `walk.rs` skip `None`.
+- `sn-sim::player`: the walking motor pushes out of overlaps as the
+  swimming one does (`CharacterController` overlap recovery,
+  **hypothesis**). The top hatch's normal exit ends 0.30 m inside the
+  pod's roof (its end point is VR-only), and the player could not move.
+- `sn-inspect walk`/`dive`: `check_hatches` also checks that no yaw is
+  left on the player after each hatch.
+- `sn-client` debug flags: `--use-hatch` takes a list of times and walks
+  to the hatch (side-stepping, as `walk`), `--hatch-name TEXT`,
+  `--hold-forward SECONDS`; with them a per-step trace for 3 s after each
+  cinematic.
+- Docs: `gameplay.md`, DESIGN (M9g5e as built), README.
+
+**How found:** reproduced in the client with the new flags. Bottom:
+`--hatch-name bot_out --use-hatch 3 --hold-forward 13`: the trace showed
+rotation euler (0, 270, 0) on the player with look yaw 270 after the
+exit (fixed: (0, 0, 0), W moves along the look). Top: `--hatch-name top
+--use-hatch 3,15,27 --hold-forward 31`: after the third use
+(`top_out_trigger`, 2.30 s) the gap was −0.300 m and the player stayed
+put at 3.5 m/s velocity (fixed: `PushedOut(0.454)` to y 5.67, then it
+walks off the roof).
+
+**How verified:**
+- `cargo test --workspace`: 332 passed. `cargo clippy --workspace
+  --all-targets -- -D warnings`: clean. The new walking test fails with
+  the walking push-out removed (checked) and passes with it.
+- `SUBNAUTICA_DIR=... cargo test -p sn-assets --test real_data --
+  --ignored`: 30 passed.
+- `sn-inspect walk`, `dive`, `swim`, seeds 1–5: all OK; yaw left after
+  every hatch 0.000°; exactly one push-out per walk/dive run (the known
+  one after the bottom first-use exit); `swim` 0 penetrations.
+- **Not tested:** the hatches with keyboard and mouse after the fix
+  (the user's check).
+
+**Dead ends:** the debug driver first used the wrong hatch (the hand's
+ray from the spawn hits the top hatch's trigger before the bottom one),
+then stood still against the ladder (it had no side-step), then could
+not use `top_in` from the roof (the ray hits the hull above the trigger;
+it now uses it directly after 2 s, logged). M9g5d's scripts never
+checked the player's rotation after a hatch or used the top hatches,
+which is why both bugs passed them.
+
+## 2026-10-10 — M9g5e: the hatch cinematics and the death camera in the client
+
+**What:** last step of M9g5, and so of M9g (`docs/DESIGN.md` § 4.3, "M9g5
+plan" and "as built").
+- `sn-assets`: `PlayerAnimation` / `Assets::player_animation` (the
+  player's compiled controller, defaults, `camAnchor` and head camera
+  nodes, look limits), now shared by `sn-inspect`'s `BodyRun` and the
+  client.
+- `sn-client` `player.rs`: the hatches play their cinematics (pod and
+  player animators run here, `Hatches::begin` / `finish`, end events,
+  late update, `apply`, `ease_tilt`); the camera follows the cinematic's
+  `camRoot` and, after a death, the head camera bone; the view model
+  turns with the player's rotation; `--use-hatch SECONDS`, `--kill
+  SECONDS` (debug). A death-camera log line each second. The unit test
+  of the camera conversion now checks `pose_to_bevy`.
+- `body.rs`: the cinematic's bools reach the drawn player rig and every
+  drawn rig of the pod's controller.
+- `main.rs`: the two flags. Docs: DESIGN, README.
+- No new dependency.
+
+**Why:** M9g5e's "Done when": cinematic duration and end pose logged;
+screenshots mid-hatch (first and third person) and during death.
+
+**How verified:**
+- `cargo test --workspace`: 323 passed. `cargo clippy --workspace
+  --all-targets -- -D warnings`: clean.
+- `SUBNAUTICA_DIR=... cargo test -p sn-assets --test real_data --
+  --ignored`: 30 passed. `sn-inspect walk`/`dive` seeds 1–5: RUN OK
+  (after the shared loader).
+- `sn-client --use-hatch 3 --shot 14 m9g5e-hatch-end`: the top
+  first-use hatch, 8.72 s, ends on the roof out of the pod, first-use
+  swap logged. `--use-hatch 3 --shot 6` (first and `--third-person`):
+  screenshots mid-hatch. `--kill 3 --shot 10`: death camera 0.10–0.12 m
+  above the player's transform, respawn, restore and controls back.
+- **Not tested:** the hatches with keyboard and mouse; any of it next to
+  the game on screen.
+
+**Found:** I forgot to pass the pod's controller name to `BodyDrive` at
+first, so no drawn pod rig would have opened; caught before running. The
+double "first use" log line matches the game (two end events in one
+frame, both handled; read in `PlayerCinematicController`).
+
 ## 2026-10-10 — M9g5d: the hatch cinematics in the scripted runs
 
 **What:** fourth step of M9g5 (`docs/DESIGN.md` § 4.3, "M9g5 plan", the

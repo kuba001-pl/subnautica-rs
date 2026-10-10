@@ -28,6 +28,13 @@ pub struct BodyDrive {
     pub view_model: Transform,
     /// This frame's parameters (taken when applied: triggers fire once).
     pub values: Vec<(&'static str, AnimValue)>,
+    /// A cinematic's bools for the player's animator (M9g5e), by name hash.
+    pub player_values: Vec<(u32, bool)>,
+    /// A cinematic's bools for the drawn pod's animators (every rig of
+    /// [`BodyDrive::pod_controller`]).
+    pub pod_values: Vec<(u32, bool)>,
+    /// The pod's controller name (`escape_pod_controller`).
+    pub pod_controller: String,
     /// CPU time of this frame's rules (`sn_sim::body`), µs.
     pub rules_micros: f32,
 }
@@ -45,10 +52,12 @@ pub struct BodyLog {
 
 /// Every frame, after `crate::player::update` and before
 /// `crate::animation::animate`: place the rig and set its parameters.
+#[allow(clippy::too_many_arguments)]
 pub fn drive(
     time: Res<Time>,
     mut drive: ResMut<BodyDrive>,
     mut rigs: Query<(&mut AnimatedRig, &mut Transform, &mut Visibility), With<PlayerBodyRig>>,
+    mut others: Query<&mut AnimatedRig, Without<PlayerBodyRig>>,
     parts: Query<(&ViewVisibility, Option<&RenderLayers>, Has<ShadowsOnly>)>,
     globals: Query<&GlobalTransform>,
     locals: Query<&Transform, Without<PlayerBodyRig>>,
@@ -56,6 +65,26 @@ pub fn drive(
 ) {
     let start = Instant::now();
     let values = std::mem::take(&mut drive.values);
+    let player_values = std::mem::take(&mut drive.player_values);
+    let pod_values = std::mem::take(&mut drive.pod_values);
+    if !pod_values.is_empty() {
+        let mut pods = 0;
+        for mut rig in &mut others {
+            if rig.animator.program().controller.name != drive.pod_controller {
+                continue;
+            }
+            pods += 1;
+            for &(id, on) in &pod_values {
+                rig.animator.set_bool(id, on);
+            }
+        }
+        if pods == 0 {
+            warn!(
+                "body: no drawn {:?} animator for the hatch",
+                drive.pod_controller
+            );
+        }
+    }
     let mut rigs_seen = 0;
     let mut status = None;
     for (mut rig, mut transform, mut visibility) in &mut rigs {
@@ -80,6 +109,9 @@ pub fn drive(
                 log.unknown.push(name);
                 warn!("body: parameter {name:?} is not in the player's controller");
             }
+        }
+        for &(id, on) in &player_values {
+            rig.animator.set_bool(id, on);
         }
         if log.since + time.delta_secs() >= LOG_EVERY {
             // Drawn parts the camera sees, and shadows-only parts: those

@@ -116,6 +116,15 @@ Usage: sn-client [--game-dir <PATH>] [--start <X> <Y> <Z>] [--look <X> <Y> <Z>]
                  clamped to the game's limits)
   --shot         --shot <SECONDS> <NAME>: after SECONDS of play, save
                  out/NAME.png and exit (a check for the human)
+  --use-hatch    --use-hatch <SECONDS[,SECONDS…]>: at each time (seconds of
+                 play), aim at the nearest usable lifepod hatch and use it
+                 (a debug check of the hatch cinematics, M9g5e)
+  --hatch-name   --hatch-name <TEXT>: --use-hatch picks only hatches whose
+                 trigger name contains TEXT (e.g. bot_out)
+  --hold-forward --hold-forward <SECONDS>: from then on, hold W (a debug
+                 check that the player moves)
+  --kill         --kill <SECONDS>: after SECONDS of play the player takes
+                 its full health as damage (a debug check of the death)
   --flythrough   once loaded, fly in a straight line to X Y Z (Unity world
                  coordinates) at --speed (default 40 m/s) without vsync, then
                  log frame times, memory and streaming latency, save
@@ -174,6 +183,14 @@ struct Args {
     third_person: bool,
     /// `--look-down`: the starting pitch, degrees down.
     look_down: f32,
+    /// `--use-hatch`: seconds of play at which to use the nearest hatch.
+    use_hatch: Vec<f64>,
+    /// `--hatch-name`: only hatches whose name contains this.
+    hatch_name: Option<String>,
+    /// `--hold-forward`: hold W from this much play on.
+    hold_forward: Option<f32>,
+    /// `--kill`: seconds of play before the player dies.
+    kill: Option<f32>,
     /// `--shot`: seconds of play, then `out/<name>.png`.
     shot: Option<(f32, String)>,
     /// `--lifepod-state`: the pod's `LightingController` state.
@@ -218,6 +235,10 @@ fn parse_args() -> Result<Args, String> {
         free_cam: false,
         third_person: false,
         look_down: 0.0,
+        use_hatch: Vec::new(),
+        hatch_name: None,
+        hold_forward: None,
+        kill: None,
         shot: None,
         lifepod_state: sn_sim::lighting::DAMAGED,
     };
@@ -304,6 +325,24 @@ fn parse_args() -> Result<Args, String> {
             "--free-cam" => args.free_cam = true,
             "--third-person" => args.third_person = true,
             "--look-down" => args.look_down = number(it.next(), "--look-down")?,
+            "--use-hatch" => {
+                let list = it.next().ok_or("--use-hatch takes seconds")?;
+                args.use_hatch = list
+                    .split(',')
+                    .map(|t| {
+                        t.trim()
+                            .parse::<f64>()
+                            .map_err(|_| format!("--use-hatch: {t:?} is not a number"))
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+            }
+            "--hatch-name" => {
+                args.hatch_name = Some(it.next().ok_or("--hatch-name takes a name")?.clone());
+            }
+            "--hold-forward" => {
+                args.hold_forward = Some(number(it.next(), "--hold-forward")?);
+            }
+            "--kill" => args.kill = Some(number(it.next(), "--kill")?),
             "--shot" => {
                 let seconds = number(it.next(), "--shot")?;
                 let name = it.next().ok_or("--shot takes <SECONDS> <NAME>")?;
@@ -746,6 +785,10 @@ fn main() -> AppExit {
                     slot_seed: args.slot_seed,
                     third_person: args.third_person,
                     look_down: f64::from(args.look_down),
+                    use_hatch: args.use_hatch.clone(),
+                    hatch_name: args.hatch_name.clone(),
+                    hold_forward: args.hold_forward.map(f64::from),
+                    kill: args.kill.map(f64::from),
                 };
                 app.insert_resource(player::PlayerSim::start(game, start))
                     .init_resource::<hud::Hud>()

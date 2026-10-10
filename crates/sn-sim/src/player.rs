@@ -405,6 +405,7 @@ impl Player {
                 self.swim(params, world, input, &mut events);
             }
             Motor::Walk => {
+                self.push_out(params, world, &mut events);
                 self.walk(params, world, input, &mut events);
                 self.walk_grounded = self.grounded;
             }
@@ -412,13 +413,20 @@ impl Player {
         events
     }
 
-    /// PhysX separating the swimming motor's rigid body from what it
-    /// overlaps (e.g. where a cinematic left it), with
-    /// [`World::push_out`]; only real overlaps (a gap below 0) move it, so
-    /// normal swimming keeps its own `SKIN` handling. **Hypothesis**: the player's
-    /// `Rigidbody.maxDepenetrationVelocity` is PhysX's default (unbounded;
-    /// Unity 2019.4 serializes none and the game sets none), so the overlap
-    /// is gone after one step, and the push adds no velocity.
+    /// Separating the player from what it overlaps (e.g. where a cinematic
+    /// left it), with [`World::push_out`]; only real overlaps (a gap below
+    /// 0) move it, so normal movement keeps its own `SKIN` handling.
+    /// Swimming: PhysX separating the motor's rigid body. **Hypothesis**:
+    /// the player's `Rigidbody.maxDepenetrationVelocity` is PhysX's default
+    /// (unbounded; Unity 2019.4 serializes none and the game sets none), so
+    /// the overlap is gone after one step, and the push adds no velocity.
+    /// Walking: the `CharacterController`'s overlap recovery
+    /// (`enableOverlapRecovery`, on by default in Unity's documentation;
+    /// the game's code never sets it), **hypothesis** for its exact push:
+    /// out in one step as for swimming. Without it the player stood 0.30 m
+    /// inside the pod's roof after the top hatch's normal exit (its end
+    /// point is VR-only, so the player stays where the animation leaves
+    /// it) and could not move.
     fn push_out(&mut self, params: &PlayerParams, world: &World, events: &mut Vec<Event>) {
         let (to, first) = world.push_out(&self.capsule(params), self.position);
         if first.is_some_and(|g| g < 0.0) {
@@ -888,6 +896,31 @@ pub(crate) mod tests {
         // Clear now: the next step pushes nothing.
         let events = pl.step(&p, &w, &Input::default());
         assert!(!events.iter().any(|e| matches!(e, Event::PushedOut(_))));
+    }
+
+    /// A walker left inside a floor (a cinematic's end) is pushed up out
+    /// of it and can walk away.
+    #[test]
+    fn walking_pushes_out_of_an_overlap() {
+        let p = params();
+        let w = world(floor_at(0.0));
+        let mut pl = Player::new(&p, v(0.0, 5.0, 0.0), false);
+        for _ in 0..200 {
+            pl.step(&p, &w, &Input::default());
+        }
+        let standing = pl.position.y;
+        // Sunk 0.3 m into the floor, as the top hatch's exit left it.
+        pl.teleport(&p, v(0.0, standing - 0.3, 0.0), None);
+        let events = pl.step(&p, &w, &forward());
+        assert!(
+            events.iter().any(|e| matches!(e, Event::PushedOut(_))),
+            "{events:?}"
+        );
+        for _ in 0..50 {
+            pl.step(&p, &w, &forward());
+        }
+        assert!(pl.position.z > 1.0, "did not walk away: {:?}", pl.position);
+        assert!((pl.position.y - standing).abs() < 0.05, "{:?}", pl.position);
     }
 
     #[test]

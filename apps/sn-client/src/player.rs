@@ -17,6 +17,13 @@
 //! at the game's eye (`CameraPose::eye`), or behind it with
 //! `--third-person` (a debug orbit camera that shows the head).
 //!
+//! The hatches (M9g5e) play their cinematics as `sn-inspect walk` does
+//! (M9g5d): the pod's and the player's animators run here as well (the
+//! drawn rigs get the same parameters through `crate::body`), a hatch
+//! moves the player along the pod's animated `cin_target` until the clip's
+//! end event, and the camera goes to `Player.camAnchor` meanwhile. After a
+//! death the camera follows the head camera bone until the respawn.
+//!
 //! Controls: click to capture the mouse (Esc releases it), mouse to look
 //! (the game's `MainCameraControl` rule, sensitivity and pitch limits,
 //! `sn_sim::look`), WASD to move, Space up / jump, C down, E or left click
@@ -29,14 +36,19 @@ use std::time::Instant;
 use bevy::input::mouse::AccumulatedMouseMotion;
 use bevy::prelude::*;
 use bevy::window::{CursorGrabMode, CursorOptions};
-use sn_assets::{BatchBodies, CollisionLoader, HATCH_BODY, LayerRules, SCENE_BODY};
+use sn_anim::Animator;
+use sn_assets::{
+    BatchBodies, CollisionLoader, HATCH_BODY, LayerRules, PlayerAnimation, PodCinematics,
+    PosedNode, SCENE_BODY,
+};
 use sn_install::GameData;
-use sn_sim::V3;
-use sn_sim::body::{Body as PlayerBody, BodyFrame, BodyParams, CameraPose};
+use sn_sim::body::{AnimValue, Body as PlayerBody, BodyFrame, BodyParams};
+use sn_sim::cinematic::{CinematicFrame, HatchRun, Signal, apply, ease_tilt};
 use sn_sim::collide::{Body, MOVE, World};
 use sn_sim::look::{Look, LookParams};
 use sn_sim::player::{Event, HatchTrigger, Hatches, Input, Player, PlayerParams, hand_target};
 use sn_sim::vitals::{Situation, Vitals, VitalsEvent, VitalsParams, depth_of};
+use sn_sim::{Pose, Q, V3};
 
 use crate::body::BodyDrive;
 use crate::hud::Hud;
@@ -54,6 +66,8 @@ const THIRD_PERSON_DISTANCE: f32 = 2.5;
 struct TriggerInfo {
     name: String,
     hand_text: String,
+    /// Its object's world position (where to look to use it).
+    at: V3,
     bodies: Vec<Body>,
 }
 
@@ -72,6 +86,11 @@ struct Init {
     /// The body's numbers (`None`: no body; the camera at the player's
     /// transform, as before M9g4).
     body: Option<BodyParams>,
+    /// The player's animator and its camera nodes (M9g5e).
+    anim: Option<PlayerAnimation>,
+    /// The pod's animator for the hatch cinematics (M9g5e; `None`: the
+    /// hatches teleport, as M9b).
+    pod_cinematics: Option<PodCinematics>,
     summary: String,
 }
 
@@ -99,6 +118,19 @@ struct State {
     triggers: Vec<TriggerInfo>,
     hatches: Hatches,
     body: Option<(BodyParams, PlayerBody)>,
+    /// The player's animator, run here too (the camera's nodes).
+    anim: Option<(PlayerAnimation, Animator)>,
+    pod_anim: Option<(PodCinematics, Animator)>,
+    /// The hatch cinematic playing.
+    hatch: Option<HatchPlay>,
+}
+
+/// A hatch cinematic playing.
+struct HatchPlay {
+    run: HatchRun,
+    started: f64,
+    /// `camRoot` where the cinematic put it in the last step.
+    camera_root: Option<Pose>,
 }
 
 #[derive(Resource)]
@@ -116,6 +148,22 @@ pub struct PlayerSim {
     steps: u64,
     third_person: bool,
     look_down: f64,
+    /// `--use-hatch` / `--kill`: seconds of play (taken when done).
+    use_hatch_at: Vec<f64>,
+    hatch_name: Option<String>,
+    hold_forward_from: Option<f64>,
+    kill_at: Option<f64>,
+    /// After a cinematic ends: trace every physics step until this time
+    /// (only with the debug flags `--use-hatch` / `--hold-forward`).
+    trace_until: f64,
+    trace_hatches: bool,
+    /// `--use-hatch`: the trigger being walked to and the time given up.
+    auto_target: Option<(usize, f64)>,
+    /// Its walk: the last place it moved from and when; strafing until.
+    auto_moved: (V3, f64),
+    auto_strafe_until: f64,
+    /// Play time of the last death-camera log line.
+    death_logged: Option<f64>,
 }
 
 /// Lifepod 5 where the player starts (the client's own start choice).
@@ -129,6 +177,14 @@ pub struct Start {
     pub third_person: bool,
     /// `--look-down`: the starting pitch, degrees down.
     pub look_down: f64,
+    /// `--use-hatch`: use the nearest hatch at each of these times.
+    pub use_hatch: Vec<f64>,
+    /// `--hatch-name`: only hatches whose trigger name contains this.
+    pub hatch_name: Option<String>,
+    /// `--hold-forward`: hold W from this much play on.
+    pub hold_forward: Option<f64>,
+    /// `--kill`: the player dies after this much play.
+    pub kill: Option<f64>,
 }
 
 impl PlayerSim {
@@ -148,6 +204,11 @@ impl PlayerSim {
     pub fn start(game: GameData, start: Start) -> PlayerSim {
         let third_person = start.third_person;
         let look_down = start.look_down;
+        let kill_at = start.kill;
+        let mut use_hatch_at = start.use_hatch.clone();
+        use_hatch_at.sort_by(|a, b| b.total_cmp(a));
+        let (hatch_name, hold_forward_from) = (start.hatch_name.clone(), start.hold_forward);
+        let trace_hatches = !start.use_hatch.is_empty() || start.hold_forward.is_some();
         let (to_worker, rx) = channel();
         let (tx, from_worker) = channel();
         std::thread::Builder::new()
@@ -170,6 +231,16 @@ impl PlayerSim {
             steps: 0,
             third_person,
             look_down,
+            use_hatch_at,
+            hatch_name,
+            hold_forward_from,
+            kill_at,
+            trace_until: 0.0,
+            trace_hatches,
+            auto_target: None,
+            auto_moved: (V3::ZERO, 0.0),
+            auto_strafe_until: 0.0,
+            death_logged: None,
         }
     }
 }
@@ -188,17 +259,22 @@ fn worker(
     let vitals = sn_assets::vitals_params(&data, &code);
     let look = sn_assets::look_params(&data, &code);
     let rules = LayerRules::new(&settings, data.player_layer);
-    let (body, body_note) = match loader.assets().player_body() {
+    let (body, anim, body_note) = match loader.assets().player_body() {
         Ok(b) => {
             let p = b.body_params(data.ocean_level);
             let eye = p.camera_up_position + p.camera_offset_position;
+            let (anim, anim_note) = match loader.assets().player_animation(&b) {
+                Ok(a) => (Some(a), String::new()),
+                Err(e) => (None, format!("; no hatch cinematics ({e})")),
+            };
             let note = format!(
-                "body: eye at rest ({:.3}, {:.3}, {:.3}) from the player's transform, smoothing {} / {}",
+                "body: eye at rest ({:.3}, {:.3}, {:.3}) from the player's transform, smoothing {} / {}{anim_note}",
                 eye.x, eye.y, eye.z, p.smooth_speed_under_water, p.smooth_speed_above_water
             );
-            (Some(p), note)
+            (Some(p), anim, note)
         }
         Err(e) => (
+            None,
             None,
             format!("body: not read ({e}); the camera stays at the player's transform"),
         ),
@@ -241,6 +317,7 @@ fn worker(
                     .triggers
                     .into_iter()
                     .map(|t| TriggerInfo {
+                        at: V3::from_f32(t.at),
                         name: t.trigger.name,
                         hand_text: t.trigger.trigger.hand_text,
                         bodies: t.bodies,
@@ -248,6 +325,8 @@ fn worker(
                     .collect(),
                 hatches,
                 body,
+                anim: anim.clone(),
+                pod_cinematics: pod.cinematics,
                 summary: format!("{summary}; {body_note}"),
             }
         }
@@ -263,6 +342,8 @@ fn worker(
             triggers: Vec::new(),
             hatches: Hatches::default(),
             body,
+            anim,
+            pod_cinematics: None,
             summary: format!("no lifepod; {body_note}"),
         },
     };
@@ -303,25 +384,147 @@ fn underwater(params: &PlayerParams, p: &Player) -> bool {
     !p.in_pod && p.position.y < params.ocean_level
 }
 
-/// The camera rig's rotation (Unity's `camRoot` Euler z-x-y, then
-/// `cameraUPTransform`'s pitch) as Bevy's: z mirrored, so the x and y
-/// angles change sign.
-fn pose_rotation(pose: &CameraPose) -> Quat {
-    let r = |deg: f64| deg.to_radians() as f32;
-    Quat::from_rotation_y(-r(pose.yaw))
-        * Quat::from_rotation_x(-r(pose.root_pitch))
-        * Quat::from_rotation_z(r(pose.roll))
-        * Quat::from_rotation_x(-r(pose.up_pitch))
+/// A Unity placement as Bevy's: z mirrored (the x and y of the rotation
+/// change sign).
+fn pose_to_bevy(p: &Pose) -> Transform {
+    let q = p.rotation;
+    Transform {
+        translation: unity_to_bevy(p.position),
+        rotation: Quat::from_xyzw(-q.x as f32, -q.y as f32, q.z as f32, q.w as f32).normalize(),
+        scale: Vec3::ONE,
+    }
 }
 
-/// The view model in the world: the player's transform (not rotated),
-/// then `MainCameraControl`'s local placement: `camRoot`'s position and
-/// its yaw only.
-fn view_model_transform(player: V3, pose: &CameraPose) -> Transform {
-    Transform {
-        translation: unity_to_bevy(player + V3::new(0.0, pose.root_y, 0.0)),
-        rotation: Quat::from_rotation_y(-(pose.yaw.to_radians() as f32)),
-        scale: Vec3::ONE,
+fn player_pose(p: &Player) -> Pose {
+    Pose::new(p.position, p.rotation)
+}
+
+/// A node of the player's hierarchy in the world for the player's
+/// animator's pose: the view model's place, then the node's chain.
+fn node_world(body: &PlayerBody, node: &PosedNode, anim: &Animator, player: Pose) -> Pose {
+    let t = node.in_prefab(anim.pose());
+    body.view_model(player).then(&Pose::new(
+        V3::from_f32(t.position),
+        Q::from_f32(t.rotation).normalized(),
+    ))
+}
+
+/// `Player.camAnchor` in the world now (the player's transform without a
+/// body).
+fn cam_anchor(state: &State) -> Pose {
+    let pose = player_pose(&state.player);
+    match (&state.body, &state.anim) {
+        (Some((_, b)), Some((pa, a))) => node_world(b, &pa.cam_anchor, a, pose),
+        _ => pose,
+    }
+}
+
+/// Puts a cinematic frame on the player and keeps its camera.
+fn put(state: &mut State, f: &CinematicFrame, h: &mut HatchPlay) {
+    let (lo, hi) = (state.look_params.minimum_y, state.look_params.maximum_y);
+    apply(f, &mut state.player, &mut state.look, &state.params, lo, hi);
+    h.camera_root = f.camera_root;
+}
+
+/// What a cinematic's signals do: the pod's and the player's animator
+/// parameters (here and, through `drive`, on the drawn rigs), the
+/// trigger's end calls.
+fn signals(state: &mut State, world: &mut World, drive: &mut BodyDrive, i: usize, list: &[Signal]) {
+    for s in list {
+        let Some((pc, pod)) = state.pod_anim.as_mut() else {
+            return;
+        };
+        let Some(names) = pc.names.get(i).cloned() else {
+            return;
+        };
+        match *s {
+            Signal::Prepare(on) => {
+                if let Some(p) = names.prepare {
+                    pod.set_bool(p, on);
+                    drive.pod_values.push((p, on));
+                }
+            }
+            Signal::Play(on) => {
+                pod.set_bool(names.play, on);
+                drive.pod_values.push((names.play, on));
+                if let Some(p) = names.player {
+                    if let Some((_, a)) = state.anim.as_mut()
+                        && !a.set_bool(p, on)
+                    {
+                        warn!(
+                            "player: the player's controller lacks {:?}",
+                            names.player_name
+                        );
+                    }
+                    drive.player_values.push((p, on));
+                }
+            }
+            Signal::TriggerEnd => {
+                for (k, on) in state.hatches.finish(i, &mut state.player) {
+                    show_trigger(world, &state.triggers, k, on);
+                    info!(
+                        "player: first use: {:?} {}",
+                        state.triggers[k].name,
+                        if on { "on" } else { "off" }
+                    );
+                }
+            }
+            Signal::Ended => {}
+        }
+    }
+}
+
+/// One physics step of the pod's animator and of the hatch cinematic
+/// playing (as `sn-inspect walk`): the pod's end events, then the
+/// controller's late update.
+fn step_cinematic(state: &mut State, world: &mut World, drive: &mut BodyDrive, dt: f64, now: f64) {
+    let Some((pc, pod)) = state.pod_anim.as_mut() else {
+        return;
+    };
+    pod.update(dt as f32);
+    let animated = pc.animated_pose(pod);
+    let ends = pod
+        .events
+        .iter()
+        .filter(|e| e.function == "OnPlayerCinematicModeEnd")
+        .count();
+    let Some(mut h) = state.hatch.take() else {
+        return;
+    };
+    let forwarded = pc.names.get(h.run.trigger).is_some_and(|n| n.forwarded);
+    let mut frames: Vec<CinematicFrame> = Vec::new();
+    for _ in 0..ends {
+        if forwarded {
+            let anchor = cam_anchor(state);
+            if let Some(f) = h.run.cinematic.end_event(now, animated, anchor) {
+                put(state, &f, &mut h);
+                frames.push(f);
+            }
+        }
+    }
+    let anchor = cam_anchor(state);
+    let f = h
+        .run
+        .cinematic
+        .late_update(now, player_pose(&state.player), animated, anchor);
+    put(state, &f, &mut h);
+    frames.push(f);
+    for f in &frames {
+        signals(state, world, drive, h.run.trigger, &f.signals);
+    }
+    if h.run.cinematic.active {
+        state.hatch = Some(h);
+    } else {
+        let p = state.player.position;
+        info!(
+            "player: cinematic of {:?} ended after {:.2} s at ({:.2}, {:.2}, {:.2}), in pod {}",
+            state.triggers[h.run.trigger].name,
+            now - h.started,
+            p.x,
+            p.y,
+            p.z,
+            state.player.in_pod
+        );
     }
 }
 
@@ -416,6 +619,22 @@ pub fn update(
                     triggers: init.triggers,
                     hatches: init.hatches,
                     body: init.body.map(|p| (p, PlayerBody::new(&p))),
+                    anim: init.anim.map(|a| {
+                        let animator = a.animator();
+                        (a, animator)
+                    }),
+                    pod_anim: init.pod_cinematics.map(|c| {
+                        drive.pod_controller = c.program.controller.name.clone();
+                        info!(
+                            "player: hatch cinematics: pod animator {:?}, {} triggers forwarded of {}",
+                            c.program.controller.name,
+                            c.names.iter().filter(|n| n.forwarded).count(),
+                            c.names.len()
+                        );
+                        let animator = c.animator();
+                        (c, animator)
+                    }),
+                    hatch: None,
                 });
             }
             FromWorker::Bodies {
@@ -467,8 +686,9 @@ pub fn update(
         }
         captured |= cursor.grab_mode != CursorGrabMode::None;
     }
-    // Dead or respawning: no look, movement or use (`Player.OnKill`).
-    let controls = state.vitals.controls_enabled();
+    // Dead or respawning: no look, movement or use (`Player.OnKill`); in
+    // a cinematic neither (`PlayerController` off).
+    let controls = state.vitals.controls_enabled() && !state.player.cinematic;
     if captured && controls {
         // Bevy's mouse delta is y down, Unity's y up.
         let d = motion.delta;
@@ -476,38 +696,187 @@ pub fn update(
             .look
             .apply(&state.look_params, f64::from(d.x), -f64::from(d.y));
     }
+    // `--use-hatch`: aim at the nearest usable hatch, then use it below.
+    let play = sim.steps as f64 * state.params.fixed_dt;
+    let mut auto_use = false;
+    if sim.ready && controls && sim.use_hatch_at.last().is_some_and(|&t| play >= t) {
+        sim.use_hatch_at.pop();
+        let pose = player_pose(&state.player);
+        let eye = state.body.as_ref().map_or(state.player.position, |(p, b)| {
+            b.camera(p, pose, None).position
+        });
+        let nearest = (0..state.triggers.len())
+            .filter(|&i| state.hatches.triggers.get(i).is_some_and(|t| t.active))
+            .filter(|&i| {
+                sim.hatch_name
+                    .as_ref()
+                    .is_none_or(|n| state.triggers[i].name.contains(n.as_str()))
+            })
+            .min_by(|&a, &b| {
+                (state.triggers[a].at - eye)
+                    .length()
+                    .total_cmp(&(state.triggers[b].at - eye).length())
+            });
+        match nearest {
+            Some(i) => {
+                info!(
+                    "player: --use-hatch: going to {:?} ({:.2} m)",
+                    state.triggers[i].name,
+                    (state.triggers[i].at - eye).length()
+                );
+                sim.auto_target = Some((i, play + 15.0));
+            }
+            None => info!("player: --use-hatch: no usable hatch"),
+        }
+    }
+    // Aim at it; use it when the hand points at it, else walk towards it.
+    let mut auto_walk = false;
+    let mut forced_use: Option<usize> = None;
+    if let Some((i, give_up)) = sim.auto_target
+        && controls
+    {
+        let pose = player_pose(&state.player);
+        let eye = state.body.as_ref().map_or(state.player.position, |(p, b)| {
+            b.camera(p, pose, None).position
+        });
+        let d = state.triggers[i].at - eye;
+        let yaw = d.x.atan2(d.z);
+        let pitch = (-d.y).atan2((d.x * d.x + d.z * d.z).sqrt());
+        state.look = Look {
+            rotation_x: yaw.to_degrees(),
+            rotation_y: (-pitch.to_degrees())
+                .clamp(state.look_params.minimum_y, state.look_params.maximum_y),
+        };
+        let target = hand_target(&sim.world, eye, state.look.yaw(), state.look.pitch());
+        let hits = target
+            .is_some_and(|(_, h)| h.body & HATCH_BODY != 0 && ((h.body >> 8) & 0xff) as usize == i);
+        if (play * 50.0).round() as u64 % 50 == 0 {
+            info!(
+                "player: --use-hatch: at ({:.2}, {:.2}, {:.2}), {:.2} m from {:?}, look ({:.1}, {:.1}), hand on {}",
+                state.player.position.x,
+                state.player.position.y,
+                state.player.position.z,
+                d.length(),
+                state.triggers[i].name,
+                state.look.rotation_x,
+                state.look.rotation_y,
+                target.map_or("nothing".to_string(), |(t, h)| format!(
+                    "{} {:#x} at {t:.2} m",
+                    sn_assets::body_kind(h.body),
+                    h.body
+                ))
+            );
+        }
+        if hits {
+            auto_use = true;
+            sim.auto_target = None;
+        } else if play > give_up - 13.0 && target.is_some_and(|(t, _)| t > 1.0) {
+            // 2 s without the hand's ray reaching it and something in the
+            // way within reach (the pod's hull above the top entry when
+            // standing on it): use it directly (debug only).
+            info!(
+                "player: --use-hatch: the hand's ray does not reach {:?}; using it directly",
+                state.triggers[i].name
+            );
+            forced_use = Some(i);
+            sim.auto_target = None;
+        } else if play > give_up {
+            info!(
+                "player: --use-hatch: gave up on {:?}",
+                state.triggers[i].name
+            );
+            sim.auto_target = None;
+        } else {
+            auto_walk = true;
+            // Blocked for half a second: step aside for half a second (as
+            // `sn-inspect walk` does round the ladder).
+            if (state.player.position - sim.auto_moved.0).length() > 0.1 {
+                sim.auto_moved = (state.player.position, play);
+            } else if play - sim.auto_moved.1 > 0.5 && play > sim.auto_strafe_until {
+                sim.auto_strafe_until = play + 0.5;
+                sim.auto_moved = (state.player.position, play + 0.5);
+            }
+        }
+    }
+    let auto_strafe = auto_walk && play < sim.auto_strafe_until;
     let (yaw, pitch) = (state.look.yaw(), state.look.pitch());
 
     // Use (the lifepod's hatches).
-    let wants_use =
-        keys.just_pressed(KeyCode::KeyE) || (captured && buttons.just_pressed(MouseButton::Left));
-    if wants_use && sim.ready && controls {
-        let eye =
-            state.player.position + state.body.as_ref().map_or(V3::ZERO, |(p, b)| b.pose.eye(p));
-        match hand_target(&sim.world, eye, yaw, pitch) {
+    let wants_use = auto_use
+        || keys.just_pressed(KeyCode::KeyE)
+        || (captured && buttons.just_pressed(MouseButton::Left));
+    if (wants_use || forced_use.is_some()) && sim.ready && controls {
+        let pose = player_pose(&state.player);
+        let eye = state.body.as_ref().map_or(state.player.position, |(p, b)| {
+            b.camera(p, pose, None).position
+        });
+        let aimed = match forced_use {
+            Some(i) => Some((
+                0.0,
+                sn_sim::collide::Hit {
+                    t: 0.0,
+                    normal: V3::ZERO,
+                    point: state.triggers[i].at,
+                    body: HATCH_BODY | ((i as u64) << 8),
+                },
+            )),
+            None => hand_target(&sim.world, eye, yaw, pitch),
+        };
+        match aimed {
             Some((d, hit)) if hit.body & HATCH_BODY != 0 => {
                 let i = ((hit.body >> 8) & 0xff) as usize;
                 let (name, text) = (
                     state.triggers[i].name.clone(),
                     state.triggers[i].hand_text.clone(),
                 );
-                match state
-                    .hatches
-                    .use_trigger(i, &mut state.player, &state.params)
-                {
-                    Some(switched) => {
-                        info!(
-                            "player: used {name:?} ({text:?}) from {d:.2} m → ({:.2}, {:.2}, {:.2}), in pod {}",
-                            state.player.position.x,
-                            state.player.position.y,
-                            state.player.position.z,
-                            state.player.in_pod
-                        );
-                        for (k, on) in switched {
-                            show_trigger(&mut sim.world, &state.triggers, k, on);
+                let cinematic = state.pod_anim.is_some() && state.anim.is_some();
+                let now = sim.steps as f64 * state.params.fixed_dt;
+                if cinematic {
+                    let root = state
+                        .body
+                        .as_ref()
+                        .map_or(pose, |(_, b)| b.camera_root(pose));
+                    let anchor = cam_anchor(state);
+                    match state.hatches.begin(
+                        i,
+                        now,
+                        &mut state.player,
+                        &mut state.look,
+                        &state.params,
+                        root,
+                        anchor,
+                    ) {
+                        Some((run, first)) => {
+                            info!("player: used {name:?} ({text:?}) from {d:.2} m: cinematic");
+                            let h = HatchPlay {
+                                run,
+                                started: now,
+                                camera_root: None,
+                            };
+                            signals(state, &mut sim.world, &mut drive, i, &first);
+                            state.hatch = Some(h);
                         }
+                        None => info!("player: {name:?} cannot be used now"),
                     }
-                    None => info!("player: {name:?} cannot be used (no end point)"),
+                } else {
+                    match state
+                        .hatches
+                        .use_trigger(i, &mut state.player, &state.params)
+                    {
+                        Some(switched) => {
+                            info!(
+                                "player: used {name:?} ({text:?}) from {d:.2} m → ({:.2}, {:.2}, {:.2}), in pod {}",
+                                state.player.position.x,
+                                state.player.position.y,
+                                state.player.position.z,
+                                state.player.in_pod
+                            );
+                            for (k, on) in switched {
+                                show_trigger(&mut sim.world, &state.triggers, k, on);
+                            }
+                        }
+                        None => info!("player: {name:?} cannot be used (no end point)"),
+                    }
                 }
             }
             Some((d, hit)) => info!(
@@ -519,7 +888,17 @@ pub fn update(
     }
 
     // Movement input.
-    let key = |k: KeyCode| if keys.pressed(k) { 1.0 } else { 0.0 };
+    let held_w = sim.hold_forward_from.is_some_and(|t| play >= t);
+    let key = |k: KeyCode| {
+        if keys.pressed(k)
+            || ((held_w || auto_walk) && k == KeyCode::KeyW)
+            || (auto_strafe && k == KeyCode::KeyD)
+        {
+            1.0
+        } else {
+            0.0
+        }
+    };
     let input = Input {
         move_dir: V3::new(
             key(KeyCode::KeyD) - key(KeyCode::KeyA),
@@ -586,9 +965,17 @@ pub fn update(
                 in_pod: state.player.in_pod,
                 landed,
                 world_settled: sim.ready,
-                cinematic: false,
+                cinematic: state.player.cinematic,
             };
-            for e in state.vitals.step(&state.vitals_params, dt, &situation) {
+            let mut vitals_events = Vec::new();
+            if sim.kill_at.is_some_and(|t| now >= t) {
+                sim.kill_at = None;
+                info!("player: --kill");
+                let all = state.vitals_params.max_health;
+                state.vitals.take_damage(all, &mut vitals_events);
+            }
+            vitals_events.extend(state.vitals.step(&state.vitals_params, dt, &situation));
+            for e in vitals_events {
                 if matches!(e, VitalsEvent::Breath(_)) {
                     continue;
                 }
@@ -609,12 +996,61 @@ pub fn update(
                     // `EscapePod.RespawnPlayer` (or the start point).
                     let (at, in_pod) = state.respawn;
                     state.player.teleport(&state.params, at, Some(in_pod));
+                    // `ResetPlayerOnDeath`: `DisableHeadCameraController`.
+                    if let Some((_, b)) = state.body.as_mut() {
+                        b.respawned();
+                    }
                 }
             }
             // `Player.FixedUpdate`'s falling clock, `UnderWaterTracker`.
             if let Some((_, b)) = state.body.as_mut() {
                 let p = &state.player;
-                b.fixed_step(now, underwater(&state.params, p), p.walk_grounded, false);
+                b.fixed_step(
+                    now,
+                    underwater(&state.params, p),
+                    p.walk_grounded,
+                    p.cinematic,
+                );
+            }
+            let was_cinematic = state.player.cinematic;
+            step_cinematic(state, &mut sim.world, &mut drive, dt, now);
+            if !state.player.cinematic {
+                state.player.rotation = ease_tilt(state.player.rotation, dt);
+            }
+            // After a cinematic: trace the player for 3 s (debugging the
+            // hatches).
+            if sim.trace_hatches && was_cinematic && !state.player.cinematic {
+                sim.trace_until = now + 3.0;
+            }
+            if now <= sim.trace_until {
+                let p = &state.player;
+                let e = p.rotation.to_euler();
+                let gap = sim
+                    .world
+                    .clearance(&p.capsule(&state.params), p.position, 1.0)
+                    .map_or(f64::NAN, |c| c.gap);
+                info!(
+                    "player: trace {now:.2} s: gap {gap:.3} m, at ({:.3}, {:.3}, {:.3}), {:?}, swimming {}, grounded {} (walk {}), velocity ({:.2}, {:.2}, {:.2}), rotation euler ({:.1}, {:.1}, {:.1}), look ({:.1}, {:.1}), input ({:.0}, {:.0}, {:.0}), height {:.2}",
+                    p.position.x,
+                    p.position.y,
+                    p.position.z,
+                    p.motor,
+                    p.swimming,
+                    p.grounded,
+                    p.walk_grounded,
+                    p.velocity.x,
+                    p.velocity.y,
+                    p.velocity.z,
+                    e.x,
+                    e.y,
+                    e.z,
+                    state.look.rotation_x,
+                    state.look.rotation_y,
+                    input.move_dir.x,
+                    input.move_dir.y,
+                    input.move_dir.z,
+                    p.height
+                );
             }
         }
         if steps == MAX_STEPS_PER_FRAME {
@@ -654,23 +1090,56 @@ pub fn update(
             };
             let world = &sim.world;
             let mut ray = |o: V3, d: V3, l: f64| world.cast(MOVE, o, d, 0.0, l).is_some();
-            drive.values = body.update(params, &frame, &mut ray);
+            let values = body.update(params, &frame, &mut ray);
+            // The same values for our own copy of the player's animator.
+            if let Some((_, a)) = state.anim.as_mut() {
+                for &(name, v) in &values {
+                    let id = sn_unity::name_hash(name);
+                    match v {
+                        AnimValue::Float(x) => a.set_float(id, x as f32),
+                        AnimValue::Bool(b) => a.set_bool(id, b),
+                        AnimValue::Trigger => a.set_trigger(id),
+                    };
+                }
+                a.update(frame.dt as f32);
+            }
+            drive.values = values;
             drive.rules_micros = started.elapsed().as_secs_f32() * 1e6;
             Some((*params, body.pose))
         }
         None => None,
     };
     drive.shown = pose.is_some();
-    if let Some((_, pose)) = &pose {
-        drive.view_model = view_model_transform(p, pose);
-    }
+    let ppose = player_pose(&state.player);
 
     // The camera: at the game's eye (the main camera hangs on
-    // `cameraOffsetTransform`, `AutoParent`), else at the player's
-    // transform.
-    let (eye, rotation) = match &pose {
-        Some((params, pose)) => (unity_to_bevy(p + pose.eye(params)), pose_rotation(pose)),
-        None => (
+    // `cameraOffsetTransform`, `AutoParent`), `camRoot` moved by a
+    // cinematic or on the head camera bone after a death; without a body
+    // at the player's transform.
+    let (eye, rotation) = match (&pose, state.body.as_ref()) {
+        (Some((params, _)), Some((_, body))) => {
+            drive.view_model = pose_to_bevy(&body.view_model(ppose));
+            let root = match (&state.anim, body.head_camera) {
+                (Some((pa, a)), true) => {
+                    let head = node_world(body, &pa.head_camera, a, ppose);
+                    // Once a second: where the death camera is.
+                    if sim.death_logged.is_none_or(|t| play >= t + 1.0) {
+                        sim.death_logged = Some(play);
+                        let d = head.position - ppose.position;
+                        info!(
+                            "player: death camera on the head camera bone, {:.2} m above the player's transform ({:.2} m sideways)",
+                            d.y,
+                            (d.x * d.x + d.z * d.z).sqrt()
+                        );
+                    }
+                    Some(head)
+                }
+                _ => state.hatch.as_ref().and_then(|h| h.camera_root),
+            };
+            let cam = pose_to_bevy(&body.camera(params, ppose, root));
+            (cam.translation, cam.rotation)
+        }
+        _ => (
             unity_to_bevy(p),
             camera_rotation(state.look.yaw(), state.look.pitch()),
         ),
@@ -702,37 +1171,35 @@ pub fn update(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sn_sim::body::CameraPose;
     use sn_sim::player::look_rotate;
 
     #[test]
-    fn pose_rotation_matches_the_rules() {
-        let pose = CameraPose {
+    fn poses_convert_to_bevy() {
+        // Any Unity rotation turns vectors as its Bevy conversion does.
+        let pose = Pose::new(V3::new(1.0, 2.0, 3.0), Q::euler(20.0, 135.0, 4.0));
+        let t = pose_to_bevy(&pose);
+        assert!((t.translation - Vec3::new(1.0, 2.0, -3.0)).length() < 1e-5);
+        for v in [
+            V3::new(0.0, 0.0, 1.0),
+            V3::new(1.0, 0.0, 0.0),
+            V3::new(0.0, 1.0, 0.0),
+        ] {
+            let expect = unity_to_bevy(pose.rotation.rotate(v));
+            let got = t.rotation * unity_to_bevy(v);
+            assert!((got - expect).length() < 1e-5, "{v:?}: {got} vs {expect}");
+        }
+        // The camera of a level player looks along the rig's pose.
+        let cam = CameraPose {
             root_y: -0.1,
             root_pitch: 20.0,
             yaw: 135.0,
             roll: 4.0,
             up_pitch: -10.0,
         };
-        let q = pose_rotation(&pose);
-        for v in [
-            V3::new(0.0, 0.0, 1.0),
-            V3::new(1.0, 0.0, 0.0),
-            V3::new(0.0, 1.0, 0.0),
-        ] {
-            let expect = unity_to_bevy(pose.rotate(v));
-            let got = q * unity_to_bevy(v);
-            assert!((got - expect).length() < 1e-5, "{v:?}: {got} vs {expect}");
-        }
-        // The view model takes the position and only the yaw.
-        let t = view_model_transform(V3::new(1.0, 2.0, 3.0), &pose);
-        assert!((t.translation - Vec3::new(1.0, 1.9, -3.0)).length() < 1e-5);
-        let yaw_only = CameraPose {
-            yaw: 135.0,
-            ..CameraPose::default()
-        };
-        let ahead = t.rotation * unity_to_bevy(V3::new(0.0, 0.0, 1.0));
-        let expect = unity_to_bevy(yaw_only.rotate(V3::new(0.0, 0.0, 1.0)));
-        assert!((ahead - expect).length() < 1e-5);
+        let ahead = cam.rotate(V3::new(0.0, 0.0, 1.0));
+        let q = Q::euler(cam.root_pitch, cam.yaw, cam.roll) * Q::euler(cam.up_pitch, 0.0, 0.0);
+        assert!((q.rotate(V3::new(0.0, 0.0, 1.0)) - ahead).length() < 1e-9);
     }
 
     #[test]

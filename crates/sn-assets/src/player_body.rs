@@ -3,9 +3,36 @@
 //! shows, the head, the camera's nodes, the animator and the numbers of
 //! `ArmsController`. Facts in `docs/formats/gameplay.md` § The player's body.
 
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use sn_anim::{Animator, Program};
 use sn_unity::{ArmsController, PPtr, PlayerFields, SkinnedMeshRenderer};
 
+use crate::anim::PosedNode;
 use crate::{Assets, ObjectRef, Prefab, Result};
+
+/// The player's animator as the rules need it (M9g5d/e): the compiled
+/// controller, the pose before animation, and the two nodes the camera
+/// follows, posed by the animator: `Player.camAnchor` (a cinematic moves
+/// `camRoot` there) and `CameraToPlayerManager.headCameraBone` (the death
+/// camera). Their chains start below the player's root and pass through
+/// the view model (checked to be stored at the root's origin).
+#[derive(Clone)]
+pub struct PlayerAnimation {
+    pub program: Arc<Program>,
+    pub defaults: Vec<f32>,
+    pub cam_anchor: PosedNode,
+    pub head_camera: PosedNode,
+    /// `MainCameraControl.minimumY` / `maximumY`.
+    pub look_limits: (f64, f64),
+}
+
+impl PlayerAnimation {
+    pub fn animator(&self) -> Animator {
+        Animator::new(self.program.clone(), self.defaults.clone())
+    }
+}
 
 /// `TechType.None`: what `Equipment.GetTechTypeInSlot` returns for an
 /// empty slot.
@@ -343,6 +370,49 @@ impl Assets<'_> {
         };
         body.equip(|_| TECH_TYPE_NONE);
         Ok(body)
+    }
+
+    /// The player's animator and its camera nodes ([`PlayerAnimation`]).
+    pub fn player_animation(&self, body: &PlayerBody) -> Result<PlayerAnimation> {
+        let mut cache = HashMap::new();
+        let set = self.animation_set(&body.controller, &mut cache)?;
+        if !set.errors.is_empty() {
+            return Err(format!("player animation: {:?}", set.errors));
+        }
+        let program = Arc::new(Program::new(Arc::new(set.controller.clone()), &set.clips));
+        let binding = body
+            .prefab
+            .bind_animator(body.animator_node, &program, &|_| Vec::new());
+        if binding.missing > 0 {
+            return Err(format!(
+                "player animator: {} slots not in the hierarchy",
+                binding.missing
+            ));
+        }
+        let posed = |node: usize, what: &str| {
+            body.prefab
+                .posed_node(node, &program, &binding)
+                .ok_or_else(|| format!("player: {what} not in the hierarchy"))
+        };
+        let cam_anchor = posed(body.cam_anchor_node, "camAnchor")?;
+        let head_camera = posed(body.head_camera_node, "headCameraBone")?;
+        let vm = &body.prefab.nodes[body.view_model_node];
+        if vm.parent != Some(0)
+            || vm.local.position != [0.0; 3]
+            || vm.local.rotation != [0.0, 0.0, 0.0, 1.0]
+        {
+            return Err("player: the view model is not at the player's origin".into());
+        }
+        Ok(PlayerAnimation {
+            program,
+            defaults: binding.defaults,
+            cam_anchor,
+            head_camera,
+            look_limits: (
+                f64::from(body.camera.minimum_y),
+                f64::from(body.camera.maximum_y),
+            ),
+        })
     }
 
     /// A material's shader name (`m_ParsedForm.m_Name`).

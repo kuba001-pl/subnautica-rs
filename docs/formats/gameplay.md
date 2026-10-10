@@ -420,6 +420,24 @@ Reader: `sn_unity::PlayerFields` (now every field), `ArmsController`;
   code sets none), so we take PhysX's unbounded default: out in one
   step, along the overlap's normal, with no velocity added. Not checked
   against the game.
+- **Hypothesis (M9g5e fix):** the walking motor does the same. The top
+  hatch's normal exit (`top_out_trigger`, end point VR-only) leaves the
+  player where the animation ends, 0.30 m inside the pod's roof; the
+  game's `CharacterController` recovers from overlaps
+  (`enableOverlapRecovery`, on by default in Unity's documentation; the
+  game's code never sets it). Ours pushes out in one step (0.45 m up,
+  onto the roof at the height the first-use exit leaves the player).
+  How PhysX's overlap recovery moves the character exactly: not checked.
+- **Confirmed (code, `PlayerCinematicController.OnPlayerCinematicModeEnd`):**
+  the end event does nothing when no cinematic runs
+  (`!cinematicModeActive`). The first-use clips fire it on two layers in
+  one frame; when the first call ends the cinematic (no end point used),
+  the second must leave the player alone. Ours put the player back on
+  the animated node, so the node's yaw stayed on the player's transform
+  while the look had taken it back: the view turned twice and movement
+  no longer went where the camera looked (the bottom first-use exit,
+  270°). Fixed (M9g5e); `sn-inspect walk`/`dive` now check that no yaw
+  is left on the player after each hatch.
 - **Confirmed (code, `Player.OnKill`, `CameraToPlayerManager`):** death
   sets `player_death` (fire: `player_death_fire`, explosions:
   `player_death_explosion`) and stops `MainCameraControl`; `camRoot`
