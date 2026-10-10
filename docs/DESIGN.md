@@ -401,7 +401,7 @@ understand it, then write our own.
 | **P1** ✅ | **Done 2026-10-10** (MODLOG; facts in `docs/formats/dotnet.md`): all 21,383 method bodies of the game's DLL decode; 793 `TechType` names, every TechData entry named; 7 menus, 159 nodes (fabricator 100), every craft node has TechData; TechData's 17 defaults. The scheme reader also needed `newarr`/`dup`/`stelem.ref` (C# `params` arrays) and `ret`: still straight-line, no branches or locals. Plan as written: `sn-dotnet` (new crate, layer 1, pure): our own reader of .NET PE files: metadata tables (`TypeDef`, `Field`, `MethodDef`, `Constant`), string heaps, method bodies; `TechType` names from the enum's constants; the `CraftTree` menus by walking the IL of its tree methods (only the patterns used there: `ldstr`, `ldc.i4`, `newobj CraftNode`, `call AddNode`). Unit tests on synthetic bytes we encode ourselves (no game files as fixtures). **Stop and ask** if the IL needs more than a simple pattern reader. | Synthetic round-trip tests; real-data test: number of `TechType` names logged and every TechData entry has a name; the fabricator tree's node count logged; every craft node's tech type has a TechData entry. |
 | **M9a** ✅ | **Done 2026-10-10** (MODLOG; facts in `docs/formats/gameplay.md` § Collision; plan below). `sn-sim::collide` passes 12 unit tests. `sn-inspect swim` reaches the Kelp Forest from the lifepod for seeds 1–5: 0 penetrations, smallest gap ≥ 5.1 mm, 1,860–3,693 contacts, about 21–31 µs mean and 60–120 µs p99 per step. The client doesn't use it yet (M9b). Plan as written: Collision: a kinematic capsule swept against triangles. Terrain from the LOD 0 meshes already built around the camera; objects from their prefabs' colliders (box, sphere, capsule, mesh; read in `sn-unity`). Our own sweep in `sn-sim`, no physics engine yet (§ 3.3's physics decision waits for rigid bodies: floating lifepod, dropped items). | Unit tests of the sweep on synthetic meshes (slide, corner, thin wall); a scripted swim lifepod → Kelp Forest logs 0 penetrations and the contacts; cost per frame logged. |
 | **M9b** ✅ | **Done 2026-10-10** (MODLOG; facts in `docs/formats/gameplay.md` § Player movement; plan and "as built" below). `sn-inspect walk`: pod → hatch → 10 s swim (71 m) → back in, 0 penetrations, 0 surfaces passed through; speeds 3.5 walking and 7.22 swimming against 3.5 and 7.6 read (7.22 is 7.6 after one step of drag 2.5). Layer 19 hits all layers but 9; every loaded collider is on layer 0 (none dropped yet). 46 pod and module colliders; placeholder spawns 10–216 per run. Colliders are one-sided, as PhysX's (source read; winding measured). The client plays as the player by default. Keyboard and mouse play are not tested by the agent. Plan as written: Player: first-person camera at eye height, swimming, walking with gravity in the lifepod and above water, the lifepod hatch. Speeds from the player's serialized fields (P0). The fly camera stays as `--free-cam`. Collision gaps left by M9a that matter here: (1) read the physics layer collision matrix (`PhysicsManager`) and collide only with the layers the player's capsule hits; (2) colliders of the lifepod's spawned modules (fabricator, radio, …) and of what placeholders spawn (M7h), so walking inside the pod hits them; (3) find out whether the game's terrain and mesh colliders block from one side or both, and match it. | Movement rules unit-tested; speeds logged next to the values read; scripted run lifepod → water → lifepod (positions logged); the layer matrix logged and the colliders kept/dropped by layer counted; lifepod module and placeholder colliders counted in the run; one- vs two-sided recorded in `docs/formats/gameplay.md` with how it was checked. |
-| **M9c** | Oxygen, health, depth: drain under water, refill at the surface and in the lifepod, suffocation → respawn in the lifepod, with the game's numbers. A minimal HUD of our own (bars and numbers; the game's UI sprites later). | Rules unit-tested; a scripted dive logs oxygen over time against the values read. |
+| **M9c** | Oxygen, health, depth: drain under water, refill at the surface and in the lifepod, suffocation → respawn in the lifepod, with the game's numbers. A minimal HUD of our own (bars and numbers; the game's UI sprites later). Also the mouse look as the game's (`MainCameraControl`: sensitivity, pitch limits, smoothing, read from its serialized fields and settings defaults), replacing our own values from M9b. | Rules unit-tested; a scripted dive logs oxygen over time against the values read; the look's values logged next to the ones read, its limits unit-tested. |
 | **M10** | Multiplayer as planned (Phase D): `sn-protocol`, `sn-net`, `sn-server`, handshake with the build check, join, player sync. From here solo play also runs against an in-process server (§ 3.1, principle 5), so items and crafting below are written server-authoritative once. | M10's own row. |
 | **M9d** | Pick up and inventory: `Pickupable` objects within reach, outcrops break into their resource (`BreakableResource`), inventory of the game's size, item sizes from TechData; picked objects gone for every player (server state keyed by entity id and slot seed). | Inventory rules unit-tested; a scripted pick-up logs item counts; the object's drawn count −1 on both clients. |
 | **M9e** | Crafting at the lifepod's fabricator: the menu from P1's tree, recipes and times from TechData, starting blueprints from `PDAData`; item names from the language files. | Crafting rules unit-tested on synthetic recipes; one real recipe crafted in a scripted run (counts before/after logged); menu node count equal to P1's. |
@@ -547,7 +547,10 @@ only); no animation of the body or the camera (bob, step smoothing);
 PhysX's solver replaced by our slide + velocity clipping; tanks, fins and
 tools don't change speeds yet (no inventory until M9d); the lifepod
 does not float or move (M7f4); mouse sensitivity and look limits our
-own until `MainCameraControl` is read.
+own until `MainCameraControl` is read (planned in M9c). Where the rest
+is planned: the cinematic, body and camera animation in "After Phase E"
+item 3; tanks and fins in item 1; the physics solver in "Deferred, not
+dropped".
 
 **As built (2026-10-10), where it differs from the plan:**
 - **The hatch.** The pod's `UseableDiveHatch` is on an inactive node and
@@ -583,17 +586,22 @@ steps before it starts):
 2. **Scanner and PDA:** fragments, blueprints unlocked by scanning
    (`analysisTech`, `TechFragment`), the databank text from the language
    files, the PDA screen.
-3. **Creatures:** spawning (the 102,777 slot creatures of M7d plus placed
+3. **The player's animations:** the hatch cinematics (`PlayerCinematicController`
+   plays an animation, then the end point; also the VR-only end points then
+   come from the animation's last frame), the body and arms, the camera bob
+   and step smoothing. Needs the `Animator` work deferred in M7f4; it is
+   the same work creatures need, so the two go one after the other.
+4. **Creatures:** spawning (the 102,777 slot creatures of M7d plus placed
    ones), swimming AI, skinned animation (needs the `Animator` work deferred
    in M7f4), attacks and damage. The largest single block.
-4. **Vehicles:** Seaglide, Seamoth, Prawn suit, Cyclops; the Mobile Vehicle
+5. **Vehicles:** Seaglide, Seamoth, Prawn suit, Cyclops; the Mobile Vehicle
    Bay (constructor tree, P1).
-5. **Base building:** Habitat Builder, base pieces and their placement
+6. **Base building:** Habitat Builder, base pieces and their placement
    rules, power.
-6. **Story:** the Aurora's countdown and explosion on the game clock
+7. **Story:** the Aurora's countdown and explosion on the game clock
    (M7f4), radio messages, Precursor bases and keys, the ending.
-7. **Audio:** FMOD banks (§ 7: decoding and licensing to check first).
-8. **The deferred look items** above, reviewed with the user: which matter
+8. **Audio:** FMOD banks (§ 7: decoding and licensing to check first).
+9. **The deferred look items** above, reviewed with the user: which matter
    most once the game can be played.
 
 **Honest size:** Phase E is about 9 milestones. "Subnautica 1:1" is the

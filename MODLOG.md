@@ -2,6 +2,19 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-10 — Plan: homes for M9b's open differences
+
+**What:** `docs/DESIGN.md` only. Added the game's mouse look
+(`MainCameraControl`: sensitivity, pitch limits, smoothing) to M9c, with
+its own "Done when" check. Added "The player's animations" as item 3 of
+"After Phase E" (the hatch cinematics, body and arms, camera bob; next to
+Creatures, which needs the same `Animator` work); the later items moved
+down by one. M9b's "Not 1:1 yet" now says where each difference is
+planned.
+**Why:** the user asked that every difference left by M9b have a place in
+the plan.
+**Verified:** docs only; `git status --short` lists only our own files.
+
 ## 2026-10-10 — M9b: the player (walk, swim, the lifepod's hatches)
 
 **What:** fourth step of Phase E (`docs/DESIGN.md` § 4.3, "M9b plan" and
