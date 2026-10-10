@@ -135,10 +135,9 @@ impl Scene {
 
     /// The Aurora scene split by when each part shows (M7f4e): one
     /// hierarchy per top-level object and [`AuroraShow`], holding only the
-    /// nodes shown in exactly those states. Drawn nodes keep the detail
-    /// level [`Prefab::visible`] picks in their state (their LOD level is
-    /// cleared, so the copy draws them all). Leaves the scene intact, as a
-    /// new game starts. Empty if the scene has no exploder.
+    /// nodes shown in exactly those states ([`Prefab::drawn`]: every LOD
+    /// level, M7f4f). Leaves the scene intact, as a new game starts. Empty
+    /// if the scene has no exploder.
     pub fn aurora_groups(&mut self, assets: &Assets) -> Result<Vec<AuroraGroup>> {
         let Some(exploder) = self.exploder(assets)? else {
             return Ok(Vec::new());
@@ -149,7 +148,7 @@ impl Scene {
                 .iter()
                 .map(|root| {
                     let mut visible = vec![false; root.nodes.len()];
-                    for (i, _) in root.visible() {
+                    for (i, _) in root.drawn() {
                         visible[i] = true;
                     }
                     (root.nodes.iter().map(|n| n.active).collect(), visible)
@@ -197,9 +196,6 @@ impl Scene {
                 let mut prefab = root.clone();
                 for (i, n) in prefab.nodes.iter_mut().enumerate() {
                     n.active = keys[i] == Some(show);
-                    if visible_i[i] || visible_e[i] {
-                        n.lod = None;
-                    }
                 }
                 groups.push(AuroraGroup {
                     root: r,

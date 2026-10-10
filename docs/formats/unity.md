@@ -207,6 +207,43 @@ So: world = placement × (nodes below the root).
 Of the 1,369 placed prefabs, 324 have LOD groups and 457 draw nothing
 (cell/batch roots, atmosphere volumes, spawn slots, lights).
 
+### LOD groups and quality settings (M7f4f)
+
+- **Confirmed (parser, real data; `sn-inspect lods`):** the placed
+  prefabs hold 3,692 enabled LOD groups (76,854 placed): 660 with 1
+  level, 2,434 with 2, 31 with 3, 536 with 4, 31 with 5. **Every group's
+  fade mode is 0** (no cross-fading). 12,008 drawn renderers are in
+  groups; 152 are listed in more than one level of their group (they show
+  at each); none is listed by two groups. The Aurora and escape pod
+  scenes: 292 groups (1 or 2 levels), fade mode 0.
+- **Confirmed (parser; UnityPy as the oracle):** `QualitySettings`
+  (class 47, `globalgamemanagers`, 436 bytes) reads to its last byte:
+  `i32 current`, then per level `string name; i32 pixelLightCount,
+  shadows, shadowResolution, shadowProjection, shadowCascades; f32
+  shadowDistance, shadowNearPlaneOffset, shadowCascade2Split; vec3
+  shadowCascade4Split; i32 shadowmaskMode, skinWeights, textureQuality,
+  anisotropicTextures, antiAliasing; 4 × bool (align 4); i32 vSyncCount;
+  f32 lodBias; i32 maximumLODLevel; 2 × bool (align 4); f32 budget; 6 ×
+  i32; bool (align 4); f32 DPI factor; PPtr customRenderPipeline`, then
+  `i32 strippedMaximumLODLevel`. Levels: Low `lodBias` 0.66, Medium 1,
+  High **10**; `maximumLODLevel` 0 in all three; current level 0 (the
+  player's saved choice replaces it).
+- **Hypothesis:** the game's "Detail" option sets the quality level by
+  index (High = 2; `GraphicsPreset.detail` → `GraphicsUtil.SetQualityLevel`,
+  in a DLL not decompiled).
+- **Confirmed (code):** the camera's field of view is
+  `MiscSettings.fieldOfView`, a static initialised to **60** (read from
+  the DLL), changed by the player's options (`Graphics/FOV`, not read);
+  60 while the PDA is open.
+- **Hypothesis (Unity's documented rule, not checked against the game):**
+  a group's level is the first whose screen-relative height the group
+  reaches, with `h = size · max|lossyScale| / 2 / (d · tan(fov / 2)) ·
+  lodBias` and `d` the distance from the camera to the group's reference
+  point (`transform.TransformPoint(localReferencePoint)`); below the last
+  level's height the group is culled. At High, placed groups by distance:
+  50 m: 65,533 LOD 0, 7,359 LOD 1, 3,961 LOD 2; 400 m: 4,491 culled;
+  800 m: 17,069 culled.
+
 ### Addressables catalog — confirmed
 
 `StreamingAssets/aa/catalog.json` (12 MB, parsed in about 50 ms by our own

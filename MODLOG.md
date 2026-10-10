@@ -2,6 +2,63 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-10 — M7f4f: levels of detail by distance, the game's field of view
+
+**What:** sixth step of M7f4 (`docs/DESIGN.md` § 4.4, "as built").
+- `sn-unity`: `LODGroup` read fully (reference point, size, fade mode,
+  cross-fading, each level's height and fade width); `quality.rs` (new):
+  `QualitySettings` (each level's name, shadow settings, `lodBias`,
+  `maximumLODLevel`).
+- `sn-dotnet`: `static_initializer_f32` (a static field's `ldc.r4 v;
+  stsfld` in `.cctor`, exactly once).
+- `sn-assets`: `quality_settings`, `field_of_view_code`
+  (`MiscSettings.fieldOfView`); `Prefab::lod_groups` (enabled groups),
+  `PrefabNode::lod_group` (its group and the levels listing it),
+  `lod_conflicts`; `Prefab::drawn` now yields every level's nodes;
+  `PrefabLodGroup::world`.
+- `sn-world::lod` (new, pure): `relative_height`, `level`.
+- `sn-client`: every level spawned, the level shown chosen per instance
+  per frame (hidden parts hidden; the shadow pass sees the same choice);
+  scene instances under one root entity each; the camera's vertical field
+  of view 60° (was Bevy's 45°); LOD counts, switches, triangles and the
+  switch's cost logged. Flags `--no-lod`, `--fov <deg>`.
+- `sn-inspect lods` (new command).
+- Docs: `docs/formats/unity.md` § LOD groups and quality settings.
+- No new dependency.
+
+**Why:** M7f4 plan (everything was drawn at LOD 0, and the camera's field
+of view was not the game's).
+
+**Findings:**
+- 3,692 enabled groups in the placed prefabs (76,854 placements), none
+  cross-fading. Quality levels: Low `lodBias` 0.66, Medium 1, High 10;
+  `maximumLODLevel` 0 in all (checked against the UnityPy oracle).
+- `MiscSettings.fieldOfView` = 60 (vertical, degrees).
+- At bias 10 most groups stay at LOD 0 to about 50 m; some are culled
+  from about 200 m.
+
+**Dead ends:**
+- None that cost time.
+
+**Not 1:1 (listed in DESIGN "as built"):** the rule is Unity's documented
+one, not compared with the game; High quality and 60° assumed (the
+player's saved options not read); hidden levels spawned up front (a cost
+the game does not have).
+
+**Verified (2026-10-10):**
+- `cargo test --workspace` passes (new: 2 `sn_world::lod` tests, 2
+  `quality` reader tests, `lod_group` in `sn-unity/tests/objects.rs`);
+  `cargo clippy --workspace --all-targets` and `cargo fmt --all` clean.
+- Real data (`--ignored`): 27 tests in `sn-assets` pass, new
+  `lod_settings_field_of_view_and_groups`.
+- `sn-client --benchmark 300` from the lifepod: 8,208 groups, by level
+  5,861 / 2,039 / 66 / 176 / 2, 64 culled; mean 25.0 ms against 24.8 and
+  24.5 ms with `--no-lod` (noise about ±1 ms). Looking at the Aurora:
+  from 500 m 16.9 ms (`--no-lod` 19.7), from 1,500 m 15.1 ms (16.6).
+- The Aurora's swap still happens with the scene under its root entity
+  (`aurora: models swapped at game time 532.39 s`).
+- Not compared with the game on screen.
+
 ## 2026-10-10 — M7f4e: the Aurora on the game clock, its exterior cull, shadow flags
 
 **What:** fifth step of M7f4 (`docs/DESIGN.md` § 4.4, "as built").

@@ -102,6 +102,25 @@ impl Assets<'_> {
     }
 }
 
+/// The project's quality levels (`QualitySettings`, `globalgamemanagers`;
+/// M7f4f).
+pub fn quality_settings(assets: &Assets) -> Result<sn_unity::QualitySettings> {
+    let ggm = assets.standalone("globalgamemanagers")?;
+    let info = ggm
+        .objects()
+        .iter()
+        .find(|o| o.class_id == QUALITY_SETTINGS)
+        .ok_or("globalgamemanagers: no QualitySettings")?;
+    let (_, data) = ggm
+        .object(info.path_id)
+        .ok_or("globalgamemanagers: QualitySettings unreadable")?;
+    sn_unity::QualitySettings::parse(data, ggm.file().big_endian)
+        .map_err(|e| format!("QualitySettings: {e}"))
+}
+
+/// `QualitySettings`' class id.
+const QUALITY_SETTINGS: i32 = 47;
+
 /// Whether the game clamps blend shape weights to 0–100
 /// (`PlayerSettings.legacyClampBlendShapeWeights`, `globalgamemanagers`).
 pub fn blend_shape_clamp(assets: &Assets) -> Result<bool> {

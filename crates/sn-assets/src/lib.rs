@@ -29,10 +29,10 @@ use std::sync::{Arc, Mutex};
 use sn_install::GameData;
 use sn_unity::{Bundle, BundleDirectory, ObjectInfo, PPtr, SerializedFile};
 
-pub use anim::{AnimationSet, AnimatorBinding, blend_shape_clamp};
+pub use anim::{AnimationSet, AnimatorBinding, blend_shape_clamp, quality_settings};
 pub use code::{
-    ExploderCode, GAME_ASSEMBLY, GameCode, PlayerCode, TechDefaults, exploder_code, game_code,
-    player_code, read_assembly,
+    ExploderCode, GAME_ASSEMBLY, GameCode, PlayerCode, TechDefaults, exploder_code,
+    field_of_view_code, game_code, player_code, read_assembly,
 };
 pub use collision::{ColliderCounts, ColliderMeshes, PrefabCollider, WorldCollider};
 pub use collision_world::{
@@ -46,8 +46,8 @@ pub use gameplay::{
 };
 pub use marmo::{BiomeSky, MarmoSkies, marmo_skies};
 pub use prefab::{
-    CullBox, ExteriorCull, NodeAnimator, PlaceholderGroup, Prefab, PrefabNode, SHADOWS_OFF,
-    SHADOWS_ON, SHADOWS_ONLY, SHADOWS_TWO_SIDED, VolumetricGlow, WorldBox,
+    CullBox, ExteriorCull, NodeAnimator, PlaceholderGroup, Prefab, PrefabLodGroup, PrefabNode,
+    SHADOWS_OFF, SHADOWS_ON, SHADOWS_ONLY, SHADOWS_TWO_SIDED, VolumetricGlow, WorldBox,
 };
 pub use scene::{
     AuroraGroup, AuroraShow, CinematicTrigger, DiveHatch, LIGHTMAPPED_PREFAB, Scene, SceneSpawn,

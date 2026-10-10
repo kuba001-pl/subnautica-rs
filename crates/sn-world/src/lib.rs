@@ -9,6 +9,7 @@
 
 mod biomes;
 mod entities;
+pub mod lod;
 mod slots;
 mod start;
 mod wire;

@@ -68,7 +68,11 @@ pub struct PrefabNode {
     /// this hierarchy or missing).
     pub bones: Vec<Option<usize>>,
     /// Level in its LOD group (0 = most detailed); `None` if not in one.
+    /// The most detailed level listing it, if several do.
     pub lod: Option<usize>,
+    /// Its LOD group (index in [`Prefab::lod_groups`]) and the levels
+    /// listing its renderer (bit `n`: level `n`), M7f4f.
+    pub lod_group: Option<(usize, u32)>,
     /// The `anchorSky` of a `SkyApplier` listing this node's renderer (its
     /// sky then comes from the biome at the object); `None`: the global sky.
     pub sky_applier: Option<i32>,
@@ -170,6 +174,34 @@ pub struct WorldBox {
     pub half: [f32; 3],
 }
 
+/// An enabled `LODGroup` (M7f4f).
+#[derive(Clone, Debug, PartialEq)]
+pub struct PrefabLodGroup {
+    /// The node holding it.
+    pub node: usize,
+    /// In the node's space.
+    pub reference_point: [f32; 3],
+    /// In the node's space (times its largest scale in the world).
+    pub size: f32,
+    /// Each level's screen-relative height.
+    pub heights: Vec<f32>,
+    /// `LODFadeMode` (0 none, 1 cross-fade, 2 speed tree).
+    pub fade_mode: i32,
+}
+
+impl PrefabLodGroup {
+    /// The world reference point and world size with the prefab's root
+    /// at `placement`.
+    pub fn world(&self, prefab: &Prefab, placement: &Transform) -> ([f32; 3], f32) {
+        let t = match prefab.nodes.get(self.node) {
+            Some(n) => placement.then(&n.in_prefab),
+            None => *placement,
+        };
+        let scale = t.scale.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+        (t.transform_point(self.reference_point), self.size * scale)
+    }
+}
+
 #[derive(Clone)]
 pub struct Prefab {
     /// The addressable key, e.g. `WorldEntities/…/X.prefab`.
@@ -178,6 +210,10 @@ pub struct Prefab {
     pub nodes: Vec<PrefabNode>,
     pub placeholder_groups: Vec<PlaceholderGroup>,
     pub exterior_culls: Vec<ExteriorCull>,
+    pub lod_groups: Vec<PrefabLodGroup>,
+    /// Renderers listed by more than one enabled LOD group (only the
+    /// first counts).
+    pub lod_conflicts: usize,
 }
 
 impl Prefab {
@@ -279,6 +315,16 @@ impl Prefab {
         self.visible().map(|(_, n)| n)
     }
 
+    /// Every node Unity may draw (active, with a mesh and an enabled
+    /// renderer), at any LOD level, with its index (M7f4f; the level
+    /// shown is chosen per frame from [`PrefabNode::lod_group`]).
+    pub fn drawn(&self) -> impl Iterator<Item = (usize, &PrefabNode)> {
+        self.nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| n.active && n.renderer_enabled && n.mesh.is_some())
+    }
+
     /// [`Prefab::visible_nodes`] with their indices.
     pub fn visible(&self) -> impl Iterator<Item = (usize, &PrefabNode)> {
         let drawable = |n: &PrefabNode| n.active && n.renderer_enabled && n.mesh.is_some();
@@ -372,7 +418,27 @@ impl Assets<'_> {
         self.add_node(root, None, true, &mut prefab, &mut lods, 0)?;
 
         // LOD levels: match each group's renderers to nodes by object.
+        let mut lod_groups = Vec::new();
+        let mut lod_conflicts = 0;
         for (file_of, group) in &lods {
+            let Some(go) = self.resolve(&file_of.file, group.game_object)? else {
+                continue;
+            };
+            let Some(at) = prefab.nodes.iter().position(|n| n.key == go.key()) else {
+                continue;
+            };
+            let g = lod_groups.len();
+            lod_groups.push(PrefabLodGroup {
+                node: at,
+                reference_point: group.local_reference_point,
+                size: group.size,
+                heights: group
+                    .lods
+                    .iter()
+                    .map(|l| l.screen_relative_height)
+                    .collect(),
+                fade_mode: group.fade_mode,
+            });
             for (level, lod) in group.lods.iter().enumerate() {
                 for renderer in &lod.renderers {
                     let Some(r) = self.resolve(&file_of.file, *renderer)? else {
@@ -387,7 +453,17 @@ impl Assets<'_> {
                     };
                     if let Some(i) = prefab.nodes.iter().position(|n| n.key == go.key()) {
                         let node = &mut prefab.nodes[i];
+                        match node.lod_group {
+                            Some((other, _)) if other != g => {
+                                lod_conflicts += 1;
+                                continue;
+                            }
+                            _ => {}
+                        }
                         node.lod = Some(node.lod.map_or(level, |l: usize| l.min(level)));
+                        let bit = if level < 32 { 1u32 << level } else { 0 };
+                        let levels = node.lod_group.map_or(0, |(_, m)| m);
+                        node.lod_group = Some((g, levels | bit));
                     }
                 }
             }
@@ -509,6 +585,8 @@ impl Assets<'_> {
             key: prefab.key,
             placeholder_groups,
             exterior_culls,
+            lod_groups,
+            lod_conflicts,
             nodes: prefab
                 .nodes
                 .into_iter()
@@ -532,6 +610,7 @@ impl Assets<'_> {
                     cast_shadows: n.cast_shadows,
                     skinned: n.skinned,
                     lod: n.lod,
+                    lod_group: n.lod_group,
                     sky_applier: n.sky_applier,
                     lights: n.lights,
                     day_night_light: n.day_night_light,
@@ -748,6 +827,7 @@ impl Assets<'_> {
             skinned,
             bone_keys,
             lod: None,
+            lod_group: None,
             sky_applier: None,
             lights,
             day_night_light,
@@ -838,6 +918,7 @@ struct BuildingNode {
     skinned: bool,
     bone_keys: Vec<Option<(std::path::PathBuf, String, i64)>>,
     lod: Option<usize>,
+    lod_group: Option<(usize, u32)>,
     sky_applier: Option<i32>,
     lights: Vec<Light>,
     day_night_light: Option<DayNightLight>,

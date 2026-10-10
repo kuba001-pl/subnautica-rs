@@ -12,6 +12,7 @@ mod entities;
 mod game;
 mod gameplay;
 mod grass;
+mod lods;
 mod materials;
 mod mesh;
 mod octree;
@@ -132,6 +133,10 @@ Commands:
                          what its swap switches, its parts by state, the
                          ShipExteriorCull volumes in the world, and the
                          drawn renderers' shadow modes
+  lods                   M7f4f: quality levels (lodBias), the camera's field
+                         of view, LOD groups of the placed prefabs and
+                         scenes, and the level each placed group shows
+                         at 5–800 m
   scene --startup        The scenes the game loads at start and what the
                          spawned ones draw in a new game
   terrain-materials      Terrain block types → materials → textures, checked
@@ -265,6 +270,7 @@ fn run(mut args: Vec<String>) -> Result<ExitCode> {
             ),
         ),
         ["aurora"] => aurora::run(&game),
+        ["lods"] => lods::run(&game),
         ["scene", "--startup"] => scene::startup(&game),
         ["scene", "--lifepod"] => scene::lifepod(&game, seed),
         ["walk"] => walk::run(&game, seed),

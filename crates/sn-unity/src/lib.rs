@@ -21,6 +21,7 @@ mod objects;
 mod physics;
 mod placeholder;
 mod prefab;
+mod quality;
 mod reader;
 mod scene_scripts;
 mod serialized;
@@ -76,6 +77,7 @@ pub use prefab::{
     AssetBundleManifest, GameObject, Lod, LodGroup, MeshRenderer, SkinnedMeshRenderer,
     TransformNode, parse_resource_container, parse_text_asset,
 };
+pub use quality::{QualityLevel, QualitySettings};
 pub use scene_scripts::{
     AutoLoadScene, CrashedShipExploder, EscapePod, PrefabSpawner, SPAWN_INTERMITTENT, SPAWN_MANUAL,
     SPAWN_ON_AWAKE, SPAWN_ON_NEW_BORN, SPAWN_ON_START, ShipExteriorCullManager, SpawnPrefab,

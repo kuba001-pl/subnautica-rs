@@ -1,7 +1,7 @@
 //! Object readers on bytes built in code (Unity 2019.4 layouts).
 
 use sn_unity::{
-    AutoLoadScene, CrashedShipExploder, Material, MonoBehaviourHeader, PPtr,
+    AutoLoadScene, CrashedShipExploder, LodGroup, Material, MonoBehaviourHeader, PPtr,
     ShipExteriorCullManager, Texture2D, TextureFormat, parse_additional_scenes,
     parse_autoload_scenes, parse_ship_exterior_cull,
 };
@@ -291,6 +291,42 @@ fn ship_exterior_cull() {
     let mut b = behaviour();
     b.i32(i32::MAX);
     assert!(parse_ship_exterior_cull(&b.0, false).is_err());
+}
+
+#[test]
+fn lod_group() {
+    let mut b = W::default();
+    b.pptr(0, 7);
+    b.f32(0.5).f32(1.0).f32(-2.0); // local reference point
+    b.f32(12.0); // size
+    b.i32(1); // fade mode: cross-fade
+    b.0.extend([1, 0]); // animate cross-fading, last is billboard
+    b.align();
+    b.i32(2);
+    b.f32(0.25).f32(0.1).i32(1).pptr(0, 20);
+    b.f32(0.01).f32(0.0).i32(2).pptr(0, 21).pptr(0, 22);
+    b.u8a(1); // enabled
+    let g = LodGroup::parse(&b.0, false).unwrap();
+    assert_eq!(g.game_object.path_id, 7);
+    assert_eq!(g.local_reference_point, [0.5, 1.0, -2.0]);
+    assert_eq!(g.size, 12.0);
+    assert_eq!(g.fade_mode, 1);
+    assert!(g.animate_cross_fading && !g.last_lod_is_billboard);
+    assert_eq!(g.lods.len(), 2);
+    assert_eq!(g.lods[0].screen_relative_height, 0.25);
+    assert_eq!(g.lods[0].fade_transition_width, 0.1);
+    assert_eq!(
+        g.lods[1]
+            .renderers
+            .iter()
+            .map(|p| p.path_id)
+            .collect::<Vec<_>>(),
+        [21, 22]
+    );
+    assert!(g.enabled);
+    for len in 0..b.0.len() - 3 {
+        assert!(LodGroup::parse(&b.0[..len], false).is_err());
+    }
 }
 
 #[test]

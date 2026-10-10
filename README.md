@@ -106,7 +106,10 @@ controllers, transitions and layers run every frame; animated Transforms
 move, skinned meshes bend on the GPU, blend shapes follow their animated
 weights; e.g. Lifepod 5's hull, eggs, Precursor terminals, the waving
 brain corals and jewelled disks; not compared with the game on screen
-yet). Flying from the lifepod
+yet); objects and scenes switch between their levels of detail by
+distance with the game's `LODGroup`s, its High quality `lodBias` and its
+60° field of view (`--no-lod`, `--fov`; Unity's documented rule, not
+compared with the game on screen yet). Flying from the lifepod
   to the crater edge
   keeps memory under 1.6 GiB, at about 220 fps on average on an RTX 3080
   (about 100 fps in the dense start area).
@@ -117,8 +120,9 @@ The water clip map (no water inside the lifepod and bases,
 shore foam); water settings per pixel (the
 camera's are used everywhere); Lifepod 5's own interior light and sky,
 floating on the waves; the sun and sky following the running game clock;
-the Aurora's explosion effects, sounds and warnings, its distant levels
-of detail, fire and smoke; terrain grass
+the Aurora's explosion effects, sounds and warnings, fire and smoke;
+the player's saved detail level and field-of-view options (High and 60°
+assumed); terrain grass
 beyond ~100 m, and grass tufts in the game's exact spots (the amount and
 spread follow its rules; our own random numbers); for world objects: reflections of the biome
 sky's cube map, cave/interior skies chosen by atmosphere volumes,

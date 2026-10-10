@@ -168,6 +168,15 @@ pub fn exploder_code(bytes: &[u8]) -> Result<ExploderCode> {
     })
 }
 
+/// `MiscSettings.fieldOfView`'s initial value: the camera's vertical field
+/// of view in degrees before the player changes it in the options
+/// (M7f4f).
+pub fn field_of_view_code(bytes: &[u8]) -> Result<f32> {
+    let e = |e: sn_dotnet::Error| format!("{GAME_ASSEMBLY}: {e}");
+    let asm = Assembly::parse(bytes).map_err(e)?;
+    sn_dotnet::static_initializer_f32(&asm, "", "MiscSettings", "fieldOfView").map_err(e)
+}
+
 /// Reads [`PlayerCode`] from the game's code assembly.
 pub fn player_code(bytes: &[u8]) -> Result<PlayerCode> {
     let e = |e: sn_dotnet::Error| format!("{GAME_ASSEMBLY}: {e}");

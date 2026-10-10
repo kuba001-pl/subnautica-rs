@@ -170,6 +170,7 @@ impl SkinnedMeshRenderer {
 pub struct Lod {
     /// Screen height fraction below which the next level takes over.
     pub screen_relative_height: f32,
+    pub fade_transition_width: f32,
     pub renderers: Vec<PPtr>,
 }
 
@@ -177,7 +178,15 @@ pub struct Lod {
 #[derive(Clone, Debug, PartialEq)]
 pub struct LodGroup {
     pub game_object: PPtr,
+    /// The point distances are measured to, in the group's Transform space.
+    pub local_reference_point: [f32; 3],
+    /// Size in the group's Transform space (times its largest scale in
+    /// the world).
     pub size: f32,
+    /// `LODFadeMode`: 0 none, 1 cross-fade, 2 speed tree.
+    pub fade_mode: i32,
+    pub animate_cross_fading: bool,
+    pub last_lod_is_billboard: bool,
     pub lods: Vec<Lod>,
     pub enabled: bool,
 }
@@ -186,20 +195,21 @@ impl LodGroup {
     pub fn parse(data: &[u8], big_endian: bool) -> Result<LodGroup> {
         let mut r = Reader::new(data, big_endian);
         let game_object = PPtr::read(&mut r)?;
-        r.bytes(12)?; // local reference point
+        let local_reference_point = [r.f32()?, r.f32()?, r.f32()?];
         let size = r.f32()?;
-        r.i32()?; // fade mode
-        r.u8()?;
-        r.u8()?; // animate cross fading, last LOD is billboard
+        let fade_mode = r.i32()?;
+        let animate_cross_fading = r.u8()? != 0;
+        let last_lod_is_billboard = r.u8()? != 0;
         r.align(4)?;
         let n = r.count(12)?;
         let mut lods = Vec::with_capacity(n);
         for _ in 0..n {
             let screen_relative_height = r.f32()?;
-            r.f32()?; // fade transition width
+            let fade_transition_width = r.f32()?;
             let renderers = pptr_vector(&mut r)?;
             lods.push(Lod {
                 screen_relative_height,
+                fade_transition_width,
                 renderers,
             });
         }
@@ -207,7 +217,11 @@ impl LodGroup {
         let enabled = r.u8()? != 0;
         Ok(LodGroup {
             game_object,
+            local_reference_point,
             size,
+            fade_mode,
+            animate_cross_fading,
+            last_lod_is_billboard,
             lods,
             enabled,
         })

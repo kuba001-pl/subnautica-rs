@@ -262,6 +262,58 @@ struct Part {
     shape: Option<u16>,
     /// The renderer's `m_CastShadows` (M7f4e): off casts no sun shadow.
     shadows: u8,
+    /// Its LOD group (index in the prefab's [`LodDesc`]s) and the levels
+    /// that show it (bit `n`: level `n`), M7f4f.
+    lod: Option<(u16, u32)>,
+}
+
+/// A `LODGroup` of a prefab (M7f4f), relative to the prefab's root.
+#[derive(Clone, Debug)]
+pub struct LodDesc {
+    /// The group's node.
+    in_prefab: Placement,
+    reference_point: [f32; 3],
+    size: f32,
+    heights: Arc<[f32]>,
+}
+
+/// One LOD group of a spawned instance (Bevy world space).
+struct LodState {
+    center: Vec3,
+    size: f32,
+    heights: Arc<[f32]>,
+    /// The level shown (`None`: culled).
+    level: Option<usize>,
+}
+
+/// A spawned instance's LOD groups and the parts they switch (M7f4f).
+#[derive(Component)]
+pub struct LodSwitch {
+    groups: Vec<LodState>,
+    /// (group, levels mask, entity, triangles).
+    members: Vec<(u16, u32, Entity, u32)>,
+}
+
+/// The game's LOD settings: `QualitySettings` level High (M7f4f).
+#[derive(Resource, Clone, Copy, Debug)]
+pub struct LodSettings {
+    pub bias: f32,
+    pub max_level: usize,
+}
+
+/// LOD switching over the last frames.
+#[derive(Resource, Default)]
+pub struct LodStats {
+    /// Groups per shown level (index 0–3, then 4 and more), culled.
+    levels: [usize; 5],
+    culled: usize,
+    groups: usize,
+    switches: usize,
+    /// Triangles of LOD group parts shown now, and with every group at
+    /// LOD 0.
+    triangles: u64,
+    triangles_lod0: u64,
+    micros: Vec<u128>,
 }
 
 /// What the client's exploder needs from the Aurora scene and the game's
@@ -408,6 +460,7 @@ struct PrefabContent {
     directional: Vec<DirectionalSource>,
     rigs: Vec<Arc<RigDesc>>,
     culls: Vec<CullDesc>,
+    lods: Vec<LodDesc>,
 }
 
 /// Prefabs spawned by placeholders inside prefabs spawned by placeholders
@@ -449,7 +502,10 @@ enum Update {
         directional: Vec<DirectionalSource>,
         rigs: Vec<Arc<RigDesc>>,
         culls: Vec<CullDesc>,
+        lods: Vec<LodDesc>,
     },
+    /// The game's LOD bias and most detailed level (M7f4f).
+    Lod(LodSettings),
     Batch {
         coord: BatchCoord,
         instances: Vec<Instance>,
@@ -1163,6 +1219,7 @@ impl Library {
             directional,
             rigs,
             culls,
+            lods,
         } = self.prefab_content(prefab, out, if spawn { 0 } else { NO_SPAWN });
         let id = (!parts.is_empty()
             || !lights.is_empty()
@@ -1177,6 +1234,7 @@ impl Library {
                 directional,
                 rigs,
                 culls,
+                lods,
             });
         }
         id
@@ -1530,7 +1588,7 @@ impl Library {
             }
             None
         };
-        for (index, node) in prefab.visible() {
+        for (index, node) in prefab.drawn() {
             if node.layer >= 32 || self.culling_mask & (1 << node.layer) == 0 {
                 info!(
                     "objects: {:?} in {} not drawn: layer {} is not in the main camera's culling mask",
@@ -1656,6 +1714,7 @@ impl Library {
                     rig,
                     shape: shape.filter(|_| !effect),
                     shadows: node.cast_shadows,
+                    lod: node.lod_group.map(|(g, m)| (g as u16, m)),
                 });
             }
         }
@@ -1712,12 +1771,26 @@ impl Library {
                 })
             })
             .collect();
+        let lods = prefab
+            .lod_groups
+            .iter()
+            .map(|g| LodDesc {
+                in_prefab: prefab
+                    .nodes
+                    .get(g.node)
+                    .map_or_else(Placement::default, |n| n.in_prefab),
+                reference_point: g.reference_point,
+                size: g.size,
+                heights: g.heights.clone().into(),
+            })
+            .collect();
         let mut content = PrefabContent {
             parts,
             lights,
             directional,
             rigs: rigs.into_iter().map(|r| Arc::new(r.desc)).collect(),
             culls,
+            lods,
         };
         if depth != NO_SPAWN && self.spawn_placeholders {
             self.add_placeholders(prefab, &mut content, out, depth);
@@ -1790,24 +1863,32 @@ impl Library {
                 // hang there too.
                 let at = node.in_prefab;
                 let first_rig = content.rigs.len() as u16;
+                let first_lod = content.lods.len() as u16;
+                content.lods.extend(child.lods.iter().map(|l| LodDesc {
+                    in_prefab: at.then(&l.in_prefab),
+                    ..l.clone()
+                }));
                 content.rigs.extend(child.rigs.iter().map(|r| {
                     Arc::new(RigDesc {
                         base: at.then(&r.base),
                         ..RigDesc::clone(r)
                     })
                 }));
-                content
-                    .parts
-                    .extend(child.parts.iter().map(|p| match p.rig {
+                content.parts.extend(child.parts.iter().map(|p| {
+                    let lod = p.lod.map(|(g, m)| (g + first_lod, m));
+                    match p.rig {
                         Some(rig) => Part {
                             rig: Some(rig.shifted(first_rig)),
+                            lod,
                             ..*p
                         },
                         None => Part {
                             local: at.then(&p.local),
+                            lod,
                             ..*p
                         },
-                    }));
+                    }
+                }));
                 content
                     .lights
                     .extend(child.lights.iter().map(|l| LocalLight {
@@ -2348,6 +2429,24 @@ fn worker(
             }
         }
     }
+    match sn_assets::quality_settings(&library.assets) {
+        Ok(q) => match q.level("High") {
+            Some(high) => {
+                let _ = tx.send(Update::Lod(LodSettings {
+                    bias: high.lod_bias,
+                    max_level: usize::try_from(high.maximum_lod_level).unwrap_or(0),
+                }));
+            }
+            None => {
+                let _ = tx.send(Update::Warning(
+                    "QualitySettings: no level High; objects stay at LOD 0".into(),
+                ));
+            }
+        },
+        Err(e) => {
+            let _ = tx.send(Update::Warning(format!("{e}; objects stay at LOD 0")));
+        }
+    }
     let _ = tx.send(Update::Ready {
         ms: start.elapsed().as_secs_f32() * 1000.0,
     });
@@ -2445,6 +2544,10 @@ pub struct ObjectStreamer {
     prefabs: HashMap<u32, Vec<Part>>,
     /// A prefab's `ShipExteriorCull` boxes (M7f4e).
     prefab_culls: HashMap<u32, Vec<CullDesc>>,
+    /// A prefab's LOD groups (M7f4f).
+    prefab_lods: HashMap<u32, Vec<LodDesc>>,
+    /// Triangles per mesh id (for the LOD statistics).
+    mesh_triangles: HashMap<u32, u32>,
     /// A prefab's animated rigs (M7f4c).
     prefab_rigs: HashMap<u32, Vec<Arc<RigDesc>>>,
     /// (prefab, rig, skin) → its inverse bind poses.
@@ -2512,6 +2615,8 @@ impl ObjectStreamer {
             meshes: HashMap::new(),
             prefabs: HashMap::new(),
             prefab_culls: HashMap::new(),
+            prefab_lods: HashMap::new(),
+            mesh_triangles: HashMap::new(),
             prefab_rigs: HashMap::new(),
             morph_bounds: HashMap::new(),
             bindposes: HashMap::new(),
@@ -2971,6 +3076,10 @@ pub fn stream_objects(
                 info!("objects: asset index ready after {ms:.0} ms");
                 streamer.ready = true;
             }
+            Update::Lod(settings) => {
+                info!("objects: LOD settings (QualitySettings High) {settings:?}");
+                commands.insert_resource(settings);
+            }
             Update::Texture { id, texture, srgb } => {
                 if let Some(image) = to_image(&texture, srgb) {
                     streamer.textures.insert(id, images.add(image));
@@ -2993,6 +3102,9 @@ pub fn stream_objects(
                 streamer.material_descs.insert(id, *desc);
             }
             Update::Mesh { id, data } => {
+                streamer
+                    .mesh_triangles
+                    .insert(id, (data.indices.len() / 3) as u32);
                 if let Some(aabb) = morph_bounds(&data) {
                     streamer.morph_bounds.insert(id, aabb);
                 }
@@ -3008,8 +3120,12 @@ pub fn stream_objects(
                 directional,
                 rigs,
                 culls,
+                lods,
             } => {
                 streamer.prefabs.insert(id, parts);
+                if !lods.is_empty() {
+                    streamer.prefab_lods.insert(id, lods);
+                }
                 if !culls.is_empty() {
                     streamer.prefab_culls.insert(id, culls);
                 }
@@ -3210,9 +3326,130 @@ pub fn stream_objects(
         for inst in &todo {
             let mut entities = Vec::new();
             streamer.spawn_instance(inst, true, &mut spawner, &mut entities);
-            shown.push(entities);
+            // One root per instance (its entities keep their world
+            // placement): the Aurora's swap hides the root, the LOD switch
+            // the parts below it.
+            let root = spawner
+                .commands
+                .spawn((Transform::IDENTITY, Visibility::default()))
+                .id();
+            for e in entities {
+                spawner.commands.entity(e).insert(ChildOf(root));
+            }
+            shown.push(vec![root]);
         }
         streamer.scenes[i].shown = Some(shown);
+    }
+}
+
+/// Records a part of a LOD group; parts not in level 0 start hidden.
+fn lod_member(
+    commands: &mut Commands,
+    members: &mut Vec<(u16, u32, Entity, u32)>,
+    lod: Option<(u16, u32)>,
+    entity: Entity,
+    triangles: u32,
+) {
+    if let Some((group, levels)) = lod {
+        if levels & 1 == 0 {
+            commands.entity(entity).insert(Visibility::Hidden);
+        }
+        members.push((group, levels, entity, triangles));
+    }
+}
+
+/// M7f4f: each spawned instance's LOD groups show the level Unity would
+/// for the camera (`sn_world::lod`), with the game's field of view and
+/// `lodBias`.
+pub fn switch_lods(
+    time: Res<Time>,
+    settings: Option<Res<LodSettings>>,
+    mut stats: ResMut<LodStats>,
+    camera: Query<(&Transform, &Projection), With<Camera3d>>,
+    mut switches: Query<&mut LodSwitch>,
+    mut visibility: Query<&mut Visibility>,
+    mut last_log: Local<f32>,
+) {
+    let (Some(settings), Ok((cam, projection))) = (settings, camera.single()) else {
+        return;
+    };
+    let fov = match projection {
+        Projection::Perspective(p) => p.fov.to_degrees(),
+        _ => return,
+    };
+    let start = Instant::now();
+    let mut levels = [0usize; 5];
+    let (mut culled, mut groups, mut switched) = (0, 0, 0);
+    let (mut triangles, mut triangles_lod0) = (0u64, 0u64);
+    // Triangle tallies only when logging (they are not the switch's cost).
+    *last_log += time.delta_secs();
+    let log_now = *last_log >= 2.0;
+    for mut switch in &mut switches {
+        let switch = &mut *switch;
+        for &(group, mask, _, tris) in switch.members.iter().filter(|_| log_now) {
+            let shown = switch
+                .groups
+                .get(usize::from(group))
+                .and_then(|g| g.level)
+                .is_some_and(|l| l < 32 && mask & (1 << l) != 0);
+            triangles += if shown { u64::from(tris) } else { 0 };
+            triangles_lod0 += if mask & 1 != 0 { u64::from(tris) } else { 0 };
+        }
+        for (g, state) in switch.groups.iter_mut().enumerate() {
+            let d = state.center.distance(cam.translation);
+            let h = sn_world::lod::relative_height(state.size, d, fov, settings.bias);
+            let level = sn_world::lod::level(&state.heights, h, settings.max_level);
+            groups += 1;
+            match level {
+                Some(l) => levels[l.min(4)] += 1,
+                None => culled += 1,
+            }
+            if level == state.level {
+                continue;
+            }
+            state.level = level;
+            switched += 1;
+            let bit = level.map_or(0, |l| if l < 32 { 1u32 << l } else { 0 });
+            for &(group, mask, entity, _) in &switch.members {
+                if usize::from(group) != g {
+                    continue;
+                }
+                if let Ok(mut v) = visibility.get_mut(entity) {
+                    let want = if mask & bit != 0 {
+                        Visibility::Inherited
+                    } else {
+                        Visibility::Hidden
+                    };
+                    if *v != want {
+                        *v = want;
+                    }
+                }
+            }
+        }
+    }
+    stats.levels = levels;
+    stats.culled = culled;
+    stats.groups = groups;
+    stats.switches += switched;
+    stats.triangles = triangles;
+    stats.triangles_lod0 = triangles_lod0;
+    stats.micros.push(start.elapsed().as_micros());
+    if log_now {
+        *last_log = 0.0;
+        let mut us = std::mem::take(&mut stats.micros);
+        us.sort_unstable();
+        info!(
+            "lod: {} groups, by level {:?} (4: 4 and more), culled {}; {} switches in 2 s; their parts' triangles {} (all at LOD 0: {}); {} µs median, {} µs worst per frame",
+            stats.groups,
+            stats.levels,
+            stats.culled,
+            stats.switches,
+            stats.triangles,
+            stats.triangles_lod0,
+            us.get(us.len() / 2).copied().unwrap_or(0),
+            us.last().copied().unwrap_or(0)
+        );
+        stats.switches = 0;
     }
 }
 
@@ -3266,6 +3503,7 @@ impl ObjectStreamer {
         let Some(parts) = self.prefabs.get(&inst.prefab) else {
             return;
         };
+        let mut lod_members: Vec<(u16, u32, Entity, u32)> = Vec::new();
         // `SkyApplier`: the biome at the object's root.
         let biome = s.water.and_then(|w| w.biome_at(inst.transform.position));
         // Animated rigs: a base entity (listed, so despawning it takes the
@@ -3322,7 +3560,9 @@ impl ObjectStreamer {
                     look,
                     textures,
                 };
-                entities.push(s.commands.spawn((marker, to_bevy(&world))).id());
+                let entity = s.commands.spawn((marker, to_bevy(&world))).id();
+                lod_member(s.commands, &mut lod_members, part.lod, entity, 0);
+                entities.push(entity);
                 continue;
             }
             let sky = self.skies.pick(part.biome_sky, biome);
@@ -3412,6 +3652,8 @@ impl ObjectStreamer {
                     }
                     shaped.push((entity, k));
                 }
+                let tris = self.mesh_triangles.get(&part.mesh).copied().unwrap_or(0);
+                lod_member(s.commands, &mut lod_members, part.lod, entity, tris);
                 drawn.push(entity);
                 continue;
             }
@@ -3425,7 +3667,36 @@ impl ObjectStreamer {
                 ))
                 .id();
             shadow_mode(s.commands, entity, casting, part.shadows);
+            let tris = self.mesh_triangles.get(&part.mesh).copied().unwrap_or(0);
+            lod_member(s.commands, &mut lod_members, part.lod, entity, tris);
             entities.push(entity);
+        }
+        // LOD groups: switched per frame by `switch_lods`, starting at LOD 0.
+        if let Some(lods) = self.prefab_lods.get(&inst.prefab)
+            && !lod_members.is_empty()
+        {
+            let groups = lods
+                .iter()
+                .map(|l| {
+                    let t = inst.transform.then(&l.in_prefab);
+                    let scale = t.scale.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+                    let c = t.transform_point(l.reference_point);
+                    LodState {
+                        center: Vec3::new(c[0], c[1], -c[2]),
+                        size: l.size * scale,
+                        heights: l.heights.clone(),
+                        level: Some(0),
+                    }
+                })
+                .collect();
+            entities.push(
+                s.commands
+                    .spawn(LodSwitch {
+                        groups,
+                        members: lod_members,
+                    })
+                    .id(),
+            );
         }
         // `ShipExteriorCull`s: registered while the instance exists.
         if let Some(culls) = self.prefab_culls.get(&inst.prefab) {

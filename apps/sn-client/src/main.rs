@@ -70,6 +70,10 @@ Usage: sn-client [--game-dir <PATH>] [--start <X> <Y> <Z>] [--look <X> <Y> <Z>]
   --no-grass     no terrain grass (for comparisons)
   --no-animation the objects' animators off: everything in its stored pose
                  (for comparisons)
+  --no-lod       objects always at their most detailed level, never culled
+                 by distance (for comparisons)
+  --fov          vertical field of view in degrees: the game's option of
+                 that name (default: its default, 60, read from the game)
   --no-scenes    without the scenes the game spawns at start (the Aurora,
                  the Precursor bases it holds)
   --aurora       intact | exploded: hold the Aurora before or after its
@@ -134,6 +138,9 @@ struct Args {
     no_placeholders: bool,
     no_grass: bool,
     no_animation: bool,
+    no_lod: bool,
+    /// `--fov`: else the game's default.
+    fov: Option<f32>,
     /// `None`: no scenes.
     scenes: Option<SceneOptions>,
     fog_unit: f32,
@@ -173,6 +180,8 @@ fn parse_args() -> Result<Args, String> {
         no_placeholders: false,
         no_grass: false,
         no_animation: false,
+        no_lod: false,
+        fov: None,
         scenes: Some(SceneOptions { lifepod: None }),
         fog_unit: 1.0,
         color_grading: ColorGrading::Off,
@@ -234,6 +243,8 @@ fn parse_args() -> Result<Args, String> {
             "--no-placeholders" => args.no_placeholders = true,
             "--no-grass" => args.no_grass = true,
             "--no-animation" => args.no_animation = true,
+            "--no-lod" => args.no_lod = true,
+            "--fov" => args.fov = Some(number(it.next(), "--fov")?),
             "--no-scenes" => args.scenes = None,
             "--aurora" => {
                 args.aurora_held = Some(match it.next().map(String::as_str) {
@@ -270,6 +281,9 @@ fn parse_args() -> Result<Args, String> {
             "-h" | "--help" => return Err(USAGE.into()),
             other => return Err(format!("unknown argument {other:?}\n\n{USAGE}")),
         }
+    }
+    if args.fov.is_some_and(|f| !(f > 1.0 && f < 179.0)) {
+        return Err("--fov must be between 1 and 179 degrees".into());
     }
     if args.view < 100.0 {
         return Err("--view must be at least 100 metres".into());
@@ -553,6 +567,9 @@ fn main() -> AppExit {
             args.look
                 .unwrap_or(args.start + Vec3::new(60.0, -30.0, 60.0)),
         ),
+        fov: args
+            .fov
+            .unwrap_or_else(|| camera_fov(args.game_dir.clone())),
         fog_end: args.view,
         free_camera: !play,
     })
@@ -626,6 +643,10 @@ fn main() -> AppExit {
                 ));
                 app.init_resource::<animation::AnimationStats>()
                     .add_systems(Update, animation::animate.after(objects::stream_objects));
+                if !args.no_lod {
+                    app.init_resource::<objects::LodStats>()
+                        .add_systems(Update, objects::switch_lods.after(objects::stream_objects));
+                }
                 if args.scenes.is_some() {
                     let start = match args.aurora_held {
                         Some(exploded) => aurora::AuroraStart::Held { exploded },
@@ -713,10 +734,32 @@ impl ColorGrading {
 
 const WATER_COLOUR: Color = Color::srgb(0.05, 0.25, 0.35);
 
+/// The game's vertical field of view in degrees: `MiscSettings.fieldOfView`
+/// from the player's DLL (M7f4f). If it cannot be read, Bevy's default
+/// (45°, **not the game's**) with a warning.
+fn camera_fov(game_dir: Option<PathBuf>) -> f32 {
+    let read = GameData::locate(game_dir)
+        .map_err(|e| e.to_string())
+        .and_then(|game| sn_assets::read_assembly(&game))
+        .and_then(|bytes| sn_assets::field_of_view_code(&bytes));
+    match read {
+        Ok(fov) => {
+            info!("camera: field of view {fov}° (MiscSettings.fieldOfView)");
+            fov
+        }
+        Err(e) => {
+            warn!("camera: field of view not read ({e}); Bevy's 45°, not the game's");
+            45.0
+        }
+    }
+}
+
 #[derive(Resource)]
 struct Setup {
     start: Vec3,
     look: Vec3,
+    /// Vertical field of view, degrees (`MiscSettings.fieldOfView`).
+    fov: f32,
     fog_end: f32,
     /// The fly camera (else the player moves the camera).
     free_camera: bool,
@@ -740,6 +783,10 @@ fn setup(
 ) {
     let mut camera = commands.spawn((
         Camera3d::default(),
+        Projection::Perspective(PerspectiveProjection {
+            fov: settings.fov.to_radians(),
+            ..default()
+        }),
         Transform::from_translation(settings.start).looking_at(settings.look, Vec3::Y),
     ));
     // Measurements keep the camera where they put it (mouse or keyboard

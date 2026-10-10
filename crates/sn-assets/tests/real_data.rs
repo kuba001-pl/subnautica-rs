@@ -743,6 +743,56 @@ fn aurora_clock_and_exterior_cull_volumes() {
     assert_eq!(boxes, 7);
 }
 
+/// M7f4f: the quality levels' LOD settings, the camera's field of view
+/// and a prefab's LOD groups.
+#[test]
+#[ignore = "needs SUBNAUTICA_DIR pointing at a Subnautica install"]
+fn lod_settings_field_of_view_and_groups() {
+    let Some(dir) = std::env::var_os("SUBNAUTICA_DIR") else {
+        eprintln!("SUBNAUTICA_DIR not set; skipping");
+        return;
+    };
+    let game = GameData::locate(Some(PathBuf::from(dir))).unwrap();
+    let fov = sn_assets::field_of_view_code(&sn_assets::read_assembly(&game).unwrap()).unwrap();
+    assert_eq!(fov, 60.0);
+    let assets = Assets::index(&game).unwrap();
+    let q = sn_assets::quality_settings(&assets).unwrap();
+    let names: Vec<(&str, f32, i32)> = q
+        .levels
+        .iter()
+        .map(|l| (l.name.as_str(), l.lod_bias, l.maximum_lod_level))
+        .collect();
+    assert_eq!(
+        names,
+        [("Low", 0.66, 0), ("Medium", 1.0, 0), ("High", 10.0, 0)]
+    );
+    let high = q.level("High").unwrap();
+    assert_eq!((high.shadow_distance, high.shadow_cascades), (50.0, 4));
+
+    // A rock-like prefab with levels: every drawn node in a group is in
+    // at least one level, and groups have falling heights.
+    let catalog = assets.catalog().unwrap();
+    let prefab = assets
+        .prefab(
+            &catalog,
+            "WorldEntities/Environment/AbandonedBases/AbandonedBaseFloatingIsland1.prefab",
+        )
+        .unwrap();
+    assert!(!prefab.lod_groups.is_empty());
+    assert_eq!(prefab.lod_conflicts, 0);
+    for g in &prefab.lod_groups {
+        assert!(g.heights.windows(2).all(|w| w[0] > w[1]), "{g:?}");
+        assert_eq!(g.fade_mode, 0);
+    }
+    for (_, n) in prefab.drawn() {
+        if let Some((g, levels)) = n.lod_group {
+            assert!(g < prefab.lod_groups.len());
+            assert!(levels != 0);
+            assert_eq!(n.lod, Some(levels.trailing_zeros() as usize));
+        }
+    }
+}
+
 #[test]
 #[ignore = "needs SUBNAUTICA_DIR pointing at a Subnautica install"]
 fn skinned_lod_matches_its_static_lod() {

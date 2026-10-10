@@ -544,6 +544,49 @@ pub fn field_initializer_f32(
     }
 }
 
+/// The value a static field gets in the type's static constructor, from
+/// a C# initialiser such as `public static float fieldOfView = 60f;`
+/// (`ldc.r4 v; stsfld field` in `.cctor`). Only that pattern is accepted,
+/// and it must occur exactly once.
+pub fn static_initializer_f32(
+    asm: &Assembly,
+    namespace: &str,
+    type_name: &str,
+    field: &str,
+) -> Result<f32> {
+    let ty = find_type(asm, namespace, type_name)?;
+    let code = method_code(asm, ty, ".cctor")?;
+    let mut found = Vec::new();
+    for (k, i) in code.iter().enumerate() {
+        if i.opcode != STSFLD {
+            continue;
+        }
+        let f = asm.field_token(i.token().unwrap_or(0))?;
+        if f.type_name != type_name || f.namespace != namespace || f.name != field {
+            continue;
+        }
+        match k.checked_sub(1).and_then(|j| code.get(j)) {
+            Some(Instr {
+                opcode: LDC_R4,
+                operand: Operand::F32(v),
+                ..
+            }) => found.push(*v),
+            _ => {
+                return Err(err(format!(
+                    "{type_name}.{field}: static initialiser pattern not recognised"
+                )));
+            }
+        }
+    }
+    match found[..] {
+        [v] => Ok(v),
+        _ => Err(err(format!(
+            "{type_name}.{field}: set {} times in .cctor",
+            found.len()
+        ))),
+    }
+}
+
 /// The bounds of the one `UnityEngine.Random.Range(min, max)` call in a
 /// method, both float constants (`ldc.r4 min; ldc.r4 max; call Range`),
 /// e.g. `CrashedShipExploder.SetExplodeTime`'s `Random.Range(2.3f, 4f)`.
@@ -822,6 +865,20 @@ mod tests {
                 .pop();
         }
         b.method("SetExplodeTime", 0, Some(&code.ret().0));
+
+        // `static float fov = 60f; static float other = …;`
+        b.type_def("", "Settings");
+        let fov = b.field(STATIC, "fov");
+        let other = b.field(STATIC, "other");
+        let mut cctor = Il::default()
+            .ldc_r4(60.0)
+            .stsfld(fov)
+            .op(LDNULL)
+            .stsfld(other);
+        if o.bad_default {
+            cctor = cctor.ldc_r4(45.0).stsfld(fov);
+        }
+        b.method(".cctor", 0, Some(&cctor.ret().0));
         b.build()
     }
 
@@ -941,6 +998,24 @@ mod tests {
     }
 
     #[test]
+    fn reads_static_initialisers() {
+        let bytes = sample(&Options::default());
+        let asm = parse(&bytes);
+        assert_eq!(
+            static_initializer_f32(&asm, "", "Settings", "fov").unwrap(),
+            60.0
+        );
+        assert!(static_initializer_f32(&asm, "", "Settings", "other").is_err());
+        assert!(static_initializer_f32(&asm, "", "Settings", "missing").is_err());
+        let bad = sample(&Options {
+            bad_default: true,
+            ..Options::default()
+        });
+        let e = static_initializer_f32(&parse(&bad), "", "Settings", "fov").unwrap_err();
+        assert!(e.message.contains("set 2 times"), "{e}");
+    }
+
+    #[test]
     fn reads_random_ranges_and_multipliers() {
         let bytes = sample(&Options::default());
         let asm = parse(&bytes);
@@ -979,6 +1054,7 @@ mod tests {
                 let _ = const_f32(&asm, "", "Manager", "defaultRate");
                 let _ = field_initializer_f32(&asm, "", "Manager", "rate");
                 let _ = random_range_f32(&asm, "", "Exploder", "SetExplodeTime");
+                let _ = static_initializer_f32(&asm, "", "Settings", "fov");
                 let _ = multiplier_f32(&asm, "", "Exploder", "SetExplodeTime");
                 for m in 1..=asm.rows(Table::METHOD_DEF) {
                     if let Ok(Some((code, base))) = asm.method_body(m) {
