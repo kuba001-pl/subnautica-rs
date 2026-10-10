@@ -100,7 +100,7 @@ Commands:
   prefab --materials     Every material drawn by the placed prefabs and the
                          startup scenes: uses, what our object shader takes
                          from it, its shader and the shader's first pass
-  scene <NAME> [--tree <DEPTH> | --script <CLASS>]
+  scene <NAME> [--tree <DEPTH> | --script <CLASS> | --cinematics]
                          A scene bundle (aurora, escapepod, main, …): object
                          counts, top-level objects (with their hierarchy to
                          DEPTH), what is drawn, scripts (with the bytes of
@@ -287,6 +287,7 @@ fn run(mut args: Vec<String>) -> Result<ExitCode> {
             s.parse().map_err(|_| format!("{s:?} is not a number"))?,
         ),
         ["scene", name] => scene::run(&game, name, None, None),
+        ["scene", name, "--cinematics"] => scene::cinematics(&game, name),
         ["scene", name, "--script", class] => scene::run(&game, name, None, Some(class)),
         ["scene", name, "--tree", depth] => {
             let depth = depth

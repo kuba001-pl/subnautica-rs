@@ -835,6 +835,8 @@ pub struct Lifepod {
     /// (normal, first use) indices into `triggers` of the bottom and top
     /// hatches (`EscapePodFirstUseCinematicsController`).
     pub first_use: Vec<(usize, usize)>,
+    /// The hatches' cinematics (M9g5d), `names` in `triggers`' order.
+    pub cinematics: Option<crate::PodCinematics>,
 }
 
 impl CollisionLoader<'_> {
@@ -852,6 +854,8 @@ impl CollisionLoader<'_> {
             .filter(|t| t.hand)
             .collect();
         let nodes: Vec<(usize, usize)> = found.iter().map(|t| t.node).collect();
+        let refs: Vec<&crate::CinematicTrigger> = found.iter().collect();
+        let cinematics = crate::PodCinematics::load(assets, &scene, &refs)?;
         let (rest, per_trigger) = self.scene_split(&mut scene, &nodes)?;
         let triggers: Vec<LifepodTrigger> = found
             .into_iter()
@@ -879,6 +883,7 @@ impl CollisionLoader<'_> {
             colliders: rest.len(),
             triggers,
             first_use,
+            cinematics,
         })
     }
 }

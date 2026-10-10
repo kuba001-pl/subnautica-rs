@@ -2,12 +2,12 @@
 
 use std::sync::Arc;
 
-use sn_anim::{Animator, ParamValue, Program, SlotKind};
+use sn_anim::{Animator, ParamValue, Program, SlotKind, event_crossed};
 use sn_unity::{
-    ATTR_POSITION, ATTR_ROTATION, AnimationClip, AnimatorController, BIND_TRANSFORM, BlendNode,
-    BlendType, Condition, ConditionMode, DefaultValues, DenseClip, GenericBinding, Interruption,
-    Layer, LayerBlending, PPtr, Param, ParamKind, SELECTOR_BASE, SelectorState, SelectorTransition,
-    State, StateMachine, StreamedKey, Transition, name_hash,
+    ATTR_POSITION, ATTR_ROTATION, AnimationClip, AnimationEvent, AnimatorController,
+    BIND_TRANSFORM, BlendNode, BlendType, Condition, ConditionMode, DefaultValues, DenseClip,
+    GenericBinding, Interruption, Layer, LayerBlending, PPtr, Param, ParamKind, SELECTOR_BASE,
+    SelectorState, SelectorTransition, State, StateMachine, StreamedKey, Transition, name_hash,
 };
 
 const ROOT: u32 = 0; // name_hash("")
@@ -839,4 +839,110 @@ fn an_empty_state_lets_the_layers_below_through() {
     a.set_bool(name_hash("go"), true);
     a.update(0.1);
     assert!(close(x(&a), 9.0), "{}", x(&a));
+}
+
+/// The clip with an event `function` at `time` seconds.
+fn with_event(mut c: AnimationClip, time: f32, function: &str) -> AnimationClip {
+    c.events.push(AnimationEvent {
+        time,
+        function: function.into(),
+        data: String::new(),
+        object: PPtr::default(),
+        float: 0.0,
+        int: 0,
+        message_options: 0,
+    });
+    c
+}
+
+fn fired(a: &Animator, function: &str) -> usize {
+    a.events.iter().filter(|e| e.function == function).count()
+}
+
+#[test]
+fn events_are_crossed_once_per_pass() {
+    // A clip that holds its end: once, when its time is passed (the
+    // last-frame event when the state reaches its end).
+    assert!(event_crossed(0.9, 1.0, 2.0, 2.0, false));
+    assert!(!event_crossed(1.0, 1.5, 2.0, 2.0, false));
+    assert!(!event_crossed(0.2, 0.4, 1.0, 2.0, false));
+    // Looping: once per loop, across the wrap too.
+    assert!(event_crossed(0.9, 1.3, 0.2, 1.0, true));
+    assert!(!event_crossed(0.3, 1.1, 0.2, 1.0, true));
+    assert!(event_crossed(0.1, 0.3, 0.2, 1.0, true));
+    // At 0, from a state's entry (just before 0).
+    assert!(event_crossed(-1e-6, 0.1, 0.0, 1.0, false));
+    // Played backwards.
+    assert!(event_crossed(0.6, 0.4, 0.5, 1.0, false));
+    // No time passed, or no length: nothing.
+    assert!(!event_crossed(0.5, 0.5, 0.5, 1.0, true));
+    assert!(!event_crossed(0.0, 1.0, 0.5, 0.0, true));
+}
+
+#[test]
+fn a_last_frame_event_fires_once_at_the_end() {
+    let c = controller(
+        vec![layer(0)],
+        vec![machine(vec![state("a", vec![leaf(0)], vec![])])],
+        &[],
+        1,
+    );
+    let clip = with_event(ramp_x("a", false), 1.0, "End");
+    let mut a = animator(c, vec![clip], vec![]);
+    let mut counts = Vec::new();
+    for _ in 0..4 {
+        a.update(0.4);
+        counts.push(fired(&a, "End"));
+    }
+    // 0.4, 0.8, 1.2 (crossed), 1.6.
+    assert_eq!(counts, vec![0, 0, 1, 0]);
+    let e = &a.events;
+    assert!(e.is_empty());
+}
+
+#[test]
+fn a_looping_event_fires_every_loop() {
+    let c = controller(
+        vec![layer(0)],
+        vec![machine(vec![state("a", vec![leaf(0)], vec![])])],
+        &[],
+        1,
+    );
+    let clip = with_event(ramp_x("a", true), 0.5, "Step");
+    let mut a = animator(c, vec![clip], vec![]);
+    let mut n = 0;
+    for _ in 0..30 {
+        a.update(0.1);
+        n += fired(&a, "Step");
+    }
+    // 3 s of a 1 s loop: at 0.5, 1.5 and 2.5 s.
+    assert_eq!(n, 3);
+}
+
+#[test]
+fn events_of_the_next_state_fire_during_a_transition() {
+    let mut t = to(1, vec![cond(ConditionMode::If, "go", 0.0)]);
+    t.duration = 0.5;
+    let sm = machine(vec![
+        state("a", vec![leaf(0)], vec![t]),
+        state("b", vec![leaf(1)], vec![]),
+    ]);
+    let c = controller(vec![layer(0)], vec![sm], &[("go", ParamKind::Bool)], 2);
+    let b = with_event(ramp_x("b", false), 0.1, "BStarted");
+    let mut a = animator(c, vec![hold_x("a", 0.0), b], vec![]);
+    a.update(0.1);
+    a.set_bool(name_hash("go"), true);
+    a.update(0.0); // the transition starts
+    assert_eq!(fired(&a, "BStarted"), 0);
+    a.update(0.2); // b at 0.2 s, blended in at 40 %
+    let e: Vec<_> = a
+        .events
+        .iter()
+        .filter(|e| e.function == "BStarted")
+        .collect();
+    assert_eq!(e.len(), 1);
+    assert_eq!(e[0].state, name_hash("b"));
+    assert!(close(e[0].weight, 0.4), "{}", e[0].weight);
+    a.update(0.5);
+    assert_eq!(fired(&a, "BStarted"), 0);
 }

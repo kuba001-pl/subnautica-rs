@@ -382,6 +382,45 @@ pub struct LayerInfo {
     pub next: Option<(u32, f32)>,
 }
 
+/// An animation event fired by the last update (M9g5b).
+#[derive(Clone, Debug, PartialEq)]
+pub struct FiredEvent {
+    pub layer: usize,
+    /// The playing state's name hash.
+    pub state: u32,
+    /// The controller's clip index and the event's index in that clip.
+    pub clip: u32,
+    pub event: usize,
+    /// `AnimationEvent.functionName`.
+    pub function: String,
+    /// The state's weight in its layer times the clip's in its blend tree
+    /// (the layer's own weight not applied).
+    pub weight: f32,
+}
+
+/// Whether a clip event at `at` seconds is crossed while the state's
+/// normalised time goes from `prev` to `now` (either way), the clip being
+/// `length` seconds long: once per loop for a looping clip; once, when
+/// `at` is passed, for a clip that holds its end (its last-frame event
+/// fires when the state reaches its end). **Hypothesis** for Unity's
+/// rule: an event fires when its time is in (previous, now].
+pub fn event_crossed(prev: f32, now: f32, at: f32, length: f32, looping: bool) -> bool {
+    if length <= 0.0 || prev == now {
+        return false;
+    }
+    let (a, b) = if now > prev {
+        (prev * length, now * length)
+    } else {
+        (now * length, prev * length)
+    };
+    if !looping {
+        return a < at && at <= b;
+    }
+    // The smallest k with k·length + at > a, then is it ≤ b.
+    let k = ((a - at) / length).floor() + 1.0;
+    k * length + at <= b
+}
+
 /// One animator: parameters, each layer's state, the pose.
 pub struct Animator {
     program: Arc<Program>,
@@ -397,6 +436,8 @@ pub struct Animator {
     state_w: Vec<f32>,
     /// Transitions started in the last update, per layer (for logs).
     pub started: Vec<(usize, u32, u32)>,
+    /// Animation events fired by the last update, in layer order.
+    pub events: Vec<FiredEvent>,
 }
 
 fn add_quat(acc: &mut [f32], q: Quat, w: f32, align: Quat) {
@@ -445,6 +486,7 @@ impl Animator {
             acc_w: vec![0.0; program.slots.len()],
             state_w: vec![0.0; program.slots.len()],
             started: Vec::new(),
+            events: Vec::new(),
             program,
         }
     }
@@ -774,6 +816,7 @@ impl Animator {
     /// Advances every layer by `dt` seconds and computes the pose.
     pub fn update(&mut self, dt: f32) {
         self.started.clear();
+        self.events.clear();
         for layer in 0..self.layers.len() {
             self.update_layer(layer, dt);
         }
@@ -793,6 +836,7 @@ impl Animator {
                 run.transit = None;
             }
         }
+        self.collect_events(layer, &run);
         let Some(sm) = self.machine(layer) else {
             self.layers[layer] = run;
             return;
@@ -902,6 +946,58 @@ impl Animator {
             }
         }
         self.layers[layer] = run;
+    }
+
+    /// The events the layer's playing states crossed in this update (the
+    /// current state and, during a transition, the next one; every clip
+    /// with weight above 0 in their blend trees).
+    fn collect_events(&mut self, layer: usize, run: &LayerRun) {
+        let mut parts: Vec<(Playing, f32)> = Vec::new();
+        match (&run.current, &run.transit) {
+            (Current::State(p), None) => parts.push((*p, 1.0)),
+            (current, Some(t)) => {
+                let a = blend_fraction(t);
+                if let Current::State(p) = current {
+                    parts.push((*p, 1.0 - a));
+                }
+                parts.push((t.next, a));
+            }
+            (Current::Frozen(_), None) => {}
+        }
+        for (p, w) in parts {
+            if w <= 0.0 {
+                continue;
+            }
+            let state = self
+                .machine(layer)
+                .and_then(|sm| sm.states.get(p.state))
+                .map_or(0, |s| s.name_id);
+            for leaf in self.leaves(layer, p.state) {
+                if leaf.weight <= 0.0 {
+                    continue;
+                }
+                let Some(cp) = self
+                    .program
+                    .clips
+                    .get(leaf.clip as usize)
+                    .and_then(Option::as_ref)
+                else {
+                    continue;
+                };
+                for (k, e) in cp.clip.events.iter().enumerate() {
+                    if event_crossed(p.prev, p.time, e.time, cp.length, cp.clip.loop_time) {
+                        self.events.push(FiredEvent {
+                            layer,
+                            state,
+                            clip: leaf.clip,
+                            event: k,
+                            function: e.function.clone(),
+                            weight: w * leaf.weight,
+                        });
+                    }
+                }
+            }
+        }
     }
 
     /// The layer's own values (over its slots; other values are the

@@ -12,6 +12,7 @@
 
 pub mod aurora;
 pub mod body;
+pub mod cinematic;
 pub mod collide;
 pub mod lighting;
 pub mod look;
@@ -19,4 +20,4 @@ mod math;
 pub mod player;
 pub mod vitals;
 
-pub use math::V3;
+pub use math::{Pose, Q, V3, lerp_angle};

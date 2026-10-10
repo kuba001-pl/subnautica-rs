@@ -220,6 +220,7 @@ fn worker(
                     .iter()
                     .map(|t| HatchTrigger {
                         end: t.trigger.end.map(|e| V3::from_f32(e.position)),
+                        cinematic: t.trigger.cinematic_params(),
                         enters: t.trigger.enters,
                         exits: t.trigger.exits,
                         active: t.active,
@@ -585,6 +586,7 @@ pub fn update(
                 in_pod: state.player.in_pod,
                 landed,
                 world_settled: sim.ready,
+                cinematic: false,
             };
             for e in state.vitals.step(&state.vitals_params, dt, &situation) {
                 if matches!(e, VitalsEvent::Breath(_)) {

@@ -1,7 +1,7 @@
 # subnautica-rs — Design
 
 Status (2026-10-10): **Phases A–B done up to M7f4g**, Phase C as first
-passes (§ 4), **Phase E up to M9c and M9g4** (§ 4.3). Next: **M9g5, the
+passes (§ 4), **Phase E up to M9c and M9g4** (§ 4.3). Next: **M9g5 (a–e), the
 hatch cinematics** (§ 4.3, plan below M9c's), then M10. M7f4h moved after M11. Each
 row's own mark says what is done; everything else is a plan, not code.
 
@@ -763,7 +763,7 @@ user's OK):
 | **M9g2** ✅ (2026-10-10; see "as built") | **Rules, pure.** `sn-sim::body`: `ArmsController`'s empty-hand rules (relative velocity, smoothing, the parameters above, `UpdateDiving` with `collide`'s ray) and the view model's transform (yaw, swim bob, landing bob, step amount, strafe tilt, the look-up pivot); output a list of parameter values and the view model's local transform. `sn-anim`: `set_float_damped` (Unity's damped `SetFloat`: its exact formula is a **hypothesis** until compared). | Unit tests: speeds and smoothing on known inputs, the dive flags, the bobs' ranges, the damped set's step response. |
 | **M9g3** ✅ (2026-10-10; see "as built") | **Scripted check, headless.** `sn-inspect walk` and `dive` run the player's animator with these rules: each layer's state changes per phase (in the pod, walking, leaving, swimming, diving, at the surface, death, respawn). | Each phase reaches its states (names logged, the expected ones written in the plan before the run); no NaN, unit quaternions; cost per step logged. |
 | **M9g4** ✅ (2026-10-10; see "as built") | **Client.** The `Player` hierarchy spawned from the `main` scene (equipment rule, camera culling mask), its root at the simulated player, the view model's transform each frame, the animator each frame with the rules (a rig as M7f4c, GPU skinning). "Shadows only" drawn as the game does (render layer seen by the sun, not the camera), for the head and for the M7f4e renderer. The camera's near plane from `MainCamera` (read in M7g1). `--third-person`: a debug orbit camera that shows the head (also what remote players will look like). | Body nodes, bones and active models counted in the log; head drawn only in the shadow pass (counted); CPU time of the body logged; screenshots in first person (looking down, swimming) and third person for the user. |
-| **M9g5** | **Cinematics.** The hatches as the game plays them (`PlayerCinematicController`: the player's animator state, the pod's hatch layer, the end at the animation's last frame), replacing M9b's end points (and the VR-only stand-ins); the death animation by damage type. Can come after M10 if the user prefers (cinematics then also need syncing). | `walk` boards and leaves with the cinematic, end poses logged next to M9b's end points; screenshots. |
+| **M9g5** | **Cinematics.** The hatches as the game plays them (`PlayerCinematicController`: the player's animator state, the pod's hatch layer, the end at the animation's last frame), replacing M9b's end points (and the VR-only stand-ins); the death animation by damage type. Started 2026-10-10 (the user's choice, before M10); split into M9g5a–e, plan "M9g5 plan" below. | `walk` boards and leaves with the cinematic, end poses logged next to M9b's end points; screenshots. |
 
 **As built (2026-10-10), where it differs from the plan:**
 - **M9g1.** Built as planned. `PlayerFields` now reads every field
@@ -871,6 +871,151 @@ base layer ("Base Modes") and "Death" layer, per phase of the scripts:
   to `New State` after the clip (exit time 1, 0.25 s).
 - never: `Dive`, `Dive_loops`, `player_view_jump_loop` (the scripts don't
   fall out of the water for 0.45 s), the vehicle, PDA and tool states.
+
+#### M9g5 plan: the hatch cinematics and the death camera (written 2026-10-10)
+
+**What the game has** (read 2026-10-10 with the new `sn-inspect scene
+escapepod --cinematics` and the decompiled classes; to go to
+`gameplay.md` § The player's body, each fact marked):
+- **9 `PlayerCinematicController`s in the pod scene** (confirmed, real
+  data): the 8 hatch triggers' and the intro's. All move the player along
+  `models/Life_Pod_damaged_03/root/player_cineLoc/cin_target`, a node the
+  pod's own animator (`escape_pod_controller`, on `Life_Pod_damaged_03`)
+  moves; all interpolate 0.25 s in and 0.25 s out (the intro 0 s in);
+  none enforces the end by time. Per trigger: the pod parameter
+  (`escapepod_topout`, `_topin`, `_botin`, `_botout`, `_botout_first`,
+  `_topout_first`, `_left_side`, `_right_side`), its "prepare" parameter
+  (`prepare_…`), the player's parameter of the same name (the two side
+  hatches: `escapepod_side`), the end point and whether it is VR-only.
+- **The flow** (confirmed, code: `PlayerCinematicController`,
+  `CinematicModeTriggerBase`): use → no other cinematic running →
+  `StartCinematicMode`: pod animator always animates, the pod's
+  `prepare_…` true, player controls off, the camera's look folded into
+  the player's rotation (`MainCameraControl.cinematicMode` = true);
+  state **In** (each `LateUpdate`): the player's transform lerps (position)
+  and slerps (rotation) from where it was to `cin_target` over 0.25 s,
+  the camera (`camRoot`) from its offset to `Player.camAnchor`; then
+  **Update**: the pod's and the player's parameter true, `prepare_…`
+  false; the player's transform sits on `cin_target` every frame. The
+  pod clip's last-frame event `OnPlayerCinematicModeEnd`
+  (`top_out` 2.000 s, `top_in` 1.167 s, `bot_in` 1.667 s, `bot_out`
+  0.667 s, `side`/`side2` 2.667 s, `escapepod_first_topout` 8.167 s,
+  `escapepod_first_botout` 6.333 s) goes through
+  `OnPlayerCinematicModeEndForward` to the controllers; the active one
+  puts the player on `cin_target`, sets both parameters false and then
+  either lerps 0.25 s to the end point (**Out**, only when the end point
+  is not VR-only) or ends at once (the player stays where the animation
+  left it); then controls on, the look taken back from the player's
+  rotation (pitch clamped, the rest left as a tilt that
+  `Player.UpdateRotation` eases out at 10/s), the trigger's
+  `onCinematicEnd` calls (`EnterExitHelper.CinematicEnter`/`Exit`, the
+  first-use swap).
+- **Death** (confirmed, code): `Player.OnKill` sets `player_death`
+  (`player_death_fire` / `_explosion` for fire and explosions, which
+  don't exist yet) and `EnableHeadCameraController`: `MainCameraControl`
+  stops and `camRoot` copies `CameraToPlayerManager.headCameraBone`
+  every frame until respawn (`DisableHeadCameraController`). The death
+  clips carry `DeathFade`/`DeathCut` events (the screen fade: ours is
+  the M9c overlay, kept).
+- **Not used here:** the other 4 events of the first-use clips
+  (creatures leaving: no creatures yet), the intro (its own item).
+
+**Steps:**
+
+| Step | Work | Done when |
+|---|---|---|
+| **M9g5a** ✅ (2026-10-10; see "as built") | **Data, headless.** `sn-unity`: `OnPlayerCinematicModeEndForward`, `CameraToPlayerManager`; `Player.camAnchor` (already read: check). `sn-assets`: per cinematic trigger its controller (parameters, interpolation times, VR flag, `animated_transform` as a node of the pod's animator hierarchy, the end point), which of its calls run at the start and which at the end, the forwarder's list; the player body's head camera bone and camera anchor. `sn-inspect scene escapepod --cinematics` (exists) and `player --body` print them. | Unit tests of the readers on synthetic bytes; real-data test: 8 triggers, one animated node, the clip lengths above; facts in `gameplay.md`. |
+| **M9g5b** ✅ (2026-10-10; see "as built") | **Events and node poses, pure.** `sn-anim`: animation events fired by an update (each playing clip with weight > 0, times crossed in (previous, now], loops counted; **hypothesis** for Unity's exact rule, written in `animation.md`); a node's placement from a pose (`sn-assets`, the rig's local chain with the animated slots). | Unit tests: events at the end of a non-looping clip, across a loop, during a transition; a node's placement against hand-computed chains. |
+| **M9g5c** ✅ (2026-10-10; see "as built") | **Rules, pure.** `sn-sim::cinematic`: the controller's states (In / Update / Out, lerp and slerp, the parameters set when the game sets them), started and ended as above; the player gets a rotation (yaw and tilt) and `Player.UpdateRotation`; `MainCameraControl.cinematicMode` on and off (look ↔ rotation); `Hatches::use_trigger` starts a cinematic instead of teleporting, the start/end calls at their time; the death head camera. | Unit tests with a synthetic animated node: in/out timing, end at the animation's last frame vs the end point, look after the end, no second cinematic while one runs. |
+| **M9g5d** ✅ (2026-10-10; see "as built") | **Scripted check, headless.** `walk` and `dive` run the pod's animator and the cinematics; the player's states (`escapepod_*`) per phase. Expected values written here before the run. | Each hatch use takes its clip length + 0.25 s (+ 0.25 s out); end poses logged next to M9b's end points; 0 penetrations after; the expected states reached; seeds 1–5. |
+| **M9g5e** | **Client.** The drawn pod's animators get the same parameters (the hatch opens), the player and camera follow `cin_target`, the body plays its hatch animation, the head camera at death. | Cinematic duration and end pose logged; screenshots mid-hatch (first and third person) and during death for the user. |
+
+**M9g5 as built:**
+- **M9g5a.** Built as planned. `sn-unity`: `CinematicEndForward`
+  (`OnPlayerCinematicModeEndForward`), `CameraToPlayerManager`,
+  `PlayerFields::cam_anchor`. `sn-assets`: `CinematicTrigger` gains its
+  `cinematic` controller and key, `animated_node`, `animator_node`;
+  `Scene::cinematic_forwards`; `PlayerBody::cam_anchor_node` (`Cam`) and
+  `head_camera_node` (`cam_deathpos`). `sn-inspect scene NAME
+  --cinematics` prints the controllers, triggers (calls at start and
+  end, forwarders) and every clip with events; `player --body` the two
+  nodes. The intro clip `escapepod_full` also has an
+  `OnPlayerCinematicModeEnd` event, mid-clip (the intro is not in M9g5).
+- **M9g5b.** `sn-anim`: `Animator::events` (`FiredEvent`: layer, state,
+  clip, event, function, weight) and `event_crossed`; `sn-assets`:
+  `PosedNode` / `PosedLink`, `Prefab::posed_node`. On real data the 8
+  hatch cinematics end one frame after their clip's length (`bot_in`
+  1.70, `top_in` 1.18, sides 2.68, `top_out` 2.03, `bot_out` 0.70, first
+  `botout` 6.35, first `topout` 8.20 s at 60 Hz) and `cin_target`
+  travels 1.9–7.1 m; the first-use ones fire twice in that frame (two
+  layers play a clip with the event; `animation.md`).
+- **M9g5c.** `sn-sim`: `Q` (Unity's quaternion: `euler`, `to_euler`,
+  `slerp`, `rotate`, `*`), `Pose`, `lerp_angle`, `V3::lerp`;
+  `cinematic`: `Cinematic` (`start`, `late_update`, `end_event`;
+  phases In / Update / Out; `Signal`s `Prepare`, `Play`, `TriggerEnd`,
+  `Ended`), `HatchRun`, `Hatches::begin` / `finish`, `apply`,
+  `look_into_rotation`, `rotation_into_look`, `ease_tilt`. `Player` gains
+  `rotation`, `cinematic` (its `step` does nothing then) and
+  `force_controller_size`; `HatchTrigger` gains `cinematic`
+  (`CinematicTrigger::cinematic_params` in `sn-assets`). `Body` gains
+  `head_camera` (`died` sets it, `respawned` clears it; the rig freezes
+  meanwhile), `view_model` and `camera` (the rig in the world for any
+  player rotation, with `camRoot` placed elsewhere by a cinematic or
+  the death camera). Vitals: `Situation::cinematic` (no breaths, no
+  refill). Differences from the plan: none in scope; `Hatches::use_trigger`
+  (M9b's teleport) stays until M9g5d/e switch the callers. Hypotheses:
+  `Quaternion.Slerp` the short way round; the controller's size forced
+  when the controller comes back (the game does it at the end event).
+- **M9g5d.** `walk` and `dive` use the hatches through the cinematics
+  (`Hatches::begin` / `finish`, the pod's animator run with its
+  parameters, `cin_target` posed each step) instead of M9b's teleport.
+  Seeds 1–5, both scripts: RUN OK. Every hatch use took the corrected
+  expected time (first-use exit 6.62 s, exit 0.96 s, entry 2.22 s, every
+  seed); the "Cinematics" layer reached `escapepod_first_botout_cine`,
+  `escapepod_botout` and `escapepod_botin` and was back in `New State`
+  after each; oxygen unchanged during each cinematic; 0 penetrations, 0
+  surfaces passed through. End places: first-use exit 0.48 m from M9b's
+  (VR-only) end point, exit 0.00 m, entry on `botin_end`. Differences
+  from the plan: (1) the expected times were corrected for the 50 Hz
+  step before checking (above); (2) the first-use exit leaves the
+  swimming capsule 0.27 m inside the pod, so the swimming motor now
+  pushes out of overlaps as PhysX would (**hypothesis**,
+  `gameplay.md`; unit test `swimming_pushes_out_of_an_overlap`); (3) the
+  state checks match phase names exactly (a prefix match let "hatch
+  bot_out_trigger" take the first-use hatch's states too). The client
+  still teleports (M9g5e).
+
+**M9g5d expected values (written 2026-10-10 before the run, from the
+M9g5a/b data and the player's controller, `sn-inspect anim scene:main
+--states`):**
+- Each hatch use lasts 0.25 s (move in) + the pod clip's length + at most
+  one physics step (the end event lands on the next step) + 0.25 s
+  where the end point is used. `walk` and `dive` leave through the
+  first-use bottom hatch (`escapepod_first_botout`, VR-only end point):
+  6.58–6.62 s, ending where the animation leaves `cin_target`; `dive`
+  leaves a second time after the respawn through the normal bottom
+  hatch (`bot_out`, VR-only end point): 0.92–0.96 s; both board through
+  the bottom entry (`bot_in`, end point used): 2.17–2.19 s, ending on
+  `botin_end` (within 1 mm).
+- The player's "Cinematics" layer reaches `escapepod_first_botout_cine`
+  while leaving the first time, `escapepod_botout` the second time and
+  `escapepod_botin` while boarding, and is back in `New State` in the
+  phase after each; the base layer stays in `Walking`, `Swim` or
+  `surface swim`.
+- Oxygen does not change while a cinematic plays; 0 penetrations and 0
+  surfaces passed through after each hatch (the moves inside a
+  cinematic are not checked: the game does not collide them either).
+- The end places are logged next to M9b's end points (no limit: the
+  game's VR-only points are not where the animation ends).
+- **Corrected after the first run (2026-10-10):** the durations above
+  forgot the scripts' 50 Hz step. Each 0.25 s move takes 13 steps
+  (0.26 s), and the pod's animator takes a parameter on its next update
+  (one step) before its clip starts, whose end event lands on the step
+  that passes the clip's length. So: first-use bottom exit 0.26 + 0.02 +
+  6.34 = 6.62 s, bottom exit 0.26 + 0.02 + 0.68 = 0.96 s, bottom entry
+  0.26 + 0.02 + 1.68 + 0.26 = 2.22 s; checked within ±0.02 s. The first
+  run gave 6.62 s and 2.22 s. At the game's frame rate the rounding is
+  smaller (not measured).
 
 **Not 1:1 after M9g (planned elsewhere):** tools, the PDA and IK (with
 the tools, "After Phase E" item 1–2); the parameters the other 15 scripts

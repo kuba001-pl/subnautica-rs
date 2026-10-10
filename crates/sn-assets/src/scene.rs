@@ -304,6 +304,41 @@ pub struct CinematicTrigger {
     /// Calls `EnterExitHelper.CinematicEnter` / `CinematicExit`.
     pub enters: bool,
     pub exits: bool,
+    /// Its `PlayerCinematicController` (M9g5), and that component's key
+    /// (as `OnPlayerCinematicModeEndForward` lists it).
+    pub cinematic: sn_unity::PlayerCinematicController,
+    pub cinematic_key: ObjectKey,
+    /// (root, node) of the cinematic's `animatedTransform` and of its
+    /// `animator`'s GameObject (`None`: null or outside the scene).
+    pub animated_node: Option<(usize, usize)>,
+    pub animator_node: Option<(usize, usize)>,
+}
+
+impl CinematicTrigger {
+    /// The cinematic's numbers for `sn_sim::cinematic` (M9g5c): the end
+    /// point only where the game uses it (not VR-only).
+    pub fn cinematic_params(&self) -> sn_sim::cinematic::CinematicParams {
+        use sn_sim::{Pose, Q, V3};
+        sn_sim::cinematic::CinematicParams {
+            interpolation_in: f64::from(self.cinematic.interpolation_time),
+            interpolation_out: f64::from(self.cinematic.interpolation_time_out),
+            end: self
+                .end
+                .filter(|_| !self.end_only_in_vr)
+                .map(|t| Pose::new(V3::from_f32(t.position), Q::from_f32(t.rotation))),
+        }
+    }
+}
+
+/// An object's (bundle, file, path id).
+pub type ObjectKey = (std::path::PathBuf, String, i64);
+
+/// An `OnPlayerCinematicModeEndForward` of a scene (M9g5): the end event
+/// arriving on `node` goes to these controllers.
+#[derive(Clone, Debug)]
+pub struct CinematicForward {
+    pub node: (usize, usize),
+    pub forward: Vec<ObjectKey>,
 }
 
 /// A lifepod hatch's (normal, first use) trigger nodes, each (root, node).
@@ -473,6 +508,18 @@ impl Scene {
             };
             let enters = calls().any(|c| c.method_name == "CinematicEnter");
             let exits = calls().any(|c| c.method_name == "CinematicExit");
+            let animator_node = match assets.resolve(&controller.file, cinematic.animator)? {
+                Some(a) => {
+                    let (_, d) = a.data()?;
+                    let animator = sn_unity::Animator::parse(d, a.file.file().big_endian)
+                        .map_err(|e| format!("Animator: {e}"))?;
+                    assets
+                        .resolve(&a.file, animator.game_object)?
+                        .and_then(|go| self.locate(&go))
+                }
+                None => None,
+            };
+            let animated_node = self.locate_transform(assets, cinematic.animated_transform)?;
             out.push(CinematicTrigger {
                 node,
                 name: self.roots[node.0].nodes[node.1].name.clone(),
@@ -483,7 +530,32 @@ impl Scene {
                 enters,
                 exits,
                 trigger,
+                cinematic_key: controller.key(),
+                cinematic,
+                animated_node,
+                animator_node,
             });
+        }
+        Ok(out)
+    }
+
+    /// The scene's `OnPlayerCinematicModeEndForward`s (M9g5).
+    pub fn cinematic_forwards(&self, assets: &Assets) -> Result<Vec<CinematicForward>> {
+        let mut out = Vec::new();
+        for b in self.behaviours(assets, "OnPlayerCinematicModeEndForward") {
+            let (_, data) = b.data()?;
+            let f = sn_unity::CinematicEndForward::parse(data, b.file.file().big_endian)
+                .map_err(|e| format!("OnPlayerCinematicModeEndForward: {e}"))?;
+            let Some(node) = self.behaviour_node(assets, &b)? else {
+                continue;
+            };
+            let mut forward = Vec::with_capacity(f.forward.len());
+            for p in f.forward {
+                if let Some(c) = assets.resolve(&b.file, p)? {
+                    forward.push(c.key());
+                }
+            }
+            out.push(CinematicForward { node, forward });
         }
         Ok(out)
     }
@@ -529,7 +601,7 @@ impl Scene {
     }
 
     /// (root, node) of the GameObject a Transform reference belongs to.
-    fn locate_transform(
+    pub fn locate_transform(
         &self,
         assets: &Assets,
         pptr: sn_unity::PPtr,

@@ -98,6 +98,11 @@ pub struct PlayerBody {
     /// placement chain below the object's root; identity is expected).
     pub main_camera_in_object: sn_world::Transform,
     pub slots: Vec<EquipmentSlot>,
+    /// `Player.camAnchor` (M9g5): where a cinematic brings the camera.
+    pub cam_anchor_node: usize,
+    /// `CameraToPlayerManager.headCameraBone` (M9g5): the camera copies
+    /// it after death.
+    pub head_camera_node: usize,
 }
 
 impl PlayerBody {
@@ -301,6 +306,23 @@ impl Assets<'_> {
             .map(|n| scene.roots[camera_root].nodes[n].in_prefab)
             .ok_or("AutoParent's object holds no MainCamera-tagged camera")?;
 
+        let cam_anchor_node = node_of_component(player.cam_anchor, "Player.camAnchor")?;
+        let mut managers = scene.behaviours(self, "CameraToPlayerManager");
+        if managers.len() != 1 {
+            return Err(format!(
+                "main scene: {} CameraToPlayerManager behaviours, expected 1",
+                managers.len()
+            ));
+        }
+        let manager_ref = managers.remove(0);
+        behaviour_node(&manager_ref, "CameraToPlayerManager")?;
+        let manager = sn_unity::CameraToPlayerManager::parse(manager_ref.data()?.1, big_endian)
+            .map_err(|e| format!("CameraToPlayerManager: {e}"))?;
+        let head_camera_node = node_of_component(
+            manager.head_camera_bone,
+            "CameraToPlayerManager.headCameraBone",
+        )?;
+
         let mut body = PlayerBody {
             prefab,
             player,
@@ -316,6 +338,8 @@ impl Assets<'_> {
             main_camera_parent,
             main_camera_in_object,
             slots,
+            cam_anchor_node,
+            head_camera_node,
         };
         body.equip(|_| TECH_TYPE_NONE);
         Ok(body)

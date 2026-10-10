@@ -255,3 +255,149 @@ impl Prefab {
         }
     }
 }
+
+/// A node's placement as an animator's pose moves it (M9g5b): the chain
+/// from below the prefab's root down to the node, each link a node's
+/// stored local placement with its animated position, rotation and scale
+/// slots (pose offsets) put in its place.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PosedNode {
+    /// Root side first; the root's own placement left out, as
+    /// [`crate::PrefabNode::in_prefab`].
+    links: Vec<PosedLink>,
+}
+
+/// One node of a [`PosedNode`] chain: its stored local placement and the
+/// pose offsets of its animated position, rotation and scale.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PosedLink {
+    pub local: sn_world::Transform,
+    pub position: Option<usize>,
+    pub rotation: Option<usize>,
+    pub scale: Option<usize>,
+}
+
+impl PosedNode {
+    pub fn new(links: Vec<PosedLink>) -> PosedNode {
+        PosedNode { links }
+    }
+
+    /// The node relative to the prefab's root for `pose` (an
+    /// `Animator::pose`; offsets past its end keep the stored values).
+    pub fn in_prefab(&self, pose: &[f32]) -> sn_world::Transform {
+        let mut t = sn_world::Transform::default();
+        for l in &self.links {
+            let mut local = l.local;
+            let get = |at: Option<usize>, n: usize| at.and_then(|a| pose.get(a..a + n));
+            if let Some(v) = get(l.position, 3) {
+                local.position = [v[0], v[1], v[2]];
+            }
+            if let Some(v) = get(l.rotation, 4) {
+                local.rotation = [v[0], v[1], v[2], v[3]];
+            }
+            if let Some(v) = get(l.scale, 3) {
+                local.scale = [v[0], v[1], v[2]];
+            }
+            t = t.then(&local);
+        }
+        t
+    }
+}
+
+impl Prefab {
+    /// `node`'s [`PosedNode`] for an animator's `program` bound by
+    /// `binding` ([`Prefab::bind_animator`]); `None` if `node` is not in
+    /// the prefab.
+    pub fn posed_node(
+        &self,
+        node: usize,
+        program: &Program,
+        binding: &AnimatorBinding,
+    ) -> Option<PosedNode> {
+        self.nodes.get(node)?;
+        let mut chain = Vec::new();
+        let mut at = Some(node);
+        while let Some(i) = at {
+            let n = &self.nodes[i];
+            // The root's own placement is the instance's.
+            if n.parent.is_none() {
+                break;
+            }
+            chain.push(i);
+            at = n.parent;
+        }
+        chain.reverse();
+        let links = chain
+            .into_iter()
+            .map(|i| {
+                let mut link = PosedLink {
+                    local: self.nodes[i].local,
+                    position: None,
+                    rotation: None,
+                    scale: None,
+                };
+                for (slot, bound) in program.slots.iter().zip(&binding.nodes) {
+                    if *bound != Some(i) {
+                        continue;
+                    }
+                    match slot.kind {
+                        SlotKind::Position => link.position = Some(slot.offset),
+                        SlotKind::Rotation => link.rotation = Some(slot.offset),
+                        SlotKind::Scale => link.scale = Some(slot.offset),
+                        SlotKind::Float { .. } => {}
+                    }
+                }
+                link
+            })
+            .collect();
+        Some(PosedNode { links })
+    }
+}
+
+#[cfg(test)]
+mod posed_tests {
+    use super::*;
+    use sn_world::Transform;
+
+    fn close(a: [f32; 3], b: [f32; 3]) -> bool {
+        a.iter().zip(&b).all(|(x, y)| (x - y).abs() < 1e-5)
+    }
+
+    #[test]
+    fn a_posed_chain_takes_the_animated_values() {
+        // Parent 1 m up; child 2 m along the parent's z. The pose turns the
+        // parent 90° about y and moves the child to 3 m along z.
+        let parent = Transform {
+            position: [0.0, 1.0, 0.0],
+            ..Transform::default()
+        };
+        let child = Transform {
+            position: [0.0, 0.0, 2.0],
+            ..Transform::default()
+        };
+        let chain = PosedNode::new(vec![
+            PosedLink {
+                local: parent,
+                position: None,
+                rotation: Some(0),
+                scale: None,
+            },
+            PosedLink {
+                local: child,
+                position: Some(4),
+                rotation: None,
+                scale: None,
+            },
+        ]);
+        // Stored: rotation slot holds identity, position the stored 2 m.
+        let h = std::f32::consts::FRAC_1_SQRT_2;
+        let stored = [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 2.0];
+        assert!(close(chain.in_prefab(&stored).position, [0.0, 1.0, 2.0]));
+        // Posed: +z turned 90° about y is +x (Unity, left-handed).
+        let posed = [0.0, h, 0.0, h, 0.0, 0.0, 3.0];
+        let t = chain.in_prefab(&posed);
+        assert!(close(t.position, [3.0, 1.0, 0.0]), "{:?}", t.position);
+        // A pose too short keeps the stored values.
+        assert!(close(chain.in_prefab(&[]).position, [0.0, 1.0, 2.0]));
+    }
+}

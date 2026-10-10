@@ -1379,6 +1379,94 @@ fn player_movement_data() {
         let active = |(r, n): (usize, usize)| scene.roots[r].nodes[n].active;
         assert!(!active(normal) && active(first));
     }
+    // M9g5: every trigger's cinematic moves the player along one node of
+    // the pod's animator, which one forwarder passes each end event from;
+    // boarding calls `CinematicEnter` at the start, leaving `CinematicExit`
+    // at the end.
+    let name = |(r, n): (usize, usize)| scene.roots[r].nodes[n].name.clone();
+    for t in &triggers {
+        assert_eq!(t.animated_node.map(name).as_deref(), Some("cin_target"));
+        assert_eq!(
+            t.animator_node.map(name).as_deref(),
+            Some("Life_Pod_damaged_03")
+        );
+        assert_eq!(
+            (
+                t.cinematic.interpolation_time,
+                t.cinematic.interpolation_time_out
+            ),
+            (0.25, 0.25)
+        );
+        assert!(!t.cinematic.enforce_cinematic_mode_end);
+        let start = t
+            .trigger
+            .on_cinematic_start
+            .iter()
+            .any(|c| c.method_name == "CinematicEnter");
+        let end = t
+            .trigger
+            .on_cinematic_end
+            .iter()
+            .any(|c| c.method_name == "CinematicExit");
+        assert!(if t.enters { start } else { end }, "{}", t.name);
+    }
+    let animated: std::collections::HashSet<_> =
+        triggers.iter().filter_map(|t| t.animated_node).collect();
+    assert_eq!(animated.len(), 1);
+    let forwards = scene.cinematic_forwards(&assets).unwrap();
+    assert_eq!(forwards.len(), 1);
+    assert_eq!(name(forwards[0].node), "Life_Pod_damaged_03");
+    assert!(
+        triggers
+            .iter()
+            .all(|t| forwards[0].forward.contains(&t.cinematic_key))
+    );
+    // The hatch clips' end events: at their last frame (the intro's
+    // `escapepod_full` clips are not hatch cinematics).
+    let (r, n) = triggers[0].animator_node.unwrap();
+    let controller = scene.roots[r].nodes[n]
+        .animator
+        .as_ref()
+        .and_then(|a| a.controller.clone())
+        .unwrap();
+    let set = assets
+        .animation_set(&controller, &mut std::collections::HashMap::new())
+        .unwrap();
+    let mut ends: Vec<(String, f32)> = set
+        .clips
+        .iter()
+        .flatten()
+        .filter(|c| !c.name.starts_with("escapepod_full"))
+        .filter_map(|c| {
+            let e = c
+                .events
+                .iter()
+                .find(|e| e.function == "OnPlayerCinematicModeEnd")?;
+            assert!(
+                (e.time - (c.stop_time - c.start_time)).abs() < 0.03,
+                "{}",
+                c.name
+            );
+            Some((c.name.clone(), (e.time * 1000.0).round() / 1000.0))
+        })
+        .collect();
+    ends.sort_by(|a, b| a.0.cmp(&b.0));
+    ends.dedup();
+    eprintln!("cinematic end events: {ends:?}");
+    assert_eq!(
+        ends,
+        [
+            ("bot_in", 1.667),
+            ("bot_out", 0.667),
+            ("escapepod_first_botout", 6.333),
+            ("escapepod_first_topout", 8.167),
+            ("side", 2.667),
+            ("side2", 2.667),
+            ("top_in", 1.167),
+            ("top_out", 2.0),
+        ]
+        .map(|(n, t)| (n.to_string(), t))
+    );
     // The dive hatch object of the pod is not in use (inactive).
     let hatches = scene.dive_hatches(&assets).unwrap();
     assert_eq!(hatches.len(), 1);
@@ -1630,6 +1718,12 @@ fn player_body() {
     for n in [body.view_model_node, body.camera_node, body.animator_node] {
         assert_eq!(body.prefab.nodes[n].in_prefab.position, [0.0; 3]);
     }
+    // M9g5: the camera's anchor in cinematics and its bone after death.
+    assert_eq!(body.prefab.nodes[body.cam_anchor_node].name, "Cam");
+    assert_eq!(
+        body.prefab.nodes[body.head_camera_node].name,
+        "cam_deathpos"
+    );
     let up = body.prefab.nodes[body.camera_up_node].in_prefab.position;
     assert!(
         (up[1] - 0.063).abs() < 1e-3 && (up[2] + 0.15).abs() < 1e-3,
@@ -1675,4 +1769,86 @@ fn player_body() {
     body.equip(|s| if s == "Body" { tech } else { 0 });
     assert!(body.prefab.nodes[node.unwrap()].active);
     assert!(!body.prefab.nodes[default].active);
+}
+
+/// M9g5b: each hatch cinematic on the pod's own animator, as the game
+/// drives it (`prepare_…` for the 0.25 s move in, then the hatch
+/// parameter): its end event fires in one frame, at about the clip's length, and
+/// the animated node (`cin_target`) moves.
+#[test]
+#[ignore = "needs SUBNAUTICA_DIR pointing at a Subnautica install"]
+fn lifepod_hatch_cinematic_events() {
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    use sn_anim::{Animator, Program};
+    let Some(dir) = std::env::var_os("SUBNAUTICA_DIR") else {
+        eprintln!("SUBNAUTICA_DIR not set; skipping");
+        return;
+    };
+    let game = GameData::locate(Some(PathBuf::from(dir))).unwrap();
+    let assets = Assets::index(&game).unwrap();
+    let mut scene = assets.scene("escapepod").unwrap();
+    scene.spawn_lightmapped_prefab();
+    scene.place_escape_pod(&assets, [0.0; 3]).unwrap();
+    let triggers = scene.cinematic_triggers(&assets).unwrap();
+    let (r, node) = triggers[0].animator_node.unwrap();
+    let prefab = &scene.roots[r];
+    let controller = prefab.nodes[node]
+        .animator
+        .as_ref()
+        .and_then(|a| a.controller.clone())
+        .unwrap();
+    let set = assets
+        .animation_set(&controller, &mut HashMap::new())
+        .unwrap();
+    let program = Arc::new(Program::new(Arc::new(set.controller.clone()), &set.clips));
+    let binding = prefab.bind_animator(node, &program, &|_| Vec::new());
+    let (ar, an) = triggers[0].animated_node.unwrap();
+    assert_eq!(ar, r);
+    let posed = prefab.posed_node(an, &program, &binding).unwrap();
+    // The stored pose gives the stored placement.
+    let stored = posed.in_prefab(&binding.defaults);
+    let d = (0..3)
+        .map(|a| (stored.position[a] - prefab.nodes[an].in_prefab.position[a]).abs())
+        .fold(0.0f32, f32::max);
+    assert!(d < 1e-4, "stored pose off by {d}");
+    let dt = 1.0 / 60.0;
+    for t in &triggers {
+        let c = &t.cinematic;
+        let mut a = Animator::new(program.clone(), binding.defaults.clone());
+        for _ in 0..30 {
+            a.update(dt);
+        }
+        a.set_bool(sn_unity::name_hash(&c.interpolate_anim_param), true);
+        for _ in 0..15 {
+            a.update(dt);
+        }
+        a.set_bool(sn_unity::name_hash(&c.interpolate_anim_param), false);
+        assert!(a.set_bool(sn_unity::name_hash(&c.anim_param), true));
+        let from = posed.in_prefab(a.pose());
+        let mut fired = Vec::new();
+        let mut travel = 0.0f32;
+        let mut last = from.position;
+        for i in 1..=60 * 12 {
+            a.update(dt);
+            let p = posed.in_prefab(a.pose()).position;
+            travel += (0..3).map(|k| (p[k] - last[k]).powi(2)).sum::<f32>().sqrt();
+            last = p;
+            for e in &a.events {
+                if e.function == "OnPlayerCinematicModeEnd" {
+                    fired.push(i as f32 * dt);
+                }
+            }
+        }
+        eprintln!(
+            "{}: {:?} → end event at {fired:?} s; cin_target from {:?} to {last:?}, travelled {travel:.2} m",
+            t.name, c.anim_param, from.position
+        );
+        // Once per playing clip that carries it (two layers play the
+        // first-use clips): all in one frame.
+        assert!(!fired.is_empty(), "{}", t.name);
+        assert!(fired.iter().all(|&f| f == fired[0]), "{}", t.name);
+        assert!(travel > 0.1, "{}: cin_target did not move", t.name);
+    }
 }

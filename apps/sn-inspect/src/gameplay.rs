@@ -227,6 +227,11 @@ pub fn player_body(game: &GameData) -> Result<ExitCode> {
     println!("camera (MainCameraControl): {}", p(body.camera_node));
     println!("cameraUPTransform: {}", p(body.camera_up_node));
     println!("cameraOffsetTransform: {}", p(body.camera_offset_node));
+    println!("camAnchor (Player.camAnchor): {}", p(body.cam_anchor_node));
+    println!(
+        "head camera bone (CameraToPlayerManager.headCameraBone): {}",
+        p(body.head_camera_node)
+    );
     let c = &body.main_camera_in_object;
     println!(
         "main camera: its object is put under {} by AutoParent (identity locals); the camera in its object: position {:.3} {:.3} {:.3}, rotation {:.3} {:.3} {:.3} {:.3}",

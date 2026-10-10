@@ -272,3 +272,28 @@ Not done: root motion (14 clips), animation events (555), mirroring (no
 mirrored state or leaf in the game), IK (no humanoid), synchronised layers
 (none in the game), direct and freeform cartesian blend trees (none in
 the game).
+
+## Animation events (`sn-anim`, M9g5b)
+
+- **Confirmed (parser, real data):** `AnimationClip.m_Events` holds each
+  event's time (seconds), function name, string/float/int/object
+  arguments and message options (`sn-inspect scene escapepod
+  --cinematics` lists every clip with events of a scene's animators and
+  of the player's).
+- **Hypothesis (Unity's documentation, not compared with the game):** an
+  update fires every event of each clip being played whose time lies in
+  (the clip time before the update, the clip time after]: once per loop
+  for a looping clip; once for a clip that holds its end, its last-frame
+  event when the state reaches its end. Clips of the current state and,
+  during a transition, of the next one fire, every clip with a weight
+  above 0 in their blend tree; the layer's weight does not matter. An
+  event at time 0 fires on the first update after the state is entered.
+  Played backwards, the same interval the other way.
+- **Confirmed (real-data test `lifepod_hatch_cinematic_events`):** with
+  this rule the pod's 8 hatch cinematics fire `OnPlayerCinematicModeEnd`
+  one frame (1/60 s) after their clip's length. The two first-use
+  hatches fire it twice in the same frame, because two layers ("bottom
+  hatch"/"top hatch" and "player_locator") play a clip carrying it.
+  Unity sends an event for each clip; the controller's end handler
+  ignores the second call when the cinematic has no end point, which
+  holds for both (their end points are VR-only).

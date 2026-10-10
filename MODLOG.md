@@ -2,6 +2,150 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-10 — M9g5d: the hatch cinematics in the scripted runs
+
+**What:** fourth step of M9g5 (`docs/DESIGN.md` § 4.3, "M9g5 plan", the
+expected values and "as built").
+- `sn-inspect walk` and `dive` use the hatches through `sn-sim`'s
+  cinematics (the pod's animator, `cin_target` posed every step, the
+  player's "Cinematics" layer watched) instead of M9b's teleport;
+  `check_hatches` checks each use's duration, end place and oxygen;
+  `dive` checks its three uses (first-use exit, exit, entry) and the
+  "Cinematics" states per phase. State checks match phase names exactly
+  (`BodyRun::states_exact`).
+- `sn-sim`: the swimming motor pushes out of overlaps (`World::push_out`,
+  `Event::PushedOut`; **hypothesis**, `gameplay.md`). Unit test
+  `swimming_pushes_out_of_an_overlap`.
+- Docs: DESIGN (expected values corrected for the 50 Hz step, written
+  before the check; "as built"), `gameplay.md` (measured durations, the
+  push-out hypothesis).
+- No new dependency.
+
+**Why:** M9g5d's "Done when": each hatch use takes its clip length +
+the moves, end poses next to M9b's, 0 penetrations, the expected states,
+seeds 1–5.
+
+**How verified:**
+- `cargo test --workspace`: passes. `cargo clippy --workspace
+  --all-targets -- -D warnings`: clean.
+- `SUBNAUTICA_DIR=... cargo test -p sn-assets --test real_data --
+  --ignored`: 30 passed.
+- `sn-inspect walk --seed N` and `dive --seed N`, N = 1–5: all RUN OK;
+  hatches 6.62 / 0.96 / 2.22 s on every seed; oxygen unchanged in each
+  cinematic; 0 penetrations, 0 surfaces passed through.
+
+**Dead ends / found:** the first run's durations were 0.02–0.04 s longer
+than the plan's: the plan forgot that a 0.25 s move takes 13 steps at
+50 Hz and that the pod's animator starts the clip one step after its
+parameter is set; the expected values were corrected in DESIGN before
+the checks were tightened. The first-use exit left the swimming capsule
+0.27 m inside the pod on every seed (why the animation's end overlaps
+the hull: not investigated); our swim step never separated overlaps, so
+the push-out was added. `dive` first passed without checking its hatches at
+all (it only logged them); the checks were added.
+
+## 2026-10-10 — M9g5c: the cinematic rules
+
+**What:** third step of M9g5 (`docs/DESIGN.md` § 4.3, "M9g5 plan").
+- `sn-sim::math`: `Q` (Unity's quaternion), `Pose`, `lerp_angle`,
+  `V3::lerp` (4 unit tests).
+- `sn-sim::cinematic` (new): the `PlayerCinematicController` states, the
+  hatch run (`Hatches::begin`, `finish`, `apply`), the look folded into
+  the player's rotation and back, `Player.UpdateRotation`'s easing (5
+  unit tests).
+- `sn-sim::player`: `Player::rotation`, `cinematic`,
+  `force_controller_size`; `HatchTrigger::cinematic`.
+- `sn-sim::body`: `head_camera`, `respawned`, `view_model`, `camera` (2
+  unit tests). `sn-sim::vitals`: `Situation::cinematic` (unit test
+  `a_cinematic_neither_breathes_nor_refills`).
+- `sn-assets`: `CinematicTrigger::cinematic_params`. The client and
+  `walk` fill the new field; their behaviour is unchanged until M9g5d/e.
+- Decompiled `UWE.Utils` from `Assembly-CSharp-firstpass.dll` with
+  ilspycmd into the system temp folder (read only) to read
+  `LerpEuler` (per-axis `Mathf.LerpAngle`).
+- Docs: DESIGN row and "as built".
+- No new dependency.
+
+**Why:** M9g5 plays the hatches as the game does; these are its rules.
+
+**How verified:**
+- `cargo test --workspace`: passes (sn-sim 77 tests). `cargo clippy
+  --workspace --all-targets -- -D warnings`: clean. `cargo fmt --all
+  --check`: clean.
+- `sn-inspect walk --seed 1` and `--seed 2`: RUN OK (unchanged path).
+
+**Dead ends:** clippy rejected a method named `mul` on `Q`; it is now
+the `*` operator.
+
+## 2026-10-10 — M9g5b: animation events and posed nodes
+
+**What:** second step of M9g5 (`docs/DESIGN.md` § 4.3, "M9g5 plan").
+- `sn-anim`: `Animator::events` (`FiredEvent`) filled by each update
+  from the playing states' clips; `event_crossed` (the rule,
+  **hypothesis**, `animation.md`).
+- `sn-assets`: `PosedNode`, `PosedLink`, `Prefab::posed_node` (a node's
+  placement from an animator's pose).
+- Tests: 4 new `sn-anim` tests (`events_are_crossed_once_per_pass`,
+  `a_last_frame_event_fires_once_at_the_end`,
+  `a_looping_event_fires_every_loop`,
+  `events_of_the_next_state_fire_during_a_transition`), `sn-assets` unit
+  test `a_posed_chain_takes_the_animated_values`, real-data test
+  `lifepod_hatch_cinematic_events`.
+- Docs: `animation.md` § Animation events, DESIGN row and "as built".
+- No new dependency.
+
+**Why:** the hatch cinematics end on a clip event and move the player
+along an animated node of the pod.
+
+**How verified:**
+- `cargo test --workspace`: passes (sn-anim 24 animator tests).
+  `cargo clippy --workspace --all-targets -- -D warnings`: clean.
+  `cargo fmt --all --check`: clean.
+- Real data: `lifepod_hatch_cinematic_events` passes: the stored pose
+  gives `cin_target`'s stored place (within 1e-4 m); each hatch's end
+  event fires one frame after its clip length; `cin_target` moves
+  1.87–7.13 m (e.g. `top_out` from y 1.92 inside to y 5.22 on top).
+
+**Dead ends:** the first test run expected exactly one end event; the
+first-use hatches give two in the same frame (two layers play clips
+with it). Kept as Unity does it; the test now asks for one frame.
+
+## 2026-10-10 — M9g5a: the hatch cinematics' data
+
+**What:** first step of M9g5 (`docs/DESIGN.md` § 4.3, "M9g5 plan",
+written before this step).
+- `sn-unity`: `CinematicEndForward`, `CameraToPlayerManager` (unit test
+  `cinematic_end_forward_and_head_camera`), `PlayerFields::cam_anchor`
+  (test `player_fields` checks it).
+- `sn-assets`: `CinematicTrigger` gains `cinematic`, `cinematic_key`,
+  `animated_node`, `animator_node`; `Scene::cinematic_forwards`,
+  `Scene::locate_transform` public; `PlayerBody::cam_anchor_node`,
+  `head_camera_node`; types `CinematicForward`, `ObjectKey`.
+- `sn-inspect scene NAME --cinematics` (new), `player --body` prints the
+  camera anchor and the death camera bone.
+- Docs: DESIGN plan, row and "as built"; `gameplay.md` (cinematic and
+  death camera facts).
+- No new dependency.
+
+**Why:** M9g5 plays the hatches as the game does; this is the data it
+needs.
+
+**How verified:**
+- `cargo test --workspace`: passes. `cargo clippy --workspace
+  --all-targets -- -D warnings`: clean. `cargo fmt --all --check`: clean.
+- Real data (`--ignored`): `player_movement_data` (8 triggers all on
+  `cin_target` of `Life_Pod_damaged_03`, 0.25 s in and out, one
+  forwarder listing all 8, enter at start and exit at end, the end
+  events at each hatch clip's last frame: `bot_in` 1.667, `bot_out`
+  0.667, `escapepod_first_botout` 6.333, `escapepod_first_topout`
+  8.167, `side`/`side2` 2.667, `top_in` 1.167, `top_out` 2.0 s) and
+  `player_body` (`Cam`, `cam_deathpos`) pass, with the other lifepod
+  and player tests.
+
+**Dead ends:** the first test version required every clip's end event
+at its last frame; the intro's `escapepod_full` has it mid-clip. The
+check now covers the hatch clips only.
+
 ## 2026-10-10 — M9g4: the player's body in the client
 
 **What:** fourth step of M9g (`docs/DESIGN.md` § 4.3, "M9g plan" and "as

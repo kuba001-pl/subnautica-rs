@@ -6,17 +6,23 @@
 //! ([`start`], [`leave_pod`], [`Run`]) are shared with `dive` (M9c). Both
 //! also run the player's body and animator (M9g3, [`BodyRun`]); the hand's
 //! ray starts at the game's eye (M9g2), not at the player's transform.
+//! The hatches play their cinematics (M9g5d): the pod's animator runs
+//! every step, a hatch moves the player along its animated node until the
+//! clip's end event, as `PlayerCinematicController` does.
 
 use std::process::ExitCode;
 use std::time::Instant;
 
-use sn_assets::{Lifepod, SCENE_BODY};
+use sn_anim::Animator;
+use sn_assets::{Lifepod, PodCinematics, SCENE_BODY};
 use sn_install::GameData;
-use sn_sim::V3;
+use sn_sim::cinematic::{CinematicFrame, HatchRun, Signal, apply, ease_tilt};
+use sn_sim::look::Look;
 use sn_sim::player::{
     Event, HatchTrigger, Hatches, Input, Motor, Player, PlayerParams, hand_target,
 };
 use sn_sim::vitals::{Situation, Vitals, VitalsEvent, VitalsParams};
+use sn_sim::{Pose, V3};
 
 use crate::Result;
 use crate::body_run::BodyRun;
@@ -55,6 +61,36 @@ pub(crate) struct Run<'a, 'g> {
     step_us: Vec<f64>,
     walk_speeds: Vec<f64>,
     swim_speeds: Vec<f64>,
+    /// The pod's animator for the hatch cinematics (M9g5d).
+    pod_anim: Option<(PodCinematics, Animator)>,
+    /// The hatch cinematic playing.
+    hatch: Option<HatchUse>,
+    /// The look: from the script's input, zero while a cinematic plays.
+    look: Look,
+    /// Each hatch cinematic that ended, for the report.
+    pub(crate) hatch_uses: Vec<HatchDone>,
+}
+
+/// A hatch cinematic playing.
+struct HatchUse {
+    run: HatchRun,
+    started: f64,
+    oxygen: Option<f64>,
+    /// The `camRoot` override of the last frame (a cinematic's).
+    camera_root: Option<Pose>,
+}
+
+/// A hatch cinematic that ended.
+pub(crate) struct HatchDone {
+    pub(crate) name: String,
+    pub(crate) seconds: f64,
+    pub(crate) end: V3,
+    /// M9b's end point (the stored `endTransform`).
+    pub(crate) stored_end: Option<V3>,
+    /// The end point the game uses (not VR-only).
+    pub(crate) used_end: Option<V3>,
+    /// Oxygen at the start and at the end (if the vitals run).
+    pub(crate) oxygen: Option<(f64, f64)>,
 }
 
 impl Run<'_, '_> {
@@ -99,10 +135,22 @@ impl Run<'_, '_> {
         V3::from_f32(self.pod.triggers[i].at)
     }
 
+    /// The player's transform.
+    fn player_pose(&self) -> Pose {
+        Pose::new(self.player.position, self.player.rotation)
+    }
+
+    /// The main camera in the world now.
+    fn eye(&self) -> V3 {
+        let root = self.hatch.as_ref().and_then(|h| h.camera_root);
+        self.body.camera(self.player_pose(), root).position
+    }
+
     pub(crate) fn step(&mut self, input: &Input) -> Result<()> {
         if self.steps % 25 == 0 {
             self.s.stream(self.player.position)?;
         }
+        let in_cinematic = self.player.cinematic;
         let before = self.centre();
         let moves = self
             .vitals
@@ -131,11 +179,16 @@ impl Run<'_, '_> {
         }
         let respawned = self.step_vitals(landed)?;
         self.step_body(input);
-        if respawned {
+        self.step_cinematic();
+        if !self.player.cinematic {
+            self.player.rotation = ease_tilt(self.player.rotation, self.params.fixed_dt);
+        }
+        // The moves inside a cinematic are not collided (the game's
+        // controller is off), so they are not checked.
+        if respawned || in_cinematic || self.player.cinematic {
             return Ok(());
         }
         let after = self.centre();
-        // Longer than any step's move: the hatch put the player elsewhere.
         if (after - before).length() < 1.0 {
             let n = self.s.world.crossings(before, after);
             if n > 0 && self.crossings < 5 {
@@ -168,10 +221,15 @@ impl Run<'_, '_> {
     /// and the vitals.
     fn step_body(&mut self, input: &Input) {
         let p = &self.player;
-        let controls = self
-            .vitals
-            .as_ref()
-            .is_none_or(|(_, v)| v.controls_enabled());
+        // Dead or in a cinematic: no input (`PlayerController` off).
+        let controls = !p.cinematic
+            && self
+                .vitals
+                .as_ref()
+                .is_none_or(|(_, v)| v.controls_enabled());
+        if !p.cinematic {
+            self.look = self.body.look(input.yaw, input.pitch);
+        }
         let frame = sn_sim::body::BodyFrame {
             dt: self.params.fixed_dt,
             time: self.t(),
@@ -182,7 +240,7 @@ impl Run<'_, '_> {
             underwater: !p.in_pod && p.position.y < self.params.ocean_level,
             swimming: p.swimming,
             inside: p.in_pod,
-            look: self.body.look(input.yaw, input.pitch),
+            look: self.look,
             strafe: if controls { input.move_dir.x } else { 0.0 },
             controls,
             bobbing: true,
@@ -190,7 +248,112 @@ impl Run<'_, '_> {
         let world = &self.s.world;
         let mut ray =
             |o: V3, d: V3, l: f64| world.cast(sn_sim::collide::MOVE, o, d, 0.0, l).is_some();
-        self.body.step(&frame, &mut ray);
+        self.body.step(&frame, p.cinematic, &mut ray);
+    }
+
+    /// One step of the pod's animator and of the hatch cinematic playing
+    /// (M9g5d), after the player's animator: the pod's end events first,
+    /// then the controller's late update.
+    fn step_cinematic(&mut self) {
+        let Some((pc, anim)) = self.pod_anim.as_mut() else {
+            return;
+        };
+        anim.update(self.params.fixed_dt as f32);
+        let animated = pc.animated_pose(anim);
+        let ends = anim
+            .events
+            .iter()
+            .filter(|e| e.function == "OnPlayerCinematicModeEnd")
+            .count();
+        let Some(mut h) = self.hatch.take() else {
+            return;
+        };
+        let forwarded = pc.names.get(h.run.trigger).is_some_and(|n| n.forwarded);
+        let t = self.t();
+        let mut frames: Vec<CinematicFrame> = Vec::new();
+        for _ in 0..ends {
+            if forwarded {
+                let anchor = self.body.cam_anchor(self.player_pose());
+                let f = h.run.cinematic.end_event(t, animated, anchor);
+                self.put(&f, &mut h);
+                frames.push(f);
+            }
+        }
+        let anchor = self.body.cam_anchor(self.player_pose());
+        let f = h
+            .run
+            .cinematic
+            .late_update(t, self.player_pose(), animated, anchor);
+        self.put(&f, &mut h);
+        frames.push(f);
+        for f in &frames {
+            self.signals(&h, &f.signals);
+        }
+        if h.run.cinematic.active {
+            self.hatch = Some(h);
+        } else {
+            let i = h.run.trigger;
+            let done = HatchDone {
+                name: self.pod.triggers[i].trigger.name.clone(),
+                seconds: t - h.started,
+                end: self.player.position,
+                stored_end: self.hatches.triggers[i].end,
+                used_end: self.hatches.triggers[i].cinematic.end.map(|e| e.position),
+                oxygen: h.oxygen.zip(self.vitals.as_ref().map(|(_, v)| v.oxygen)),
+            };
+            self.log(&format!(
+                "cinematic of {:?} ended after {:.2} s",
+                done.name, done.seconds
+            ));
+            self.hatch_uses.push(done);
+        }
+    }
+
+    /// Puts a cinematic frame on the player and keeps its camera.
+    fn put(&mut self, f: &CinematicFrame, h: &mut HatchUse) {
+        let (lo, hi) = self.body.look_limits();
+        apply(f, &mut self.player, &mut self.look, &self.params, lo, hi);
+        h.camera_root = f.camera_root;
+    }
+
+    /// What a cinematic's signals do to the animators and the triggers.
+    fn signals(&mut self, h: &HatchUse, signals: &[Signal]) {
+        let i = h.run.trigger;
+        for s in signals {
+            let Some((pc, anim)) = self.pod_anim.as_mut() else {
+                return;
+            };
+            let names = pc.names[i].clone();
+            match *s {
+                Signal::Prepare(on) => {
+                    if let Some(p) = names.prepare {
+                        anim.set_bool(p, on);
+                    }
+                }
+                Signal::Play(on) => {
+                    anim.set_bool(names.play, on);
+                    if let Some(p) = names.player
+                        && !self.body.set_bool(p, on)
+                    {
+                        self.log(&format!(
+                            "the player's controller lacks {:?}",
+                            names.player_name
+                        ));
+                    }
+                }
+                Signal::TriggerEnd => {
+                    for (k, on) in self.hatches.finish(i, &mut self.player) {
+                        self.show_trigger(k, on);
+                        self.log(&format!(
+                            "first use: {:?} {}",
+                            self.pod.triggers[k].trigger.name,
+                            if on { "on" } else { "off" }
+                        ));
+                    }
+                }
+                Signal::Ended => {}
+            }
+        }
     }
 
     /// One step of the vitals, if they run: logs their events (not the
@@ -205,6 +368,7 @@ impl Run<'_, '_> {
             in_pod: self.player.in_pod,
             landed,
             world_settled: true,
+            cinematic: self.player.cinematic,
         };
         let events = v.step(vp, self.params.fixed_dt, &situation);
         let (time, oxygen, health) = (v.time, v.oxygen, v.health);
@@ -223,6 +387,8 @@ impl Run<'_, '_> {
             // `EscapePod.RespawnPlayer`: the pod's player spawn, inside.
             let spawn = V3::from_f32(self.pod.spawn.position);
             self.player.teleport(&self.params, spawn, Some(true));
+            // `ResetPlayerOnDeath`: `DisableHeadCameraController`.
+            self.body.respawned();
             self.s.stream(self.player.position)?;
             self.log("moved to the respawn point");
         }
@@ -238,7 +404,7 @@ impl Run<'_, '_> {
         {
             return None;
         }
-        let eye = self.body.eye(self.player.position);
+        let eye = self.eye();
         let (yaw, pitch) = look_at(eye, self.at(i));
         let (d, hit) = hand_target(&self.s.world, eye, yaw, pitch)?;
         if hit.body & HATCH == 0 || ((hit.body >> 8) & 0xff) as usize != i {
@@ -249,17 +415,42 @@ impl Run<'_, '_> {
             "used {:?} ({:?}, animation {:?}) from {d:.2} m",
             t.name, t.trigger.hand_text, t.animation
         );
-        let switched = self
-            .hatches
-            .use_trigger(i, &mut self.player, &self.params)?;
+        let name = t.name.clone();
+        // The look as the hand aimed it, then the cinematic.
+        self.look = self.body.look(yaw, pitch);
+        let pose = self.player_pose();
+        let root = self.body.camera_root(pose);
+        let anchor = self.body.cam_anchor(pose);
+        let now = self.t();
+        let (run, signals) = self.hatches.begin(
+            i,
+            now,
+            &mut self.player,
+            &mut self.look,
+            &self.params,
+            root,
+            anchor,
+        )?;
         self.log(&what);
-        for (k, on) in switched {
-            self.show_trigger(k, on);
-            self.log(&format!(
-                "first use: {:?} {}",
-                self.pod.triggers[k].trigger.name,
-                if on { "on" } else { "off" }
-            ));
+        let h = HatchUse {
+            run,
+            started: now,
+            oxygen: self.vitals.as_ref().map(|(_, v)| v.oxygen),
+            camera_root: None,
+        };
+        self.signals(&h, &signals);
+        self.hatch = Some(h);
+        // Play it out: the player's states during it are their own phase.
+        self.body.set_phase(&format!("hatch {name}"));
+        let limit = self.steps + (20.0 / self.params.fixed_dt) as usize;
+        while self.hatch.is_some() && self.steps < limit {
+            if self.step(&Input::default()).is_err() {
+                return None;
+            }
+        }
+        if self.hatch.is_some() {
+            self.log("CINEMATIC DID NOT END within 20 s");
+            return None;
         }
         Some(d)
     }
@@ -380,6 +571,7 @@ pub(crate) fn start<'a, 'g>(s: &'a mut Streamed<'g>, seed: u64) -> Result<Run<'a
             .iter()
             .map(|t| HatchTrigger {
                 end: t.trigger.end.map(|e| V3::from_f32(e.position)),
+                cinematic: t.trigger.cinematic_params(),
                 enters: t.trigger.enters,
                 exits: t.trigger.exits,
                 active: t.active,
@@ -390,6 +582,19 @@ pub(crate) fn start<'a, 'g>(s: &'a mut Streamed<'g>, seed: u64) -> Result<Run<'a
 
     let mut player = Player::new(&params, V3::from_f32(pod.spawn.position), true);
     player.pod_position = Some(V3::from_f32(point));
+    let pod_anim = pod.cinematics.clone().map(|c| {
+        let a = c.animator();
+        (c, a)
+    });
+    match &pod_anim {
+        Some((c, _)) => println!(
+            "hatch cinematics: pod animator {} slots, {} triggers forwarded of {}",
+            c.program.slots.len(),
+            c.names.iter().filter(|n| n.forwarded).count(),
+            c.names.len()
+        ),
+        None => println!("hatch cinematics: none (no pod animator)"),
+    }
     let mut r = Run {
         s,
         params,
@@ -407,6 +612,10 @@ pub(crate) fn start<'a, 'g>(s: &'a mut Streamed<'g>, seed: u64) -> Result<Run<'a
         step_us: Vec::new(),
         walk_speeds: Vec::new(),
         swim_speeds: Vec::new(),
+        pod_anim,
+        hatch: None,
+        look: Look::default(),
+        hatch_uses: Vec::new(),
     };
     for i in 0..r.pod.triggers.len() {
         if r.pod.triggers[i].active {
@@ -451,6 +660,46 @@ pub(crate) fn leave_pod(r: &mut Run) -> Result<bool> {
         ));
     }
     Ok(ok)
+}
+
+/// The hatch cinematics' durations, end places and oxygen against the
+/// plan's "M9g5d expected values". False if one is off.
+pub(crate) fn check_hatches(r: &Run) -> bool {
+    // (trigger, shortest, longest seconds): the plan's values corrected
+    // for the 50 Hz step (`docs/DESIGN.md`, "M9g5d expected values").
+    const RANGES: [(&str, f64, f64); 3] = [
+        ("bot_out_trigger_first", 6.60, 6.64),
+        ("bot_out_trigger", 0.94, 0.98),
+        ("bot_in_trigger", 2.20, 2.24),
+    ];
+    let mut ok = true;
+    for h in &r.hatch_uses {
+        let range = RANGES.iter().find(|x| x.0 == h.name);
+        let in_range = range.is_some_and(|&(_, lo, hi)| (lo..=hi).contains(&h.seconds));
+        let end_ok = h.used_end.is_none_or(|e| (e - h.end).length() < 1e-3);
+        let oxygen_ok = h.oxygen.is_none_or(|(a, b)| a == b);
+        let fmt = |v: V3| format!("({:.2}, {:.2}, {:.2})", v.x, v.y, v.z);
+        println!(
+            "check: hatch {:?} took {:.2} s (expected {}): {}; ended at {}, M9b's end point {} ({}); end point used {}: {}; oxygen {}: {}",
+            h.name,
+            h.seconds,
+            range.map_or("no range".into(), |&(_, lo, hi)| format!("{lo}–{hi} s")),
+            if in_range { "ok" } else { "FAILED" },
+            fmt(h.end),
+            h.stored_end.map_or("none".into(), fmt),
+            h.stored_end.map_or("-".into(), |e| format!(
+                "{:.2} m apart",
+                (e - h.end).length()
+            )),
+            h.used_end.map_or("none".into(), fmt),
+            if end_ok { "ok" } else { "FAILED" },
+            h.oxygen
+                .map_or("not run".into(), |(a, b)| format!("{a:.2} → {b:.2}")),
+            if oxygen_ok { "ok" } else { "FAILED" },
+        );
+        ok &= in_range && end_ok && oxygen_ok;
+    }
+    ok
 }
 
 /// Prints the collision checks and the cost per step. Returns the
@@ -516,9 +765,10 @@ pub fn run(game: &GameData, seed: u64) -> Result<ExitCode> {
         r.params.swim_forward * (1.0 - r.params.swim_drag * r.params.fixed_dt)
     );
     let penetrations = report(&r);
+    let hatches_ok = check_hatches(&r) && r.hatch_uses.len() == 2;
     let body_ok = r.body.report() & check_body(&r.body, &WALK_EXPECTED);
     crate::swim::print_load_stats(&s);
-    let ok = ok && penetrations == 0 && body_ok;
+    let ok = ok && penetrations == 0 && body_ok && hatches_ok;
     println!(
         "{} (total {:.1} s)",
         if ok { "RUN OK" } else { "RUN FAILED" },
@@ -551,7 +801,7 @@ const NEVER: &[&str] = &[
     "cyclops_steering",
 ];
 
-const WALK_EXPECTED: [Expected; 4] = [
+const WALK_EXPECTED: [Expected; 9] = [
     Expected {
         phase: "in the pod",
         layer: "Base Modes",
@@ -565,10 +815,40 @@ const WALK_EXPECTED: [Expected; 4] = [
         only: &["Walking"],
     },
     Expected {
+        phase: "hatch bot_out_trigger_first",
+        layer: "Cinematics",
+        has: &["escapepod_first_botout_cine"],
+        only: &["New State", "escapepod_first_botout_cine"],
+    },
+    Expected {
+        phase: "hatch bot_out_trigger_first",
+        layer: "Base Modes",
+        has: &[],
+        only: &["Walking", "Swim", "surface swim"],
+    },
+    Expected {
         phase: "swimming away",
         layer: "Base Modes",
         has: &["Swim"],
         only: &["Walking", "Swim", "surface swim"],
+    },
+    Expected {
+        phase: "swimming away",
+        layer: "Cinematics",
+        has: &["New State"],
+        only: &["New State", "escapepod_first_botout_cine"],
+    },
+    Expected {
+        phase: "hatch bot_in_trigger",
+        layer: "Cinematics",
+        has: &["escapepod_botin"],
+        only: &["New State", "escapepod_botin"],
+    },
+    Expected {
+        phase: "after boarding",
+        layer: "Cinematics",
+        has: &["New State"],
+        only: &["New State", "escapepod_botin"],
     },
     Expected {
         phase: "after boarding",
@@ -582,7 +862,7 @@ const WALK_EXPECTED: [Expected; 4] = [
 pub(crate) fn check_body(body: &BodyRun, expected: &[Expected]) -> bool {
     let mut ok = true;
     for e in expected {
-        let seen = body.states(e.phase, e.layer);
+        let seen = body.states_exact(e.phase, e.layer);
         let good = e.has.iter().all(|s| seen.contains(*s))
             && seen.iter().all(|s| e.only.contains(&s.as_str()));
         println!(

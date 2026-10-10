@@ -289,3 +289,154 @@ pub fn lifepod(game: &GameData, seed: u64) -> Result<ExitCode> {
     println!("({:.2} s)", start.elapsed().as_secs_f64());
     Ok(ExitCode::SUCCESS)
 }
+
+/// `scene NAME --cinematics` (M9g5): every `PlayerCinematicController`
+/// of the scene with its fields and the nodes they point at, and the
+/// clips with animation events of the scene's animators (and the
+/// player's, from the main scene) with each event's time and function.
+pub fn cinematics(game: &GameData, name: &str) -> Result<ExitCode> {
+    let start = Instant::now();
+    let assets = Assets::index(game)?;
+    let mut scene = assets.scene(name)?;
+    scene.spawn_lightmapped_prefab();
+    let path = |at: Option<(usize, usize)>| -> String {
+        let Some((r, n)) = at else {
+            return "(none)".into();
+        };
+        let nodes = &scene.roots[r].nodes;
+        let mut parts = Vec::new();
+        let mut i = Some(n);
+        while let Some(k) = i {
+            parts.push(nodes[k].name.as_str());
+            i = nodes[k].parent;
+        }
+        parts.reverse();
+        parts.join("/")
+    };
+    let controllers = scene.behaviours(&assets, "PlayerCinematicController");
+    println!("{} PlayerCinematicControllers:", controllers.len());
+    for b in &controllers {
+        let big_endian = b.file.file().big_endian;
+        let (_, data) = b.data()?;
+        let c = sn_unity::PlayerCinematicController::parse(data, big_endian)
+            .map_err(|e| format!("PlayerCinematicController: {e}"))?;
+        let on = scene.behaviour_node(&assets, b)?;
+        let animator_node = match assets.resolve(&b.file, c.animator)? {
+            Some(a) => {
+                let (_, d) = a.data()?;
+                let animator = sn_unity::Animator::parse(d, a.file.file().big_endian)
+                    .map_err(|e| format!("Animator: {e}"))?;
+                assets
+                    .resolve(&a.file, animator.game_object)?
+                    .and_then(|go| scene.locate(&go))
+            }
+            None => None,
+        };
+        let inform = assets
+            .resolve(&b.file, c.inform_game_object)?
+            .and_then(|go| scene.locate(&go));
+        println!("- on {}", path(on));
+        println!(
+            "    animatedTransform {}; animator {}; endTransform {} (only in VR {}); inform {}",
+            path(scene.locate_transform(&assets, c.animated_transform)?),
+            path(animator_node),
+            path(scene.locate_transform(&assets, c.end_transform)?),
+            c.only_use_end_transform_in_vr,
+            path(inform)
+        );
+        println!(
+            "    animParam {:?}, interpolateAnimParam {:?}, playerViewAnimationName {:?}, playerViewInterpolateAnimParam {:?}, receiversAnimParam {:?} ({} receivers)",
+            c.anim_param,
+            c.interpolate_anim_param,
+            c.player_view_animation_name,
+            c.player_view_interpolate_anim_param,
+            c.receivers_anim_param,
+            c.anim_param_receivers.len()
+        );
+        println!(
+            "    interpolation {} s in, {} s out; interpolateDuringAnimation {}, enforceCinematicModeEnd {}, playInVr {}, interruptAutoMove {}",
+            c.interpolation_time,
+            c.interpolation_time_out,
+            c.interpolate_during_animation,
+            c.enforce_cinematic_mode_end,
+            c.play_in_vr,
+            c.interrupt_auto_move
+        );
+    }
+    // The triggers: their calls at the start and the end, and which
+    // forwarder passes their end event on.
+    let forwards = scene.cinematic_forwards(&assets)?;
+    for f in &forwards {
+        println!(
+            "OnPlayerCinematicModeEndForward on {}: {} controllers",
+            path(Some(f.node)),
+            f.forward.len()
+        );
+    }
+    for t in scene.cinematic_triggers(&assets)? {
+        let calls = |list: &[sn_unity::PersistentCall]| -> Vec<String> {
+            list.iter().map(|c| c.method_name.clone()).collect()
+        };
+        let forwarded = forwards
+            .iter()
+            .filter(|f| f.forward.contains(&t.cinematic_key))
+            .count();
+        println!(
+            "trigger {:?} (hand {}): start {:?}, end {:?}; animated node {}, animator {}; forwarded by {forwarded}",
+            t.name,
+            t.hand,
+            calls(&t.trigger.on_cinematic_start),
+            calls(&t.trigger.on_cinematic_end),
+            path(t.animated_node),
+            path(t.animator_node)
+        );
+    }
+    // Clips with events, per controller (each controller once).
+    let mut seen = std::collections::BTreeSet::new();
+    let mut cache = std::collections::HashMap::new();
+    let main = assets.player_body()?;
+    let mut sets = Vec::new();
+    for root in &scene.roots {
+        for (i, node) in root.nodes.iter().enumerate() {
+            if let Some(controller) = node.animator.as_ref().and_then(|a| a.controller.clone()) {
+                sets.push((format!("{} ({})", node.name, i), controller));
+            }
+        }
+    }
+    sets.push(("the player (main scene)".into(), main.controller.clone()));
+    for (owner, controller) in sets {
+        if !seen.insert(controller.key()) {
+            continue;
+        }
+        let set = assets.animation_set(&controller, &mut cache)?;
+        println!(
+            "controller {:?} on {owner}: clips with events:",
+            set.controller.name
+        );
+        for clip in set.clips.iter().flatten() {
+            if clip.events.is_empty() {
+                continue;
+            }
+            let events: Vec<String> = clip
+                .events
+                .iter()
+                .map(|e| {
+                    let arg = if e.data.is_empty() {
+                        String::new()
+                    } else {
+                        format!("({:?})", e.data)
+                    };
+                    format!("{:.3} s {}{arg}", e.time, e.function)
+                })
+                .collect();
+            println!(
+                "  {:?} {:.3} s: {}",
+                clip.name,
+                clip.stop_time - clip.start_time,
+                events.join(", ")
+            );
+        }
+    }
+    println!("({:.2} s)", start.elapsed().as_secs_f64());
+    Ok(ExitCode::SUCCESS)
+}

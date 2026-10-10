@@ -306,6 +306,9 @@ pub struct PlayerFields {
     pub player_sphere_radius: f32,
     /// `camRoot` (an `SNCameraRoot`).
     pub cam_root: PPtr,
+    /// `camAnchor` (a Transform): where cinematics bring the camera back
+    /// to (`PlayerCinematicController`, M9g5).
+    pub cam_anchor: PPtr,
     /// `armsController` (an `ArmsController`).
     pub arms_controller: PPtr,
     /// `playerAnimator` (an `Animator`).
@@ -354,9 +357,10 @@ impl PlayerFields {
         let head = PPtr::read(&mut r)?;
         let player_sphere_radius = r.f32()?;
         let cam_root = PPtr::read(&mut r)?;
-        // camAnchor, surfaceFXSpawn, temperatureDamage, scubaMaskModelSpawn,
+        let cam_anchor = PPtr::read(&mut r)?;
+        // surfaceFXSpawn, temperatureDamage, scubaMaskModelSpawn,
         // fpParticleEmissionPoint, pda
-        for _ in 0..6 {
+        for _ in 0..5 {
             PPtr::read(&mut r)?;
         }
         let arms_controller = PPtr::read(&mut r)?;
@@ -397,6 +401,7 @@ impl PlayerFields {
             head,
             player_sphere_radius,
             cam_root,
+            cam_anchor,
             arms_controller,
             player_animator,
             crush_depth,
@@ -1006,6 +1011,45 @@ impl AutoParent {
     }
 }
 
+/// `OnPlayerCinematicModeEndForward` (M9g5): an animation event
+/// `OnPlayerCinematicModeEnd` on its GameObject is passed on to each of
+/// these `PlayerCinematicController`s. Every field.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CinematicEndForward {
+    pub forward: Vec<PPtr>,
+}
+
+impl CinematicEndForward {
+    pub fn parse(data: &[u8], big_endian: bool) -> Result<CinematicEndForward> {
+        let mut r = fields(data, big_endian)?;
+        let n = r.count(12)?;
+        let mut forward = Vec::with_capacity(n);
+        for _ in 0..n {
+            forward.push(PPtr::read(&mut r)?);
+        }
+        at_end(&r, data)?;
+        Ok(CinematicEndForward { forward })
+    }
+}
+
+/// `CameraToPlayerManager` on the player (M9g5): after death the camera
+/// (`camRoot`) copies `headCameraBone` every frame. Every field.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CameraToPlayerManager {
+    pub head_camera_bone: PPtr,
+}
+
+impl CameraToPlayerManager {
+    pub fn parse(data: &[u8], big_endian: bool) -> Result<CameraToPlayerManager> {
+        let mut r = fields(data, big_endian)?;
+        let c = CameraToPlayerManager {
+            head_camera_bone: PPtr::read(&mut r)?,
+        };
+        at_end(&r, data)?;
+        Ok(c)
+    }
+}
+
 /// `EscapePodFirstUseCinematicsController`: which lifepod hatch triggers
 /// are the first-use ones (13 object references).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1424,6 +1468,7 @@ mod tests {
         );
         assert_eq!(p.head.path_id, 6);
         assert_eq!(p.cam_root.path_id, 10);
+        assert_eq!(p.cam_anchor.path_id, 11);
         assert_eq!(p.arms_controller.path_id, 17);
         assert_eq!(p.player_animator.path_id, 18);
         assert_eq!(p.left_hand_bone.path_id, 50);
@@ -1588,6 +1633,28 @@ mod tests {
         robust(&w.0, |d| AutoParent::parse(d, false));
         w.u8(0);
         assert!(AutoParent::parse(&w.0, false).is_err());
+    }
+
+    #[test]
+    fn cinematic_end_forward_and_head_camera() {
+        let mut w = W::behaviour();
+        w.i32(2).pptr(0, 7).pptr(0, 8);
+        let f = CinematicEndForward::parse(&w.0, false).unwrap();
+        assert_eq!(
+            f.forward.iter().map(|p| p.path_id).collect::<Vec<_>>(),
+            vec![7, 8]
+        );
+        robust(&w.0, |d| CinematicEndForward::parse(d, false));
+        w.u8(0);
+        assert!(CinematicEndForward::parse(&w.0, false).is_err());
+
+        let mut w = W::behaviour();
+        w.pptr(0, 91);
+        let c = CameraToPlayerManager::parse(&w.0, false).unwrap();
+        assert_eq!(c.head_camera_bone.path_id, 91);
+        robust(&w.0, |d| CameraToPlayerManager::parse(d, false));
+        w.i32(0);
+        assert!(CameraToPlayerManager::parse(&w.0, false).is_err());
     }
 
     #[test]

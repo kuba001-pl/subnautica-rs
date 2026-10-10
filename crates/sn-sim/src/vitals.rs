@@ -209,6 +209,9 @@ pub struct Situation {
     pub landed: Option<f64>,
     /// The world around the player is loaded (`IsWorldSettled`).
     pub world_settled: bool,
+    /// A cinematic plays (M9g5c): `Player.FreezeStats` stops the breaths
+    /// and `OxygenManager` adds no oxygen (`cinematicModeActive`).
+    pub cinematic: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -354,7 +357,7 @@ impl Vitals {
 
         // `Player.Update`: a breath each time the clock crosses a multiple
         // of the breath period.
-        if !can_breathe && !self.frozen {
+        if !can_breathe && !self.frozen && !s.cinematic {
             let period = breath_period(class);
             if (self.time / period).floor() != (self.prev_time / period).floor() {
                 let want = oxygen_per_breath(period, class);
@@ -364,9 +367,9 @@ impl Vitals {
             }
         }
 
-        // `OxygenManager.Update` (no cinematic plays in our hatches).
+        // `OxygenManager.Update`: none while a cinematic plays.
         let source_y = s.y + params.oxygen_above_player;
-        if source_y > params.ocean_level - 1.0 || can_breathe {
+        if (source_y > params.ocean_level - 1.0 || can_breathe) && !s.cinematic {
             self.add_oxygen(params, dt * params.refill_per_second);
         }
 
@@ -429,6 +432,7 @@ mod tests {
         Situation {
             y,
             world_settled: true,
+            cinematic: false,
             ..Situation::default()
         }
     }
@@ -568,6 +572,30 @@ mod tests {
             1
         );
         assert!(v.health == 100.0 && v.oxygen == 45.0 && v.controls_enabled());
+    }
+
+    #[test]
+    fn a_cinematic_neither_breathes_nor_refills() {
+        let p = params();
+        let mut v = Vitals::new(&p);
+        v.oxygen = 20.0;
+        let under = Situation {
+            cinematic: true,
+            ..at(-10.0)
+        };
+        let events = run(&mut v, &p, under, 10.0);
+        assert!(
+            events
+                .iter()
+                .all(|(_, e)| !matches!(e, VitalsEvent::Breath(_)))
+        );
+        assert_eq!(v.oxygen, 20.0);
+        let surface = Situation {
+            cinematic: true,
+            ..at(5.0)
+        };
+        run(&mut v, &p, surface, 1.0);
+        assert_eq!(v.oxygen, 20.0);
     }
 
     #[test]

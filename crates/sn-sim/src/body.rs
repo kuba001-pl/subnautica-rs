@@ -12,8 +12,8 @@
 //! Angles are Unity's: degrees, left-handed, y up; Euler angles apply z,
 //! then x, then y; a positive x angle looks down.
 
-use crate::V3;
 use crate::look::Look;
+use crate::{Pose, Q, V3};
 
 /// From the game's data (`sn-assets`' `body_params`).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -228,6 +228,10 @@ pub struct Body {
     pub pose: CameraPose,
     /// Death trigger waiting for the next frame's parameters.
     death_trigger: bool,
+    /// `CameraToPlayerManager` (M9g5c): from the death to the respawn the
+    /// camera copies the head camera bone and `MainCameraControl` stops
+    /// (the rig keeps its last pose).
+    pub head_camera: bool,
 }
 
 impl Body {
@@ -248,6 +252,7 @@ impl Body {
             strafe_tilt: 0.0,
             pose: CameraPose::default(),
             death_trigger: false,
+            head_camera: false,
         }
     }
 
@@ -279,6 +284,14 @@ impl Body {
     /// yet, so every death is the plain one.
     pub fn died(&mut self) {
         self.death_trigger = true;
+        // `Player.OnKill`: `EnableHeadCameraController`.
+        self.head_camera = true;
+    }
+
+    /// `Player.ResetPlayerOnDeath` when it moves the player to the
+    /// respawn point: `DisableHeadCameraController`.
+    pub fn respawned(&mut self) {
+        self.head_camera = false;
     }
 
     /// One frame: `ArmsController.Update`, then
@@ -377,8 +390,43 @@ impl Body {
             out.push(("player_death", AnimValue::Trigger));
         }
 
-        self.update_camera(params, f);
+        if !self.head_camera {
+            self.update_camera(params, f);
+        }
         out
+    }
+
+    /// The view model (`MainCameraControl.viewModel`) in the world: the
+    /// player's transform, then `camRoot`'s position and its yaw only.
+    pub fn view_model(&self, player: Pose) -> Pose {
+        player.then(&Pose::new(
+            V3::new(0.0, self.pose.root_y, 0.0),
+            Q::euler(0.0, self.pose.yaw, 0.0),
+        ))
+    }
+
+    /// `camRoot` (`MainCameraControl`'s transform) in the world where the
+    /// rig puts it on the player's transform.
+    pub fn camera_root(&self, player: Pose) -> Pose {
+        let p = &self.pose;
+        player.then(&Pose::new(
+            V3::new(0.0, p.root_y, 0.0),
+            Q::euler(p.root_pitch, p.yaw, p.roll),
+        ))
+    }
+
+    /// The main camera in the world (M9g5c): `camRoot` where the rig puts
+    /// it on the player's transform, or at `root` when something else
+    /// places it (a cinematic, the death camera); then
+    /// `cameraUPTransform` (its look-up pitch) and `cameraOffsetTransform`.
+    pub fn camera(&self, params: &BodyParams, player: Pose, root: Option<Pose>) -> Pose {
+        let p = &self.pose;
+        let root = root.unwrap_or_else(|| self.camera_root(player));
+        root.then(&Pose::new(
+            params.camera_up_position,
+            Q::euler(p.up_pitch, 0.0, 0.0),
+        ))
+        .then(&Pose::new(params.camera_offset_position, Q::IDENTITY))
     }
 
     /// `MainCameraControl.OnUpdate` in normal play (no PDA, vehicle,
@@ -779,5 +827,54 @@ mod tests {
         assert_eq!(value(&out, "player_death"), AnimValue::Trigger);
         let out = run(&mut b, &p, &mut f, 1);
         assert!(out.iter().all(|(n, _)| *n != "player_death"));
+    }
+
+    #[test]
+    fn the_world_camera_matches_the_rig() {
+        let p = params();
+        let mut b = Body::new(&p);
+        let mut f = frame();
+        f.look = Look {
+            rotation_x: 70.0,
+            rotation_y: 25.0,
+        };
+        run(&mut b, &p, &mut f, 5);
+        let at = V3::new(1.0, -10.0, 2.0);
+        let player = Pose::new(at, Q::IDENTITY);
+        // With the player not turned: the rig's own eye and rotation.
+        let c = b.camera(&p, player, None);
+        assert!((c.position - (at + b.pose.eye(&p))).length() < 1e-9);
+        let v = V3::new(0.2, 0.3, 1.0);
+        assert!((c.rotation.rotate(v) - b.pose.rotate(v)).length() < 1e-9);
+        // A turned player turns the rig with it.
+        let turned = Pose::new(at, Q::euler(0.0, 90.0, 0.0));
+        let c = b.camera(&p, turned, None);
+        let ahead = c.rotation.rotate(V3::new(0.0, 0.0, 1.0));
+        let flat = Q::euler(0.0, 90.0, 0.0).rotate(b.pose.rotate(V3::new(0.0, 0.0, 1.0)));
+        assert!((ahead - flat).length() < 1e-9);
+        // Somewhere else placing camRoot: the eye hangs below it.
+        let root = Pose::new(V3::new(5.0, 0.0, 0.0), Q::IDENTITY);
+        let c = b.camera(&p, player, Some(root));
+        let up = Q::euler(b.pose.up_pitch, 0.0, 0.0).rotate(p.camera_offset_position);
+        assert!((c.position - (root.position + p.camera_up_position + up)).length() < 1e-9);
+        // The view model takes the yaw only.
+        let vm = b.view_model(player);
+        assert!((vm.rotation.to_euler().y - 70.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn the_head_camera_freezes_the_rig_until_respawn() {
+        let p = params();
+        let mut b = Body::new(&p);
+        let mut f = frame();
+        run(&mut b, &p, &mut f, 3);
+        b.died();
+        let frozen = b.pose;
+        f.look.rotation_x = 45.0;
+        run(&mut b, &p, &mut f, 3);
+        assert_eq!(b.pose, frozen);
+        b.respawned();
+        run(&mut b, &p, &mut f, 1);
+        assert_eq!(b.pose.yaw, 45.0);
     }
 }

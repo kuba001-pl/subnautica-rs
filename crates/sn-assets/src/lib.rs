@@ -10,6 +10,7 @@
 //! Read-only: everything comes from the player's install via `sn-install`.
 
 mod anim;
+mod cinematics;
 mod code;
 mod collision;
 mod collision_world;
@@ -31,7 +32,10 @@ use std::sync::{Arc, Mutex};
 use sn_install::GameData;
 use sn_unity::{Bundle, BundleDirectory, ObjectInfo, PPtr, SerializedFile};
 
-pub use anim::{AnimationSet, AnimatorBinding, blend_shape_clamp, quality_settings};
+pub use anim::{
+    AnimationSet, AnimatorBinding, PosedLink, PosedNode, blend_shape_clamp, quality_settings,
+};
+pub use cinematics::{CinematicNames, PodCinematics};
 pub use code::{
     ExploderCode, GAME_ASSEMBLY, GameCode, PlayerCode, TechDefaults, exploder_code,
     field_of_view_code, game_code, player_code, read_assembly,
@@ -56,7 +60,8 @@ pub use prefab::{
     SHADOWS_OFF, SHADOWS_ON, SHADOWS_ONLY, SHADOWS_TWO_SIDED, VolumetricGlow, WorldBox,
 };
 pub use scene::{
-    AuroraGroup, AuroraShow, CinematicTrigger, DiveHatch, LIGHTMAPPED_PREFAB, Scene, SceneSpawn,
+    AuroraGroup, AuroraShow, CinematicForward, CinematicTrigger, DiveHatch, LIGHTMAPPED_PREFAB,
+    ObjectKey, Scene, SceneSpawn,
 };
 pub use skin::{Mat4, skin};
 pub use slots::{LootTable, entity_infos, loot_table, parse_loot_table};

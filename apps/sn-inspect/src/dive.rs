@@ -19,10 +19,47 @@ use sn_sim::vitals::{
 
 use crate::Result;
 use crate::collision::Streamed;
-use crate::walk::{Expected, Run, board, check_body, leave_pod, report, start};
+use crate::walk::{Expected, Run, board, check_body, check_hatches, leave_pod, report, start};
 
-/// The plan's "M9g3 expected states" for the dive's phases.
-const DIVE_EXPECTED: [Expected; 5] = [
+/// The plan's "M9g3 expected states" and "M9g5d expected values" for the
+/// dive's phases.
+const DIVE_EXPECTED: [Expected; 11] = [
+    Expected {
+        phase: "hatch bot_out_trigger_first",
+        layer: "Cinematics",
+        has: &["escapepod_first_botout_cine"],
+        only: &["New State", "escapepod_first_botout_cine"],
+    },
+    Expected {
+        phase: "hatch bot_out_trigger",
+        layer: "Cinematics",
+        has: &["escapepod_botout"],
+        only: &["New State", "escapepod_botout"],
+    },
+    Expected {
+        phase: "hatch bot_in_trigger",
+        layer: "Cinematics",
+        has: &["escapepod_botin"],
+        only: &["New State", "escapepod_botin"],
+    },
+    Expected {
+        phase: "clear of the pod",
+        layer: "Cinematics",
+        has: &["New State"],
+        only: &["New State", "escapepod_first_botout_cine"],
+    },
+    Expected {
+        phase: "clear of the pod again",
+        layer: "Cinematics",
+        has: &["New State"],
+        only: &["New State", "escapepod_botout"],
+    },
+    Expected {
+        phase: "hatch bot_out_trigger",
+        layer: "Base Modes",
+        has: &[],
+        only: &["Walking", "Swim", "surface swim"],
+    },
     Expected {
         phase: "in the pod",
         layer: "Base Modes",
@@ -104,6 +141,7 @@ impl Dive<'_, '_, '_> {
             in_pod: self.r.player.in_pod,
             landed: None,
             world_settled: true,
+            cinematic: false,
         }
     }
 
@@ -403,6 +441,16 @@ pub fn run(game: &GameData, seed: u64) -> Result<ExitCode> {
     );
     let states_ok = check_body(&d.r.body, &DIVE_EXPECTED);
     check("body: states as expected", states_ok);
+    let names: Vec<&str> = d.r.hatch_uses.iter().map(|h| h.name.as_str()).collect();
+    check(
+        &format!("hatch cinematics: first-use exit, exit, entry ({names:?})"),
+        names == ["bot_out_trigger_first", "bot_out_trigger", "bot_in_trigger"],
+    );
+    let hatches_ok = check_hatches(d.r);
+    check(
+        "hatch cinematics: durations, end places, oxygen",
+        hatches_ok,
+    );
     crate::swim::print_load_stats(&s);
     println!(
         "{} (total {:.1} s)",

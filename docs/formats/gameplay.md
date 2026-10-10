@@ -369,6 +369,62 @@ Reader: `sn_unity::PlayerFields` (now every field), `ArmsController`;
   inside the rig. Standing in the pod, the animated nodes reach 1.53 m
   below the view model, matching the standing capsule's bottom (1.50 m
   below the player's transform).
+- **Confirmed (real data, `sn-inspect scene escapepod --cinematics`,
+  real-data test `player_movement_data`; M9g5a):** the pod's 8 hatch
+  triggers and the intro each have a `PlayerCinematicController`; all
+  move the player along `models/Life_Pod_damaged_03/root/player_cineLoc/
+  cin_target`, a node of the pod's own animator (`escape_pod_controller`
+  on `Life_Pod_damaged_03`); the hatches interpolate 0.25 s in and out,
+  none enforces the end by time. Each sets a pod parameter
+  (`escapepod_topout`, `_topin`, `_botin`, `_botout`, `_botout_first`,
+  `_topout_first`, `_left_side`, `_right_side`), a "prepare" parameter
+  during the move in (`prepare_…`), and the player's parameter of the
+  same name (both side hatches: `escapepod_side`). Boarding calls
+  `EnterExitHelper.CinematicEnter` at the start of the cinematic,
+  leaving calls `CinematicExit` at its end.
+- **Confirmed (real data):** the end of a hatch cinematic is the
+  `OnPlayerCinematicModeEnd` event at the last frame of the pod's clip
+  (`top_out` 2.000 s, `top_in` 1.167 s, `bot_in` 1.667 s, `bot_out`
+  0.667 s, `side` and `side2` 2.667 s, `escapepod_first_topout` 8.167 s,
+  `escapepod_first_botout` 6.333 s). The event arrives on
+  `Life_Pod_damaged_03`, whose one `OnPlayerCinematicModeEndForward`
+  passes it to all 8 hatch controllers; only the running one acts. The
+  first-use clips carry 1–3 more events (creatures leaving the pod's
+  surroundings: not used without creatures).
+- **Confirmed (real data):** `Player.camAnchor` is the skeleton's `Cam`
+  bone; `CameraToPlayerManager.headCameraBone` is `cam_deathpos`.
+- **Confirmed (code, `PlayerCinematicController`):** a cinematic starts
+  only when none runs; the player's transform lerps (position) and
+  slerps (rotation) to the animated node over the interpolation time
+  while `camRoot` moves from its offset to `camAnchor`; then the
+  parameters are set and the player sits on the node every frame (late
+  update) until the end event; the end puts the player on the node,
+  clears the parameters, and then lerps to `endTransform` only if it is
+  set and not VR-only, else stops there. `MainCameraControl.cinematicMode`
+  folds the look into the player's rotation at the start and takes it
+  back at the end (pitch clamped to the look limits; the rest of the
+  pitch and the roll stay on the player's transform and
+  `Player.UpdateRotation` eases them to 0 at 10 per second).
+- **Measured (M9g5d, `sn-inspect walk`/`dive`, seeds 1–5):** at our 50 Hz
+  step the bottom hatches take 6.62 s (first-use exit), 0.96 s (exit)
+  and 2.22 s (entry): the 0.25 s moves take 13 steps and the pod's
+  animator starts its clip one step after the parameter is set. The
+  first-use exit ends where the animation leaves `cin_target`, 0.48 m
+  from the stored (VR-only) end point; the normal exit's animation ends
+  on its stored end point (0.00 m); the entry ends on `botin_end`. The
+  oxygen doesn't change during a cinematic.
+- **Hypothesis (M9g5d):** where the first-use exit leaves the player,
+  the swimming capsule overlaps the pod by 0.27 m (every seed). PhysX
+  separates an overlapping rigid body; the player's `Rigidbody` sets no
+  `maxDepenetrationVelocity` (Unity 2019.4 serializes none, the game's
+  code sets none), so we take PhysX's unbounded default: out in one
+  step, along the overlap's normal, with no velocity added. Not checked
+  against the game.
+- **Confirmed (code, `Player.OnKill`, `CameraToPlayerManager`):** death
+  sets `player_death` (fire: `player_death_fire`, explosions:
+  `player_death_explosion`) and stops `MainCameraControl`; `camRoot`
+  then copies `cam_deathpos` every frame until the respawn. The death
+  clips carry `DeathFade` / `DeathCut` events (the screen's fade).
 - **Confirmed (real data, M9g2): where the camera is.** The scene's one
   `AutoParent` sits on the top-level `PlayerCameras` (which holds the
   camera tagged `MainCamera`, at identity in its object) and on `Start`

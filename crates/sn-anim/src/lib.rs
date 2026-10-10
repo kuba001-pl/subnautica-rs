@@ -12,4 +12,6 @@ mod machine;
 pub mod math;
 pub mod sample;
 
-pub use machine::{Animator, LayerInfo, ParamValue, Program, Slot, SlotKind};
+pub use machine::{
+    Animator, FiredEvent, LayerInfo, ParamValue, Program, Slot, SlotKind, event_crossed,
+};

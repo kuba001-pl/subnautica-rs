@@ -9,16 +9,17 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use sn_anim::{Animator, Program, SlotKind};
-use sn_assets::Assets;
-use sn_sim::V3;
+use sn_assets::{Assets, PosedNode};
 use sn_sim::body::{AnimValue, Body, BodyFrame, BodyParams};
 use sn_sim::look::Look;
+use sn_sim::{Pose, Q, V3};
 use sn_unity::{AnimatorController, name_hash};
 
 use crate::Result;
 
-/// The layers whose states are collected: "Base Modes" and "Death".
-const WATCHED: [&str; 2] = ["Base Modes", "Death"];
+/// The layers whose states are collected: "Base Modes", "Death" and
+/// "Cinematics" (M9g5d).
+const WATCHED: [&str; 3] = ["Base Modes", "Death", "Cinematics"];
 
 pub(crate) struct BodyRun {
     pub(crate) params: BodyParams,
@@ -41,6 +42,9 @@ pub(crate) struct BodyRun {
     us: Vec<f64>,
     /// Parameters set that the controller doesn't have.
     unknown: BTreeSet<&'static str>,
+    /// `Player.camAnchor` and the death camera's bone (M9g5d).
+    cam_anchor: PosedNode,
+    head_camera: PosedNode,
 }
 
 impl BodyRun {
@@ -66,6 +70,23 @@ impl BodyRun {
                 "player animator: {} slots not in the hierarchy",
                 binding.missing
             ));
+        }
+        let posed = |node: usize, what: &str| {
+            body.prefab
+                .posed_node(node, &program, &binding)
+                .ok_or_else(|| format!("player: {what} not in the hierarchy"))
+        };
+        let cam_anchor = posed(body.cam_anchor_node, "camAnchor")?;
+        let head_camera = posed(body.head_camera_node, "headCameraBone")?;
+        // The posed chains start below the player's root and pass through
+        // the view model, which must be stored at the root's origin (the
+        // client and the rules put the view model there each frame).
+        let vm = &body.prefab.nodes[body.view_model_node];
+        if vm.parent != Some(0)
+            || vm.local.position != [0.0; 3]
+            || vm.local.rotation != [0.0, 0.0, 0.0, 1.0]
+        {
+            return Err("player: the view model is not at the player's origin".into());
         }
         let animator = Animator::new(program.clone(), binding.defaults);
         let layers = controller
@@ -104,6 +125,8 @@ impl BodyRun {
             worst_q: 0.0,
             us: Vec::new(),
             unknown: BTreeSet::new(),
+            cam_anchor,
+            head_camera,
         })
     }
 
@@ -117,9 +140,51 @@ impl BodyRun {
         self.phase = phase.to_string();
     }
 
-    /// The camera's place in the world for a player at `position`.
-    pub(crate) fn eye(&self, position: V3) -> V3 {
-        position + self.body.pose.eye(&self.params)
+    /// The main camera in the world (M9g5d): `camRoot` on the player's
+    /// transform, or at `root` (a cinematic), or on the head camera bone
+    /// after a death.
+    pub(crate) fn camera(&self, player: Pose, root: Option<Pose>) -> Pose {
+        let root = if self.body.head_camera {
+            Some(self.node_world(&self.head_camera, player))
+        } else {
+            root
+        };
+        self.body.camera(&self.params, player, root)
+    }
+
+    /// `camRoot` where the rig puts it now.
+    pub(crate) fn camera_root(&self, player: Pose) -> Pose {
+        self.body.camera_root(player)
+    }
+
+    /// `Player.camAnchor` in the world now.
+    pub(crate) fn cam_anchor(&self, player: Pose) -> Pose {
+        self.node_world(&self.cam_anchor, player)
+    }
+
+    /// A node of the player's hierarchy in the world: the view model's
+    /// place, then the node's chain for the animator's pose.
+    fn node_world(&self, node: &PosedNode, player: Pose) -> Pose {
+        let t = node.in_prefab(self.animator.pose());
+        self.body.view_model(player).then(&Pose::new(
+            V3::from_f32(t.position),
+            Q::from_f32(t.rotation).normalized(),
+        ))
+    }
+
+    /// Sets a bool of the player's animator (a cinematic's
+    /// `playerViewAnimationName`); false if the controller lacks it.
+    pub(crate) fn set_bool(&mut self, id: u32, v: bool) -> bool {
+        self.animator.set_bool(id, v)
+    }
+
+    /// `MainCameraControl.minimumY` / `maximumY`.
+    pub(crate) fn look_limits(&self) -> (f64, f64) {
+        self.look_limits
+    }
+
+    pub(crate) fn respawned(&mut self) {
+        self.body.respawned();
     }
 
     pub(crate) fn jumped(&mut self, time: f64) {
@@ -138,11 +203,12 @@ impl BodyRun {
     pub(crate) fn step(
         &mut self,
         frame: &BodyFrame,
+        cinematic: bool,
         obstacle: &mut dyn FnMut(V3, V3, f64) -> bool,
     ) {
         let t = Instant::now();
         self.body
-            .fixed_step(frame.time, frame.underwater, frame.grounded, false);
+            .fixed_step(frame.time, frame.underwater, frame.grounded, cinematic);
         let values = self.body.update(&self.params, frame, obstacle);
         for (name, v) in values {
             let id = name_hash(name);
@@ -198,9 +264,20 @@ impl BodyRun {
     /// The states layer `layer` was in during phases whose name starts
     /// with `phase`.
     pub(crate) fn states(&self, phase: &str, layer: &str) -> BTreeSet<String> {
+        self.states_where(|p| p.starts_with(phase), layer)
+    }
+
+    /// The states layer `layer` was in during the phases named exactly
+    /// `phase` (a phase name may come back, e.g. "in the pod" after the
+    /// respawn).
+    pub(crate) fn states_exact(&self, phase: &str, layer: &str) -> BTreeSet<String> {
+        self.states_where(|p| p == phase, layer)
+    }
+
+    fn states_where(&self, keep: impl Fn(&str) -> bool, layer: &str) -> BTreeSet<String> {
         self.visited
             .iter()
-            .filter(|(p, _)| p.starts_with(phase))
+            .filter(|(p, _)| keep(p))
             .filter_map(|(_, m)| m.get(layer))
             .flatten()
             .cloned()

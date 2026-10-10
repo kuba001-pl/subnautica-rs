@@ -93,6 +93,9 @@ pub enum Event {
     /// Left the escape pod's 15 m radius without a hatch.
     LeftPodRadius,
     SteppedOutOfWater,
+    /// The swimming motor's rigid body was pushed out of an overlap by
+    /// this many metres (M9g5d, [`Player::step`]).
+    PushedOut(f64),
 }
 
 /// `Player.escapePodRadius`.
@@ -129,9 +132,11 @@ pub fn hand_target(world: &World, eye: V3, yaw: f64, pitch: f64) -> Option<(f64,
 /// `PlayerCinematicController`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct HatchTrigger {
-    /// The cinematic's end point (`None`: where its animation ends, not
-    /// read).
+    /// The cinematic's end point as stored (M9b's stand-in, also when the
+    /// game uses it only in VR; `None`: none).
     pub end: Option<V3>,
+    /// The cinematic as the game plays it (M9g5c).
+    pub cinematic: crate::cinematic::CinematicParams,
     /// Calls `EnterExitHelper.CinematicEnter` / `CinematicExit`.
     pub enters: bool,
     pub exits: bool,
@@ -233,6 +238,14 @@ pub struct Player {
     /// Seconds since the jump button went down (`lastButtonDownTime`).
     jump_held_for: Option<f64>,
     recently_collided: bool,
+    /// The player's transform's rotation (M9g5c): identity in normal play
+    /// (the look turns the camera rig, not the player); a cinematic turns
+    /// it, and what is left after one eases out
+    /// ([`crate::cinematic::ease_tilt`]).
+    pub rotation: crate::Q,
+    /// `Player.cinematicModeActive`: the controller is off
+    /// ([`Player::step`] does nothing).
+    pub cinematic: bool,
 }
 
 impl Player {
@@ -252,6 +265,8 @@ impl Player {
             ground_normal: V3::ZERO,
             jump_held_for: None,
             recently_collided: false,
+            rotation: crate::Q::IDENTITY,
+            cinematic: false,
         };
         p.update_swimming(params, None);
         p.motor = if p.swimming { Motor::Swim } else { Motor::Walk };
@@ -320,9 +335,20 @@ impl Player {
         self.update_swimming(params, None);
     }
 
+    /// `PlayerController.ForceControllerSize`: the controller's height
+    /// set to the motor's at once.
+    pub fn force_controller_size(&mut self, params: &PlayerParams) {
+        self.height = self.desired_height(params);
+    }
+
     /// One physics step.
     pub fn step(&mut self, params: &PlayerParams, world: &World, input: &Input) -> Vec<Event> {
         let mut events = Vec::new();
+        // `PlayerController.SetEnabled(false)` while a cinematic plays.
+        if self.cinematic {
+            self.velocity = V3::ZERO;
+            return events;
+        }
         let dt = params.fixed_dt;
         // `Player.ValidateEscapePod`.
         if self.in_pod
@@ -374,13 +400,31 @@ impl Player {
             self.height = next;
         }
         match self.motor {
-            Motor::Swim => self.swim(params, world, input, &mut events),
+            Motor::Swim => {
+                self.push_out(params, world, &mut events);
+                self.swim(params, world, input, &mut events);
+            }
             Motor::Walk => {
                 self.walk(params, world, input, &mut events);
                 self.walk_grounded = self.grounded;
             }
         }
         events
+    }
+
+    /// PhysX separating the swimming motor's rigid body from what it
+    /// overlaps (e.g. where a cinematic left it), with
+    /// [`World::push_out`]; only real overlaps (a gap below 0) move it, so
+    /// normal swimming keeps its own `SKIN` handling. **Hypothesis**: the player's
+    /// `Rigidbody.maxDepenetrationVelocity` is PhysX's default (unbounded;
+    /// Unity 2019.4 serializes none and the game sets none), so the overlap
+    /// is gone after one step, and the push adds no velocity.
+    fn push_out(&mut self, params: &PlayerParams, world: &World, events: &mut Vec<Event>) {
+        let (to, first) = world.push_out(&self.capsule(params), self.position);
+        if first.is_some_and(|g| g < 0.0) {
+            events.push(Event::PushedOut((to - self.position).length()));
+            self.position = to;
+        }
     }
 
     /// `UnderwaterMotor.UpdateMove`, then the rigid body's step.
@@ -702,12 +746,12 @@ struct Moved {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::collide::Body;
 
     /// The game's numbers as `sn-inspect player` prints them.
-    fn params() -> PlayerParams {
+    pub(crate) fn params() -> PlayerParams {
         PlayerParams {
             radius: 0.3,
             stand_height: 1.5,
@@ -817,6 +861,33 @@ mod tests {
             sw.step(&p, &World::new(), &forward());
         }
         assert!(!sw.grounded && sw.walk_grounded);
+    }
+
+    /// A swimmer left overlapping something (where a cinematic ends) is
+    /// pushed clear in one step; a clear one isn't moved.
+    #[test]
+    fn swimming_pushes_out_of_an_overlap() {
+        let p = params();
+        let mut pl = Player::new(&p, v(0.0, -10.0, 0.0), false);
+        let c = pl.capsule(&p);
+        // A floor through the capsule's lower half-sphere, its core above.
+        let low = c.a.y.min(c.b.y);
+        let w = world(floor_at(-10.0 + low - c.radius * 0.5));
+        let events = pl.step(&p, &w, &Input::default());
+        let pushed: Vec<f64> = events
+            .iter()
+            .filter_map(|e| match e {
+                Event::PushedOut(d) => Some(*d),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(pushed.len(), 1, "{events:?}");
+        assert!(pushed[0] > c.radius * 0.5 - 1e-6, "{pushed:?}");
+        let gap = w.clearance(&pl.capsule(&p), pl.position, 1.0).unwrap().gap;
+        assert!(gap >= 0.0, "still overlapping: {gap}");
+        // Clear now: the next step pushes nothing.
+        let events = pl.step(&p, &w, &Input::default());
+        assert!(!events.iter().any(|e| matches!(e, Event::PushedOut(_))));
     }
 
     #[test]
@@ -1107,6 +1178,11 @@ mod tests {
         pl.teleport(&p, inside, Some(true));
         let exit = HatchTrigger {
             end: Some(outside),
+            cinematic: crate::cinematic::CinematicParams {
+                interpolation_in: 0.25,
+                interpolation_out: 0.25,
+                end: None,
+            },
             enters: false,
             exits: true,
             active: true,
