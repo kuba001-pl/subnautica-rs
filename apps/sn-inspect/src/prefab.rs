@@ -187,8 +187,16 @@ fn placed_prefabs(game: &GameData) -> Result<BTreeMap<String, usize>> {
 
 /// Every placed prefab with the world (Unity) positions of its placements.
 pub fn placed_positions(game: &GameData) -> Result<BTreeMap<String, Vec<[f32; 3]>>> {
+    Ok(placed_transforms(game)?
+        .into_iter()
+        .map(|(k, v)| (k, v.iter().map(|t| t.position).collect()))
+        .collect())
+}
+
+/// Every placed prefab with the world (Unity) placements of its instances.
+pub fn placed_transforms(game: &GameData) -> Result<BTreeMap<String, Vec<sn_world::Transform>>> {
     let prefabs = game.read_prefab_database()?;
-    let mut keys: BTreeMap<String, Vec<[f32; 3]>> = BTreeMap::new();
+    let mut keys: BTreeMap<String, Vec<sn_world::Transform>> = BTreeMap::new();
     let (batches, _) = game.cell_batches()?;
     for coord in batches {
         let Some(file) = game.read_batch_cells(coord)? else {
@@ -198,7 +206,7 @@ pub fn placed_positions(game: &GameData) -> Result<BTreeMap<String, Vec<[f32; 3]
             let (world, _) = tree.world_transforms();
             for (o, t) in tree.objects.iter().zip(world) {
                 if let Some(path) = prefabs.get(&o.class_id) {
-                    keys.entry(path.clone()).or_default().push(t.position);
+                    keys.entry(path.clone()).or_default().push(t);
                 }
             }
         }
@@ -221,7 +229,7 @@ pub fn placed_positions(game: &GameData) -> Result<BTreeMap<String, Vec<[f32; 3]
         let (world, _) = tree.world_transforms();
         for (o, t) in tree.objects.iter().zip(world) {
             if let Some(path) = prefabs.get(&o.class_id) {
-                keys.entry(path.clone()).or_default().push(t.position);
+                keys.entry(path.clone()).or_default().push(t);
             }
         }
     }

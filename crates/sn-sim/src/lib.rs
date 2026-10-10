@@ -2,12 +2,14 @@
 //! (`docs/DESIGN.md` § 4.3). So far: collision of a capsule against
 //! triangles and primitive shapes (`collide`, M9a), the player's movement
 //! (`player`, M9b), oxygen, health and death (`vitals`) and the mouse look
-//! (`look`, M9c).
+//! (`look`, M9c), the Aurora's explosion and exterior cull (`aurora`,
+//! M7f4e).
 //!
 //! Pure: no files, no network, no engine. Positions are Unity world
 //! coordinates (left-handed, y up), computed in `f64` so that a few
 //! kilometres from the origin a 1 cm skin is still far above rounding.
 
+pub mod aurora;
 pub mod collide;
 pub mod look;
 mod math;

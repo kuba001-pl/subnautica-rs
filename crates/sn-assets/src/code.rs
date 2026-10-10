@@ -140,6 +140,34 @@ pub struct PlayerCode {
     pub default_mouse_sensitivity: f32,
 }
 
+/// The Aurora's explosion numbers that live in the code (M7f4e):
+/// `CrashedShipExploder.SetExplodeTime`'s `Random.Range(min, max)` days and
+/// its seconds per day, and the class's `const` delays after the
+/// countdown starts.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ExploderCode {
+    pub range: (f32, f32),
+    pub day_seconds: f32,
+    pub sound_delay: f32,
+    pub fx_delay: f32,
+    pub swap_delay: f32,
+}
+
+/// Reads [`ExploderCode`] from the game's code assembly.
+pub fn exploder_code(bytes: &[u8]) -> Result<ExploderCode> {
+    let e = |e: sn_dotnet::Error| format!("{GAME_ASSEMBLY}: {e}");
+    let asm = Assembly::parse(bytes).map_err(e)?;
+    let class = "CrashedShipExploder";
+    let delay = |name: &str| sn_dotnet::const_f32(&asm, "", class, name).map_err(e);
+    Ok(ExploderCode {
+        range: sn_dotnet::random_range_f32(&asm, "", class, "SetExplodeTime").map_err(e)?,
+        day_seconds: sn_dotnet::multiplier_f32(&asm, "", class, "SetExplodeTime").map_err(e)?,
+        sound_delay: delay("delayBeforeExplosionSound")?,
+        fx_delay: delay("delayBeforeExplosionFX")?,
+        swap_delay: delay("delayBeforeSwap")?,
+    })
+}
+
 /// Reads [`PlayerCode`] from the game's code assembly.
 pub fn player_code(bytes: &[u8]) -> Result<PlayerCode> {
     let e = |e: sn_dotnet::Error| format!("{GAME_ASSEMBLY}: {e}");

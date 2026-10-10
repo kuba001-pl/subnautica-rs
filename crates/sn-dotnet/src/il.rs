@@ -60,6 +60,7 @@ pub const DUP: u16 = 0x25;
 pub const POP: u16 = 0x26;
 pub const CALL: u16 = 0x28;
 pub const RET: u16 = 0x2A;
+pub const MUL: u16 = 0x5A;
 pub const CALLVIRT: u16 = 0x6F;
 pub const LDSTR: u16 = 0x72;
 pub const NEWOBJ: u16 = 0x73;

@@ -2,6 +2,7 @@
 //! a Subnautica install. Reads the game folder, never writes to it.
 
 mod anim;
+mod aurora;
 mod biomes;
 mod code;
 mod collision;
@@ -127,6 +128,10 @@ Commands:
                          lifepod, to the seabed until the player dies,
                          respawn in the pod, a dive cut short by surfacing;
                          oxygen each second next to the values read
+  aurora                 M7f4e: the Aurora's countdown rule (from the DLL),
+                         what its swap switches, its parts by state, the
+                         ShipExteriorCull volumes in the world, and the
+                         drawn renderers' shadow modes
   scene --startup        The scenes the game loads at start and what the
                          spawned ones draw in a new game
   terrain-materials      Terrain block types → materials → textures, checked
@@ -259,6 +264,7 @@ fn run(mut args: Vec<String>) -> Result<ExitCode> {
                     .map_err(|_| format!("{seconds:?} is not a number"))?,
             ),
         ),
+        ["aurora"] => aurora::run(&game),
         ["scene", "--startup"] => scene::startup(&game),
         ["scene", "--lifepod"] => scene::lifepod(&game, seed),
         ["walk"] => walk::run(&game, seed),

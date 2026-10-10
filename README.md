@@ -77,8 +77,10 @@ Tested on Windows 11 with game build 10 (Steam):
   `--slot-seed`), and the grass the terrain grows within ~100 m (sea grass,
   the Grassy Plateaus' red seaweed, small corals; the game's placement
   rules and grass shader: tints, height gradient, waving), and the scenes
-  the game spawns at start: the Aurora (intact as in a new game, or
-  `--aurora exploded`) and the Precursor bases and Lost River trees its
+  the game spawns at start: the Aurora (intact as in a new game, swapped
+  for the wreck on the game clock with the game's countdown rule,
+  `--aurora-countdown`, `--time-scale`, or held with `--aurora intact |
+  exploded`) and the Precursor bases and Lost River trees its
   scene holds, and Lifepod 5 at a start point drawn the game's way (from its
   map of valid starts; seeded, `--lifepod-seed`, or `--lifepod X Z`) with
   its fabricator, radio, medical cabinet and power cells; the camera starts
@@ -114,9 +116,9 @@ yet). Flying from the lifepod
 The water clip map (no water inside the lifepod and bases,
 shore foam); water settings per pixel (the
 camera's are used everywhere); Lifepod 5's own interior light and sky,
-floating on the waves; the Aurora's explosion over
-time, its distant levels of
-detail, fire and smoke; terrain grass
+floating on the waves; the sun and sky following the running game clock;
+the Aurora's explosion effects, sounds and warnings, its distant levels
+of detail, fire and smoke; terrain grass
 beyond ~100 m, and grass tufts in the game's exact spots (the amount and
 spread follow its rules; our own random numbers); for world objects: reflections of the biome
 sky's cube map, cave/interior skies chosen by atmosphere volumes,

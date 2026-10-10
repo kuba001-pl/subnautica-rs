@@ -77,6 +77,32 @@ impl CrashedShipExploder {
     }
 }
 
+/// `ShipExteriorCullManager`: every `updateEveryXFrames` frames it tells
+/// the exploder whether the camera is inside one of the registered
+/// `ShipExteriorCull` volumes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ShipExteriorCullManager {
+    pub crashed_ship_exploder: PPtr,
+    pub update_every_x_frames: i32,
+}
+
+impl ShipExteriorCullManager {
+    pub fn parse(data: &[u8], big_endian: bool) -> Result<ShipExteriorCullManager> {
+        let mut r = fields(data, big_endian)?;
+        Ok(ShipExteriorCullManager {
+            crashed_ship_exploder: PPtr::read(&mut r)?,
+            update_every_x_frames: r.i32()?,
+        })
+    }
+}
+
+/// `ShipExteriorCull.colliders`: the `BoxCollider`s whose boxes (in their
+/// Transform's space) are the volume.
+pub fn parse_ship_exterior_cull(data: &[u8], big_endian: bool) -> Result<Vec<PPtr>> {
+    let mut r = fields(data, big_endian)?;
+    pptrs(&mut r)
+}
+
 /// `RandomStart.validStartPointTexture`: the map of valid lifepod starts.
 pub fn parse_random_start(data: &[u8], big_endian: bool) -> Result<PPtr> {
     let mut r = fields(data, big_endian)?;

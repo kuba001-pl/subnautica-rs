@@ -8,8 +8,8 @@ use std::collections::BTreeMap;
 
 use sn_unity::{
     AutoLoadScene, Camera, CrashedShipExploder, EscapePod, GameObject, MonoBehaviourHeader,
-    PrefabSpawner, SpawnPrefab, TAG_MAIN_CAMERA, TransformNode, parse_additional_scenes,
-    parse_autoload_scenes, parse_random_start,
+    PrefabSpawner, ShipExteriorCullManager, SpawnPrefab, TAG_MAIN_CAMERA, TransformNode,
+    parse_additional_scenes, parse_autoload_scenes, parse_random_start,
 };
 use sn_world::{StartMap, Transform};
 
@@ -96,6 +96,121 @@ impl Scene {
         found
     }
 
+    /// The scene's `CrashedShipExploder` (the Aurora), if it has one.
+    pub fn exploder(&self, assets: &Assets) -> Result<Option<CrashedShipExploder>> {
+        let Some(behaviour) = self
+            .behaviours(assets, "CrashedShipExploder")
+            .into_iter()
+            .next()
+        else {
+            return Ok(None);
+        };
+        let (_, data) = behaviour.data()?;
+        CrashedShipExploder::parse(data, self.file.file().big_endian)
+            .map(Some)
+            .map_err(|e| format!("CrashedShipExploder: {e}"))
+    }
+
+    /// The scene's `ShipExteriorCullManager`, if one runs (enabled, on an
+    /// active object).
+    pub fn ship_exterior_cull_manager(
+        &self,
+        assets: &Assets,
+    ) -> Result<Option<ShipExteriorCullManager>> {
+        for behaviour in self.behaviours(assets, "ShipExteriorCullManager") {
+            let (_, data) = behaviour.data()?;
+            let big_endian = self.file.file().big_endian;
+            let header = MonoBehaviourHeader::parse(data, big_endian).map_err(|e| e.to_string())?;
+            let active = self
+                .behaviour_node(assets, &behaviour)?
+                .is_some_and(|(r, n)| self.roots[r].nodes[n].active);
+            if header.enabled && active {
+                return ShipExteriorCullManager::parse(data, big_endian)
+                    .map(Some)
+                    .map_err(|e| format!("ShipExteriorCullManager: {e}"));
+            }
+        }
+        Ok(None)
+    }
+
+    /// The Aurora scene split by when each part shows (M7f4e): one
+    /// hierarchy per top-level object and [`AuroraShow`], holding only the
+    /// nodes shown in exactly those states. Drawn nodes keep the detail
+    /// level [`Prefab::visible`] picks in their state (their LOD level is
+    /// cleared, so the copy draws them all). Leaves the scene intact, as a
+    /// new game starts. Empty if the scene has no exploder.
+    pub fn aurora_groups(&mut self, assets: &Assets) -> Result<Vec<AuroraGroup>> {
+        let Some(exploder) = self.exploder(assets)? else {
+            return Ok(Vec::new());
+        };
+        let states = |scene: &Scene| -> Vec<(Vec<bool>, Vec<bool>)> {
+            scene
+                .roots
+                .iter()
+                .map(|root| {
+                    let mut visible = vec![false; root.nodes.len()];
+                    for (i, _) in root.visible() {
+                        visible[i] = true;
+                    }
+                    (root.nodes.iter().map(|n| n.active).collect(), visible)
+                })
+                .collect()
+        };
+        self.swap_aurora_models(assets, true)?;
+        let exploded = states(self);
+        self.swap_aurora_models(assets, false)?;
+        let intact = states(self);
+        let exterior = match assets.resolve(&self.file, exploder.exploded_exterior)? {
+            Some(object) => self.locate(&object),
+            None => None,
+        };
+        let mut groups = Vec::new();
+        for (r, root) in self.roots.iter().enumerate() {
+            let mut in_exterior = vec![false; root.nodes.len()];
+            for (i, n) in root.nodes.iter().enumerate() {
+                in_exterior[i] = exterior == Some((r, i))
+                    || n.parent
+                        .is_some_and(|p| in_exterior.get(p).copied().unwrap_or(false));
+            }
+            let ((active_i, visible_i), (active_e, visible_e)) = (&intact[r], &exploded[r]);
+            // Mesh nodes count by being drawn, the others (lights,
+            // animators) by being active.
+            let key = |i: usize| -> Option<AuroraShow> {
+                let n = &root.nodes[i];
+                let drawable = n.renderer_enabled && n.mesh.is_some();
+                let (a, b) = if drawable {
+                    (visible_i[i], visible_e[i])
+                } else {
+                    (active_i[i], active_e[i])
+                };
+                (a || b).then_some(AuroraShow {
+                    intact: a,
+                    exploded: b,
+                    exterior: in_exterior[i],
+                })
+            };
+            let keys: Vec<Option<AuroraShow>> = (0..root.nodes.len()).map(key).collect();
+            let mut shows: Vec<AuroraShow> = keys.iter().flatten().copied().collect();
+            shows.sort();
+            shows.dedup();
+            for show in shows {
+                let mut prefab = root.clone();
+                for (i, n) in prefab.nodes.iter_mut().enumerate() {
+                    n.active = keys[i] == Some(show);
+                    if visible_i[i] || visible_e[i] {
+                        n.lod = None;
+                    }
+                }
+                groups.push(AuroraGroup {
+                    root: r,
+                    show,
+                    prefab,
+                });
+            }
+        }
+        Ok(groups)
+    }
+
     /// Puts the Aurora in its state before (`exploded` false, a new game)
     /// or after the explosion, as `CrashedShipExploder.SwapModels` does.
     /// Returns how many objects were switched off and on; an error if the
@@ -105,14 +220,9 @@ impl Scene {
         assets: &Assets,
         exploded: bool,
     ) -> Result<(usize, usize)> {
-        let behaviour = self
-            .behaviours(assets, "CrashedShipExploder")
-            .into_iter()
-            .next()
+        let exploder = self
+            .exploder(assets)?
             .ok_or_else(|| format!("{}: no CrashedShipExploder", self.name))?;
-        let (_, data) = behaviour.data()?;
-        let exploder = CrashedShipExploder::parse(data, self.file.file().big_endian)
-            .map_err(|e| format!("CrashedShipExploder: {e}"))?;
         let mut counts = (0, 0);
         for (list, active) in [
             (&exploder.disable_on_explosion, !exploded),
@@ -137,6 +247,45 @@ impl Scene {
         }
         Ok(counts)
     }
+}
+
+/// The Aurora states a part shows in (M7f4e).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct AuroraShow {
+    /// Before the explosion.
+    pub intact: bool,
+    /// After it.
+    pub exploded: bool,
+    /// Below `CrashedShipExploder.explodedExterior`, which
+    /// `CullExplodedExterior` can hide after the explosion.
+    pub exterior: bool,
+}
+
+impl AuroraShow {
+    pub const ALWAYS: AuroraShow = AuroraShow {
+        intact: true,
+        exploded: true,
+        exterior: false,
+    };
+
+    /// Shown with the ship `exploded` or not and the exploded exterior
+    /// hidden by the cull or not.
+    pub fn shown(self, exploded: bool, exterior_hidden: bool) -> bool {
+        if exploded {
+            self.exploded && !(self.exterior && exterior_hidden)
+        } else {
+            self.intact
+        }
+    }
+}
+
+/// Part of a top-level object of the Aurora scene ([`Scene::aurora_groups`]).
+pub struct AuroraGroup {
+    /// Index in [`Scene::roots`].
+    pub root: usize,
+    pub show: AuroraShow,
+    /// The root with only this group's nodes active.
+    pub prefab: Prefab,
 }
 
 /// A `CinematicModeTrigger` of a scene ([`Scene::cinematic_triggers`]).

@@ -31,7 +31,8 @@ use sn_unity::{Bundle, BundleDirectory, ObjectInfo, PPtr, SerializedFile};
 
 pub use anim::{AnimationSet, AnimatorBinding, blend_shape_clamp};
 pub use code::{
-    GAME_ASSEMBLY, GameCode, PlayerCode, TechDefaults, game_code, player_code, read_assembly,
+    ExploderCode, GAME_ASSEMBLY, GameCode, PlayerCode, TechDefaults, exploder_code, game_code,
+    player_code, read_assembly,
 };
 pub use collision::{ColliderCounts, ColliderMeshes, PrefabCollider, WorldCollider};
 pub use collision_world::{
@@ -44,8 +45,13 @@ pub use gameplay::{
     physics_settings, player_data, tech_data,
 };
 pub use marmo::{BiomeSky, MarmoSkies, marmo_skies};
-pub use prefab::{NodeAnimator, PlaceholderGroup, Prefab, PrefabNode, VolumetricGlow};
-pub use scene::{CinematicTrigger, DiveHatch, LIGHTMAPPED_PREFAB, Scene, SceneSpawn};
+pub use prefab::{
+    CullBox, ExteriorCull, NodeAnimator, PlaceholderGroup, Prefab, PrefabNode, SHADOWS_OFF,
+    SHADOWS_ON, SHADOWS_ONLY, SHADOWS_TWO_SIDED, VolumetricGlow, WorldBox,
+};
+pub use scene::{
+    AuroraGroup, AuroraShow, CinematicTrigger, DiveHatch, LIGHTMAPPED_PREFAB, Scene, SceneSpawn,
+};
 pub use skin::{Mat4, skin};
 pub use slots::{LootTable, entity_infos, loot_table, parse_loot_table};
 pub use terrain::{

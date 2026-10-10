@@ -313,6 +313,74 @@ are ported in `sn-sim::vitals`.
   same physical movement turns the view by the same angle. Not checked
   side by side.
 
+## The Aurora's explosion (M7f4e)
+
+- **Confirmed (code):** `CrashedShipExploder.SetExplodeTime` sets
+  `timeToStartWarning` = the clock now (`DayNightCycle.timePassedAsFloat`)
+  and `timeToStartCountdown` = warning + `Random.Range(2.3f, 4f)` ×
+  `1200f`. It runs on the exploder's first `Update` once
+  `LargeWorldStreamer.IsReady()`, only if the exploder was not loaded
+  from a save (or the save is older than version 2). The numbers are read
+  from the DLL: the `Random.Range` bounds and the multiplier from that
+  method's IL (`sn_dotnet::random_range_f32`, `multiplier_f32`), the
+  delays from the `const` fields `delayBeforeExplosionSound` 24,
+  `delayBeforeExplosionFX` 25, `delayBeforeSwap` 27.
+- **Confirmed (code):** each `Update` feeds the clock to a
+  `ScalarMonitor` and checks, in one `else if` chain, countdown + 27
+  (`SwapModels(true)`), + 25 (explosion effects, camera shake, explosive
+  force, `RadiusDamage(2000, …, 500)`), + 24 (explosion sound), + 0
+  (countdown sound, `OnShipExplode`, warning effects). "Just went above"
+  is `previous ≤ t < current`, so a frame that jumps past several
+  thresholds fires only the latest. `IsExploded` = clock > countdown + 27.
+  `Start` shows the intact ship unless loaded from a save.
+- **Confirmed (code):** a new game's clock starts at `timePassedOrigin` =
+  1200 × (9:36:00 of `dateOrigin`) / 86400 = 480 s, so the countdown comes
+  2,760–4,800 game seconds (46–80 real minutes) after the start.
+  `AuroraWarnings` triggers story goals at 20, 50 and 80 % between warning
+  and countdown (not ported: PDA messages).
+- **Confirmed (parser, real data):** `disableOnExplosion` is
+  `starship_unexploded` and `unexplodedFX`, `enableOnExplosion` is
+  `starship_expoded` and `explodedFX`, `explodedExterior` is
+  `starship_expoded` (the whole wreck model). Intact: 330 nodes drawn,
+  exploded: 337; split by state: 11 drawn only intact, 18 only exploded
+  (all of them in the exterior), 319 in both.
+- **Confirmed (code):** `ShipExteriorCullManager.Update` runs every
+  `updateEveryXFrames` frames (`Time.frameCount % n == 0`; **10** in the
+  Aurora scene, read) and calls `CullExplodedExterior(!inside)`, where
+  inside = the camera's position is strictly inside one box of any
+  registered `ShipExteriorCull` (`PointInOABB`: the point in the box
+  collider's Transform space minus its center, against ± size / 2). A
+  `ShipExteriorCull` registers in `Start` and leaves in `OnDestroy`.
+- **Confirmed (parser, real data):** only two prefabs have a
+  `ShipExteriorCull` (of 3,336 world prefabs): `CrashedShip_cargo_room`
+  (4 boxes) and `CrashedShip_exo_room` (3 boxes), each placed once; all
+  scripts enabled, every listed collider a `BoxCollider` of its prefab.
+- **Confirmed (code):** `CullExplodedExterior` acts only when the exploder
+  is both `initialized` and `deserialized`. A new game sets only
+  `initialized`; a loaded save sets `deserialized` and skips the
+  initialisation. So in a game started in this session the exterior is
+  **never** hidden. **Hypothesis:** in a loaded save too, unless the
+  exploder's first `Update` runs before its data is restored (or the save
+  is a legacy one): the load order (`LargeWorld` sets the streamer ready
+  before `LoadSceneObjectsAsync`) was read but not traced to the
+  exploder's own scene load. Revisit with saves (M9f).
+- **Confirmed (code, real data):** `DisableBeforeExplosion` (active only
+  if the ship has exploded when it starts) is on one prefab,
+  `ExplodedWreckage`, which is not placed in the world.
+- **Our stand-in (not the game's):** the countdown's `Random.Range` draw
+  comes from our seeded generator (`--lifepod-seed`; seed 1: 4,500 s);
+  the game's `Random` is unseeded, so any value in the range is the
+  game's behaviour.
+
+## Shadow casting modes (M7f4e)
+
+- **Confirmed (parser, real data):** drawn renderers of the placed
+  prefabs by `m_CastShadows`: off 5,380 (29,145 placements), on 6,776
+  (202,091), two-sided 0, shadows only 1 (1 placement). The Aurora scene:
+  off 195, on 153. The client now leaves "off" renderers out of the sun's
+  shadow map; the shadows-only one is drawn as a normal renderer (not
+  1:1).
+
 ## Pick-ups and outcrops
 
 - **Confirmed (census):** `Pickupable` is on 50 placed prefabs (23,832

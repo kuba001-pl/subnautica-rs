@@ -7,7 +7,7 @@
 
 use crate::assembly::{Assembly, FIELD_LITERAL, FIELD_STATIC};
 use crate::il::{
-    CALL, CALLVIRT, DUP, Instr, LDARG_0, LDC_R4, LDSFLD, LDSTR, NEWARR, NEWOBJ, Operand, RET,
+    CALL, CALLVIRT, DUP, Instr, LDARG_0, LDC_R4, LDSFLD, LDSTR, MUL, NEWARR, NEWOBJ, Operand, RET,
     STELEM_REF, STFLD, STSFLD, decode, opcode_name,
 };
 use crate::{Error, Result};
@@ -544,6 +544,90 @@ pub fn field_initializer_f32(
     }
 }
 
+/// The bounds of the one `UnityEngine.Random.Range(min, max)` call in a
+/// method, both float constants (`ldc.r4 min; ldc.r4 max; call Range`),
+/// e.g. `CrashedShipExploder.SetExplodeTime`'s `Random.Range(2.3f, 4f)`.
+pub fn random_range_f32(
+    asm: &Assembly,
+    namespace: &str,
+    type_name: &str,
+    method: &str,
+) -> Result<(f32, f32)> {
+    let ty = find_type(asm, namespace, type_name)?;
+    let code = method_code(asm, ty, method)?;
+    let what = || format!("{type_name}.{method}");
+    let mut found = Vec::new();
+    for (k, i) in code.iter().enumerate() {
+        if i.opcode != CALL {
+            continue;
+        }
+        let m = asm.method_token(i.token().unwrap_or(0))?;
+        if (m.namespace.as_str(), m.type_name.as_str(), m.name.as_str())
+            != ("UnityEngine", "Random", "Range")
+        {
+            continue;
+        }
+        let arg = |n: usize| match k.checked_sub(n).and_then(|j| code.get(j)) {
+            Some(Instr {
+                opcode: LDC_R4,
+                operand: Operand::F32(v),
+                ..
+            }) => Some(*v),
+            _ => None,
+        };
+        match (m.params, arg(2), arg(1)) {
+            (2, Some(min), Some(max)) => found.push((min, max)),
+            _ => {
+                return Err(err(format!(
+                    "{}: Random.Range pattern not recognised",
+                    what()
+                )));
+            }
+        }
+    }
+    match found[..] {
+        [v] => Ok(v),
+        _ => Err(err(format!(
+            "{}: {} Random.Range calls, expected 1",
+            what(),
+            found.len()
+        ))),
+    }
+}
+
+/// The float constant of the one `ldc.r4 v; mul` in a method, e.g. the
+/// day length in `CrashedShipExploder.SetExplodeTime`'s `num * 1200f`.
+pub fn multiplier_f32(
+    asm: &Assembly,
+    namespace: &str,
+    type_name: &str,
+    method: &str,
+) -> Result<f32> {
+    let ty = find_type(asm, namespace, type_name)?;
+    let code = method_code(asm, ty, method)?;
+    let found: Vec<f32> = code
+        .windows(2)
+        .filter_map(|w| match (&w[0], &w[1]) {
+            (
+                Instr {
+                    opcode: LDC_R4,
+                    operand: Operand::F32(v),
+                    ..
+                },
+                Instr { opcode: MUL, .. },
+            ) => Some(*v),
+            _ => None,
+        })
+        .collect();
+    match found[..] {
+        [v] => Ok(v),
+        _ => Err(err(format!(
+            "{type_name}.{method}: {} constant multipliers, expected 1",
+            found.len()
+        ))),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -556,6 +640,7 @@ mod tests {
     const STATIC: u16 = 0x0016;
     const LDARG_0: u8 = 0x02;
     const LDNULL: u8 = 0x14;
+    const MUL_OP: u8 = 0x5A;
 
     #[derive(Default)]
     struct Options {
@@ -714,6 +799,29 @@ mod tests {
             ctor = ctor.op(LDARG_0).ldc_r4(1.0).stfld(rate);
         }
         b.method(".ctor", 0, Some(&ctor.ret().0));
+
+        // `void SetExplodeTime() { float n = Random.Range(2.3f, 4f); t = n * 1200f; }`
+        let random = b.type_ref("UnityEngine", "Random");
+        let range = b.member_ref((Table::TYPE_REF, random), "Range", Some(2));
+        b.type_def("", "Exploder");
+        let t = b.field(0x0001, "t");
+        let mut code = Il::default()
+            .ldc_r4(2.3)
+            .ldc_r4(4.0)
+            .call(range)
+            .ldc_r4(1200.0)
+            .op(MUL_OP)
+            .stfld(t);
+        if o.bad_default {
+            code = code
+                .ldc_r4(1.0)
+                .ldc_r4(1.5)
+                .call(range)
+                .ldc_r4(2.0)
+                .op(MUL_OP)
+                .pop();
+        }
+        b.method("SetExplodeTime", 0, Some(&code.ret().0));
         b.build()
     }
 
@@ -833,6 +941,34 @@ mod tests {
     }
 
     #[test]
+    fn reads_random_ranges_and_multipliers() {
+        let bytes = sample(&Options::default());
+        let asm = parse(&bytes);
+        assert_eq!(
+            random_range_f32(&asm, "", "Exploder", "SetExplodeTime").unwrap(),
+            (2.3, 4.0)
+        );
+        assert_eq!(
+            multiplier_f32(&asm, "", "Exploder", "SetExplodeTime").unwrap(),
+            1200.0
+        );
+        assert!(random_range_f32(&asm, "", "Exploder", "Missing").is_err());
+        // No Random.Range, no multiplier.
+        assert!(random_range_f32(&asm, "", "Manager", ".ctor").is_err());
+        assert!(multiplier_f32(&asm, "", "Manager", ".ctor").is_err());
+        // Two of each: an error, not a guess.
+        let bad = sample(&Options {
+            bad_default: true,
+            ..Options::default()
+        });
+        let asm = parse(&bad);
+        let e = random_range_f32(&asm, "", "Exploder", "SetExplodeTime").unwrap_err();
+        assert!(e.message.contains("2 Random.Range calls"), "{e}");
+        let e = multiplier_f32(&asm, "", "Exploder", "SetExplodeTime").unwrap_err();
+        assert!(e.message.contains("2 constant multipliers"), "{e}");
+    }
+
+    #[test]
     fn damaged_assemblies_never_panic() {
         let bytes = sample(&Options::default());
         let read = |b: &[u8]| {
@@ -842,6 +978,8 @@ mod tests {
                 let _ = tech_data_defaults(&asm);
                 let _ = const_f32(&asm, "", "Manager", "defaultRate");
                 let _ = field_initializer_f32(&asm, "", "Manager", "rate");
+                let _ = random_range_f32(&asm, "", "Exploder", "SetExplodeTime");
+                let _ = multiplier_f32(&asm, "", "Exploder", "SetExplodeTime");
                 for m in 1..=asm.rows(Table::METHOD_DEF) {
                     if let Ok(Some((code, base))) = asm.method_body(m) {
                         let _ = decode(code, base);

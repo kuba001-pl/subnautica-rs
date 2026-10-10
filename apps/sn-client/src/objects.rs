@@ -30,7 +30,8 @@ use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, Face, TextureDimension, TextureFormat};
 use sn_anim::{Animator, Program, SlotKind};
 use sn_assets::{
-    Assets as GameAssets, LootTable, MarmoSkies, ObjectRef, Prefab, TerrainTexture, marmo_skies,
+    Assets as GameAssets, AuroraShow, LootTable, MarmoSkies, ObjectRef, Prefab, SHADOWS_OFF,
+    TerrainTexture, marmo_skies,
 };
 use sn_install::GameData;
 use sn_unity::{Catalog, DayNightLight, LightKind, Material, SKIES_AUTO, Shader};
@@ -259,7 +260,54 @@ struct Part {
     /// Its blend shapes driven by that rig (M7f4d): the index in the rig's
     /// `shapes`; `mesh` then has the morph targets.
     shape: Option<u16>,
+    /// The renderer's `m_CastShadows` (M7f4e): off casts no sun shadow.
+    shadows: u8,
 }
+
+/// What the client's exploder needs from the Aurora scene and the game's
+/// code (M7f4e).
+#[derive(Clone, Copy, Debug)]
+pub struct AuroraData {
+    pub code: sn_assets::ExploderCode,
+    /// `ShipExteriorCullManager.updateEveryXFrames`; `None`: no manager runs.
+    pub cull_every: Option<i32>,
+}
+
+/// The Aurora's parts that show only in some states, with their entities.
+pub type AuroraParts<'a> = Vec<(AuroraShow, &'a [Entity])>;
+
+/// A box of a `ShipExteriorCull` (M7f4e), relative to the prefab's root.
+#[derive(Clone, Copy, Debug)]
+pub struct CullDesc {
+    /// The box collider's node.
+    in_prefab: Placement,
+    center: [f32; 3],
+    size: [f32; 3],
+}
+
+impl CullDesc {
+    /// In the world with the prefab's root at `placement`.
+    pub fn world(&self, placement: &Placement) -> sn_sim::aurora::CullBox {
+        let t = placement.then(&self.in_prefab);
+        let v = sn_sim::V3::from_f32;
+        sn_sim::aurora::CullBox {
+            center: v(t.transform_point(self.center)),
+            axes: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+                .map(|a| v(t.rotate_vector(a))),
+            half: [0, 1, 2].map(|a| f64::from(self.size[a] * t.scale[a].abs() * 0.5)),
+        }
+    }
+}
+
+/// A spawned `ShipExteriorCull`: registered with the Aurora's cull while
+/// it exists, as the game's `Start` and `OnDestroy` do.
+#[derive(Component)]
+pub struct ExteriorCullVolume(pub Vec<sn_sim::aurora::CullBox>);
+
+/// A drawn part whose renderer casts no shadow (`m_CastShadows` off): the
+/// batches' shadow switch leaves it alone.
+#[derive(Component)]
+pub struct ShadowsOff;
 
 #[derive(Clone, Copy)]
 enum RigPart {
@@ -301,8 +349,6 @@ struct Instance {
 /// Which scenes the worker loads, and their state.
 #[derive(Clone, Copy)]
 pub struct SceneOptions {
-    /// The Aurora after its explosion (a new game starts before it).
-    pub aurora_exploded: bool,
     /// Where Lifepod 5 starts (`None`: no lifepod).
     pub lifepod: Option<[f32; 3]>,
 }
@@ -361,6 +407,7 @@ struct PrefabContent {
     lights: Vec<LocalLight>,
     directional: Vec<DirectionalSource>,
     rigs: Vec<Arc<RigDesc>>,
+    culls: Vec<CullDesc>,
 }
 
 /// Prefabs spawned by placeholders inside prefabs spawned by placeholders
@@ -401,16 +448,21 @@ enum Update {
         lights: Vec<LocalLight>,
         directional: Vec<DirectionalSource>,
         rigs: Vec<Arc<RigDesc>>,
+        culls: Vec<CullDesc>,
     },
     Batch {
         coord: BatchCoord,
         instances: Vec<Instance>,
         ms: f32,
     },
-    /// A scene's top-level objects, shown always.
+    /// A scene's top-level objects; `shows`: for each instance, the
+    /// Aurora states it shows in (M7f4e; [`AuroraShow::ALWAYS`] outside
+    /// the Aurora).
     Scene {
         summary: String,
         instances: Vec<Instance>,
+        shows: Vec<AuroraShow>,
+        aurora: Option<AuroraData>,
         ms: f32,
     },
     Ready {
@@ -1110,9 +1162,13 @@ impl Library {
             lights,
             directional,
             rigs,
+            culls,
         } = self.prefab_content(prefab, out, if spawn { 0 } else { NO_SPAWN });
-        let id =
-            (!parts.is_empty() || !lights.is_empty() || !directional.is_empty()).then(|| self.id());
+        let id = (!parts.is_empty()
+            || !lights.is_empty()
+            || !directional.is_empty()
+            || !culls.is_empty())
+        .then(|| self.id());
         if let Some(id) = id {
             out.push(Update::Prefab {
                 id,
@@ -1120,6 +1176,7 @@ impl Library {
                 lights,
                 directional,
                 rigs,
+                culls,
             });
         }
         id
@@ -1598,6 +1655,7 @@ impl Library {
                     effect,
                     rig,
                     shape: shape.filter(|_| !effect),
+                    shadows: node.cast_shadows,
                 });
             }
         }
@@ -1640,11 +1698,26 @@ impl Library {
                 });
             }
         }
+        // `ShipExteriorCull`s that register when the prefab starts.
+        let culls = prefab
+            .exterior_culls
+            .iter()
+            .filter(|c| c.registers)
+            .flat_map(|c| &c.boxes)
+            .filter_map(|b| {
+                Some(CullDesc {
+                    in_prefab: prefab.nodes.get(b.node)?.in_prefab,
+                    center: b.center,
+                    size: b.size,
+                })
+            })
+            .collect();
         let mut content = PrefabContent {
             parts,
             lights,
             directional,
             rigs: rigs.into_iter().map(|r| Arc::new(r.desc)).collect(),
+            culls,
         };
         if depth != NO_SPAWN && self.spawn_placeholders {
             self.add_placeholders(prefab, &mut content, out, depth);
@@ -1748,6 +1821,10 @@ impl Library {
                         d.local = at.then(&d.local);
                         d
                     }));
+                content.culls.extend(child.culls.iter().map(|c| CullDesc {
+                    in_prefab: at.then(&c.in_prefab),
+                    ..*c
+                }));
                 self.placeholders_spawned += 1;
             }
         }
@@ -1853,33 +1930,70 @@ impl Library {
             };
             scene.spawn_lightmapped_prefab();
             let mut state = String::new();
-            if !scene
-                .behaviours(&self.assets, "CrashedShipExploder")
-                .is_empty()
-            {
-                match scene.swap_aurora_models(&self.assets, options.aurora_exploded) {
-                    Ok((off, on)) => {
-                        state = format!(
-                            ", Aurora {} ({off} objects off, {on} on)",
-                            if options.aurora_exploded {
-                                "exploded"
-                            } else {
-                                "intact"
-                            }
-                        );
+            // The Aurora: its parts by the states they show in (M7f4e); the
+            // client's exploder decides which are shown.
+            let groups = match scene.aurora_groups(&self.assets) {
+                Ok(g) => g,
+                Err(e) => {
+                    out.push(Update::Warning(format!("scene {}: {e}", scene.name)));
+                    Vec::new()
+                }
+            };
+            let mut instances = Vec::new();
+            let mut shows = Vec::new();
+            let mut aurora = None;
+            if !groups.is_empty() {
+                let code = sn_assets::read_assembly(self.assets.game())
+                    .and_then(|bytes| sn_assets::exploder_code(&bytes));
+                let manager = scene.ship_exterior_cull_manager(&self.assets);
+                match (code, manager) {
+                    (Ok(code), Ok(manager)) => {
+                        aurora = Some(AuroraData {
+                            code,
+                            cull_every: manager.map(|m| m.update_every_x_frames),
+                        });
                     }
-                    Err(e) => out.push(Update::Warning(format!("scene {}: {e}", scene.name))),
+                    (Err(e), _) | (_, Err(e)) => {
+                        out.push(Update::Warning(format!("Aurora: {e}")));
+                    }
+                }
+                let drawn = |exploded: bool| -> usize {
+                    groups
+                        .iter()
+                        .filter(|g| g.show.shown(exploded, false))
+                        .map(|g| g.prefab.visible_nodes().count())
+                        .sum()
+                };
+                state = format!(
+                    ", Aurora: {} parts by state, {} nodes drawn intact, {} exploded",
+                    groups.len(),
+                    drawn(false),
+                    drawn(true)
+                );
+                for g in &groups {
+                    if let Some(prefab) = self.prefab_parts(&g.prefab, out) {
+                        instances.push(Instance {
+                            level: 0,
+                            prefab,
+                            transform: g.prefab.nodes[0].local,
+                            from_slot: false,
+                        });
+                        shows.push(g.show);
+                    }
                 }
             }
-            let mut instances = Vec::new();
             if let (true, Some(point)) = (is_pod, options.lifepod) {
                 match self.place_pod(&mut scene, point, &mut instances, out) {
                     Ok(summary) => state = summary,
                     Err(e) => out.push(Update::Warning(format!("lifepod: {e}"))),
                 }
             }
-            let mut drawn = 0;
-            for root in &scene.roots {
+            let mut drawn: usize = groups
+                .iter()
+                .filter(|g| g.show.intact)
+                .map(|g| g.prefab.visible_nodes().count())
+                .sum();
+            for root in scene.roots.iter().filter(|_| groups.is_empty()) {
                 drawn += root.visible_nodes().count();
                 if let Some(prefab) = self.prefab_parts(root, out) {
                     instances.push(Instance {
@@ -1890,6 +2004,9 @@ impl Library {
                     });
                 }
             }
+            // The pod's own instances (placed before) and the roots: shown
+            // always.
+            shows.resize(instances.len(), AuroraShow::ALWAYS);
             let nodes: usize = scene.roots.iter().map(|r| r.nodes.len()).sum();
             out.push(Update::Scene {
                 summary: format!(
@@ -1898,6 +2015,8 @@ impl Library {
                     scene.roots.len()
                 ),
                 instances,
+                shows,
+                aurora,
                 ms: start.elapsed().as_secs_f32() * 1000.0,
             });
         }
@@ -2281,8 +2400,11 @@ struct BatchObjects {
 /// A scene's top-level objects on the main thread.
 struct SceneObjects {
     instances: Vec<Instance>,
-    /// `None` until spawned.
-    shown: Option<Vec<Entity>>,
+    /// Per instance: the Aurora states it shows in.
+    shows: Vec<AuroraShow>,
+    aurora: Option<AuroraData>,
+    /// Per instance, its entities; `None` until spawned.
+    shown: Option<Vec<Vec<Entity>>>,
 }
 
 #[derive(Default, Clone)]
@@ -2321,6 +2443,8 @@ pub struct ObjectStreamer {
     skies: SkySet,
     meshes: HashMap<u32, Handle<Mesh>>,
     prefabs: HashMap<u32, Vec<Part>>,
+    /// A prefab's `ShipExteriorCull` boxes (M7f4e).
+    prefab_culls: HashMap<u32, Vec<CullDesc>>,
     /// A prefab's animated rigs (M7f4c).
     prefab_rigs: HashMap<u32, Vec<Arc<RigDesc>>>,
     /// (prefab, rig, skin) → its inverse bind poses.
@@ -2387,6 +2511,7 @@ impl ObjectStreamer {
             skies: SkySet::default(),
             meshes: HashMap::new(),
             prefabs: HashMap::new(),
+            prefab_culls: HashMap::new(),
             prefab_rigs: HashMap::new(),
             morph_bounds: HashMap::new(),
             bindposes: HashMap::new(),
@@ -2445,7 +2570,7 @@ impl ObjectStreamer {
         s.scene_entities = self
             .scenes
             .iter()
-            .flat_map(|sc| &sc.shown)
+            .flat_map(|sc| sc.shown.iter().flatten())
             .map(Vec::len)
             .sum();
         s
@@ -2813,6 +2938,7 @@ pub fn stream_objects(
     light: Res<GameLightImages>,
     water: Option<Res<WaterWorld>>,
     camera: Query<&Transform, With<Camera3d>>,
+    shadows_off: Query<(), With<ShadowsOff>>,
     mut terrain_look: Option<ResMut<TerrainLook>>,
     mut effect_meshes: ResMut<EffectMeshes>,
     mut bindposes: ResMut<Assets<SkinnedMeshInverseBindposes>>,
@@ -2881,8 +3007,12 @@ pub fn stream_objects(
                 lights,
                 directional,
                 rigs,
+                culls,
             } => {
                 streamer.prefabs.insert(id, parts);
+                if !culls.is_empty() {
+                    streamer.prefab_culls.insert(id, culls);
+                }
                 if !rigs.is_empty() {
                     for (r, rig) in rigs.iter().enumerate() {
                         info!(
@@ -2929,11 +3059,15 @@ pub fn stream_objects(
             Update::Scene {
                 summary,
                 instances,
+                shows,
+                aurora,
                 ms,
             } => {
                 info!("objects: {summary} ({ms:.0} ms)");
                 streamer.scenes.push(SceneObjects {
                     instances,
+                    shows,
+                    aurora,
                     shown: None,
                 });
             }
@@ -3003,6 +3137,9 @@ pub fn stream_objects(
         let casting = lod == 0;
         if casting != b.casting {
             for entity in b.shown.iter().flatten().flatten() {
+                if shadows_off.contains(*entity) {
+                    continue;
+                }
                 if casting {
                     commands
                         .entity(*entity)
@@ -3055,7 +3192,8 @@ pub fn stream_objects(
         }
     }
 
-    // Scenes: spawned once, shown always.
+    // Scenes: spawned once (the Aurora's parts are shown or hidden by
+    // `aurora::update`).
     let mut spawner = Spawner {
         commands: &mut commands,
         materials: &mut materials,
@@ -3068,11 +3206,26 @@ pub fn stream_objects(
             continue;
         }
         let todo = streamer.scenes[i].instances.clone();
-        let mut entities = Vec::new();
+        let mut shown = Vec::with_capacity(todo.len());
         for inst in &todo {
+            let mut entities = Vec::new();
             streamer.spawn_instance(inst, true, &mut spawner, &mut entities);
+            shown.push(entities);
         }
-        streamer.scenes[i].shown = Some(entities);
+        streamer.scenes[i].shown = Some(shown);
+    }
+}
+
+/// A drawn part's sun shadow (M7f4e): none when its batch is too far
+/// (`casting` false) or its renderer's `m_CastShadows` is off. Shadows-only
+/// renderers (1 in the placed prefabs) are drawn as normal renderers (not
+/// 1:1: Bevy has no shadow-only draw).
+fn shadow_mode(commands: &mut Commands, entity: Entity, casting: bool, mode: u8) {
+    let mut e = commands.entity(entity);
+    if mode == SHADOWS_OFF {
+        e.insert((bevy::light::NotShadowCaster, ShadowsOff));
+    } else if !casting {
+        e.insert(bevy::light::NotShadowCaster);
     }
 }
 
@@ -3086,6 +3239,21 @@ struct Spawner<'a, 'w, 's> {
 }
 
 impl ObjectStreamer {
+    /// The Aurora scene once it is spawned: its data and its parts that
+    /// show only in some states, with their entities.
+    pub fn aurora(&self) -> Option<(AuroraData, AuroraParts<'_>)> {
+        let scene = self.scenes.iter().find(|s| s.aurora.is_some())?;
+        let shown = scene.shown.as_ref()?;
+        let parts = scene
+            .shows
+            .iter()
+            .zip(shown)
+            .filter(|(show, _)| **show != AuroraShow::ALWAYS)
+            .map(|(show, entities)| (*show, entities.as_slice()))
+            .collect();
+        Some((scene.aurora?, parts))
+    }
+
     /// Spawns an instance's parts and lights, adding their entities to
     /// `entities`.
     fn spawn_instance(
@@ -3225,11 +3393,7 @@ impl ObjectStreamer {
                             .id()
                     }
                 };
-                if !casting {
-                    s.commands
-                        .entity(entity)
-                        .insert(bevy::light::NotShadowCaster);
-                }
+                shadow_mode(s.commands, entity, casting, part.shadows);
                 // Blend shapes: the weights before the first update, and
                 // (for a mesh not skinned on the GPU) bounds that hold
                 // every shape.
@@ -3252,15 +3416,21 @@ impl ObjectStreamer {
                 continue;
             }
             let world = inst.transform.then(&part.local);
-            let mut entity = s.commands.spawn((
-                Mesh3d(mesh.clone()),
-                MeshMaterial3d(material.clone()),
-                to_bevy(&world),
-            ));
-            if !casting {
-                entity.insert(bevy::light::NotShadowCaster);
-            }
-            entities.push(entity.id());
+            let entity = s
+                .commands
+                .spawn((
+                    Mesh3d(mesh.clone()),
+                    MeshMaterial3d(material.clone()),
+                    to_bevy(&world),
+                ))
+                .id();
+            shadow_mode(s.commands, entity, casting, part.shadows);
+            entities.push(entity);
+        }
+        // `ShipExteriorCull`s: registered while the instance exists.
+        if let Some(culls) = self.prefab_culls.get(&inst.prefab) {
+            let boxes = culls.iter().map(|c| c.world(&inst.transform)).collect();
+            entities.push(s.commands.spawn(ExteriorCullVolume(boxes)).id());
         }
         // Each rig's animator, on its base.
         for (rig, (base, nodes, drawn, shaped)) in rigs.iter().zip(rig_entities) {

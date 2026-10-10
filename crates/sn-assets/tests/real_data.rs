@@ -678,6 +678,71 @@ fn startup_scenes_and_aurora() {
     assert!(pod.spawn_lightmapped_prefab());
 }
 
+/// M7f4e: the exploder's numbers from the code, the scene's cull manager,
+/// the Aurora's parts by state, and the `ShipExteriorCull` volumes.
+#[test]
+#[ignore = "needs SUBNAUTICA_DIR pointing at a Subnautica install"]
+fn aurora_clock_and_exterior_cull_volumes() {
+    let Some(dir) = std::env::var_os("SUBNAUTICA_DIR") else {
+        eprintln!("SUBNAUTICA_DIR not set; skipping");
+        return;
+    };
+    let game = GameData::locate(Some(PathBuf::from(dir))).unwrap();
+    let code = sn_assets::exploder_code(&sn_assets::read_assembly(&game).unwrap()).unwrap();
+    assert_eq!(code.range, (2.3, 4.0));
+    assert_eq!(code.day_seconds, 1200.0);
+    assert_eq!(
+        (code.sound_delay, code.fx_delay, code.swap_delay),
+        (24.0, 25.0, 27.0)
+    );
+
+    let assets = Assets::index(&game).unwrap();
+    let mut aurora = assets.scene("aurora").unwrap();
+    assert!(aurora.spawn_lightmapped_prefab());
+    let manager = aurora.ship_exterior_cull_manager(&assets).unwrap().unwrap();
+    assert_eq!(manager.update_every_x_frames, 10);
+    let groups = aurora.aurora_groups(&assets).unwrap();
+    let drawn = |exploded: bool| -> usize {
+        groups
+            .iter()
+            .filter(|g| g.show.shown(exploded, false))
+            .map(|g| g.prefab.visible_nodes().count())
+            .sum()
+    };
+    // The same as the whole scene swapped (startup_scenes_and_aurora).
+    assert_eq!((drawn(false), drawn(true)), (330, 337));
+    let exterior: usize = groups
+        .iter()
+        .filter(|g| g.show.exterior)
+        .map(|g| g.prefab.visible_nodes().count())
+        .sum();
+    assert_eq!(exterior, 18);
+
+    let catalog = assets.catalog().unwrap();
+    let mut boxes = 0;
+    for (key, n) in [
+        (
+            "WorldEntities/Doodads/Debris/Aurora/Rooms/CrashedShip_cargo_room.prefab",
+            4,
+        ),
+        (
+            "WorldEntities/Doodads/Debris/Aurora/Rooms/CrashedShip_exo_room.prefab",
+            3,
+        ),
+    ] {
+        let prefab = assets.prefab(&catalog, key).unwrap();
+        assert_eq!(prefab.exterior_culls.len(), 1, "{key}");
+        let cull = &prefab.exterior_culls[0];
+        assert!(cull.registers, "{key}");
+        assert_eq!((cull.boxes.len(), cull.missing), (n, 0), "{key}");
+        for b in &cull.boxes {
+            assert!(b.size.iter().all(|&s| s > 0.0), "{key}: {b:?}");
+        }
+        boxes += cull.boxes.len();
+    }
+    assert_eq!(boxes, 7);
+}
+
 #[test]
 #[ignore = "needs SUBNAUTICA_DIR pointing at a Subnautica install"]
 fn skinned_lod_matches_its_static_lod() {

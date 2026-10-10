@@ -3,9 +3,10 @@
 //! `docs/formats/unity.md`.
 
 use sn_unity::{
-    ANIMATOR, Animator, AssetBundleManifest, Catalog, DayNightLight, GameObject, Light, Location,
-    LodGroup, Mesh, MeshFilter, MeshGeometry, MeshRenderer, PrefabPlaceholder,
-    PrefabPlaceholdersGroup, SkinnedMeshRenderer, SkyApplier, TransformNode, VfxVolumetricLight,
+    ANIMATOR, Animator, AssetBundleManifest, Catalog, Collider, ColliderShape, DayNightLight,
+    GameObject, Light, Location, LodGroup, Mesh, MeshFilter, MeshGeometry, MeshRenderer,
+    MonoBehaviourHeader, PPtr, PrefabPlaceholder, PrefabPlaceholdersGroup, SkinnedMeshRenderer,
+    SkyApplier, TransformNode, VfxVolumetricLight, parse_ship_exterior_cull,
 };
 use sn_world::Transform;
 
@@ -24,11 +25,19 @@ const LOD_GROUP: i32 = 205;
 const SKINNED_MESH_RENDERER: i32 = 137;
 const MONO_BEHAVIOUR: i32 = 114;
 const LIGHT: i32 = 108;
+const BOX_COLLIDER: i32 = 65;
+
+/// `Renderer.m_CastShadows` (`ShadowCastingMode`).
+pub const SHADOWS_OFF: u8 = 0;
+pub const SHADOWS_ON: u8 = 1;
+pub const SHADOWS_TWO_SIDED: u8 = 2;
+pub const SHADOWS_ONLY: u8 = 3;
 
 /// Hierarchies deeper than this are treated as broken.
 const MAX_DEPTH: usize = 64;
 
 /// One GameObject of a prefab.
+#[derive(Clone)]
 pub struct PrefabNode {
     /// The GameObject (bundle, file, path id).
     pub object: (std::path::PathBuf, String, i64),
@@ -49,6 +58,9 @@ pub struct PrefabNode {
     /// From an enabled MeshRenderer, one per sub-mesh.
     pub materials: Vec<Option<ObjectRef>>,
     pub renderer_enabled: bool,
+    /// The renderer's `m_CastShadows` ([`SHADOWS_OFF`], [`SHADOWS_ON`],
+    /// [`SHADOWS_TWO_SIDED`], [`SHADOWS_ONLY`]); 0 without a renderer.
+    pub cast_shadows: u8,
     /// Has a SkinnedMeshRenderer (its mesh and materials are `mesh` and
     /// `materials`; draw it through [`Prefab::skinned_geometry`]).
     pub skinned: bool,
@@ -108,12 +120,64 @@ pub struct VolumetricGlow {
     pub updates: bool,
 }
 
+/// A `ShipExteriorCull` (M7f4e): while the camera is inside one of its
+/// boxes, the Aurora's exploded exterior may be hidden
+/// (`sn_sim::aurora`).
+#[derive(Clone, Debug)]
+pub struct ExteriorCull {
+    /// The node holding the script.
+    pub node: usize,
+    /// `Start` registers it with the manager: the script is enabled and
+    /// its node active.
+    pub registers: bool,
+    /// Its `colliders` that resolve to a `BoxCollider` of this hierarchy.
+    pub boxes: Vec<CullBox>,
+    /// Listed colliders that don't (not a box, or outside the hierarchy).
+    pub missing: usize,
+}
+
+/// A `BoxCollider`'s box, in its node's space.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CullBox {
+    pub node: usize,
+    pub center: [f32; 3],
+    pub size: [f32; 3],
+}
+
+impl CullBox {
+    /// In the world with the prefab's root at `placement`: the box's
+    /// center, its unit axes and its half extents along them (`size / 2`
+    /// times the absolute scale; a negative size stays negative, so
+    /// nothing is inside, as in the game's test).
+    pub fn world(&self, prefab: &Prefab, placement: &Transform) -> WorldBox {
+        let t = match prefab.nodes.get(self.node) {
+            Some(n) => placement.then(&n.in_prefab),
+            None => *placement,
+        };
+        WorldBox {
+            center: t.transform_point(self.center),
+            axes: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]].map(|a| t.rotate_vector(a)),
+            half: [0, 1, 2].map(|a| self.size[a] * t.scale[a].abs() * 0.5),
+        }
+    }
+}
+
+/// An oriented box in the world (Unity coordinates).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WorldBox {
+    pub center: [f32; 3],
+    pub axes: [[f32; 3]; 3],
+    pub half: [f32; 3],
+}
+
+#[derive(Clone)]
 pub struct Prefab {
     /// The addressable key, e.g. `WorldEntities/…/X.prefab`.
     pub key: String,
     /// Node 0 is the root.
     pub nodes: Vec<PrefabNode>,
     pub placeholder_groups: Vec<PlaceholderGroup>,
+    pub exterior_culls: Vec<ExteriorCull>,
 }
 
 impl Prefab {
@@ -383,6 +447,40 @@ impl Assets<'_> {
                 light,
             });
         }
+        // Ship exterior culls: their listed box colliders → nodes.
+        let mut exterior_culls = Vec::new();
+        for (file_of, enabled, colliders, at) in std::mem::take(&mut prefab.exterior_culls) {
+            let mut boxes = Vec::new();
+            let mut missing = 0;
+            for pptr in colliders {
+                let Some(c) = self.resolve(&file_of, pptr)? else {
+                    missing += 1;
+                    continue;
+                };
+                let (info, data) = c.data()?;
+                if info.class_id != BOX_COLLIDER {
+                    missing += 1;
+                    continue;
+                }
+                let col = Collider::parse(info.class_id, data, c.file.file().big_endian)
+                    .map_err(|e| format!("BoxCollider {}: {e}", c.path_id))?;
+                let node = self
+                    .resolve(&c.file, col.game_object)?
+                    .and_then(|go| prefab.nodes.iter().position(|n| n.key == go.key()));
+                match (node, col.shape) {
+                    (Some(node), ColliderShape::Box { size, center }) => {
+                        boxes.push(CullBox { node, center, size });
+                    }
+                    _ => missing += 1,
+                }
+            }
+            exterior_culls.push(ExteriorCull {
+                node: at,
+                registers: enabled && prefab.nodes[at].active,
+                boxes,
+                missing,
+            });
+        }
         // Placeholder groups: their listed placeholder components → nodes.
         let mut placeholder_groups = Vec::new();
         for (file_of, group, at) in std::mem::take(&mut prefab.placeholder_groups) {
@@ -410,6 +508,7 @@ impl Assets<'_> {
         let mut result = Prefab {
             key: prefab.key,
             placeholder_groups,
+            exterior_culls,
             nodes: prefab
                 .nodes
                 .into_iter()
@@ -430,6 +529,7 @@ impl Assets<'_> {
                     mesh: n.mesh,
                     materials: n.materials,
                     renderer_enabled: n.renderer_enabled,
+                    cast_shadows: n.cast_shadows,
                     skinned: n.skinned,
                     lod: n.lod,
                     sky_applier: n.sky_applier,
@@ -494,6 +594,7 @@ impl Assets<'_> {
         let mut mesh = None;
         let mut materials = Vec::new();
         let mut renderer_enabled = false;
+        let mut cast_shadows = 0;
         let mut skinned = false;
         let mut lights = Vec::new();
         let mut day_night_light = None;
@@ -523,6 +624,7 @@ impl Assets<'_> {
                     let r = MeshRenderer::parse(data, big_endian)
                         .map_err(|e| format!("MeshRenderer {}: {e}", c.path_id))?;
                     renderer_enabled = r.enabled;
+                    cast_shadows = r.cast_shadows;
                     for m in r.materials {
                         materials.push(self.resolve(file, m)?);
                     }
@@ -532,6 +634,7 @@ impl Assets<'_> {
                         .map_err(|e| format!("SkinnedMeshRenderer {}: {e}", c.path_id))?;
                     skinned = true;
                     renderer_enabled = r.renderer.enabled;
+                    cast_shadows = r.renderer.cast_shadows;
                     blend_shape_weights = r.blend_shape_weights.clone();
                     mesh = self.resolve(file, r.mesh)?;
                     materials.clear();
@@ -584,6 +687,18 @@ impl Assets<'_> {
                             .map_err(|e| format!("PrefabPlaceholdersGroup {}: {e}", c.path_id))?;
                         prefab.placeholder_groups.push((c.file.clone(), g, index));
                     }
+                    Some("ShipExteriorCull") => {
+                        let header = MonoBehaviourHeader::parse(data, big_endian)
+                            .map_err(|e| format!("ShipExteriorCull {}: {e}", c.path_id))?;
+                        let colliders = parse_ship_exterior_cull(data, big_endian)
+                            .map_err(|e| format!("ShipExteriorCull {}: {e}", c.path_id))?;
+                        prefab.exterior_culls.push((
+                            c.file.clone(),
+                            header.enabled,
+                            colliders,
+                            index,
+                        ));
+                    }
                     _ => {}
                 },
                 ANIMATOR => {
@@ -629,6 +744,7 @@ impl Assets<'_> {
             mesh,
             materials,
             renderer_enabled,
+            cast_shadows,
             skinned,
             bone_keys,
             lod: None,
@@ -718,6 +834,7 @@ struct BuildingNode {
     mesh: Option<ObjectRef>,
     materials: Vec<Option<ObjectRef>>,
     renderer_enabled: bool,
+    cast_shadows: u8,
     skinned: bool,
     bone_keys: Vec<Option<(std::path::PathBuf, String, i64)>>,
     lod: Option<usize>,
@@ -741,6 +858,8 @@ struct Building {
     placeholder_components: std::collections::HashMap<(std::path::PathBuf, String, i64), usize>,
     /// `PrefabPlaceholdersGroup`s found: their file, the group, its node.
     placeholder_groups: Vec<(FileRef, PrefabPlaceholdersGroup, usize)>,
+    /// `ShipExteriorCull`s found: their file, enabled, colliders, node.
+    exterior_culls: Vec<(FileRef, bool, Vec<PPtr>, usize)>,
 }
 
 impl Building {
@@ -752,6 +871,7 @@ impl Building {
             volumetric_lights: Vec::new(),
             placeholder_components: std::collections::HashMap::new(),
             placeholder_groups: Vec::new(),
+            exterior_culls: Vec::new(),
         }
     }
 }

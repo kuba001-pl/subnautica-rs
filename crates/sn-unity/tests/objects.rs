@@ -1,8 +1,9 @@
 //! Object readers on bytes built in code (Unity 2019.4 layouts).
 
 use sn_unity::{
-    AutoLoadScene, CrashedShipExploder, Material, MonoBehaviourHeader, PPtr, Texture2D,
-    TextureFormat, parse_additional_scenes, parse_autoload_scenes,
+    AutoLoadScene, CrashedShipExploder, Material, MonoBehaviourHeader, PPtr,
+    ShipExteriorCullManager, Texture2D, TextureFormat, parse_additional_scenes,
+    parse_autoload_scenes, parse_ship_exterior_cull,
 };
 
 /// Little-endian writer with Unity's 4-byte alignment for strings and bools.
@@ -263,6 +264,33 @@ fn crashed_ship_exploder() {
     for len in 0..b.0.len() - 4 {
         assert!(CrashedShipExploder::parse(&b.0[..len], false).is_err());
     }
+}
+
+#[test]
+fn ship_exterior_cull() {
+    let mut b = behaviour();
+    b.pptr(0, 21).i32(10);
+    let m = ShipExteriorCullManager::parse(&b.0, false).unwrap();
+    assert_eq!(m.crashed_ship_exploder.path_id, 21);
+    assert_eq!(m.update_every_x_frames, 10);
+    for len in 0..b.0.len() {
+        assert!(ShipExteriorCullManager::parse(&b.0[..len], false).is_err());
+    }
+
+    let mut b = behaviour();
+    b.i32(2).pptr(0, 30).pptr(0, 31);
+    let boxes = parse_ship_exterior_cull(&b.0, false).unwrap();
+    assert_eq!(
+        boxes.iter().map(|p| p.path_id).collect::<Vec<_>>(),
+        [30, 31]
+    );
+    for len in 0..b.0.len() {
+        assert!(parse_ship_exterior_cull(&b.0[..len], false).is_err());
+    }
+    // A count larger than the bytes left: an error, not a huge allocation.
+    let mut b = behaviour();
+    b.i32(i32::MAX);
+    assert!(parse_ship_exterior_cull(&b.0, false).is_err());
 }
 
 #[test]

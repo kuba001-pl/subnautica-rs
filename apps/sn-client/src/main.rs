@@ -4,6 +4,7 @@
 //! with `--free-cam`.
 
 mod animation;
+mod aurora;
 mod effects;
 mod game_light;
 mod grass_look;
@@ -71,10 +72,14 @@ Usage: sn-client [--game-dir <PATH>] [--start <X> <Y> <Z>] [--look <X> <Y> <Z>]
                  (for comparisons)
   --no-scenes    without the scenes the game spawns at start (the Aurora,
                  the Precursor bases it holds)
-  --aurora       intact | exploded: the Aurora before its explosion (default,
-                 as in a new game) or after it
-  --lifepod-seed world seed for Lifepod 5's random start point (default 1;
-                 the game picks anew in every new game)
+  --aurora       intact | exploded: hold the Aurora before or after its
+                 explosion (default: a new game's, on the game clock)
+  --aurora-countdown  <S>: the Aurora's countdown S game seconds after the
+                 start (default: Random.Range(2.3, 4) days, drawn from
+                 --lifepod-seed); the ship is swapped 27 s after it
+  --lifepod-seed seed of a new game's random draws: Lifepod 5's start point
+                 and the Aurora's countdown (default 1; the game draws anew
+                 in every new game)
   --lifepod      <X> <Z>: put Lifepod 5 there instead (Unity world metres)
   --fog-unit     scale on the game's light values (calibration; default 1:
                  one game light unit = 1.0 in the image, as in Unity)
@@ -87,7 +92,9 @@ Usage: sn-client [--game-dir <PATH>] [--start <X> <Y> <Z>] [--look <X> <Y> <Z>]
                  high: simulated waves; medium: the 64 baked frames)
   --gpu-timings  with --benchmark/--flythrough: log GPU time per render pass
   --time         game clock in hours for the sun and sky (default 9.6, i.e.
-                 09:36, when a new game starts)
+                 09:36, when a new game starts); the clock runs from there
+                 (the sun and sky stay at the start time for now)
+  --time-scale   game seconds per real second (default 1, as the game)
   --view         view distance in metres (default 1200); level-of-detail
                  ranges scale with it
   --benchmark    once the start area is loaded, render FRAMES frames without
@@ -137,6 +144,12 @@ struct Args {
     gpu_timings: bool,
     /// Game clock, hours.
     time: f32,
+    /// `--time-scale`: the clock's speed.
+    time_scale: f32,
+    /// `--aurora`: held intact (false) or exploded (true).
+    aurora_held: Option<bool>,
+    /// `--aurora-countdown`, seconds after the start.
+    aurora_countdown: Option<f32>,
     /// `--free-cam`: the fly camera instead of the player.
     free_cam: bool,
 }
@@ -160,10 +173,7 @@ fn parse_args() -> Result<Args, String> {
         no_placeholders: false,
         no_grass: false,
         no_animation: false,
-        scenes: Some(SceneOptions {
-            aurora_exploded: false,
-            lifepod: None,
-        }),
+        scenes: Some(SceneOptions { lifepod: None }),
         fog_unit: 1.0,
         color_grading: ColorGrading::Off,
         no_water_fog: false,
@@ -171,6 +181,9 @@ fn parse_args() -> Result<Args, String> {
         water_quality: WaterQuality::High,
         gpu_timings: false,
         time: sky::NEW_GAME_HOURS,
+        time_scale: 1.0,
+        aurora_held: None,
+        aurora_countdown: None,
         free_cam: false,
     };
     let raw: Vec<String> = std::env::args().skip(1).collect();
@@ -223,15 +236,16 @@ fn parse_args() -> Result<Args, String> {
             "--no-animation" => args.no_animation = true,
             "--no-scenes" => args.scenes = None,
             "--aurora" => {
-                let exploded = match it.next().map(String::as_str) {
+                args.aurora_held = Some(match it.next().map(String::as_str) {
                     Some("intact") => false,
                     Some("exploded") => true,
                     _ => return Err("--aurora takes intact or exploded".into()),
-                };
-                if let Some(o) = args.scenes.as_mut() {
-                    o.aurora_exploded = exploded;
-                }
+                });
             }
+            "--aurora-countdown" => {
+                args.aurora_countdown = Some(number(it.next(), "--aurora-countdown")?);
+            }
+            "--time-scale" => args.time_scale = number(it.next(), "--time-scale")?,
             "--no-water-fog" => args.no_water_fog = true,
             "--no-water-surface" => args.no_water_surface = true,
             "--water-quality" => {
@@ -259,6 +273,15 @@ fn parse_args() -> Result<Args, String> {
     }
     if args.view < 100.0 {
         return Err("--view must be at least 100 metres".into());
+    }
+    if !(args.time_scale >= 0.0 && args.time_scale.is_finite()) {
+        return Err("--time-scale must be 0 or more".into());
+    }
+    if args
+        .aurora_countdown
+        .is_some_and(|s| !(s >= 0.0 && s.is_finite()))
+    {
+        return Err("--aurora-countdown must be 0 or more seconds".into());
     }
     Ok(args)
 }
@@ -533,7 +556,9 @@ fn main() -> AppExit {
         fog_end: args.view,
         free_camera: !play,
     })
+    .insert_resource(aurora::GameClock::at_hours(args.time, args.time_scale))
     .add_systems(Startup, setup)
+    .add_systems(Update, aurora::tick_clock)
     .add_systems(
         Update,
         (
@@ -601,6 +626,22 @@ fn main() -> AppExit {
                 ));
                 app.init_resource::<animation::AnimationStats>()
                     .add_systems(Update, animation::animate.after(objects::stream_objects));
+                if args.scenes.is_some() {
+                    let start = match args.aurora_held {
+                        Some(exploded) => aurora::AuroraStart::Held { exploded },
+                        None => aurora::AuroraStart::NewGame {
+                            seed: args.lifepod_seed,
+                            countdown: args.aurora_countdown,
+                        },
+                    };
+                    app.insert_resource(aurora::AuroraState::new(start))
+                        .add_systems(
+                            Update,
+                            aurora::update
+                                .after(objects::stream_objects)
+                                .after(aurora::tick_clock),
+                        );
+                }
             }
             Err(e) => {
                 eprintln!("error: {e}");

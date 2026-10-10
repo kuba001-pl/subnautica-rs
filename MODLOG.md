@@ -2,6 +2,78 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-10 — M7f4e: the Aurora on the game clock, its exterior cull, shadow flags
+
+**What:** fifth step of M7f4 (`docs/DESIGN.md` § 4.4, "as built").
+- `sn-dotnet`: `random_range_f32` (the one `Random.Range(a, b)` in a
+  method, both float constants) and `multiplier_f32` (the one
+  `ldc.r4 v; mul`), plus the `mul` opcode.
+- `sn-unity`: `ShipExteriorCullManager` and `ShipExteriorCull` readers.
+- `sn-assets`: `exploder_code` (the countdown rule and delays from the
+  DLL); `PrefabNode.cast_shadows`; `Prefab.exterior_culls` (each script's
+  box colliders); `Scene::exploder`, `ship_exterior_cull_manager`,
+  `aurora_groups` (the Aurora's parts by the states they show in);
+  `Prefab` and `PrefabNode` are `Clone`.
+- `sn-sim::aurora` (new): the exploder (countdown, the `else if` event
+  chain with "just went above", `IsExploded`, the cull's
+  initialised-and-deserialised condition), the manager's frame rule, the
+  strict oriented box test.
+- `sn-client`: `GameClock` (from `--time`, `--time-scale`), `aurora.rs`
+  (the exploder on the clock, swap and cull applied to the scene's parts,
+  events logged); rooms with `ShipExteriorCull` spawn an
+  `ExteriorCullVolume` with their world boxes; renderers with
+  `m_CastShadows` off get `NotShadowCaster` and keep it when their
+  batch's shadow switch changes. Flags: `--aurora-countdown <s>`,
+  `--time-scale <x>`; `--aurora intact | exploded` now holds the state.
+- `sn-inspect aurora`; `prefab::placed_transforms`.
+- Docs: `docs/formats/gameplay.md` § The Aurora's explosion, § Shadow
+  casting modes.
+- No new dependency.
+
+**Why:** M7f4 plan (the Aurora was a flag, its cull and the renderers'
+shadow flags were not read).
+
+**Findings:**
+- Code: `Random.Range(2.3, 4) × 1200` s after the start; sound +24, explosion
+  +25, swap +27 s. Our seed 1 draws 4,500 s.
+- The exterior cull never acts in a new game (it needs the exploder both
+  initialised and loaded from a save). The "exterior" is the whole wreck.
+- 2 of 3,336 world prefabs have `ShipExteriorCull` (cargo room 4 boxes,
+  Prawn bay 3), each placed once; the manager checks every 10 frames.
+- Drawn renderers with shadows off: 5,380 in placed prefabs (29,145
+  placements), 195 in the Aurora scene; 1 shadows-only; 0 two-sided.
+
+**Dead ends:**
+- None that cost time. A first census over placed prefabs only was
+  widened to every world prefab (placeholders could bring in unplaced
+  ones); the result was the same two rooms.
+
+**Verified (2026-10-10):**
+- `cargo test --workspace` passes (new: 7 `sn_sim::aurora` tests,
+  `reads_random_ranges_and_multipliers` in `sn-dotnet`,
+  `ship_exterior_cull` reader test in `sn-unity`); `cargo clippy
+  --workspace --all-targets` and `cargo fmt --all --check` clean.
+- Real data (`--ignored`): `aurora_clock_and_exterior_cull_volumes`
+  (code numbers, manager every 10 frames, 330/337 nodes drawn by groups
+  equal to the whole scene swapped, 18 exterior nodes, 7 boxes) and
+  `startup_scenes_and_aurora` pass.
+- `sn-client --benchmark 300` from the lifepod: countdown at 4,982.7 s
+  (clock 483.1 s when the scene loaded + 4,499.6 s), mean 21.00 ms (M7f4d:
+  21.06 ms); 0 warnings.
+- Swap pair (`--free-cam --start 500 60 350 --look 1000 0 0 --benchmark
+  120`): `--aurora intact` shows the intact ship; `--aurora-countdown 0
+  --time-scale 10` logs the countdown at 498.39 s, the explosion at
+  523.61 s, the swap at 525.36 s, and the screenshot shows the wreck
+  (`out/m7f4e-intact.png`, `out/m7f4e-swap.png`). The sound event was
+  skipped there: one frame jumped past both 522.3 and 523.3 s, which the
+  game's chain does too.
+- Camera in the cargo room (`--start 944 18.5 17.3 --aurora exploded`):
+  "camera entered a ship exterior cull volume (7 registered)", exterior
+  stays shown (the game's rule).
+- **Not checked:** the swap moment against the game; whether a loaded
+  save culls the exterior (needs saves, M9f); shadows of "off" renderers
+  compared with the game on screen.
+
 ## 2026-10-10 — M7f4d: blend shapes
 
 **What:** fourth step of M7f4 (`docs/DESIGN.md` § 4.4, "as built").

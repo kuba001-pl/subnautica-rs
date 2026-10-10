@@ -78,8 +78,8 @@ pub use prefab::{
 };
 pub use scene_scripts::{
     AutoLoadScene, CrashedShipExploder, EscapePod, PrefabSpawner, SPAWN_INTERMITTENT, SPAWN_MANUAL,
-    SPAWN_ON_AWAKE, SPAWN_ON_NEW_BORN, SPAWN_ON_START, SpawnPrefab, parse_additional_scenes,
-    parse_autoload_scenes, parse_random_start,
+    SPAWN_ON_AWAKE, SPAWN_ON_NEW_BORN, SPAWN_ON_START, ShipExteriorCullManager, SpawnPrefab,
+    parse_additional_scenes, parse_autoload_scenes, parse_random_start, parse_ship_exterior_cull,
 };
 pub use serialized::{
     External, ObjectInfo, SUPPORTED_VERSIONS, SerializedFile, SerializedType, TypeTreeNode,
