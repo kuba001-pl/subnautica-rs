@@ -1270,3 +1270,25 @@ fn player_movement_data() {
     let (r, n) = hatches[0].node;
     assert!(!scene.roots[r].nodes[n].active);
 }
+
+#[test]
+#[ignore = "needs SUBNAUTICA_DIR pointing at a Subnautica install"]
+fn vitals_and_look_data() {
+    let Some(dir) = std::env::var_os("SUBNAUTICA_DIR") else {
+        eprintln!("SUBNAUTICA_DIR not set; skipping");
+        return;
+    };
+    let game = GameData::locate(Some(PathBuf::from(dir))).unwrap();
+    let assets = Assets::index(&game).unwrap();
+    let d = sn_assets::player_data(&assets).unwrap();
+    let code = sn_assets::player_code(&sn_assets::read_assembly(&game).unwrap()).unwrap();
+    let v = sn_assets::vitals_params(&d, &code);
+    let l = sn_assets::look_params(&d, &code);
+    eprintln!("vitals {v:?}; look {l:?}; camera on {:?}", d.camera_node);
+    assert_eq!((v.oxygen_capacity, v.refill_per_second), (45.0, 30.0));
+    assert_eq!((v.max_health, v.start_health_percent), (100.0, 1.0));
+    assert_eq!(v.oxygen_above_player, 0.0);
+    assert_eq!((l.minimum_y, l.maximum_y), (-87.0, 87.0));
+    assert!((l.mouse_sensitivity - 0.15).abs() < 1e-6);
+    assert_eq!((d.camera_node.1, d.camera.skin), ([0.0; 3], 0.0));
+}

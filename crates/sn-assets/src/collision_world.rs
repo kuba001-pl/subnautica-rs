@@ -634,6 +634,36 @@ pub fn player_params(
     }
 }
 
+/// The rules of `sn_sim::vitals` from the main scene's player and the
+/// numbers kept in the code (M9c).
+pub fn vitals_params(
+    data: &crate::PlayerData,
+    code: &crate::PlayerCode,
+) -> sn_sim::vitals::VitalsParams {
+    let f = f64::from;
+    sn_sim::vitals::VitalsParams {
+        oxygen_capacity: f(data.oxygen.oxygen_capacity),
+        refill_per_second: f(code.oxygen_per_second_surface),
+        oxygen_above_player: f(data.oxygen_above_player),
+        suffocation_time: f(data.player.suffocation_time),
+        suffocation_recovery_time: f(data.player.suffocation_recovery_time),
+        max_health: f(data.live_mixin_data.max_health),
+        start_health_percent: f(data.live_mixin.start_health_percent),
+        ocean_level: f(data.ocean_level),
+    }
+}
+
+/// The mouse look from the main scene's `MainCameraControl` and the
+/// game's default settings (the player's own settings are not read).
+pub fn look_params(data: &crate::PlayerData, code: &crate::PlayerCode) -> sn_sim::look::LookParams {
+    sn_sim::look::LookParams {
+        mouse_sensitivity: f64::from(code.default_mouse_sensitivity),
+        invert: false,
+        minimum_y: f64::from(data.camera.minimum_y),
+        maximum_y: f64::from(data.camera.maximum_y),
+    }
+}
+
 /// Half the side of the region with collision: the game's finest clipmap
 /// level, 7 chunks of 16 m (`clipmaps-high.json`).
 pub const COLLISION_REACH: f32 = 56.0;

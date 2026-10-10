@@ -58,6 +58,14 @@ Tested on Windows 11 with game build 10 (Steam):
   penetrations. In `sn-client` you are the player (the fly camera is
   `--free-cam`). Playing it with keyboard and mouse is not tested by the
   agent.
+- Oxygen, suffocation, health, death and respawn in the lifepod, with
+  the game's numbers (45 units, 1 / 1.5 / 2 per second by depth, refill
+  30 per second at the surface, 8 s to pass out). `sn-inspect dive` runs
+  a dive to the seabed until the player dies and respawns, then a dive cut
+  short by surfacing; seeds 1–5 pass. The mouse look uses the game's rule,
+  default sensitivity and ±87° pitch limit. `sn-client` shows a HUD of our
+  own: oxygen and health bars, depth, the black-out overlay. The HUD
+  layout and the look in play are not tested by the agent.
 - `sn-client`: a desktop window (Bevy), first person or a fly camera. Terrain streams in
   and out as you move, with four levels of detail out to 1.2 km, textured
   with the game's own terrain materials, blended between neighbouring
@@ -114,7 +122,8 @@ meshes not yet decoded are flat, Safe Shallows triplanar rocks white;
 `docs/formats/materials.md`), creatures (including the
 ~100,000 the spawn slots would add); the player's animations (the
 hatch cinematics, body, camera bob), tanks and fins changing speeds,
-oxygen and health; audio, multiplayer.
+the game's own HUD, damage effects and the death animation; audio,
+multiplayer.
 Linux/macOS: not tested.
 
 ## Try it

@@ -2,6 +2,82 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-10 — M9c: oxygen, health, death and respawn; the game's mouse look
+
+**What:** fifth step of Phase E (`docs/DESIGN.md` § 4.3, "M9c plan" and
+"as built"). The plan was written first.
+- `sn-dotnet`: `const_f32` (a `const float`'s `Constant` row) and
+  `field_initializer_f32` (only `ldarg.0; ldc.r4; stfld` in `.ctor`,
+  exactly once). Synthetic tests, including a field set twice and one
+  set from a non-constant.
+- `sn-unity`: `MainCameraControl` (every field, checked to the last
+  byte); `LiveMixin` now reads every field (`startHealthPercent`,
+  `player`) to the last byte.
+- `sn-assets`: `player_data` gains the camera, its node and the oxygen
+  source's height; `player_code` reads `OxygenManager
+  .oxygenUnitsPerSecondSurface` and `GameInputSystem
+  .defaultMouseSensitivity` from the DLL; `vitals_params`, `look_params`.
+- `sn-sim`: `vitals` (depth classes, breaths on the game-time clock,
+  refill, suffocation `Sequence`, fall damage, death → respawn timeline)
+  and `look` (`MainCameraControl`'s rule). `player::Event::Landed` now
+  carries the impact velocity.
+- `sn-inspect`: `dive` (the scripted run); `player` prints the new
+  values; `walk`'s pieces are shared with `dive`.
+- `sn-client`: vitals run with the player; the game's look replaces our
+  sensitivity and ±89° limit; a HUD of our own (`hud.rs`: oxygen and
+  health bars with numbers, depth, the suffocation overlay). No new
+  dependencies (Bevy's default `ui` feature was already on).
+- Real-data test `vitals_and_look_data`.
+
+**Findings** (`docs/formats/gameplay.md` § Oxygen, health and death and
+§ Mouse look; `docs/formats/dotnet.md`):
+- Refill 30 units/s (code only), capacity 45, 1 / 1.5 / 2 units per
+  second by depth class, suffocation 8 s, recovery 4 s.
+- Breaths follow game time, not time under water, so the first comes 0
+  to one period after going under.
+- Suffocation starts only at exactly 0 oxygen (`Utils.NearlyEqual`
+  against 0 is an exact compare).
+- `CrushDamageUpdate` is never called for the player.
+- Mouse: 0.15 × 1.5 × 0.5 = 0.1125° per count, no smoothing. Pitch
+  limits are ±87° in the scene against ±80° in the code.
+- The camera sits at the player's origin (`camRoot`, `skin` 0), as M9b
+  assumed.
+
+**Dead ends:**
+- Three vitals tests first ran for exactly 18 s or 30 s and lost the
+  last breath to the rounding of a clock summed from 0.02 s steps. The
+  tests now stop off the boundary; the rule is unchanged.
+- The first dive tried to surface from under the lifepod and stayed
+  there, then climbed onto the pod's roof and could not board. The
+  script now swims 8 m clear of the pod first and dives 1 s before
+  boarding.
+- The first time-to-empty check passed by mistake. It took the depth
+  class at the respawn point (inside the pod: surface, period 99999 s).
+  It now uses the depth where the oxygen ran out.
+- The prediction check also first allowed 99999 units (the surface
+  period counted as a breath). Once tightened, it failed at 3.06: steps
+  taken by the shared walking code skipped the prediction. It is now
+  resynced after those steps.
+- Seed 5's second dive slid along the seabed back under the pod. The
+  player died a second time there, and the script used a hatch while
+  dead. The script now swims clear before surfacing, and no hatch can be
+  used while the controls are off.
+
+**Verified (2026-10-10):**
+- `cargo test --workspace` passes without the game, including
+  `sn-sim`'s 14 new tests (vitals 10, look 4), `sn-dotnet`'s new test and
+  `sn-unity`'s `main_camera_control`; `cargo clippy --workspace
+  --all-targets` clean.
+- Real data: `cargo test --release -p sn-assets --test real_data --
+  --ignored vitals_and_look_data player_movement_data game_code`: 3 pass.
+- `sn-inspect dive --seed N` for N = 1–5: `RUN OK`, every check ok.
+  Times as in the findings, 0 penetrations, 0 surfaces passed through,
+  13–26 µs mean per step.
+- `sn-inspect walk`: still `RUN OK`.
+- `sn-client` launched for 45 s on the real install: it logs the values
+  read and no errors. The HUD's look, the mouse look in play and a death
+  in the client are not tested by the agent.
+
 ## 2026-10-10 — Plan: homes for M9b's open differences
 
 **What:** `docs/DESIGN.md` only. Added the game's mouse look

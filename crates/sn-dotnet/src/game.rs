@@ -7,8 +7,8 @@
 
 use crate::assembly::{Assembly, FIELD_LITERAL, FIELD_STATIC};
 use crate::il::{
-    CALL, CALLVIRT, DUP, Instr, LDC_R4, LDSFLD, LDSTR, NEWARR, NEWOBJ, Operand, RET, STELEM_REF,
-    STSFLD, decode, opcode_name,
+    CALL, CALLVIRT, DUP, Instr, LDARG_0, LDC_R4, LDSFLD, LDSTR, NEWARR, NEWOBJ, Operand, RET,
+    STELEM_REF, STFLD, STSFLD, decode, opcode_name,
 };
 use crate::{Error, Result};
 
@@ -21,6 +21,7 @@ const ELEMENT_I4: u8 = 0x08;
 const ELEMENT_U4: u8 = 0x09;
 const ELEMENT_I8: u8 = 0x0A;
 const ELEMENT_U8: u8 = 0x0B;
+const ELEMENT_R4: u8 = 0x0C;
 
 /// Deepest crafting menu accepted.
 const MAX_DEPTH: usize = 32;
@@ -469,6 +470,80 @@ pub fn tech_data_defaults(asm: &Assembly) -> Result<Vec<(String, DefaultValue)>>
     Ok(out)
 }
 
+/// The value of a `const float` field (its `Constant` row), e.g.
+/// `GameInputSystem.defaultMouseSensitivity`.
+pub fn const_f32(asm: &Assembly, namespace: &str, type_name: &str, field: &str) -> Result<f32> {
+    let ty = find_type(asm, namespace, type_name)?;
+    let constants = asm.field_constants()?;
+    for row in asm.fields(ty)? {
+        if asm.field_name(row)? != field {
+            continue;
+        }
+        let what = || format!("{type_name}.{field}");
+        let &(element, bytes) = constants
+            .get(&row)
+            .ok_or_else(|| err(format!("{}: no constant", what())))?;
+        if element != ELEMENT_R4 {
+            return Err(err(format!(
+                "{}: constant type {element:#x} is not a float",
+                what()
+            )));
+        }
+        let b: [u8; 4] = bytes
+            .try_into()
+            .map_err(|_| err(format!("{}: constant of {} bytes", what(), bytes.len())))?;
+        return Ok(f32::from_le_bytes(b));
+    }
+    Err(err(format!("{type_name}: no field {field}")))
+}
+
+/// The value an instance field gets in the type's constructor, from a
+/// C# initialiser such as `private float rate = 30f;` (the compiler puts
+/// it at the start of `.ctor` as `ldarg.0; ldc.r4 v; stfld field`). Only
+/// that pattern is accepted, and it must occur exactly once.
+pub fn field_initializer_f32(
+    asm: &Assembly,
+    namespace: &str,
+    type_name: &str,
+    field: &str,
+) -> Result<f32> {
+    let ty = find_type(asm, namespace, type_name)?;
+    let code = method_code(asm, ty, ".ctor")?;
+    let mut found = Vec::new();
+    for (k, i) in code.iter().enumerate() {
+        if i.opcode != STFLD {
+            continue;
+        }
+        let f = asm.field_token(i.token().unwrap_or(0))?;
+        if f.type_name != type_name || f.namespace != namespace || f.name != field {
+            continue;
+        }
+        let fail = || {
+            err(format!(
+                "{type_name}.{field}: initialiser pattern not recognised"
+            ))
+        };
+        let (Some(load), Some(value)) = (
+            k.checked_sub(2).and_then(|j| code.get(j)),
+            k.checked_sub(1).and_then(|j| code.get(j)),
+        ) else {
+            return Err(fail());
+        };
+        match (load.opcode, value.opcode, &value.operand) {
+            (LDARG_0, LDC_R4, Operand::F32(v)) => found.push(*v),
+            _ => return Err(fail()),
+        }
+    }
+    match found[..] {
+        [v] => Ok(v),
+        [] => Err(err(format!("{type_name}.{field}: not set in .ctor"))),
+        _ => Err(err(format!(
+            "{type_name}.{field}: set {} times in .ctor",
+            found.len()
+        ))),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -621,6 +696,24 @@ mod tests {
             cctor = cctor.op(LDNULL).stsfld(f[1]);
         }
         b.method(".cctor", 0, Some(&cctor.ret().0));
+
+        // `class Manager { const float defaultRate = 0.15f; float rate = 30f; }`
+        b.type_def("", "Manager");
+        let c = b.field(LITERAL, "defaultRate");
+        b.constant_r4(c, 0.15);
+        let rate = b.field(0x0001, "rate");
+        let other = b.field(0x0001, "other");
+        let mut ctor = Il::default()
+            .op(LDARG_0)
+            .ldc_r4(30.0)
+            .stfld(rate)
+            .op(LDARG_0)
+            .op(LDNULL)
+            .stfld(other);
+        if o.bad_default {
+            ctor = ctor.op(LDARG_0).ldc_r4(1.0).stfld(rate);
+        }
+        b.method(".ctor", 0, Some(&ctor.ret().0));
         b.build()
     }
 
@@ -718,6 +811,28 @@ mod tests {
     }
 
     #[test]
+    fn reads_float_constants_and_initialisers() {
+        let bytes = sample(&Options::default());
+        let asm = parse(&bytes);
+        assert_eq!(const_f32(&asm, "", "Manager", "defaultRate").unwrap(), 0.15);
+        assert!(const_f32(&asm, "", "Manager", "rate").is_err());
+        assert!(const_f32(&asm, "", "TechType", "Knife").is_err());
+        assert_eq!(
+            field_initializer_f32(&asm, "", "Manager", "rate").unwrap(),
+            30.0
+        );
+        // Set from something other than a float constant.
+        assert!(field_initializer_f32(&asm, "", "Manager", "other").is_err());
+        assert!(field_initializer_f32(&asm, "", "Manager", "missing").is_err());
+        let bad = sample(&Options {
+            bad_default: true,
+            ..Options::default()
+        });
+        let e = field_initializer_f32(&parse(&bad), "", "Manager", "rate").unwrap_err();
+        assert!(e.message.contains("set 2 times"), "{e}");
+    }
+
+    #[test]
     fn damaged_assemblies_never_panic() {
         let bytes = sample(&Options::default());
         let read = |b: &[u8]| {
@@ -725,6 +840,8 @@ mod tests {
                 let _ = tech_type_names(&asm);
                 let _ = craft_trees(&asm);
                 let _ = tech_data_defaults(&asm);
+                let _ = const_f32(&asm, "", "Manager", "defaultRate");
+                let _ = field_initializer_f32(&asm, "", "Manager", "rate");
                 for m in 1..=asm.rows(Table::METHOD_DEF) {
                     if let Ok(Some((code, base))) = asm.method_body(m) {
                         let _ = decode(code, base);

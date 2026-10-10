@@ -113,8 +113,9 @@ are not `[NonSerialized]`, `static`, `const` or properties):
     drag (swim 2.5 / 2), accelerations (water 20, ground 45, air 5), jump
     height 2.
 - `GroundMotor`'s own fields: § Player movement (M9b).
-- Not read yet: `OxygenManager`, `Survival` (food and water), the
-  `Player` fields after `guiHand`.
+- Not read yet: `Survival` (food and water), the `Player` fields after
+  `guiHand`. `OxygenManager` has no serialized number (its rate is code
+  only, § Oxygen, health and death).
 
 ## Colliders (on placed prefabs)
 
@@ -223,6 +224,94 @@ are not `[NonSerialized]`, `static`, `const` or properties):
   count. Our terrain mesher's faces point out of the rock (`sn-mesh` test
   `sphere_is_closed_oriented_and_faces_out`). `voxel_to_world` only
   translates, so terrain fronts face the water, as the game's do.
+
+## Oxygen, health and death (M9c)
+
+Read in the decompiled code; the numbers from the scene and the DLL
+(`sn-inspect player`, real-data test `vitals_and_look_data`). The rules
+are ported in `sn-sim::vitals`.
+
+- **Confirmed (code):** "under water" for breathing is
+  `Player.UpdateIsUnderwater`, not M9b's swimming flag: never in the
+  lifepod (`escapePod`), else the transform below the ocean level. With
+  no sub or vehicle, `CanBreathe` is "not under water".
+- **Confirmed (code):** depth classes (`Player.GetDepthClass`, the player
+  has no `CrushDamage`): depth = max(0, level − y); > 200 m crush, > 100 m
+  unsafe, > 0.1 m (`GetSurfaceDepth`) safe, else surface. Breath period
+  (`GetBreathPeriod`): 3 / 2.25 / 1.5 s, surface 99999 s. Oxygen per
+  breath (`GetOxygenPerBreath`): period × 1 / 1.5 / 2 (no rebreather, not
+  piloting, Survival mode). So 1, 1.5 and 2 units per second.
+- **Confirmed (code):** a breath happens in `Player.Update` when the
+  player cannot breathe and stats are not frozen, each time `Time.time`
+  crosses a multiple of the period (`ScalarMonitor.DidChangeInterval`
+  over game time, not time under water). So the first breath after
+  going under comes after 0 to one period.
+- **Confirmed (code + IL):** `OxygenManager.Update` adds
+  `oxygenUnitsPerSecondSurface` × `deltaTime` when a source's object is
+  above level − 1 m or the player can breathe, unless a cinematic plays
+  or the player is in a water park. The field is private, set by its
+  initialiser in the constructor: **30** (read from the DLL). The
+  player's `Oxygen` is on the `Player` object itself (0 m above it,
+  scene).
+- **Confirmed (code):** `Utils.NearlyEqual(x, 0)` is true only for x = 0
+  exactly (its small-number branch compares with `epsilon ×
+  float.MinValue`, a negative number), so suffocation starts only at
+  exactly 0 oxygen.
+- **Confirmed (code):** suffocation (`SuffocationUpdate`, a `Sequence`
+  starting at t = 1): at 0 oxygen, t runs to 0 over `suffocationTime`
+  (8 s, scene); the update after it gets there kills the player. Oxygen
+  back: t runs to 1 over `suffocationRecoveryTime` (4 s), then a reset.
+  The screen overlay 0 gets 1 − t.
+- **Confirmed (code):** `LiveMixin.TakeDamage` × `DamageSystem
+  .damageMultiplier` (1); death at health 0 (`Kill`, then `OnKill`). The
+  only player damage without creatures: `Player.OnLand` from the walking
+  motor, out of the water: (−min(0, impact y + 10)) × 2.5, impact = the
+  velocity at the start of the step (`GroundMotor.previousVelocity`).
+  `Player.CrushDamageUpdate` exists but nothing calls it.
+- **Confirmed (code):** death and respawn (`OnKill`,
+  `ResetPlayerOnDeath`): input, the player controller and the mouse look
+  off, stats frozen; after 5 s the player goes to the respawn point (no
+  sub: the last lifepod's `playerSpawn`, in the pod); after 1 s more and
+  the world settled, `ResetHealth` then the respawn event's
+  `LiveMixin.OnRespawn` (health = `maxHealth` × `startHealthPercent`),
+  oxygen full, suffocation reset; 1 s later stats unfrozen and input
+  back. The inventory is lost (`Inventory.LoseItems`; no inventory yet).
+- **Confirmed (parser, real data):** `LiveMixin`'s serialized fields are
+  `data`, `health`, `startHealthPercent`, `damageClip`, `deathClip`,
+  `player`; the data ends there (its two `Event<float>` fields are not
+  serialized). The player's: health 100, `startHealthPercent` 1.
+- **Measured (`sn-inspect dive`, seeds 1–5):** oxygen 0 at 42.26 s
+  after going under (the first breath 0.22 s after: phase of the clock),
+  death 8.02 s later, respawn 5.02 s, restore 1.02 s, controls 1.02 s
+  (the 0.02 s is our one physics step). Oxygen stays within one breath
+  (3 units) of a steady 1 unit/s drain. Refill from 23–29 units to 45 in
+  0.56–0.74 s after surfacing.
+
+## Mouse look (M9c)
+
+- **Confirmed (code):** `MainCameraControl.OnUpdate` in normal play adds
+  the look delta to `rotationX` (yaw, unbounded: `minimumX` and
+  `maximumX` are never used) and `rotationY` (pitch, up positive),
+  clamped to `minimumY`…`maximumY`. The camera's pitch is −`rotationY`,
+  split between `cameraUPTransform` (looking up) and the camera's own
+  transform (looking down). There is no smoothing of the look. Camera
+  bob, strafe tilt, impact bob and shake are added on top (not ported:
+  "After Phase E" item 3).
+- **Confirmed (code):** `GameInputSystem.GetVector2(Look)` for a mouse
+  (`<Mouse>/delta`, a `Delta` control): delta × `MouseSensitivity` × 1.5 ×
+  0.5, y negated if `InvertMouse`. The default sensitivity is the `const`
+  `defaultMouseSensitivity`: **0.15** (read from the DLL), so 0.1125° per
+  unit of mouse delta. The player's own settings are saved by the game
+  (`InputSystem/MouseSensitivity`, `InvertMouse`); we don't read them.
+- **Confirmed (parser, real data):** `MainCameraControl` is in the main
+  scene on `camRoot`, at the player's origin; all its fields read to the
+  last byte: `minimumY` −87, `maximumY` 87 (the code's initial values are
+  ±80, so the scene's count), `skin` 0 (the camera sits at its parent),
+  `cameraTiltMod` 0.1, `camPDAZOffset` 0.18.
+- **Hypothesis:** Unity's Input System reads the mouse delta on Windows
+  as raw input counts, as Bevy's `AccumulatedMouseMotion` does, so the
+  same physical movement turns the view by the same angle. Not checked
+  side by side.
 
 ## Pick-ups and outcrops
 

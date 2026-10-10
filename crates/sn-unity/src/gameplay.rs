@@ -373,19 +373,97 @@ impl Oxygen {
     }
 }
 
-/// `LiveMixin`: health. The parser reads the first fields only.
+/// `LiveMixin`: health. Every serialized field (its `Event<float>`
+/// fields are not serialized: the data ends after `player`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LiveMixin {
     pub data: PPtr,
     pub health: f32,
+    /// `startHealthPercent`: health on respawn is `maxHealth` × this
+    /// (`LiveMixin.OnRespawn`).
+    pub start_health_percent: f32,
+    pub player: PPtr,
 }
 
 impl LiveMixin {
     pub fn parse(data: &[u8], big_endian: bool) -> Result<LiveMixin> {
         let mut r = fields(data, big_endian)?;
+        let data_ptr = PPtr::read(&mut r)?;
+        let health = r.f32()?;
+        let start_health_percent = r.f32()?;
+        PPtr::read(&mut r)?; // damageClip
+        PPtr::read(&mut r)?; // deathClip
+        let player = PPtr::read(&mut r)?;
+        at_end(&r, data)?;
         Ok(LiveMixin {
-            data: PPtr::read(&mut r)?,
-            health: r.f32()?,
+            data: data_ptr,
+            health,
+            start_health_percent,
+            player,
+        })
+    }
+}
+
+/// `MainCameraControl`: the first-person mouse look (M9c). Every field.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MainCameraControl {
+    pub cam_pda_z_offset: f32,
+    pub step_amount: f32,
+    /// `minimumX` / `maximumX`: declared but not used by the code.
+    pub minimum_x: f32,
+    pub maximum_x: f32,
+    /// `minimumY` / `maximumY`: the pitch limits, degrees (up positive).
+    pub minimum_y: f32,
+    pub maximum_y: f32,
+    pub mouse_look_enabled: bool,
+    /// `skin`: the camera sits this far below its parent.
+    pub skin: f32,
+    pub max_view_model_rotation: f32,
+    pub max_view_model_movement: f32,
+    pub camera_tilt_mod: f32,
+    pub camera_offset_transform: PPtr,
+    pub camera_up_transform: PPtr,
+}
+
+impl MainCameraControl {
+    pub fn parse(data: &[u8], big_endian: bool) -> Result<MainCameraControl> {
+        let mut r = fields(data, big_endian)?;
+        let cam_pda_z_offset = r.f32()?;
+        r.f32()?; // camPDAZStart (set in Awake)
+        let step_amount = r.f32()?;
+        let minimum_x = r.f32()?;
+        let maximum_x = r.f32()?;
+        let minimum_y = r.f32()?;
+        let maximum_y = r.f32()?;
+        let mouse_look_enabled = r.bool4()?;
+        for _ in 0..4 {
+            r.f32()?; // rotationY, rotationX, camRotationX, camRotationY
+        }
+        let skin = r.f32()?;
+        PPtr::read(&mut r)?; // viewModel
+        r.vector3()?; // cameraAngleMotion
+        let max_view_model_rotation = r.f32()?;
+        let max_view_model_movement = r.f32()?;
+        let camera_tilt_mod = r.f32()?;
+        let camera_offset_transform = PPtr::read(&mut r)?;
+        let camera_up_transform = PPtr::read(&mut r)?;
+        r.bool4()?; // _cinematicMode
+        r.bool4()?; // lookAroundMode
+        at_end(&r, data)?;
+        Ok(MainCameraControl {
+            cam_pda_z_offset,
+            step_amount,
+            minimum_x,
+            maximum_x,
+            minimum_y,
+            maximum_y,
+            mouse_look_enabled,
+            skin,
+            max_view_model_rotation,
+            max_view_model_movement,
+            camera_tilt_mod,
+            camera_offset_transform,
+            camera_up_transform,
         })
     }
 }
@@ -1198,6 +1276,25 @@ mod tests {
     }
 
     #[test]
+    fn main_camera_control() {
+        let mut w = W::behaviour();
+        w.f32(0.18).f32(0.0).f32(0.0);
+        w.f32(-360.0).f32(360.0).f32(-87.0).f32(87.0).bool4(true);
+        w.f32(0.0).f32(0.0).f32(0.0).f32(0.0).f32(0.0);
+        w.pptr(0, 5).f32(0.0).f32(0.0).f32(0.0);
+        w.f32(10.0).f32(5.0).f32(0.1).pptr(0, 6).pptr(0, 7);
+        w.bool4(false).bool4(false);
+        let c = MainCameraControl::parse(&w.0, false).unwrap();
+        assert_eq!((c.minimum_y, c.maximum_y, c.skin), (-87.0, 87.0, 0.0));
+        assert!(c.mouse_look_enabled);
+        assert_eq!(c.camera_up_transform.path_id, 7);
+        robust(&w.0, |d| MainCameraControl::parse(d, false));
+        // A byte more is an error: the layout is checked to the end.
+        w.u8(0);
+        assert!(MainCameraControl::parse(&w.0, false).is_err());
+    }
+
+    #[test]
     fn oxygen_and_health() {
         let mut w = W::behaviour();
         w.f32(45.0).bool4(true);
@@ -1207,9 +1304,16 @@ mod tests {
         robust(&w.0, |d| Oxygen::parse(d, false));
 
         let mut w = W::behaviour();
-        w.pptr(1, 9).f32(100.0).bool4(false).f32(1.0);
+        w.pptr(1, 9)
+            .f32(100.0)
+            .f32(0.5)
+            .pptr(0, 0)
+            .pptr(0, 0)
+            .pptr(0, 40);
         let l = LiveMixin::parse(&w.0, false).unwrap();
         assert_eq!((l.data.path_id, l.health), (9, 100.0));
+        assert_eq!((l.start_health_percent, l.player.path_id), (0.5, 40));
+        robust(&w.0, |d| LiveMixin::parse(d, false));
 
         let mut w = W::behaviour();
         w.f32(100.0).f32(5.0).f32(0.2);

@@ -6,6 +6,7 @@
 mod effects;
 mod game_light;
 mod grass_look;
+mod hud;
 mod object_look;
 mod objects;
 mod player;
@@ -612,7 +613,10 @@ fn main() -> AppExit {
                     slot_seed: args.slot_seed,
                 };
                 app.insert_resource(player::PlayerSim::start(game, start))
-                    .add_systems(Update, player::update.before(terrain::stream));
+                    .init_resource::<hud::Hud>()
+                    .add_systems(Startup, hud::setup)
+                    .add_systems(Update, player::update.before(terrain::stream))
+                    .add_systems(Update, hud::update.after(player::update));
             }
             Err(e) => {
                 eprintln!("error: {e}");

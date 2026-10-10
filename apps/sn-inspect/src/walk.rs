@@ -2,7 +2,8 @@
 //! (`sn_sim::player`), headless: spawn in the lifepod, walk to its exit,
 //! use it, swim away for 10 s and back, board. Logs positions, motor
 //! changes, the hatch triggers used and speeds next to the values read
-//! from the game. See `docs/DESIGN.md` § 4.3 "M9b plan".
+//! from the game. See `docs/DESIGN.md` § 4.3 "M9b plan". The pieces
+//! ([`start`], [`leave_pod`], [`Run`]) are shared with `dive` (M9c).
 
 use std::process::ExitCode;
 use std::time::Instant;
@@ -13,6 +14,7 @@ use sn_sim::V3;
 use sn_sim::player::{
     Event, HatchTrigger, Hatches, Input, Motor, Player, PlayerParams, hand_target,
 };
+use sn_sim::vitals::{Situation, Vitals, VitalsEvent, VitalsParams};
 
 use crate::Result;
 use crate::collision::{HATCH, Streamed, kind};
@@ -27,13 +29,19 @@ fn look_at(eye: V3, at: V3) -> (f64, f64) {
     (yaw, pitch)
 }
 
-struct Run<'a, 'g> {
-    s: &'a mut Streamed<'g>,
-    params: PlayerParams,
-    player: Player,
-    pod: Lifepod,
+pub(crate) struct Run<'a, 'g> {
+    pub(crate) s: &'a mut Streamed<'g>,
+    pub(crate) params: PlayerParams,
+    pub(crate) player: Player,
+    pub(crate) pod: Lifepod,
+    pub(crate) pod_point: V3,
     hatches: Hatches,
-    steps: usize,
+    /// Oxygen and health (`dive`, M9c): stepped with the player; while
+    /// the controls are off (dead) the player does not move.
+    pub(crate) vitals: Option<(VitalsParams, Vitals)>,
+    /// The vitals' events with the time they happened.
+    pub(crate) vitals_events: Vec<(f64, VitalsEvent)>,
+    pub(crate) steps: usize,
     penetrations: usize,
     /// Surfaces the capsule's centre passed through in a step (the hatch's
     /// moves excepted).
@@ -45,7 +53,7 @@ struct Run<'a, 'g> {
 }
 
 impl Run<'_, '_> {
-    fn t(&self) -> f64 {
+    pub(crate) fn t(&self) -> f64 {
         self.steps as f64 * self.params.fixed_dt
     }
 
@@ -55,7 +63,7 @@ impl Run<'_, '_> {
         self.player.position + (c.a + c.b) * 0.5
     }
 
-    fn log(&self, what: &str) {
+    pub(crate) fn log(&self, what: &str) {
         let p = &self.player;
         println!(
             "  t {:>5.2} s: {what}; at ({:.2}, {:.2}, {:.2}), {:?}, in pod {}, grounded {}, speed {:.2} m/s",
@@ -86,21 +94,35 @@ impl Run<'_, '_> {
         V3::from_f32(self.pod.triggers[i].at)
     }
 
-    fn step(&mut self, input: &Input) -> Result<()> {
+    pub(crate) fn step(&mut self, input: &Input) -> Result<()> {
         if self.steps % 25 == 0 {
             self.s.stream(self.player.position)?;
         }
         let before = self.centre();
+        let moves = self
+            .vitals
+            .as_ref()
+            .is_none_or(|(_, v)| v.controls_enabled());
         let t = Instant::now();
-        let events = self.player.step(&self.params, &self.s.world, input);
+        // Dead: `playerController.SetEnabled(false)`, the body stays.
+        let events = if moves {
+            self.player.step(&self.params, &self.s.world, input)
+        } else {
+            Vec::new()
+        };
         self.step_us.push(t.elapsed().as_secs_f64() * 1e6);
         self.steps += 1;
+        let mut landed = None;
         for e in events {
             match e {
                 Event::MotorChanged(m) => self.log(&format!("motor → {m:?}")),
-                Event::Landed | Event::Jumped => {}
+                Event::Landed { impact_y } => landed = Some(impact_y),
+                Event::Jumped => {}
                 other => self.log(&format!("{other:?}")),
             }
+        }
+        if self.step_vitals(landed)? {
+            return Ok(());
         }
         let after = self.centre();
         // Longer than any step's move: the hatch put the player elsewhere.
@@ -132,8 +154,48 @@ impl Run<'_, '_> {
         Ok(())
     }
 
+    /// One step of the vitals, if they run: logs their events (not the
+    /// breaths) and moves the player to the respawn point when they say
+    /// so. True if it did.
+    fn step_vitals(&mut self, landed: Option<f64>) -> Result<bool> {
+        let Some((vp, v)) = self.vitals.as_mut() else {
+            return Ok(false);
+        };
+        let situation = Situation {
+            y: self.player.position.y,
+            in_pod: self.player.in_pod,
+            landed,
+            world_settled: true,
+        };
+        let events = v.step(vp, self.params.fixed_dt, &situation);
+        let (time, oxygen, health) = (v.time, v.oxygen, v.health);
+        let mut respawn = false;
+        for e in events {
+            self.vitals_events.push((time, e));
+            respawn |= e == VitalsEvent::MoveToRespawn;
+            if !matches!(e, VitalsEvent::Breath(_)) {
+                self.log(&format!("{e:?} (oxygen {oxygen:.2}, health {health:.1})"));
+            }
+        }
+        if respawn {
+            // `EscapePod.RespawnPlayer`: the pod's player spawn, inside.
+            let spawn = V3::from_f32(self.pod.spawn.position);
+            self.player.teleport(&self.params, spawn, Some(true));
+            self.s.stream(self.player.position)?;
+            self.log("moved to the respawn point");
+        }
+        Ok(respawn)
+    }
+
     /// Looks at trigger `i` and uses it if the hand points at it.
     fn try_use(&mut self, i: usize) -> Option<f64> {
+        if self
+            .vitals
+            .as_ref()
+            .is_some_and(|(_, v)| !v.controls_enabled())
+        {
+            return None;
+        }
         let eye = self.player.position;
         let (yaw, pitch) = look_at(eye, self.at(i));
         let (d, hit) = hand_target(&self.s.world, eye, yaw, pitch)?;
@@ -162,7 +224,7 @@ impl Run<'_, '_> {
 
     /// Walks or swims towards `target` for at most `seconds`; stops when
     /// trigger `use_trigger` was used (true) or when within `near` metres.
-    fn go_to(
+    pub(crate) fn go_to(
         &mut self,
         target: V3,
         seconds: f64,
@@ -213,9 +275,9 @@ impl Run<'_, '_> {
     }
 }
 
-pub fn run(game: &GameData, seed: u64) -> Result<ExitCode> {
-    let started = Instant::now();
-    let mut s = Streamed::new(game, seed)?;
+/// The lifepod for world seed `seed` as in a new game (no hatch used yet)
+/// and the player standing at its spawn.
+pub(crate) fn start<'a, 'g>(s: &'a mut Streamed<'g>, seed: u64) -> Result<Run<'a, 'g>> {
     let assets = s.loader.assets();
     let data = sn_assets::player_data(assets)?;
     let settings = sn_assets::physics_settings(assets)?;
@@ -233,7 +295,6 @@ pub fn run(game: &GameData, seed: u64) -> Result<ExitCode> {
         params.fixed_dt
     );
 
-    // The lifepod as in a new game: no hatch used yet.
     let (point, _) = assets.start_map()?.random_start(seed);
     let rules = s.rules.clone();
     let pod = s.loader.lifepod(&rules, point)?;
@@ -287,11 +348,14 @@ pub fn run(game: &GameData, seed: u64) -> Result<ExitCode> {
     let mut player = Player::new(&params, V3::from_f32(pod.spawn.position), true);
     player.pod_position = Some(V3::from_f32(point));
     let mut r = Run {
-        s: &mut s,
+        s,
         params,
         player,
         pod,
+        pod_point: V3::from_f32(point),
         hatches,
+        vitals: None,
+        vitals_events: Vec::new(),
         steps: 0,
         penetrations: 0,
         crossings: 0,
@@ -307,8 +371,12 @@ pub fn run(game: &GameData, seed: u64) -> Result<ExitCode> {
     }
     r.s.stream(r.player.position)?;
     r.log("spawned");
+    Ok(r)
+}
 
-    // 1. Stand for a second.
+/// Stands for a second, then walks to the exit that ends in the water and
+/// uses it. False if it could not.
+pub(crate) fn leave_pod(r: &mut Run) -> Result<bool> {
     for _ in 0..50 {
         r.step(&Input::default())?;
     }
@@ -320,30 +388,55 @@ pub fn run(game: &GameData, seed: u64) -> Result<ExitCode> {
         "standing; floor {} below the camera",
         floor.map_or("not found".into(), |d| format!("{d:.3} m"))
     ));
-
-    // 2. To the exit that ends in the water, and through it.
     let level = r.params.ocean_level;
     let exit = (0..r.hatches.triggers.len()).find(|&i| {
         let t = &r.hatches.triggers[i];
         t.active && t.exits && t.end.is_some_and(|e| e.y < level)
     });
-    let mut ok = false;
-    if let Some(i) = exit {
-        ok = r.go_to(r.at(i), 10.0, Some(i), 0.0)?;
-        if !ok {
-            r.log(&format!(
-                "could not use {:?}",
-                r.pod.triggers[i].trigger.name
-            ));
-        }
-    } else {
+    let Some(i) = exit else {
         println!("  no active exit ends in the water");
+        return Ok(false);
+    };
+    let ok = r.go_to(r.at(i), 10.0, Some(i), 0.0)?;
+    if !ok {
+        r.log(&format!(
+            "could not use {:?}",
+            r.pod.triggers[i].trigger.name
+        ));
     }
+    Ok(ok)
+}
+
+/// Prints the collision checks and the cost per step. Returns the
+/// penetrations plus the surfaces passed through (0 for a good run).
+pub(crate) fn report(r: &Run) -> usize {
+    let mut us = r.step_us.clone();
+    us.sort_by(f64::total_cmp);
+    println!(
+        "{} steps ({:.1} s simulated); penetrations (gap < {PENETRATION} m): {}; surfaces passed through: {}; smallest gap {:.4} m; cost per step mean {:.1} µs, p99 {:.1} µs",
+        r.steps,
+        r.t(),
+        r.penetrations,
+        r.crossings,
+        r.min_gap,
+        us.iter().sum::<f64>() / us.len().max(1) as f64,
+        percentile(&us, 0.99)
+    );
+    r.penetrations + r.crossings
+}
+
+pub fn run(game: &GameData, seed: u64) -> Result<ExitCode> {
+    let started = Instant::now();
+    let mut s = Streamed::new(game, seed)?;
+    let mut r = start(&mut s, seed)?;
+    let point = r.pod_point;
+
+    // 1–2. Stand, walk to the exit that ends in the water, use it.
+    let mut ok = leave_pod(&mut r)?;
 
     // 3. Swim away for 10 s, back, and board through the nearest entry.
     if ok {
-        let pod = V3::from_f32(point);
-        let out = r.player.position - pod;
+        let out = r.player.position - point;
         let away = V3::new(out.x, 0.0, out.z)
             .normalized()
             .unwrap_or(V3::new(1.0, 0.0, 0.0));
@@ -351,35 +444,9 @@ pub fn run(game: &GameData, seed: u64) -> Result<ExitCode> {
         r.go_to(far, 10.0, None, 0.5)?;
         r.log(&format!(
             "swam away, {:.1} m from the pod",
-            (r.player.position - pod).length()
+            (r.player.position - point).length()
         ));
-        let here = r.player.position;
-        let entry = (0..r.hatches.triggers.len())
-            .filter(|&i| r.hatches.triggers[i].active && r.hatches.triggers[i].enters)
-            .min_by(|&a, &b| {
-                (r.at(a) - here)
-                    .length()
-                    .total_cmp(&(r.at(b) - here).length())
-            });
-        ok = match entry {
-            Some(i) => {
-                // Under it first (it sits under the floor), then up to it.
-                let at = r.at(i);
-                let used = r.go_to(at - V3::Y * 1.5, 30.0, Some(i), 0.5)?
-                    || r.go_to(at, 20.0, Some(i), 0.0)?;
-                if !used {
-                    r.log(&format!(
-                        "could not use {:?}",
-                        r.pod.triggers[i].trigger.name
-                    ));
-                }
-                used
-            }
-            None => {
-                println!("  no active entry");
-                false
-            }
-        };
+        ok = board(&mut r)?;
         for _ in 0..50 {
             r.step(&Input::default())?;
         }
@@ -400,19 +467,7 @@ pub fn run(game: &GameData, seed: u64) -> Result<ExitCode> {
         r.params.swim_forward,
         r.params.swim_forward * (1.0 - r.params.swim_drag * r.params.fixed_dt)
     );
-    let mut us = r.step_us.clone();
-    us.sort_by(f64::total_cmp);
-    println!(
-        "{} steps ({:.1} s simulated); penetrations (gap < {PENETRATION} m): {}; surfaces passed through: {}; smallest gap {:.4} m; cost per step mean {:.1} µs, p99 {:.1} µs",
-        r.steps,
-        r.t(),
-        r.penetrations,
-        r.crossings,
-        r.min_gap,
-        us.iter().sum::<f64>() / us.len().max(1) as f64,
-        percentile(&us, 0.99)
-    );
-    let penetrations = r.penetrations + r.crossings;
+    let penetrations = report(&r);
     crate::swim::print_load_stats(&s);
     let ok = ok && penetrations == 0;
     println!(
@@ -425,4 +480,30 @@ pub fn run(game: &GameData, seed: u64) -> Result<ExitCode> {
     } else {
         ExitCode::FAILURE
     })
+}
+
+/// Swims to the nearest active entry and uses it. False if it could not.
+pub(crate) fn board(r: &mut Run) -> Result<bool> {
+    let here = r.player.position;
+    let entry = (0..r.hatches.triggers.len())
+        .filter(|&i| r.hatches.triggers[i].active && r.hatches.triggers[i].enters)
+        .min_by(|&a, &b| {
+            (r.at(a) - here)
+                .length()
+                .total_cmp(&(r.at(b) - here).length())
+        });
+    let Some(i) = entry else {
+        println!("  no active entry");
+        return Ok(false);
+    };
+    // Under it first (it sits under the floor), then up to it.
+    let at = r.at(i);
+    let used = r.go_to(at - V3::Y * 1.5, 30.0, Some(i), 0.5)? || r.go_to(at, 20.0, Some(i), 0.0)?;
+    if !used {
+        r.log(&format!(
+            "could not use {:?}",
+            r.pod.triggers[i].trigger.name
+        ));
+    }
+    Ok(used)
 }

@@ -8,10 +8,13 @@
 //! thread keeps the `sn-sim` world, reads input and runs the player at the
 //! game's physics step.
 //!
-//! Controls: click to capture the mouse (Esc releases it), mouse to look,
-//! WASD to move, Space up / jump, C down, E or left click to use (the
-//! lifepod's hatches). Our own key layout and mouse sensitivity, not read
-//! from the game.
+//! Oxygen, health, suffocation and respawn (`sn_sim::vitals`, M9c) run
+//! with the player at the same step and fill the HUD (`crate::hud`).
+//!
+//! Controls: click to capture the mouse (Esc releases it), mouse to look
+//! (the game's `MainCameraControl` rule, sensitivity and pitch limits,
+//! `sn_sim::look`), WASD to move, Space up / jump, C down, E or left click
+//! to use (the lifepod's hatches). The key layout is our own.
 
 use std::sync::Mutex;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
@@ -24,13 +27,11 @@ use sn_assets::{BatchBodies, CollisionLoader, HATCH_BODY, LayerRules, SCENE_BODY
 use sn_install::GameData;
 use sn_sim::V3;
 use sn_sim::collide::{Body, World};
+use sn_sim::look::{Look, LookParams};
 use sn_sim::player::{Event, HatchTrigger, Hatches, Input, Player, PlayerParams, hand_target};
+use sn_sim::vitals::{Situation, Vitals, VitalsEvent, VitalsParams, depth_of};
 
-/// Radians per pixel of mouse movement (ours).
-const SENSITIVITY: f64 = 0.0025;
-
-/// Look limit up and down (ours, until `MainCameraControl` is read).
-const MAX_PITCH: f64 = 89.0 * std::f64::consts::PI / 180.0;
+use crate::hud::Hud;
 
 /// The worker gets the player's position again after it moved this far.
 const RESEND_DISTANCE: f64 = 4.0;
@@ -48,6 +49,8 @@ struct TriggerInfo {
 /// What the worker found at start.
 struct Init {
     params: PlayerParams,
+    vitals: VitalsParams,
+    look: LookParams,
     spawn: V3,
     spawn_yaw: f64,
     in_pod: bool,
@@ -73,8 +76,12 @@ enum FromWorker {
 struct State {
     params: PlayerParams,
     player: Player,
-    yaw: f64,
-    pitch: f64,
+    look_params: LookParams,
+    look: Look,
+    vitals_params: VitalsParams,
+    vitals: Vitals,
+    /// Where a respawn puts the player, and whether that is in the pod.
+    respawn: (V3, bool),
     triggers: Vec<TriggerInfo>,
     hatches: Hatches,
 }
@@ -139,6 +146,9 @@ fn worker(
     let data = sn_assets::player_data(loader.assets())?;
     let settings = sn_assets::physics_settings(loader.assets())?;
     let params = sn_assets::player_params(&data, &settings);
+    let code = sn_assets::player_code(&sn_assets::read_assembly(game)?)?;
+    let vitals = sn_assets::vitals_params(&data, &code);
+    let look = sn_assets::look_params(&data, &code);
     let rules = LayerRules::new(&settings, data.player_layer);
     let init = match start.lifepod {
         Some(point) => {
@@ -166,6 +176,8 @@ fn worker(
             };
             Init {
                 params: params.clone(),
+                vitals: vitals.clone(),
+                look,
                 spawn: V3::from_f32(pod.spawn.position),
                 spawn_yaw: f64::from(forward[0]).atan2(f64::from(forward[2])),
                 in_pod: true,
@@ -186,6 +198,8 @@ fn worker(
         }
         None => Init {
             params: params.clone(),
+            vitals: vitals.clone(),
+            look,
             spawn: V3::from_f32(start.position),
             spawn_yaw: 0.0,
             in_pod: false,
@@ -249,6 +263,7 @@ fn show_trigger(world: &mut World, triggers: &[TriggerInfo], i: usize, on: bool)
 
 #[allow(clippy::too_many_arguments)]
 pub fn update(
+    mut hud: ResMut<Hud>,
     time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,
     buttons: Res<ButtonInput<MouseButton>>,
@@ -278,6 +293,19 @@ pub fn update(
                     init.params.ocean_level,
                     init.params.fixed_dt
                 );
+                info!(
+                    "player: oxygen {} (refill {}/s at the surface), suffocation {} s, recovery {} s, health {} (x {} on respawn); look {:.4} degrees per mouse count (sensitivity {}), pitch {} to {} degrees",
+                    init.vitals.oxygen_capacity,
+                    init.vitals.refill_per_second,
+                    init.vitals.suffocation_time,
+                    init.vitals.suffocation_recovery_time,
+                    init.vitals.max_health,
+                    init.vitals.start_health_percent,
+                    init.look.degrees_per_count(),
+                    init.look.mouse_sensitivity,
+                    init.look.minimum_y,
+                    init.look.maximum_y
+                );
                 for (i, b) in init.pod_bodies.into_iter().enumerate() {
                     sim.world.insert(SCENE_BODY | i as u64, b);
                 }
@@ -291,8 +319,11 @@ pub fn update(
                 sim.state = Some(State {
                     params: init.params,
                     player,
-                    yaw: init.spawn_yaw,
-                    pitch: 0.0,
+                    look_params: init.look,
+                    look: Look::facing(init.spawn_yaw),
+                    vitals: Vitals::new(&init.vitals),
+                    vitals_params: init.vitals,
+                    respawn: (init.spawn, init.in_pod),
                     triggers: init.triggers,
                     hatches: init.hatches,
                 });
@@ -346,18 +377,23 @@ pub fn update(
         }
         captured |= cursor.grab_mode != CursorGrabMode::None;
     }
-    if captured {
+    // Dead or respawning: no look, movement or use (`Player.OnKill`).
+    let controls = state.vitals.controls_enabled();
+    if captured && controls {
+        // Bevy's mouse delta is y down, Unity's y up.
         let d = motion.delta;
-        state.yaw += f64::from(d.x) * SENSITIVITY;
-        state.pitch = (state.pitch + f64::from(d.y) * SENSITIVITY).clamp(-MAX_PITCH, MAX_PITCH);
+        state
+            .look
+            .apply(&state.look_params, f64::from(d.x), -f64::from(d.y));
     }
+    let (yaw, pitch) = (state.look.yaw(), state.look.pitch());
 
     // Use (the lifepod's hatches).
     let wants_use =
         keys.just_pressed(KeyCode::KeyE) || (captured && buttons.just_pressed(MouseButton::Left));
-    if wants_use && sim.ready {
+    if wants_use && sim.ready && controls {
         let eye = state.player.position;
-        match hand_target(&sim.world, eye, state.yaw, state.pitch) {
+        match hand_target(&sim.world, eye, yaw, pitch) {
             Some((d, hit)) if hit.body & HATCH_BODY != 0 => {
                 let i = ((hit.body >> 8) & 0xff) as usize;
                 let (name, text) = (
@@ -399,8 +435,8 @@ pub fn update(
             key(KeyCode::Space) - key(KeyCode::KeyC),
             key(KeyCode::KeyW) - key(KeyCode::KeyS),
         ),
-        yaw: state.yaw,
-        pitch: state.pitch,
+        yaw,
+        pitch,
         jump: keys.pressed(KeyCode::Space),
     };
 
@@ -428,13 +464,44 @@ pub fn update(
                     p.velocity.length()
                 );
             }
-            for e in state.player.step(&state.params, &sim.world, &input) {
+            let events = if state.vitals.controls_enabled() {
+                state.player.step(&state.params, &sim.world, &input)
+            } else {
+                Vec::new()
+            };
+            let mut landed = None;
+            for e in events {
                 match e {
-                    Event::Landed | Event::Jumped => {}
+                    Event::Landed { impact_y } => landed = Some(impact_y),
+                    Event::Jumped => {}
                     other => info!(
                         "player: {other:?} at ({:.2}, {:.2}, {:.2})",
                         state.player.position.x, state.player.position.y, state.player.position.z
                     ),
+                }
+            }
+            let situation = Situation {
+                y: state.player.position.y,
+                in_pod: state.player.in_pod,
+                landed,
+                world_settled: sim.ready,
+            };
+            for e in state.vitals.step(&state.vitals_params, dt, &situation) {
+                if matches!(e, VitalsEvent::Breath(_)) {
+                    continue;
+                }
+                info!(
+                    "player: {e:?} (oxygen {:.1}, health {:.1}) at ({:.2}, {:.2}, {:.2})",
+                    state.vitals.oxygen,
+                    state.vitals.health,
+                    state.player.position.x,
+                    state.player.position.y,
+                    state.player.position.z
+                );
+                if e == VitalsEvent::MoveToRespawn {
+                    // `EscapePod.RespawnPlayer` (or the start point).
+                    let (at, in_pod) = state.respawn;
+                    state.player.teleport(&state.params, at, Some(in_pod));
                 }
             }
         }
@@ -453,11 +520,25 @@ pub fn update(
         let _ = sim.to_worker.send(p.to_f32());
     }
 
-    // The camera sits at the player's transform.
+    // The camera sits at the player's transform (the game's camRoot is at
+    // the player's origin and `MainCameraControl.skin` is 0).
     if let Ok(mut t) = camera.single_mut() {
         t.translation = unity_to_bevy(p);
-        t.rotation = camera_rotation(state.yaw, state.pitch);
+        t.rotation = camera_rotation(state.look.yaw(), state.look.pitch());
     }
+
+    let v = &state.vitals;
+    *hud = Hud {
+        shown: true,
+        oxygen: v.oxygen,
+        capacity: state.vitals_params.oxygen_capacity,
+        seconds_left: v.seconds_left(),
+        health: v.health,
+        max_health: state.vitals_params.max_health,
+        depth: depth_of(&state.vitals_params, p.y),
+        overlay: v.overlay(),
+        dead: !v.controls_enabled(),
+    };
 }
 
 #[cfg(test)]

@@ -7,9 +7,9 @@ use std::collections::{BTreeMap, HashSet};
 
 use sn_unity::json::{Json, parse_json};
 use sn_unity::{
-    EntTechEntry, GroundMotor, LiveMixin, LiveMixinData, Oxygen, PHYSICS_MANAGER, PdaData,
-    PhysicsManager, PlayerController, PlayerFields, RIGIDBODY, Rigidbody, TAG_MANAGER,
-    TIME_MANAGER, TagManager, TimeManager, UnderwaterMotor, parse_ent_tech_data,
+    EntTechEntry, GroundMotor, LiveMixin, LiveMixinData, MainCameraControl, Oxygen,
+    PHYSICS_MANAGER, PdaData, PhysicsManager, PlayerController, PlayerFields, RIGIDBODY, Rigidbody,
+    TAG_MANAGER, TIME_MANAGER, TagManager, TimeManager, UnderwaterMotor, parse_ent_tech_data,
 };
 
 use crate::prefab::PrefabNode;
@@ -287,6 +287,14 @@ pub struct PlayerData {
     pub rigidbody: Rigidbody,
     /// `Ocean.GetOceanLevel`: the y of the `Ocean` object.
     pub ocean_level: f32,
+    /// How far the player's `Oxygen` object is above the `Player` object
+    /// (`OxygenManager` tests the source's height, M9c).
+    pub oxygen_above_player: f32,
+    /// The mouse look (M9c).
+    pub camera: MainCameraControl,
+    /// Where `MainCameraControl`'s object sits relative to the player's
+    /// in the scene, and its node's name (M9c, logged).
+    pub camera_node: (String, [f32; 3]),
 }
 
 fn one(assets: &Assets, scene: &crate::Scene, class: &str) -> Result<ObjectRef> {
@@ -346,6 +354,7 @@ pub fn player_data(assets: &Assets) -> Result<PlayerData> {
         .behaviour_node(assets, &player_ref)?
         .ok_or("Player: object not in the main scene")?;
     let player_layer = scene.roots[r].nodes[n].layer;
+    let player_world = scene.roots[r].world(n).position;
     let mut rigidbody = None;
     for c in assets.node_components(&scene.roots[r].nodes[n])? {
         let (info, data) = c.data()?;
@@ -368,6 +377,32 @@ pub fn player_data(assets: &Assets) -> Result<PlayerData> {
     )
     .map_err(|e| format!("PlayerController: {e}"))?;
 
+    let node_offset = |o: &ObjectRef, what: &str| -> Result<(String, [f32; 3])> {
+        let (rr, nn) = scene
+            .behaviour_node(assets, o)?
+            .ok_or_else(|| format!("{what}: object not in the main scene"))?;
+        let p = scene.roots[rr].world(nn).position;
+        Ok((
+            scene.roots[rr].nodes[nn].name.clone(),
+            [
+                p[0] - player_world[0],
+                p[1] - player_world[1],
+                p[2] - player_world[2],
+            ],
+        ))
+    };
+    let mut oxygen_above_player = None;
+    for o in scene.behaviours(assets, "Oxygen") {
+        if Oxygen::parse(&read(&o)?, big_endian).is_ok_and(|ox| ox.is_player) {
+            oxygen_above_player = Some(node_offset(&o, "Oxygen")?.1[1]);
+        }
+    }
+    let oxygen_above_player = oxygen_above_player.ok_or("main scene: no Oxygen with isPlayer")?;
+    let camera_ref = one(assets, &scene, "MainCameraControl")?;
+    let camera = MainCameraControl::parse(&read(&camera_ref)?, big_endian)
+        .map_err(|e| format!("MainCameraControl: {e}"))?;
+    let camera_node = node_offset(&camera_ref, "MainCameraControl")?;
+
     let pda_ref = resolve(player.pda_data, "pdaData")?;
     if assets.script_class(&pda_ref).as_deref() != Some("PDAData") {
         return Err("Player.pdaData is not a PDAData".into());
@@ -385,6 +420,9 @@ pub fn player_data(assets: &Assets) -> Result<PlayerData> {
         player_layer,
         rigidbody,
         ocean_level,
+        oxygen_above_player,
+        camera,
+        camera_node,
         pda,
     })
 }

@@ -130,6 +130,13 @@ impl Builder {
         self.row(Table::CONSTANT, vec![0x08, parent, b]);
     }
 
+    /// A `float32` constant of a field (by token).
+    pub fn constant_r4(&mut self, field: u32, value: f32) {
+        let b = self.blob(&value.to_le_bytes());
+        let parent = coded(HAS_CONSTANT, Table::FIELD, field & 0x00FF_FFFF);
+        self.row(Table::CONSTANT, vec![0x0C, parent, b]);
+    }
+
     fn method_sig(&mut self, params: u8) -> u32 {
         let mut sig = vec![0x20, params, 0x01];
         sig.extend(std::iter::repeat_n(0x08, params as usize));
@@ -334,6 +341,9 @@ impl Il {
     }
     pub fn stsfld(self, t: u32) -> Il {
         self.op_token(0x80, t)
+    }
+    pub fn stfld(self, t: u32) -> Il {
+        self.op_token(0x7D, t)
     }
     pub fn dup(self) -> Il {
         self.op(0x25)

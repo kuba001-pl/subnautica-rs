@@ -401,7 +401,7 @@ understand it, then write our own.
 | **P1** ✅ | **Done 2026-10-10** (MODLOG; facts in `docs/formats/dotnet.md`): all 21,383 method bodies of the game's DLL decode; 793 `TechType` names, every TechData entry named; 7 menus, 159 nodes (fabricator 100), every craft node has TechData; TechData's 17 defaults. The scheme reader also needed `newarr`/`dup`/`stelem.ref` (C# `params` arrays) and `ret`: still straight-line, no branches or locals. Plan as written: `sn-dotnet` (new crate, layer 1, pure): our own reader of .NET PE files: metadata tables (`TypeDef`, `Field`, `MethodDef`, `Constant`), string heaps, method bodies; `TechType` names from the enum's constants; the `CraftTree` menus by walking the IL of its tree methods (only the patterns used there: `ldstr`, `ldc.i4`, `newobj CraftNode`, `call AddNode`). Unit tests on synthetic bytes we encode ourselves (no game files as fixtures). **Stop and ask** if the IL needs more than a simple pattern reader. | Synthetic round-trip tests; real-data test: number of `TechType` names logged and every TechData entry has a name; the fabricator tree's node count logged; every craft node's tech type has a TechData entry. |
 | **M9a** ✅ | **Done 2026-10-10** (MODLOG; facts in `docs/formats/gameplay.md` § Collision; plan below). `sn-sim::collide` passes 12 unit tests. `sn-inspect swim` reaches the Kelp Forest from the lifepod for seeds 1–5: 0 penetrations, smallest gap ≥ 5.1 mm, 1,860–3,693 contacts, about 21–31 µs mean and 60–120 µs p99 per step. The client doesn't use it yet (M9b). Plan as written: Collision: a kinematic capsule swept against triangles. Terrain from the LOD 0 meshes already built around the camera; objects from their prefabs' colliders (box, sphere, capsule, mesh; read in `sn-unity`). Our own sweep in `sn-sim`, no physics engine yet (§ 3.3's physics decision waits for rigid bodies: floating lifepod, dropped items). | Unit tests of the sweep on synthetic meshes (slide, corner, thin wall); a scripted swim lifepod → Kelp Forest logs 0 penetrations and the contacts; cost per frame logged. |
 | **M9b** ✅ | **Done 2026-10-10** (MODLOG; facts in `docs/formats/gameplay.md` § Player movement; plan and "as built" below). `sn-inspect walk`: pod → hatch → 10 s swim (71 m) → back in, 0 penetrations, 0 surfaces passed through; speeds 3.5 walking and 7.22 swimming against 3.5 and 7.6 read (7.22 is 7.6 after one step of drag 2.5). Layer 19 hits all layers but 9; every loaded collider is on layer 0 (none dropped yet). 46 pod and module colliders; placeholder spawns 10–216 per run. Colliders are one-sided, as PhysX's (source read; winding measured). The client plays as the player by default. Keyboard and mouse play are not tested by the agent. Plan as written: Player: first-person camera at eye height, swimming, walking with gravity in the lifepod and above water, the lifepod hatch. Speeds from the player's serialized fields (P0). The fly camera stays as `--free-cam`. Collision gaps left by M9a that matter here: (1) read the physics layer collision matrix (`PhysicsManager`) and collide only with the layers the player's capsule hits; (2) colliders of the lifepod's spawned modules (fabricator, radio, …) and of what placeholders spawn (M7h), so walking inside the pod hits them; (3) find out whether the game's terrain and mesh colliders block from one side or both, and match it. | Movement rules unit-tested; speeds logged next to the values read; scripted run lifepod → water → lifepod (positions logged); the layer matrix logged and the colliders kept/dropped by layer counted; lifepod module and placeholder colliders counted in the run; one- vs two-sided recorded in `docs/formats/gameplay.md` with how it was checked. |
-| **M9c** | Oxygen, health, depth: drain under water, refill at the surface and in the lifepod, suffocation → respawn in the lifepod, with the game's numbers. A minimal HUD of our own (bars and numbers; the game's UI sprites later). Also the mouse look as the game's (`MainCameraControl`: sensitivity, pitch limits, smoothing, read from its serialized fields and settings defaults), replacing our own values from M9b. | Rules unit-tested; a scripted dive logs oxygen over time against the values read; the look's values logged next to the ones read, its limits unit-tested. |
+| **M9c** ✅ | **Done 2026-10-10** (MODLOG; facts in `docs/formats/gameplay.md` § Oxygen, health and death and § Mouse look; plan and "as built" below). `sn-sim::vitals` and `look` pass 14 unit tests; `sn-inspect dive` seeds 1–5: oxygen 0 at 42.26 s under water, death 8.02 s later, respawn in the pod 5.02 s, restore 1.02 s, controls 1.02 s; oxygen within one breath of the read rate; refill 0.56–0.74 s from surfacing; 0 penetrations. Look: 0.1125° per mouse count (sensitivity 0.15 from the DLL), pitch ±87° (scene; the code says ±80). The HUD and the look in play are not tested by the agent. Plan as written: Oxygen, health, depth: drain under water, refill at the surface and in the lifepod, suffocation → respawn in the lifepod, with the game's numbers. A minimal HUD of our own (bars and numbers; the game's UI sprites later). Also the mouse look as the game's (`MainCameraControl`: sensitivity, pitch limits, smoothing, read from its serialized fields and settings defaults), replacing our own values from M9b. | Rules unit-tested; a scripted dive logs oxygen over time against the values read; the look's values logged next to the ones read, its limits unit-tested. |
 | **M10** | Multiplayer as planned (Phase D): `sn-protocol`, `sn-net`, `sn-server`, handshake with the build check, join, player sync. From here solo play also runs against an in-process server (§ 3.1, principle 5), so items and crafting below are written server-authoritative once. | M10's own row. |
 | **M9d** | Pick up and inventory: `Pickupable` objects within reach, outcrops break into their resource (`BreakableResource`), inventory of the game's size, item sizes from TechData; picked objects gone for every player (server state keyed by entity id and slot seed). | Inventory rules unit-tested; a scripted pick-up logs item counts; the object's drawn count −1 on both clients. |
 | **M9e** | Crafting at the lifepod's fabricator: the menu from P1's tree, recipes and times from TechData, starting blueprints from `PDAData`; item names from the language files. | Crafting rules unit-tested on synthetic recipes; one real recipe crafted in a scripted run (counts before/after logged); menu node count equal to P1's. |
@@ -547,7 +547,8 @@ only); no animation of the body or the camera (bob, step smoothing);
 PhysX's solver replaced by our slide + velocity clipping; tanks, fins and
 tools don't change speeds yet (no inventory until M9d); the lifepod
 does not float or move (M7f4); mouse sensitivity and look limits our
-own until `MainCameraControl` is read (planned in M9c). Where the rest
+own until `MainCameraControl` is read (planned in M9c; done, see M9c's
+"as built"). Where the rest
 is planned: the cinematic, body and camera animation in "After Phase E"
 item 3; tanks and fins in item 1; the physics solver in "Deferred, not
 dropped".
@@ -578,6 +579,106 @@ dropped".
   (blocks movement, seen by the hand, or both) and gain `cast` for the
   hand. The client streams collision bodies on a worker thread (4 batches
   in about 2 s) and steps the player at the game's 50 Hz.
+
+#### M9c plan (written 2026-10-10)
+
+**What the game does** (read in the decompiled code; each fact goes to
+`docs/formats/gameplay.md` § Oxygen, health and death and § Mouse look,
+marked):
+- **Under water** (`Player.UpdateIsUnderwater`, not the swimming flag of
+  M9b): never in the lifepod, else the player's transform below the ocean
+  level. **Can breathe** (`CanBreathe`, no sub or vehicle yet): not under
+  water.
+- **Depth class** (`GetDepthClass`, no `CrushDamage` on the player):
+  depth = max(0, level − y); > 200 m crush, > 100 m unsafe, > 0.1 m safe,
+  else surface. **Breaths** (`Player.Update`): while it cannot breathe and
+  stats are not frozen, each time game time crosses a multiple of the
+  breath period (`ScalarMonitor.DidChangeInterval`) it removes period ×
+  cost: periods 3 / 2.25 / 1.5 s (safe / unsafe / crush; 99999 at the
+  surface), cost × 1 / 1.5 / 2, so 1, 1.5 and 2 units per second.
+- **Refill** (`OxygenManager.Update`, every frame): + 30 units/s
+  (`oxygenUnitsPerSecondSurface`, a private field initialised in the
+  constructor) when a source is above level − 1 m or the player can
+  breathe, and no cinematic plays. Capacity: the player's `Oxygen` (45).
+- **Suffocation** (`SuffocationUpdate`, a `Sequence`): when oxygen is
+  exactly 0 (`Utils.NearlyEqual(x, 0)` is true only for 0) it runs from 1
+  to 0 over `suffocationTime` (8 s) and then kills; when oxygen comes back
+  it runs back to 1 over `suffocationRecoveryTime` (4 s). The screen
+  overlay is 1 − t.
+- **Health** (`LiveMixin`): `maxHealth` from `LiveMixinData` (100);
+  `TakeDamage` × `DamageSystem.damageMultiplier` (1); death at 0
+  (`Kill`). The only damage without creatures: landing on the walking
+  motor out of water (`Player.OnLand`): (−min(0, impact y + 10)) × 2.5,
+  impact = the velocity before landing. `CrushDamageUpdate` is never
+  called for the player.
+- **Death and respawn** (`OnKill`, `ResetPlayerOnDeath`): input, the
+  controller and mouse look off, stats frozen; after 5 s the player goes
+  to the respawn point (the lifepod's `playerSpawn`, in the pod); after
+  1 s and the world settled, health = max × `startHealthPercent`
+  (`ResetHealth`, then the `OnRespawn` handler), oxygen full, suffocation
+  reset; 1 s later stats unfrozen, input back.
+- **Mouse look** (`MainCameraControl.OnUpdate`, `GameInputSystem`): the
+  mouse delta × `MouseSensitivity` × 1.5 × 0.5 degrees, added to yaw and
+  pitch (pitch up positive in the game, unbounded yaw), pitch clamped to
+  `minimumY`…`maximumY` (serialized on the main scene's
+  `MainCameraControl`). No smoothing of the look itself (the game's
+  smoothing is camera bob, tilt and impact bob, item 3 of "After Phase
+  E"). Default sensitivity: the `const` `defaultMouseSensitivity`;
+  invert off.
+
+**Steps:**
+1. **Data (headless).** `sn-unity`: `MainCameraControl` (every field, to
+  the last byte), `LiveMixin` gains `startHealthPercent`. `sn-dotnet`:
+  read a `const` float (`Constant` table) and a field initialiser from a
+  constructor (only `ldarg.0; ldc.r4; stfld`). `sn-assets`: player data
+  gains the look limits, the oxygen source's height above the player and
+  the two code values; `sn-inspect player` prints them.
+2. **`sn-sim::vitals` (pure).** State (oxygen, health, suffocation,
+  breath clock, death phase), parameters (all from step 1; the
+  constants inside method bodies, such as the breath periods, are the
+  game's code ported, named after their method), one step per physics
+  step. Unit tests: no drain in the pod or at the surface; 1 / 1.5 / 2
+  units per second by depth; refill at 30/s; suffocation after exactly
+  the read time, recovery when oxygen comes back; fall damage at the
+  formula; death → respawn timeline. `sn-sim::look`: the mouse rule,
+  with its limit unit-tested.
+3. **`sn-inspect dive`:** out of the pod, a dive to the seabed held
+  until death, respawn in the pod, then a dive cut short by surfacing.
+  Logs oxygen each second next to the value the read numbers predict,
+  the time to empty, to death, to respawn, the refill time.
+4. **Client.** Vitals run with the player; the game's look replaces
+  ours; a HUD of our own (Bevy UI): oxygen and health bars with numbers,
+  depth, the suffocation overlay (black, alpha 1 − t). Logs deaths and
+  respawns.
+
+**Not 1:1 yet (planned here):** stats step at the physics step
+(50 Hz), the game's at every frame (a breath or the death can land up to
+20 ms apart); the breath clock starts at 0 when the game starts (the
+game's `Time.time` includes loading, so the phase of the first breath
+differs); script order of `Player` and `OxygenManager` in one frame is
+assumed (Player first); no rebreather, tanks, subs, vehicles, water
+parks or game modes other than Survival (each comes with its item); no
+damage sounds or screen effects, no death animation or "you died"
+message (text waits for the language files, M9e); the player's own
+settings (sensitivity, invert) are not read, the defaults are used.
+
+**As built (2026-10-10), where it differs from the plan:**
+- **The camera's place.** `MainCameraControl` sits on `camRoot`, at the
+  player's origin, and its `skin` is 0, so M9b's camera at the player's
+  transform is the game's at rest. Whether the pivot of looking up
+  (`cameraUPTransform`) moves the eye is not measured.
+- **The look.** The game has no look smoothing (the plan's row said
+  "smoothing"); its pitch limits are ±87° in the scene against ±80° in
+  the code's initialisers.
+- **In the pod after death.** The body is moved into the pod at 5 s;
+  there `OxygenManager` refills while the stats are still frozen, so the
+  suffocation recovery starts before the restore. The game does the
+  same (the refill is not frozen).
+- **Shared script pieces.** `sn-inspect walk`'s setup, pod exit, boarding
+  and report are shared with `dive`; both scripts run the vitals the
+  same way the client does (no movement, use or look while dead). The
+  dive swims 8 m clear of the pod before going up: the exits end under
+  it, and on seed 5 the seabed led back under it.
 
 **After Phase E** (order to be agreed then; each gets its own plan with
 steps before it starts):

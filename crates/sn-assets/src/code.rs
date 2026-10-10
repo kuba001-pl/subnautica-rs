@@ -1,6 +1,7 @@
 //! What the game keeps only in its code, read from the player's
 //! `Assembly-CSharp.dll` with `sn-dotnet` (Phase E, P1): `TechType`
-//! names, the crafting menus, `TechData`'s defaults. See
+//! names, the crafting menus, `TechData`'s defaults; and (M9c) two of the
+//! player's numbers that are not serialized ([`PlayerCode`]). See
 //! `docs/formats/dotnet.md`.
 
 use std::collections::HashMap;
@@ -125,5 +126,38 @@ pub fn game_code(bytes: &[u8]) -> Result<GameCode> {
         tree_actions: sn_dotnet::enum_values(&asm, "", "TreeAction").map_err(e)?,
         craft_trees: sn_dotnet::craft_trees(&asm).map_err(e)?,
         tech_defaults: TechDefaults::from_fields(&sn_dotnet::tech_data_defaults(&asm).map_err(e)?)?,
+    })
+}
+
+/// The player's numbers that live in the code, not in the scene (M9c).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PlayerCode {
+    /// `OxygenManager.oxygenUnitsPerSecondSurface`: a private field set
+    /// by its initialiser.
+    pub oxygen_per_second_surface: f32,
+    /// `GameInputSystem.defaultMouseSensitivity` (a `const`): the mouse
+    /// sensitivity before the player changes it in the options.
+    pub default_mouse_sensitivity: f32,
+}
+
+/// Reads [`PlayerCode`] from the game's code assembly.
+pub fn player_code(bytes: &[u8]) -> Result<PlayerCode> {
+    let e = |e: sn_dotnet::Error| format!("{GAME_ASSEMBLY}: {e}");
+    let asm = Assembly::parse(bytes).map_err(e)?;
+    Ok(PlayerCode {
+        oxygen_per_second_surface: sn_dotnet::field_initializer_f32(
+            &asm,
+            "",
+            "OxygenManager",
+            "oxygenUnitsPerSecondSurface",
+        )
+        .map_err(e)?,
+        default_mouse_sensitivity: sn_dotnet::const_f32(
+            &asm,
+            "",
+            "GameInputSystem",
+            "defaultMouseSensitivity",
+        )
+        .map_err(e)?,
     })
 }

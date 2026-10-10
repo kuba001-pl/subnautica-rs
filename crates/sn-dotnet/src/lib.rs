@@ -19,8 +19,8 @@ use std::fmt;
 
 pub use assembly::{Assembly, MemberRefInfo};
 pub use game::{
-    CraftNode, CraftTree, DefaultValue, craft_trees, enum_values, tech_data_defaults,
-    tech_type_names,
+    CraftNode, CraftTree, DefaultValue, const_f32, craft_trees, enum_values, field_initializer_f32,
+    tech_data_defaults, tech_type_names,
 };
 pub use il::{Instr, Operand, decode, opcode_name};
 pub use tables::{Table, TableId};

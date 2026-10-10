@@ -131,8 +131,13 @@ pub fn player(game: &GameData) -> Result<ExitCode> {
     );
     println!("Oxygen (isPlayer):");
     println!("  oxygenCapacity:             {}", d.oxygen.oxygen_capacity);
+    println!("  object above the player by: {} m", d.oxygen_above_player);
     println!("LiveMixin:");
     println!("  health:                     {}", d.live_mixin.health);
+    println!(
+        "  startHealthPercent:         {}",
+        d.live_mixin.start_health_percent
+    );
     let l = &d.live_mixin_data;
     println!("  data.maxHealth:             {}", l.max_health);
     println!("  data.minDamageForSound:     {}", l.min_damage_for_sound);
@@ -189,6 +194,40 @@ pub fn player(game: &GameData) -> Result<ExitCode> {
     println!(
         "UnderwaterMotor: fastSwimMode {} playerSpeedModifier {}",
         d.underwater_motor.fast_swim_mode, d.underwater_motor.player_speed_modifier
+    );
+    let cam = &d.camera;
+    println!(
+        "MainCameraControl (on {:?}, {:?} from the player):",
+        d.camera_node.0, d.camera_node.1
+    );
+    println!(
+        "  minimumY {} maximumY {} (pitch limits, degrees); minimumX {} maximumX {} (unused)",
+        cam.minimum_y, cam.maximum_y, cam.minimum_x, cam.maximum_x
+    );
+    println!(
+        "  mouseLookEnabled {} skin {} camPDAZOffset {} stepAmount {} cameraTiltMod {} maxViewModelRotation {} maxViewModelMovement {}",
+        cam.mouse_look_enabled,
+        cam.skin,
+        cam.cam_pda_z_offset,
+        cam.step_amount,
+        cam.camera_tilt_mod,
+        cam.max_view_model_rotation,
+        cam.max_view_model_movement
+    );
+    let code = sn_assets::player_code(&sn_assets::read_assembly(game)?)?;
+    println!("From the game's code ({}):", sn_assets::GAME_ASSEMBLY);
+    println!(
+        "  OxygenManager.oxygenUnitsPerSecondSurface: {} (initialiser)",
+        code.oxygen_per_second_surface
+    );
+    println!(
+        "  GameInputSystem.defaultMouseSensitivity:   {} (const)",
+        code.default_mouse_sensitivity
+    );
+    let look = sn_assets::look_params(&d, &code);
+    println!(
+        "  mouse look: {} degrees per count (sensitivity × 1.5 × 0.5)",
+        look.degrees_per_count()
     );
     let c = &d.controller;
     println!("PlayerController:");

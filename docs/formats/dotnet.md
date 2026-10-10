@@ -99,6 +99,17 @@ to the console only).
   Workbench 13, SeamothUpgrades 22, MapRoom 5, Centrifuge 3,
   CyclopsFabricator 9. Every craft node's tech type has a TechData entry.
 
+## Single values: `const` fields and field initialisers (M9c)
+
+- **Confirmed (metadata):** a `const float` is a `Literal` field with a
+  `Constant` row of element type `R4` (0x0C) and 4 bytes. Read for
+  `GameInputSystem.defaultMouseSensitivity`: 0.15.
+- **Confirmed (IL):** a private instance field with an initialiser
+  (`private float oxygenUnitsPerSecondSurface = 30f;`) is set at the start
+  of `.ctor` as `ldarg.0; ldc.r4 30; stfld`, before the base constructor
+  call. The reader accepts only that pattern, exactly once. Read for
+  `OxygenManager.oxygenUnitsPerSecondSurface`: 30.
+
 ## `TechData` defaults
 
 - **Confirmed (IL):** `TechData`'s static constructor sets

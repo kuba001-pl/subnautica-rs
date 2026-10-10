@@ -53,6 +53,7 @@ impl Instr {
     }
 }
 
+pub const LDARG_0: u16 = 0x02;
 pub const LDNULL: u16 = 0x14;
 pub const LDC_R4: u16 = 0x22;
 pub const DUP: u16 = 0x25;
@@ -62,6 +63,7 @@ pub const RET: u16 = 0x2A;
 pub const CALLVIRT: u16 = 0x6F;
 pub const LDSTR: u16 = 0x72;
 pub const NEWOBJ: u16 = 0x73;
+pub const STFLD: u16 = 0x7D;
 pub const LDSFLD: u16 = 0x7E;
 pub const STSFLD: u16 = 0x80;
 pub const NEWARR: u16 = 0x8D;

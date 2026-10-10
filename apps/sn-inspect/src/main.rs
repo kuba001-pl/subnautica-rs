@@ -5,6 +5,7 @@ mod biomes;
 mod code;
 mod collision;
 mod density;
+mod dive;
 mod entities;
 mod game;
 mod gameplay;
@@ -109,6 +110,10 @@ Commands:
                          in the lifepod, walk to the hatch, leave, swim
                          away 10 s and back, enter; positions, motor
                          changes, speeds next to the values read
+  dive [--seed <N>]      M9c: oxygen, suffocation and respawn: out of the
+                         lifepod, to the seabed until the player dies,
+                         respawn in the pod, a dive cut short by surfacing;
+                         oxygen each second next to the values read
   scene --startup        The scenes the game loads at start and what the
                          spawned ones draw in a new game
   terrain-materials      Terrain block types → materials → textures, checked
@@ -230,6 +235,7 @@ fn run(mut args: Vec<String>) -> Result<ExitCode> {
         ["scene", "--startup"] => scene::startup(&game),
         ["scene", "--lifepod"] => scene::lifepod(&game, seed),
         ["walk"] => walk::run(&game, seed),
+        ["dive"] => dive::run(&game, seed),
         ["swim"] => swim::run(&game, seed, 600.0),
         ["swim", "--seconds", s] => swim::run(
             &game,

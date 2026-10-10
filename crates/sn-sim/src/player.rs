@@ -84,7 +84,11 @@ pub enum Motor {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Event {
     MotorChanged(Motor),
-    Landed,
+    /// The walking motor landed; `impact_y` is the vertical velocity
+    /// before the step (`GroundMotor.previousVelocity`, `OnLand`).
+    Landed {
+        impact_y: f64,
+    },
     Jumped,
     /// Left the escape pod's 15 m radius without a hatch.
     LeftPodRadius,
@@ -598,7 +602,7 @@ impl Player {
             self.position.y += step;
         } else if !self.grounded && on_ground {
             self.grounded = true;
-            events.push(Event::Landed);
+            events.push(Event::Landed { impact_y: before.y });
         }
     }
 

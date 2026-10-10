@@ -28,12 +28,14 @@ use std::sync::{Arc, Mutex};
 use sn_install::GameData;
 use sn_unity::{Bundle, BundleDirectory, ObjectInfo, PPtr, SerializedFile};
 
-pub use code::{GAME_ASSEMBLY, GameCode, TechDefaults, game_code, read_assembly};
+pub use code::{
+    GAME_ASSEMBLY, GameCode, PlayerCode, TechDefaults, game_code, player_code, read_assembly,
+};
 pub use collision::{ColliderCounts, ColliderMeshes, PrefabCollider, WorldCollider};
 pub use collision_world::{
     BatchBodies, BodyChanges, COLLISION_REACH, CollisionLoader, HATCH_BODY, LayerRules, Lifepod,
     LifepodTrigger, LoaderStats, OBJECTS_BODY, PlacedCollider, SCENE_BODY, SPAWNED, SceneCollider,
-    SlotTables, bodies, body_kind, player_params,
+    SlotTables, bodies, body_kind, look_params, player_params, vitals_params,
 };
 pub use gameplay::{
     Ingredient, PhysicsSettings, PlayerData, TechData, TechEntry, ent_tech_data, parse_tech_data,
