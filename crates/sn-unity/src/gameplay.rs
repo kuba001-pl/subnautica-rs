@@ -9,6 +9,7 @@
 
 use crate::objects::{MonoBehaviourHeader, PPtr};
 use crate::reader::Reader;
+use crate::water_surface::AnimationCurve;
 use crate::{ErrorKind, Result};
 
 fn fields<'a>(data: &'a [u8], big_endian: bool) -> Result<Reader<'a>> {
@@ -522,6 +523,311 @@ impl UnderwaterMotor {
     }
 }
 
+/// `GroundMotor`: walking (Unity's `CharacterMotor` script, adapted). The
+/// `PlayerMotor` fields, then its own serialized classes in declaration
+/// order (`[NonSerialized]` and private fields are not stored).
+#[derive(Clone, Debug, PartialEq)]
+pub struct GroundMotor {
+    pub motor: PlayerMotor,
+    /// `movement`.
+    pub max_forward_speed: f32,
+    pub max_sideways_speed: f32,
+    pub max_backwards_speed: f32,
+    /// Speed factor by slope angle in degrees (negative: downhill).
+    pub slope_speed_multiplier: AnimationCurve,
+    pub max_fall_speed: f32,
+    /// `jumping`.
+    pub jump_enabled: bool,
+    pub jump_base_height: f32,
+    pub jump_extra_height: f32,
+    pub jump_perp_amount: f32,
+    pub jump_steep_perp_amount: f32,
+    /// `movingPlatform`.
+    pub moving_platform_enabled: bool,
+    pub movement_transfer: i32,
+    /// `sliding`.
+    pub sliding_enabled: bool,
+    pub sliding_speed: f32,
+    pub sliding_sideways_control: f32,
+    pub sliding_speed_control: f32,
+    /// `controllerSetup`.
+    pub step_offset: f32,
+    pub slope_limit: f32,
+    /// `floatingModeSetup` (a debug mode).
+    pub floating_gravity: f32,
+    pub floating_air_acceleration: f32,
+    pub floating_max_fall_speed: f32,
+    pub floating_jump_height: f32,
+    pub min_wind_speed_to_affect_movement: f32,
+    pub percent_wind_dampening_on_ground: f32,
+    pub percent_wind_dampening_in_air: f32,
+    pub fly_cheat_enabled: bool,
+}
+
+impl GroundMotor {
+    pub fn parse(data: &[u8], big_endian: bool) -> Result<GroundMotor> {
+        let mut r = fields(data, big_endian)?;
+        let motor = PlayerMotor::read(&mut r)?;
+        PPtr::read(&mut r)?; // controller
+        let m = GroundMotor {
+            motor,
+            max_forward_speed: r.f32()?,
+            max_sideways_speed: r.f32()?,
+            max_backwards_speed: r.f32()?,
+            slope_speed_multiplier: AnimationCurve::read(&mut r)?,
+            max_fall_speed: r.f32()?,
+            jump_enabled: r.bool4()?,
+            jump_base_height: r.f32()?,
+            jump_extra_height: r.f32()?,
+            jump_perp_amount: r.f32()?,
+            jump_steep_perp_amount: r.f32()?,
+            moving_platform_enabled: r.bool4()?,
+            movement_transfer: r.i32()?,
+            sliding_enabled: r.bool4()?,
+            sliding_speed: r.f32()?,
+            sliding_sideways_control: r.f32()?,
+            sliding_speed_control: r.f32()?,
+            step_offset: r.f32()?,
+            slope_limit: r.f32()?,
+            floating_gravity: r.f32()?,
+            floating_air_acceleration: r.f32()?,
+            floating_max_fall_speed: r.f32()?,
+            floating_jump_height: r.f32()?,
+            min_wind_speed_to_affect_movement: r.f32()?,
+            percent_wind_dampening_on_ground: r.f32()?,
+            percent_wind_dampening_in_air: r.f32()?,
+            fly_cheat_enabled: r.bool4()?,
+        };
+        at_end(&r, data)?;
+        Ok(m)
+    }
+}
+
+/// `UseableDiveHatch` (a `HandTarget`, which stores no fields): where the
+/// hatch puts the player when leaving (`outsideExit`) and entering
+/// (`insideSpawn`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct UseableDiveHatch {
+    pub outside_exit: PPtr,
+    pub inside_spawn: PPtr,
+    pub ignore_object: PPtr,
+    pub exit_search_distance: f32,
+    pub enter_custom_text: String,
+    pub exit_custom_text: String,
+    pub enter_custom_goal_text: String,
+    pub custom_goal_with_loot_only: bool,
+    pub enter_only: bool,
+    pub is_for_escape_pod: bool,
+    pub is_for_water_park: bool,
+    pub secure_inventory: bool,
+    pub enter_cinematic_controller: PPtr,
+    pub exit_cinematic_controller: PPtr,
+}
+
+impl UseableDiveHatch {
+    pub fn parse(data: &[u8], big_endian: bool) -> Result<UseableDiveHatch> {
+        let mut r = fields(data, big_endian)?;
+        let h = UseableDiveHatch {
+            outside_exit: PPtr::read(&mut r)?,
+            inside_spawn: PPtr::read(&mut r)?,
+            ignore_object: PPtr::read(&mut r)?,
+            exit_search_distance: r.f32()?,
+            enter_custom_text: r.aligned_string()?,
+            exit_custom_text: r.aligned_string()?,
+            enter_custom_goal_text: r.aligned_string()?,
+            custom_goal_with_loot_only: r.bool4()?,
+            enter_only: r.bool4()?,
+            is_for_escape_pod: r.bool4()?,
+            is_for_water_park: r.bool4()?,
+            secure_inventory: r.bool4()?,
+            enter_cinematic_controller: PPtr::read(&mut r)?,
+            exit_cinematic_controller: PPtr::read(&mut r)?,
+        };
+        at_end(&r, data)?;
+        Ok(h)
+    }
+}
+
+/// One persistent listener of a serialized `UnityEvent` (2019.4 layout:
+/// target, method name, mode, arguments, call state).
+#[derive(Clone, Debug, PartialEq)]
+pub struct PersistentCall {
+    pub target: PPtr,
+    pub method_name: String,
+    pub mode: i32,
+    pub object_argument: PPtr,
+    pub object_argument_type: String,
+    pub int_argument: i32,
+    pub float_argument: f32,
+    pub string_argument: String,
+    pub bool_argument: bool,
+    pub call_state: i32,
+}
+
+/// A serialized `UnityEvent`'s persistent calls.
+fn unity_event(r: &mut Reader) -> Result<Vec<PersistentCall>> {
+    let n = r.count(40)?;
+    let mut calls = Vec::with_capacity(n);
+    for _ in 0..n {
+        calls.push(PersistentCall {
+            target: PPtr::read(r)?,
+            method_name: r.aligned_string()?,
+            mode: r.i32()?,
+            object_argument: PPtr::read(r)?,
+            object_argument_type: r.aligned_string()?,
+            int_argument: r.i32()?,
+            float_argument: r.f32()?,
+            string_argument: r.aligned_string()?,
+            bool_argument: r.bool4()?,
+            call_state: r.i32()?,
+        });
+    }
+    Ok(calls)
+}
+
+/// `CinematicModeTrigger` (`CinematicModeTriggerBase` fields, then
+/// `handText`): starts a cinematic when used by hand (`trigger_type` 0) or
+/// when the player enters or leaves its trigger volume (1).
+#[derive(Clone, Debug, PartialEq)]
+pub struct CinematicModeTrigger {
+    pub trigger_type: i32,
+    /// 0 on enter, 1 on exit.
+    pub volume_trigger_type: i32,
+    pub show_icon_on_hand_hover: bool,
+    pub cinematic_controller: PPtr,
+    pub secure_inventory: bool,
+    pub restore_active_quick_slot: bool,
+    pub on_cinematic_start: Vec<PersistentCall>,
+    pub on_cinematic_end: Vec<PersistentCall>,
+    pub debug: bool,
+    pub hand_text: String,
+}
+
+impl CinematicModeTrigger {
+    pub fn parse(data: &[u8], big_endian: bool) -> Result<CinematicModeTrigger> {
+        let mut r = fields(data, big_endian)?;
+        let t = CinematicModeTrigger {
+            trigger_type: r.i32()?,
+            volume_trigger_type: r.i32()?,
+            show_icon_on_hand_hover: r.bool4()?,
+            cinematic_controller: PPtr::read(&mut r)?,
+            secure_inventory: r.bool4()?,
+            restore_active_quick_slot: r.bool4()?,
+            on_cinematic_start: unity_event(&mut r)?,
+            on_cinematic_end: unity_event(&mut r)?,
+            debug: r.bool4()?,
+            hand_text: r.aligned_string()?,
+        };
+        at_end(&r, data)?;
+        Ok(t)
+    }
+}
+
+/// `PlayerCinematicController`: moves the player along an animated
+/// transform; at the end, to `endTransform` if set (else the player stays
+/// where the animation left it).
+#[derive(Clone, Debug, PartialEq)]
+pub struct PlayerCinematicController {
+    pub animated_transform: PPtr,
+    pub inform_game_object: PPtr,
+    pub end_transform: PPtr,
+    pub only_use_end_transform_in_vr: bool,
+    pub play_in_vr: bool,
+    pub interrupt_auto_move: bool,
+    pub player_view_animation_name: String,
+    pub player_view_interpolate_anim_param: String,
+    pub anim_param: String,
+    pub interpolate_anim_param: String,
+    pub interpolation_time: f32,
+    pub interpolation_time_out: f32,
+    pub receivers_anim_param: String,
+    pub anim_param_receivers: Vec<PPtr>,
+    pub interpolate_during_animation: bool,
+    pub debug: bool,
+    pub animator: PPtr,
+    pub sound: PPtr,
+    pub enforce_cinematic_mode_end: bool,
+}
+
+impl PlayerCinematicController {
+    pub fn parse(data: &[u8], big_endian: bool) -> Result<PlayerCinematicController> {
+        let mut r = fields(data, big_endian)?;
+        let animated_transform = PPtr::read(&mut r)?;
+        let inform_game_object = PPtr::read(&mut r)?;
+        let end_transform = PPtr::read(&mut r)?;
+        let only_use_end_transform_in_vr = r.bool4()?;
+        let play_in_vr = r.bool4()?;
+        let interrupt_auto_move = r.bool4()?;
+        let player_view_animation_name = r.aligned_string()?;
+        let player_view_interpolate_anim_param = r.aligned_string()?;
+        let anim_param = r.aligned_string()?;
+        let interpolate_anim_param = r.aligned_string()?;
+        let interpolation_time = r.f32()?;
+        let interpolation_time_out = r.f32()?;
+        let receivers_anim_param = r.aligned_string()?;
+        let n = r.count(12)?;
+        let mut anim_param_receivers = Vec::with_capacity(n);
+        for _ in 0..n {
+            anim_param_receivers.push(PPtr::read(&mut r)?);
+        }
+        let c = PlayerCinematicController {
+            animated_transform,
+            inform_game_object,
+            end_transform,
+            only_use_end_transform_in_vr,
+            play_in_vr,
+            interrupt_auto_move,
+            player_view_animation_name,
+            player_view_interpolate_anim_param,
+            anim_param,
+            interpolate_anim_param,
+            interpolation_time,
+            interpolation_time_out,
+            receivers_anim_param,
+            anim_param_receivers,
+            interpolate_during_animation: r.bool4()?,
+            debug: r.bool4()?,
+            animator: PPtr::read(&mut r)?,
+            sound: PPtr::read(&mut r)?,
+            enforce_cinematic_mode_end: r.bool4()?,
+        };
+        at_end(&r, data)?;
+        Ok(c)
+    }
+}
+
+/// `EscapePodFirstUseCinematicsController`: which lifepod hatch triggers
+/// are the first-use ones (13 object references).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EscapePodFirstUse {
+    pub escape_pod: PPtr,
+    pub escape_pod_rigidbody: PPtr,
+    pub bottom: PPtr,
+    pub bottom_first_use: PPtr,
+    pub top: PPtr,
+    pub top_first_use: PPtr,
+    /// The creatures its first-use cinematics spawn and where.
+    pub creatures: [PPtr; 7],
+}
+
+impl EscapePodFirstUse {
+    pub fn parse(data: &[u8], big_endian: bool) -> Result<EscapePodFirstUse> {
+        let mut r = fields(data, big_endian)?;
+        let mut p = || PPtr::read(&mut r);
+        let e = EscapePodFirstUse {
+            escape_pod: p()?,
+            escape_pod_rigidbody: p()?,
+            bottom: p()?,
+            bottom_first_use: p()?,
+            top: p()?,
+            top_first_use: p()?,
+            creatures: [p()?, p()?, p()?, p()?, p()?, p()?, p()?],
+        };
+        at_end(&r, data)?;
+        Ok(e)
+    }
+}
+
 /// `PlayerController`: switches motors and sets their speeds per motor
 /// mode (swim, Seaglide, walk/run).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -930,6 +1236,113 @@ mod tests {
             w.f32(v as f32);
         }
         w.bool4(false).f32(18.0);
+    }
+
+    #[test]
+    fn ground_motor() {
+        let mut w = W::behaviour();
+        motor(&mut w);
+        w.pptr(0, 9); // controller
+        w.f32(10.0).f32(10.0).f32(10.0);
+        // slopeSpeedMultiplier: two keys, then pre/post infinity and rotation order.
+        w.i32(2);
+        for (t, v) in [(-90.0, 1.0), (90.0, 0.0)] {
+            w.f32(t).f32(v).f32(0.0).f32(0.0).i32(0).f32(0.33).f32(0.33);
+        }
+        w.i32(2).i32(2).i32(4);
+        w.f32(50.0); // maxFallSpeed
+        w.bool4(true).f32(1.0).f32(4.1).f32(0.0).f32(0.5);
+        w.bool4(true).i32(2);
+        w.bool4(true).f32(7.0).f32(1.0).f32(0.2);
+        w.f32(0.4).f32(60.0);
+        w.f32(8.0).f32(10.0).f32(3.0).f32(2.0);
+        w.f32(15.0).f32(0.25).f32(0.5).bool4(false);
+        let g = GroundMotor::parse(&w.0, false).unwrap();
+        assert_eq!(g.motor.jump_height, 18.0);
+        assert_eq!(g.slope_speed_multiplier.keys.len(), 2);
+        assert_eq!((g.max_fall_speed, g.sliding_speed), (50.0, 7.0));
+        assert_eq!((g.step_offset, g.slope_limit), (0.4, 60.0));
+        assert_eq!(g.movement_transfer, 2);
+        assert!(g.jump_enabled && !g.fly_cheat_enabled);
+        robust(&w.0, |d| GroundMotor::parse(d, false));
+    }
+
+    #[test]
+    fn hatch_and_cinematic_scripts() {
+        let mut w = W::behaviour();
+        w.pptr(0, 1).pptr(0, 2).pptr(0, 0).f32(2.0);
+        w.string("Enter").string("Exit").string("");
+        w.bool4(false)
+            .bool4(false)
+            .bool4(true)
+            .bool4(false)
+            .bool4(true);
+        w.pptr(0, 3).pptr(0, 4);
+        let h = UseableDiveHatch::parse(&w.0, false).unwrap();
+        assert_eq!((h.outside_exit.path_id, h.inside_spawn.path_id), (1, 2));
+        assert!(h.is_for_escape_pod && h.secure_inventory && !h.enter_only);
+        assert_eq!(h.exit_custom_text, "Exit");
+        robust(&w.0, |d| UseableDiveHatch::parse(d, false));
+
+        let call = |w: &mut W, method: &str| {
+            w.pptr(0, 7).string(method).i32(1);
+            w.pptr(0, 0)
+                .string("")
+                .i32(0)
+                .f32(0.0)
+                .string("")
+                .bool4(false)
+                .i32(2);
+        };
+        let mut w = W::behaviour();
+        w.i32(0)
+            .i32(0)
+            .bool4(true)
+            .pptr(0, 5)
+            .bool4(false)
+            .bool4(true);
+        w.i32(1);
+        call(&mut w, "CinematicEnter");
+        w.i32(2);
+        call(&mut w, "CinematicExit");
+        call(&mut w, "Other");
+        w.bool4(false).string("ExitEscapePod");
+        let t = CinematicModeTrigger::parse(&w.0, false).unwrap();
+        assert_eq!(t.cinematic_controller.path_id, 5);
+        assert_eq!(t.on_cinematic_start[0].method_name, "CinematicEnter");
+        assert_eq!(t.on_cinematic_end.len(), 2);
+        assert_eq!(t.on_cinematic_end[0].call_state, 2);
+        assert_eq!(t.hand_text, "ExitEscapePod");
+        robust(&w.0, |d| CinematicModeTrigger::parse(d, false));
+
+        let mut w = W::behaviour();
+        w.pptr(0, 1).pptr(0, 0).pptr(0, 6);
+        w.bool4(true).bool4(false).bool4(true);
+        for s in ["view", "", "cinematicMode", ""] {
+            w.string(s);
+        }
+        w.f32(0.25).f32(0.5).string("");
+        w.i32(1).pptr(0, 8);
+        w.bool4(false)
+            .bool4(false)
+            .pptr(0, 9)
+            .pptr(0, 0)
+            .bool4(true);
+        let c = PlayerCinematicController::parse(&w.0, false).unwrap();
+        assert_eq!(c.end_transform.path_id, 6);
+        assert!(c.only_use_end_transform_in_vr && c.enforce_cinematic_mode_end);
+        assert_eq!(c.anim_param, "cinematicMode");
+        assert_eq!(c.anim_param_receivers.len(), 1);
+        robust(&w.0, |d| PlayerCinematicController::parse(d, false));
+
+        let mut w = W::behaviour();
+        for i in 1..=13 {
+            w.pptr(0, i);
+        }
+        let f = EscapePodFirstUse::parse(&w.0, false).unwrap();
+        assert_eq!((f.bottom.path_id, f.top_first_use.path_id), (3, 6));
+        assert_eq!(f.creatures[6].path_id, 13);
+        robust(&w.0, |d| EscapePodFirstUse::parse(d, false));
     }
 
     #[test]

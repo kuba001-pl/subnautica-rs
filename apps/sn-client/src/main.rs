@@ -1,12 +1,14 @@
-//! `sn-client`: the desktop client. For now it streams the terrain around the
-//! camera from the player's install (with levels of detail) and lets you fly
-//! around it.
+//! `sn-client`: the desktop client. It streams the world around the camera
+//! from the player's install (terrain with levels of detail, objects, the
+//! scenes) and puts you in it as the player (M9b), or lets you fly around
+//! with `--free-cam`.
 
 mod effects;
 mod game_light;
 mod grass_look;
 mod object_look;
 mod objects;
+mod player;
 mod sky;
 mod sky_dome;
 mod stars;
@@ -86,13 +88,18 @@ Usage: sn-client [--game-dir <PATH>] [--start <X> <Y> <Z>] [--look <X> <Y> <Z>]
                  ranges scale with it
   --benchmark    once the start area is loaded, render FRAMES frames without
                  vsync, log frame times, save out/client-benchmark.png, exit
+  --free-cam     a fly camera instead of the player (also with --benchmark
+                 and --flythrough)
   --flythrough   once loaded, fly in a straight line to X Y Z (Unity world
                  coordinates) at --speed (default 40 m/s) without vsync, then
                  log frame times, memory and streaming latency, save
                  out/client-flythrough.png and exit
 
-Controls: right mouse (hold) or M (toggle) to look around, WASD to move,
-Q/E down/up, Shift to go fast, mouse wheel to change speed.
+Controls (player): click to capture the mouse, Esc to release it; mouse to
+look, WASD to move, Space up / jump, C down, E or left click to use (the
+lifepod's hatches).
+Controls (--free-cam): right mouse (hold) or M (toggle) to look around, WASD
+to move, Q/E down/up, Shift to go fast, mouse wheel to change speed.
 ";
 
 struct Args {
@@ -125,6 +132,8 @@ struct Args {
     gpu_timings: bool,
     /// Game clock, hours.
     time: f32,
+    /// `--free-cam`: the fly camera instead of the player.
+    free_cam: bool,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -156,6 +165,7 @@ fn parse_args() -> Result<Args, String> {
         water_quality: WaterQuality::High,
         gpu_timings: false,
         time: sky::NEW_GAME_HOURS,
+        free_cam: false,
     };
     let raw: Vec<String> = std::env::args().skip(1).collect();
     let mut it = raw.iter();
@@ -225,6 +235,7 @@ fn parse_args() -> Result<Args, String> {
                 }
             }
             "--gpu-timings" => args.gpu_timings = true,
+            "--free-cam" => args.free_cam = true,
             "--time" => args.time = number(it.next(), "--time")?,
             "--fog-unit" => args.fog_unit = number(it.next(), "--fog-unit")?,
             "--color-grading" => {
@@ -467,6 +478,7 @@ fn main() -> AppExit {
     };
 
     let measuring = args.benchmark.is_some() || args.flythrough.is_some();
+    let play = !measuring && !args.free_cam;
     let present_mode = if measuring {
         PresentMode::AutoNoVsync
     } else {
@@ -512,6 +524,7 @@ fn main() -> AppExit {
                 .unwrap_or(args.start + Vec3::new(60.0, -30.0, 60.0)),
         ),
         fog_end: args.view,
+        free_camera: !play,
     })
     .add_systems(Startup, setup)
     .add_systems(
@@ -585,6 +598,28 @@ fn main() -> AppExit {
             }
         }
     }
+    if play {
+        let lifepod = args
+            .scenes
+            .as_ref()
+            .and_then(|o| o.lifepod)
+            .filter(|_| !args.start_given);
+        match GameData::locate(args.game_dir.clone()) {
+            Ok(game) => {
+                let start = player::Start {
+                    lifepod,
+                    position: args.start.to_array(),
+                    slot_seed: args.slot_seed,
+                };
+                app.insert_resource(player::PlayerSim::start(game, start))
+                    .add_systems(Update, player::update.before(terrain::stream));
+            }
+            Err(e) => {
+                eprintln!("error: {e}");
+                return AppExit::error();
+            }
+        }
+    }
     if let Some(frames) = args.benchmark {
         app.insert_resource(Measurement::new(Mode::Benchmark { frames }))
             .add_systems(Update, measure);
@@ -629,6 +664,8 @@ struct Setup {
     start: Vec3,
     look: Vec3,
     fog_end: f32,
+    /// The fly camera (else the player moves the camera).
+    free_camera: bool,
 }
 
 /// Whether the game's water fog replaces the plain distance fog, and
@@ -653,7 +690,7 @@ fn setup(
     ));
     // Measurements keep the camera where they put it (mouse or keyboard
     // input in the window would otherwise move it).
-    if measuring.is_none() {
+    if measuring.is_none() && settings.free_camera {
         camera.insert(FreeCamera {
             walk_speed: 15.0,
             run_speed: 80.0,

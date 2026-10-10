@@ -8,5 +8,6 @@
 
 pub mod collide;
 mod math;
+pub mod player;
 
 pub use math::V3;

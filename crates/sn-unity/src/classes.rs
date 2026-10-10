@@ -6,8 +6,9 @@ pub fn class_name(class_id: i32) -> Option<&'static str> {
     Some(match class_id {
         1 => "GameObject",
         4 => "Transform",
+        5 => "TimeManager",
         6 => "LevelGameManager",
-        8 => "TimeManager",
+        8 => "Behaviour",
         11 => "AudioManager",
         13 => "InputManager",
         20 => "Camera",

@@ -1180,7 +1180,7 @@ fn lifepod_colliders() {
     for root in &scene.roots {
         let (list, c) = assets.prefab_colliders(root, &mut meshes).unwrap();
         counts.add(&c);
-        for col in &list {
+        for col in list.iter().filter(|c| !c.trigger) {
             let w = col.world(&root.nodes[0].local);
             let (kind, finite) = match &w {
                 sn_assets::WorldCollider::Box { center, half, .. } => {
@@ -1203,7 +1203,9 @@ fn lifepod_colliders() {
         }
     }
     eprintln!("lifepod colliders: {counts:?}; box, sphere, capsule, mesh: {kinds:?}");
-    // 40 boxes kept; 10 triggers, 1 disabled, 3 on inactive nodes left out.
+    // 54 colliders: 40 solid boxes; 5 enabled triggers on active nodes
+    // (returned marked, not solid); 5 disabled and 4 on inactive nodes
+    // left out (checked in that order).
     assert_eq!(kinds, [40, 0, 0, 0]);
     assert_eq!(
         (
@@ -1212,10 +1214,59 @@ fn lifepod_colliders() {
             counts.disabled,
             counts.inactive
         ),
-        (40, 10, 1, 3)
+        (40, 5, 5, 4)
     );
     assert_eq!(
         (counts.layout_errors, counts.mesh_errors, counts.null_mesh),
         (0, 0, 0)
     );
+}
+
+#[test]
+#[ignore = "needs SUBNAUTICA_DIR pointing at a Subnautica install"]
+fn player_movement_data() {
+    let Some(dir) = std::env::var_os("SUBNAUTICA_DIR") else {
+        eprintln!("SUBNAUTICA_DIR not set; skipping");
+        return;
+    };
+    let game = GameData::locate(Some(PathBuf::from(dir))).unwrap();
+    let assets = Assets::index(&game).unwrap();
+    let d = sn_assets::player_data(&assets).unwrap();
+    let g = &d.ground_motor;
+    assert_eq!((g.step_offset, g.slope_limit), (0.4, 60.0));
+    assert_eq!((g.max_fall_speed, g.sliding_speed), (50.0, 7.0));
+    assert!(!d.rigidbody.use_gravity && d.rigidbody.drag == 2.5);
+    assert_eq!((d.player_layer, d.ocean_level), (19, 0.0));
+    let s = sn_assets::physics_settings(&assets).unwrap();
+    assert_eq!(s.time.fixed_timestep, 0.02);
+    assert!(!s.physics.queries_hit_backfaces);
+    assert_eq!(s.tags.layer("Player"), Some(19));
+    assert_eq!(s.tags.layer("OnlyVehicle"), Some(9));
+    let missed: Vec<u32> = (0..32).filter(|&l| !s.physics.collides(19, l)).collect();
+    assert_eq!(missed, vec![9]);
+
+    // The lifepod's hand triggers: 8, each with an end point; in a new
+    // game the two first-use ones are active and their normal ones not.
+    let mut scene = assets.scene("escapepod").unwrap();
+    scene.spawn_lightmapped_prefab();
+    scene.place_escape_pod(&assets, [0.0; 3]).unwrap();
+    let pairs = scene
+        .init_lifepod_hatches(&assets, false, false)
+        .unwrap()
+        .unwrap();
+    let triggers = scene.cinematic_triggers(&assets).unwrap();
+    assert_eq!(triggers.len(), 8);
+    assert!(triggers.iter().all(|t| t.hand && t.end.is_some()));
+    assert_eq!(triggers.iter().filter(|t| t.enters).count(), 2);
+    assert_eq!(triggers.iter().filter(|t| t.exits).count(), 6);
+    assert_eq!(triggers.iter().filter(|t| t.end_only_in_vr).count(), 4);
+    for (normal, first) in pairs {
+        let active = |(r, n): (usize, usize)| scene.roots[r].nodes[n].active;
+        assert!(!active(normal) && active(first));
+    }
+    // The dive hatch object of the pod is not in use (inactive).
+    let hatches = scene.dive_hatches(&assets).unwrap();
+    assert_eq!(hatches.len(), 1);
+    let (r, n) = hatches[0].node;
+    assert!(!scene.roots[r].nodes[n].active);
 }

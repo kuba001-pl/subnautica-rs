@@ -2,6 +2,94 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-10 — M9b: the player (walk, swim, the lifepod's hatches)
+
+**What:** fourth step of Phase E (`docs/DESIGN.md` § 4.3, "M9b plan" and
+"as built").
+- `sn-unity`: parsers for `GroundMotor`'s own fields, `UseableDiveHatch`,
+  `CinematicModeTrigger` (with Unity's serialized event lists),
+  `PlayerCinematicController` and `EscapePodFirstUse`; new `physics`
+  module: `PhysicsManager` (with the layer collision matrix),
+  `TimeManager`, `TagManager`. Each is checked against the exact byte
+  length on real data. Synthetic tests check them on every truncation.
+- `sn-assets`: `player_data` gains the walking motor, the rigid body, the
+  player's layer and the ocean level; `physics_settings`; scene functions
+  for the pod's triggers, dive hatches and the first-use swap; new
+  `collision_world`: the batch loader moved out of `sn-inspect swim`
+  (terrain, objects, placeholder spawns, layer rules), the lifepod's
+  colliders and triggers, and the player's parameters. Mesh colliders
+  with a mirroring scale swap their winding back (PhysX `flipsNormal`).
+- `sn-sim`: `player` (state, parameters, input; one fixed step: motor
+  choice at the game's water levels, swimming, walking through our own
+  character controller with step offset, slope limit and ground check,
+  jumping, the hand target, the hatch triggers). `collide`: triangles are
+  now one-sided, bodies carry groups, plus `cast` and `crossings`.
+- `sn-inspect`: `walk` (the scripted run) and `prefab --winding`;
+  `player` prints the new data; `swim` uses the shared loader and counts
+  surfaces passed through.
+- `sn-client`: the player is the default (`--free-cam` keeps the fly
+  camera). It has a first-person camera at eye height and WASD / Space /
+  C / mouse controls. E or a left click uses a hatch trigger. Collision
+  streams on a worker thread.
+- Real-data test `player_movement_data`.
+
+**Findings** (`docs/formats/gameplay.md` § Player movement):
+- Layer 19 ("Player") collides with every layer but 9 ("OnlyVehicle"),
+  and every collider loaded so far is on layer 0.
+- The fixed time step is 0.02 s.
+- PhysX 4.1 (Unity 2019.4.36f1) treats mesh colliders as one-sided in
+  contacts, sweeps and rays. I read its BSD-3 source to check; nothing
+  was copied.
+- The pod is entered and left through 8 cinematic triggers. Its dive
+  hatch is inactive.
+
+**Dead ends:**
+- The first controller stopped at a 0.3 m step's face. It never lifted
+  the capsule, although a 0.4 m step offset should clear it. With that
+  fixed, it then climbed a 0.6 m step. Both were traced in the
+  controller's three passes (up, across, down) and fixed; the unit test
+  covers 0.3 m (climbs) and 0.6 m (doesn't).
+- The real hatch is not `UseableDiveHatch`, as the plan assumed. That
+  node is inactive in the pod; the cinematic triggers do the job.
+- `sn-client --benchmark` turns the player off (measuring runs keep the
+  fixed camera), so the client check is a normal launch stopped after
+  45 s.
+- Winding rays from above deep terrain batches start inside rock and see
+  back faces (up to 3,150 of 3,300 in one batch). The check uses shallow
+  batches only, plus the `sn-mesh` orientation test.
+
+**Verified (2026-10-10):**
+- `cargo test --workspace` passes without the game, including `sn-sim`'s
+  24 tests. They cover:
+  - swim speed capped and drag stopping;
+  - surface damping and the motor switch at the game's water levels;
+  - walking on a floor, a 0.3 m step but not 0.6 m, sliding on 70°,
+    jump height;
+  - hand reach, and the hatch;
+  - a one-sided wall that blocks from the front only.
+
+  `sn-unity` adds tests for the new parsers, and `sn-assets` for the
+  mirrored winding.
+- `SUBNAUTICA_DIR=… cargo test -p sn-assets --test real_data -- --ignored
+  player_movement_data player_and_pda_data lifepod_colliders` passes.
+- `cargo run --release -p sn-inspect -- walk`: RUN OK. Leaves the pod at
+  1.7 s through `bot_out_trigger_first` (first-use swap logged), swims
+  71 m away in 10 s and boards through `bot_in_trigger` at 21.8 s. 1,138
+  steps, 0 penetrations, 0 surfaces passed through, smallest gap 5 mm,
+  5.9 µs mean per step. Speeds: walking max 3.50 (read 3.5); swimming
+  7.22 (7.6 read, 7.22 after one step of drag).
+- `sn-inspect swim --seed 1…5`: all arrive in Kelp Forest, 0
+  penetrations, 0 surfaces passed through, smallest gap 5.1–5.2 mm,
+  13–19 µs mean per step.
+- `sn-inspect prefab --winding`: terrain 17,066 front / 1 back; mesh
+  colliders 6,012 front / 152 back.
+- `sn-client` (normal launch, 45 s, no input): the player is ready 4.3 s
+  after start, collision for 4 batches in 2.0 s, and it stands on the pod
+  floor at (−126.79, 1.83, −49.75), grounded, as in the headless walk.
+- **Not tested:** playing with keyboard and mouse in the client (the
+  agent can't give input); the look limits and mouse sensitivity are our
+  own.
+
 ## 2026-10-10 — M9a: collision (capsule sweep, terrain and object colliders, scripted swim)
 
 **What:** third step of Phase E (`docs/DESIGN.md` § 4.3, "M9a plan").

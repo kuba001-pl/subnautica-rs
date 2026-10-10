@@ -10,6 +10,7 @@ publish.workspace = true
 [dependencies]
 sn-dotnet.workspace = true
 sn-install.workspace = true
+sn-sim.workspace = true
 sn-terrain.workspace = true
 sn-unity.workspace = true
 sn-world.workspace = true

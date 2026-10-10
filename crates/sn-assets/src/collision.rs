@@ -1,8 +1,9 @@
 //! The colliders of a prefab, in world space when placed (M9a). Read with
 //! `sn_unity::Collider`; see `docs/formats/gameplay.md` § Colliders.
 //!
-//! Kept: enabled, non-trigger colliders on active nodes (active in the
-//! hierarchy). Unity's scaling rules (*hypothesis*, from Unity's
+//! Kept: enabled colliders on active nodes (active in the hierarchy).
+//! Triggers are returned marked (`trigger`): the player passes through
+//! them, but the hand's ray can hit them (a hatch). Unity's scaling rules (*hypothesis*, from Unity's
 //! documentation, not checked in the game): a box scales per axis; a
 //! sphere's radius by the largest |scale|; a capsule's radius by the larger
 //! |scale| of its two cross axes and its height by its own axis; a mesh
@@ -31,6 +32,8 @@ pub struct PrefabCollider {
     pub in_prefab: Transform,
     /// The node's physics layer.
     pub layer: u32,
+    /// A trigger: no collision, only queries.
+    pub trigger: bool,
     pub shape: ColliderShape,
     /// For mesh colliders: the mesh's triangles (empty when the mesh could
     /// not be read; counted in [`ColliderCounts::mesh_errors`]).
@@ -40,6 +43,7 @@ pub struct PrefabCollider {
 /// What [`Assets::prefab_colliders`] found and left out.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ColliderCounts {
+    /// Solid colliders kept (triggers are counted in `triggers`).
     pub kept: usize,
     pub triggers: usize,
     pub disabled: usize,
@@ -125,12 +129,21 @@ impl PrefabCollider {
                     radius,
                 }
             }
-            ColliderShape::Mesh { .. } => WorldCollider::Triangles(
-                self.mesh
-                    .chunks_exact(3)
-                    .map(|p| [0, 1, 2].map(|i| t.transform_point(p[i])))
-                    .collect(),
-            ),
+            ColliderShape::Mesh { .. } => {
+                // A mirroring scale turns the faces inside out; PhysX swaps
+                // the winding back (`flipsNormal`), so the front stays out.
+                let order = if t.scale.iter().product::<f32>() < 0.0 {
+                    [0, 2, 1]
+                } else {
+                    [0, 1, 2]
+                };
+                WorldCollider::Triangles(
+                    self.mesh
+                        .chunks_exact(3)
+                        .map(|p| order.map(|i| t.transform_point(p[i])))
+                        .collect(),
+                )
+            }
         }
     }
 }
@@ -158,10 +171,6 @@ impl Assets<'_> {
                         continue;
                     }
                 };
-                if col.is_trigger {
-                    counts.triggers += 1;
-                    continue;
-                }
                 if !col.enabled {
                     counts.disabled += 1;
                     continue;
@@ -190,12 +199,17 @@ impl Assets<'_> {
                         },
                     }
                 }
-                counts.kept += 1;
-                *counts.layers.entry(node.layer).or_default() += 1;
+                if col.is_trigger {
+                    counts.triggers += 1;
+                } else {
+                    counts.kept += 1;
+                    *counts.layers.entry(node.layer).or_default() += 1;
+                }
                 out.push(PrefabCollider {
                     node: i,
                     in_prefab: node.in_prefab,
                     layer: node.layer,
+                    trigger: col.is_trigger,
                     shape: col.shape,
                     mesh,
                 });
@@ -237,6 +251,7 @@ mod tests {
             node: 0,
             in_prefab,
             layer: 0,
+            trigger: false,
             shape,
             mesh: Arc::new(vec![[0.0; 3], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]),
         }
@@ -303,6 +318,19 @@ mod tests {
             Transform::default(),
         );
         let WorldCollider::Triangles(t) = mesh.world(&at) else {
+            panic!()
+        };
+        // The scale mirrors (one negative axis): the winding is swapped
+        // back, so the triangle still faces where the mesh's did.
+        assert_eq!(
+            t,
+            vec![[[10.0, 0.0, 0.0], [10.0, 3.0, 0.0], [12.0, 0.0, 0.0]]]
+        );
+        let plain = Transform {
+            scale: [2.0, 3.0, 4.0],
+            ..at
+        };
+        let WorldCollider::Triangles(t) = mesh.world(&plain) else {
             panic!()
         };
         assert_eq!(

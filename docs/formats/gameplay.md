@@ -112,9 +112,9 @@ are not `[NonSerialized]`, `static`, `const` or properties):
   - `UnderwaterMotor` and `GroundMotor` (`PlayerMotor` fields): gravity 12,
     drag (swim 2.5 / 2), accelerations (water 20, ground 45, air 5), jump
     height 2.
-- Not read yet: `GroundMotor`'s own fields (`CharacterMotorMovement` and
-  others), `OxygenManager`, `Survival` (food and water), the `Player`
-  fields after `guiHand`.
+- `GroundMotor`'s own fields: § Player movement (M9b).
+- Not read yet: `OxygenManager`, `Survival` (food and water), the
+  `Player` fields after `guiHand`.
 
 ## Colliders (on placed prefabs)
 
@@ -156,8 +156,73 @@ are not `[NonSerialized]`, `static`, `const` or properties):
   colliders scale. A box scales per axis. A sphere's radius scales by the
   largest |scale|. A capsule's radius scales by the larger |scale| of its
   two cross axes, and its height by its own axis.
-- Not read yet: the physics layer collision matrix (which layers the
-  player's capsule hits). Every kept collider seen so far is on layer 0.
+- The physics layer collision matrix and which side of a triangle
+  blocks: § Player movement (M9b).
+
+## Player movement (M9b)
+
+- **Confirmed (parser, real-data test `player_movement_data`, `sn-inspect
+  player`):** `GroundMotor`'s own fields (Unity's `CharacterMotor`
+  classes `CharacterMotorMovement`, `…Jumping`, `…MovingPlatform`,
+  `…Sliding`, then the controller's): step offset 0.4 m, slope limit 60°,
+  max fall speed 50, sliding speed 7 (sideways control 1, speed control
+  0.2), jumping enabled with base height 1 and extra height 4.1, moving
+  platform transfer 2. Its own max speeds (10) are overwritten by
+  `PlayerController.SetMotorMode` (*confirmed*, decompiled code), so the
+  walk speeds are `PlayerController`'s (3.5 / 5).
+- **Confirmed (same test):** the player's `Rigidbody`: mass 70, drag 2.5,
+  no gravity (`UnderwaterMotor` applies its own), rotation frozen
+  (constraints 112), continuous collision detection. Player layer 19
+  ("Player"). The ocean level is the `Ocean` object's y: 0.
+- **Confirmed (`globalgamemanagers`, same test):** `TimeManager` fixed
+  time step 0.02 s (our player steps at 50 Hz); `PhysicsManager` gravity
+  −9.8 (the motors use their own 12), `queriesHitBackfaces` false. The
+  layer collision matrix: layer 19 collides with every layer except 9
+  ("OnlyVehicle"). `TagManager`'s sorting layers are a name and an id
+  each (the editor-only `locked` flag is not stored).
+- **Counted (`sn-inspect walk`, `sn-inspect swim` seeds 1–5):** every
+  solid collider loaded in these runs (110–137 per run, counted once per
+  prefab) is on layer 0, so the layer filter drops none of them yet. The
+  terrain's colliders are on layer 30, which the player collides with.
+- **Confirmed (real-data test):** the lifepod has 8 cinematic hand
+  triggers (`CinematicModeTrigger` + `PlayerCinematicController`), each
+  with an end point: 2 enter the pod (`BoardEscapePod`), 6 leave it.
+  4 end points are marked VR-only (`onlyUseEndTransformInVr`); we use
+  them anyway, because without the animation the end point is the only
+  place we have. In a new game the two first-use triggers are active and
+  their normal twins not (`EscapePodFirstUse`); the first use swaps them.
+  The pod's `UseableDiveHatch` sits on an inactive node: the triggers,
+  not the dive hatch, move the player in and out.
+- **Confirmed (PhysX source, read only; Unity 2019.4.36f1, from
+  `globalgamemanagers`, ships PhysX 4.1): triangle-mesh colliders are
+  one-sided.** The front is the side `(b − a) × (c − a)` points to, on
+  the mesh's own vertex order (Unity's front face). Three paths do this:
+  - Rigid-body contacts (the swimming capsule) skip a triangle when the
+    capsule's centre is behind its plane. That holds both for PCM
+    contacts (`GuPCMContactConvexCommon.cpp`, "Backface culling"), which
+    are Unity's default, and for the older path
+    (`GuContactCapsuleMesh.cpp`).
+  - Mesh sweeps cull a triangle the sweep moves along the normal of,
+    unless the mesh is double-sided or the query asks for both sides
+    (`GuSweepsMesh.cpp`). The character controller (walking) sweeps with
+    the default flags, both-sides commented out
+    (`CctCharacterController.cpp`).
+  - Raycasts skip back faces because `queriesHitBackfaces` is false.
+
+  A mirroring scale flips the winding back (`flipsNormal`).
+  **Hypothesis:** Unity doesn't mark mesh colliders double-sided (2019.4
+  has no such option) and hands PhysX the indices unchanged. This is not
+  checked in the engine binary. Our `sn-sim` follows these rules.
+- **Measured (`sn-inspect prefab --winding`):** our triangles face the
+  same way. Terrain, rays straight down over 4 shallow batches: 17,066
+  first hits on a front face, 1 on a back face. Mesh colliders of the 14
+  placed prefabs that have them, rays from outside along 6 axes: 6,012
+  front, 152 back. 147 of the backs are `Precursor_Aquarium_Sand_Drift`,
+  an open sheet seen from below. Over deep batches, rays from above start
+  inside rock and see the surface from behind, so only shallow batches
+  count. Our terrain mesher's faces point out of the rock (`sn-mesh` test
+  `sphere_is_closed_oriented_and_faces_out`). `voxel_to_world` only
+  translates, so terrain fronts face the water, as the game's do.
 
 ## Pick-ups and outcrops
 

@@ -7,8 +7,9 @@ use std::collections::{BTreeMap, HashSet};
 
 use sn_unity::json::{Json, parse_json};
 use sn_unity::{
-    EntTechEntry, LiveMixin, LiveMixinData, Oxygen, PdaData, PlayerController, PlayerFields,
-    PlayerMotor, UnderwaterMotor, parse_ent_tech_data,
+    EntTechEntry, GroundMotor, LiveMixin, LiveMixinData, Oxygen, PHYSICS_MANAGER, PdaData,
+    PhysicsManager, PlayerController, PlayerFields, RIGIDBODY, Rigidbody, TAG_MANAGER,
+    TIME_MANAGER, TagManager, TimeManager, UnderwaterMotor, parse_ent_tech_data,
 };
 
 use crate::prefab::PrefabNode;
@@ -277,10 +278,15 @@ pub struct PlayerData {
     pub live_mixin: LiveMixin,
     pub live_mixin_data: LiveMixinData,
     pub underwater_motor: UnderwaterMotor,
-    /// `GroundMotor`'s `PlayerMotor` fields.
-    pub ground_motor: PlayerMotor,
+    pub ground_motor: GroundMotor,
     pub controller: PlayerController,
     pub pda: PdaData,
+    /// The player's GameObject's physics layer.
+    pub player_layer: u32,
+    /// The player's `Rigidbody` (used by `UnderwaterMotor`).
+    pub rigidbody: Rigidbody,
+    /// `Ocean.GetOceanLevel`: the y of the `Ocean` object.
+    pub ocean_level: f32,
 }
 
 fn one(assets: &Assets, scene: &crate::Scene, class: &str) -> Result<ObjectRef> {
@@ -335,7 +341,27 @@ pub fn player_data(assets: &Assets) -> Result<PlayerData> {
         return Err("Player.groundMotor is not a GroundMotor".into());
     }
     let ground_motor =
-        PlayerMotor::parse(&read(&ground)?, big_endian).map_err(|e| format!("GroundMotor: {e}"))?;
+        GroundMotor::parse(&read(&ground)?, big_endian).map_err(|e| format!("GroundMotor: {e}"))?;
+    let (r, n) = scene
+        .behaviour_node(assets, &player_ref)?
+        .ok_or("Player: object not in the main scene")?;
+    let player_layer = scene.roots[r].nodes[n].layer;
+    let mut rigidbody = None;
+    for c in assets.node_components(&scene.roots[r].nodes[n])? {
+        let (info, data) = c.data()?;
+        if info.class_id == RIGIDBODY {
+            rigidbody = Some(
+                Rigidbody::parse(data, c.file.file().big_endian)
+                    .map_err(|e| format!("player Rigidbody: {e}"))?,
+            );
+        }
+    }
+    let rigidbody = rigidbody.ok_or("the player has no Rigidbody")?;
+    let ocean = one(assets, &scene, "Ocean")?;
+    let (r, n) = scene
+        .behaviour_node(assets, &ocean)?
+        .ok_or("Ocean: object not in the main scene")?;
+    let ocean_level = scene.roots[r].world(n).position[1];
     let controller = PlayerController::parse(
         &read(&one(assets, &scene, "PlayerController")?)?,
         big_endian,
@@ -356,7 +382,43 @@ pub fn player_data(assets: &Assets) -> Result<PlayerData> {
         underwater_motor,
         ground_motor,
         controller,
+        player_layer,
+        rigidbody,
+        ocean_level,
         pda,
+    })
+}
+
+/// The project's physics, time and layer settings (`globalgamemanagers`).
+#[derive(Clone, Debug)]
+pub struct PhysicsSettings {
+    pub physics: PhysicsManager,
+    pub time: TimeManager,
+    pub tags: TagManager,
+}
+
+pub fn physics_settings(assets: &Assets) -> Result<PhysicsSettings> {
+    let ggm = assets.standalone("globalgamemanagers")?;
+    let big_endian = ggm.file().big_endian;
+    let data = |class: i32, name: &str| -> Result<Vec<u8>> {
+        let info = ggm
+            .objects()
+            .iter()
+            .find(|o| o.class_id == class)
+            .ok_or_else(|| format!("globalgamemanagers: no {name}"))?;
+        Ok(ggm
+            .object(info.path_id)
+            .ok_or_else(|| format!("globalgamemanagers: {name} unreadable"))?
+            .1
+            .to_vec())
+    };
+    Ok(PhysicsSettings {
+        physics: PhysicsManager::parse(&data(PHYSICS_MANAGER, "PhysicsManager")?, big_endian)
+            .map_err(|e| format!("PhysicsManager: {e}"))?,
+        time: TimeManager::parse(&data(TIME_MANAGER, "TimeManager")?, big_endian)
+            .map_err(|e| format!("TimeManager: {e}"))?,
+        tags: TagManager::parse(&data(TAG_MANAGER, "TagManager")?, big_endian)
+            .map_err(|e| format!("TagManager: {e}"))?,
     })
 }
 

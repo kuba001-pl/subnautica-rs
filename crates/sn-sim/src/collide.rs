@@ -16,8 +16,11 @@
 //!   along what it hit (up to [`MAX_SLIDES`] times), keeping a gap of at
 //!   least [`SKIN`] / 2.
 //!
-//! Triangles collide on both sides (the game's are one-sided or not:
-//! not checked).
+//! Triangles are one-sided, as PhysX's triangle meshes in the game
+//! (`docs/formats/gameplay.md` § Player movement): the front is the side
+//! `(b − a) × (c − a)` points to. A sweep ignores triangles it moves along
+//! the normal of (from behind), and an overlap test ignores triangles
+//! whose plane has the capsule's centre behind it.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -79,6 +82,7 @@ impl Capsule {
 /// A primitive shape in world space.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Shape {
+    /// One-sided: blocks only from the side `(b − a) × (c − a)` points to.
     Triangle([V3; 3]),
     Sphere {
         center: V3,
@@ -333,6 +337,18 @@ fn gap(shape: &Shape, capsule: &Capsule, at: V3, fallback: V3) -> (f64, V3, V3) 
     (sep.length() - capsule.radius - r, normal, c)
 }
 
+/// Whether the shape is a triangle with the capsule's centre behind its
+/// plane: PhysX's capsule–mesh contacts skip those.
+fn behind(shape: &Shape, capsule: &Capsule, at: V3) -> bool {
+    match *shape {
+        Shape::Triangle([a, b, c]) => {
+            let centre = at + (capsule.a + capsule.b) * 0.5;
+            (b - a).cross(c - a).dot(centre - a) < 0.0
+        }
+        _ => false,
+    }
+}
+
 /// Sweeps the capsule from `from` by `delta` against one shape, up to the
 /// share `max_t` of the move. Returns the share of the move at the contact,
 /// the normal and the contact point.
@@ -345,6 +361,12 @@ fn sweep_shape(
 ) -> Option<(f64, V3, V3)> {
     let len = delta.length();
     let dir = delta.normalized()?;
+    // PhysX's mesh sweeps cull a triangle the move runs along the normal of.
+    if let Shape::Triangle([a, b, c]) = *shape {
+        if (b - a).cross(c - a).dot(dir) > 0.0 {
+            return None;
+        }
+    }
     let mut t = 0.0;
     for _ in 0..MAX_ADVANCE_STEPS {
         let (g, normal, point) = gap(shape, capsule, from + delta * t, -dir);
@@ -386,10 +408,19 @@ fn overlaps(a: (V3, V3), b: (V3, V3)) -> bool {
         && b.0.z <= a.1.z
 }
 
+/// Group of bodies that block movement (sweeps, slides, clearance).
+pub const MOVE: u32 = 1;
+
+/// Group of bodies the hand's ray sees ([`World::cast`]): what blocks it
+/// and what it can use.
+pub const HAND: u32 = 2;
+
 /// Triangles and shapes of one thing in the world (a terrain batch, a
 /// placed object), in world space.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct Body {
+    /// [`MOVE`], [`HAND`] or both (the default).
+    groups: u32,
     /// Kept in `f32` (terrain is large); converted when used.
     triangles: Vec<[[f32; 3]; 3]>,
     shapes: Vec<Shape>,
@@ -400,7 +431,31 @@ pub struct Body {
     skipped: usize,
 }
 
+impl Default for Body {
+    fn default() -> Self {
+        Body {
+            groups: MOVE | HAND,
+            triangles: Vec::new(),
+            shapes: Vec::new(),
+            bounds: None,
+            cells: HashMap::new(),
+            large: Vec::new(),
+            skipped: 0,
+        }
+    }
+}
+
 impl Body {
+    /// The same body in other groups ([`MOVE`], [`HAND`]).
+    pub fn with_groups(mut self, groups: u32) -> Body {
+        self.groups = groups;
+        self
+    }
+
+    pub fn groups(&self) -> u32 {
+        self.groups
+    }
+
     /// Degenerate (zero-area) and non-finite triangles and shapes are
     /// skipped and counted ([`Body::skipped`]).
     pub fn new(triangles: impl IntoIterator<Item = [[f32; 3]; 3]>, shapes: Vec<Shape>) -> Body {
@@ -560,11 +615,12 @@ impl World {
         self.bodies.is_empty()
     }
 
-    /// Calls `f` for every shape whose cells overlap the box.
-    fn each_candidate(&self, lo: V3, hi: V3, mut f: impl FnMut(u64, Shape)) {
+    /// Calls `f` for every shape of a body in `groups` whose cells overlap
+    /// the box.
+    fn each_candidate(&self, groups: u32, lo: V3, hi: V3, mut f: impl FnMut(u64, Shape)) {
         let mut ids = Vec::new();
         for (&id, body) in &self.bodies {
-            if !body.bounds.is_some_and(|b| overlaps(b, (lo, hi))) {
+            if body.groups & groups == 0 || !body.bounds.is_some_and(|b| overlaps(b, (lo, hi))) {
                 continue;
             }
             body.candidates(lo, hi, &mut ids);
@@ -576,6 +632,31 @@ impl World {
 
     /// The first contact when the capsule moves from `from` by `delta`.
     pub fn sweep(&self, capsule: &Capsule, from: V3, delta: V3) -> Option<Hit> {
+        self.sweep_in(MOVE, capsule, from, delta)
+    }
+
+    /// The first thing in `groups` a sphere of `radius` (0: a ray) meets
+    /// going `distance` metres from `origin` along `dir`, and how far it
+    /// got. The hand's targeting uses this (`Targeting.GetTarget`).
+    pub fn cast(
+        &self,
+        groups: u32,
+        origin: V3,
+        dir: V3,
+        radius: f64,
+        distance: f64,
+    ) -> Option<(f64, Hit)> {
+        let dir = dir.normalized()?;
+        let ball = Capsule {
+            a: V3::ZERO,
+            b: V3::ZERO,
+            radius,
+        };
+        let hit = self.sweep_in(groups, &ball, origin, dir * distance)?;
+        Some((hit.t * distance, hit))
+    }
+
+    fn sweep_in(&self, groups: u32, capsule: &Capsule, from: V3, delta: V3) -> Option<Hit> {
         if delta.length() < 1e-12 || !from.is_finite() || !delta.is_finite() {
             return None;
         }
@@ -584,7 +665,7 @@ impl World {
         let lo = (from + a).min(from + delta + a) - pad;
         let hi = (from + b).max(from + delta + b) + pad;
         let mut best: Option<Hit> = None;
-        self.each_candidate(lo, hi, |body, shape| {
+        self.each_candidate(groups, lo, hi, |body, shape| {
             let max_t = best.map_or(1.0, |h| h.t);
             if let Some((t, normal, point)) = sweep_shape(&shape, capsule, from, delta, max_t) {
                 if best.is_none_or(|h| t < h.t) {
@@ -606,7 +687,10 @@ impl World {
         let lo = (at + capsule.a).min(at + capsule.b) - pad;
         let hi = (at + capsule.a).max(at + capsule.b) + pad;
         let mut best: Option<Clearance> = None;
-        self.each_candidate(lo, hi, |body, shape| {
+        self.each_candidate(MOVE, lo, hi, |body, shape| {
+            if behind(&shape, capsule, at) {
+                return;
+            }
             let (g, normal, point) = gap(&shape, capsule, at, V3::Y);
             if g <= range && best.is_none_or(|b| g < b.gap) {
                 best = Some(Clearance {
@@ -618,6 +702,20 @@ impl World {
             }
         });
         best
+    }
+
+    /// Triangles the segment `from`–`to` passes through, from either side.
+    /// A check for the scripts: with one-sided triangles a capsule that
+    /// slipped through a surface has it behind, where [`World::clearance`]
+    /// no longer sees it, but its centre's path crosses it.
+    pub fn crossings(&self, from: V3, to: V3) -> usize {
+        let mut n = 0;
+        self.each_candidate(MOVE, from.min(to), from.max(to), |_, shape| {
+            if let Shape::Triangle([a, b, c]) = shape {
+                n += usize::from(segment_crosses_triangle(from, to, a, b, c).is_some());
+            }
+        });
+        n
     }
 
     /// Pushes the capsule out of anything closer than `SKIN / 2` (a spawn
@@ -643,6 +741,19 @@ impl World {
     /// hits (Quake-style velocity clipping, with creases between two planes
     /// and a stop at three or when the slide would turn back).
     pub fn move_and_slide(&self, capsule: &Capsule, from: V3, delta: V3) -> Slide {
+        self.move_and_slide_with(capsule, from, delta, |n| n)
+    }
+
+    /// [`World::move_and_slide`], sliding along `plane(normal)` instead of
+    /// each contact's own plane (a character controller treats slopes too
+    /// steep to climb as walls). The contacts keep their real normals.
+    pub fn move_and_slide_with(
+        &self,
+        capsule: &Capsule,
+        from: V3,
+        delta: V3,
+        plane: impl Fn(V3) -> V3,
+    ) -> Slide {
         let mut pos = from;
         let mut remaining = delta;
         let mut contacts = Vec::new();
@@ -658,7 +769,7 @@ impl World {
             pos += remaining * hit.t;
             let left = remaining * (1.0 - hit.t);
             contacts.push(hit);
-            planes.push(hit.normal);
+            planes.push(plane(hit.normal).normalized().unwrap_or(hit.normal));
             remaining = clip_to_planes(left, &planes, delta);
         }
         Slide {
@@ -726,6 +837,30 @@ mod tests {
         ]
     }
 
+    /// The triangles turned to face the point `p` (triangles are one-sided).
+    pub(crate) fn facing(
+        tris: impl IntoIterator<Item = [[f32; 3]; 3]>,
+        p: V3,
+    ) -> Vec<[[f32; 3]; 3]> {
+        tris.into_iter()
+            .map(|t| {
+                let [a, b, c] = t.map(V3::from_f32);
+                if (b - a).cross(c - a).dot(p - a) < 0.0 {
+                    [t[0], t[2], t[1]]
+                } else {
+                    t
+                }
+            })
+            .collect()
+    }
+
+    /// Both sides: each triangle twice, once per winding.
+    fn two_sided(tris: impl IntoIterator<Item = [[f32; 3]; 3]>) -> Vec<[[f32; 3]; 3]> {
+        tris.into_iter()
+            .flat_map(|t| [t, [t[0], t[2], t[1]]])
+            .collect()
+    }
+
     fn world_of(tris: Vec<[[f32; 3]; 3]>, shapes: Vec<Shape>) -> World {
         let mut w = World::new();
         w.insert(1, Body::new(tris, shapes));
@@ -734,7 +869,10 @@ mod tests {
 
     fn floor() -> World {
         world_of(
-            quad(v(-50.0, 0.0, -50.0), v(100.0, 0.0, 0.0), v(0.0, 0.0, 100.0)).to_vec(),
+            facing(
+                quad(v(-50.0, 0.0, -50.0), v(100.0, 0.0, 0.0), v(0.0, 0.0, 100.0)),
+                v(0.0, 10.0, 0.0),
+            ),
             vec![],
         )
     }
@@ -789,7 +927,10 @@ mod tests {
     #[test]
     fn slides_along_a_wall() {
         let w = world_of(
-            quad(v(2.0, -50.0, -50.0), v(0.0, 100.0, 0.0), v(0.0, 0.0, 100.0)).to_vec(),
+            facing(
+                quad(v(2.0, -50.0, -50.0), v(0.0, 100.0, 0.0), v(0.0, 0.0, 100.0)),
+                V3::ZERO,
+            ),
             vec![],
         );
         let c = player();
@@ -813,7 +954,7 @@ mod tests {
             v(100.0, 0.0, 0.0),
             v(0.0, 0.0, 100.0),
         ));
-        let w = world_of(tris, vec![]);
+        let w = world_of(facing(tris, V3::ZERO), vec![]);
         let c = player();
         let mut pos = V3::ZERO;
         for _ in 0..50 {
@@ -826,9 +967,13 @@ mod tests {
     }
 
     #[test]
-    fn a_thin_wall_stops_a_fast_move_from_both_sides() {
+    fn a_two_sided_thin_wall_stops_a_fast_move_from_both_sides() {
         let w = world_of(
-            quad(v(0.0, -5.0, -5.0), v(0.0, 10.0, 0.0), v(0.0, 0.0, 10.0)).to_vec(),
+            two_sided(quad(
+                v(0.0, -5.0, -5.0),
+                v(0.0, 10.0, 0.0),
+                v(0.0, 0.0, 10.0),
+            )),
             vec![],
         );
         let c = player();
@@ -846,6 +991,46 @@ mod tests {
             assert!(one.position.x.signum() == from.x.signum());
             assert_clear(&w, &c, one.position);
         }
+    }
+
+    #[test]
+    fn a_one_sided_wall_blocks_from_the_front_only() {
+        // Facing -x: blocks a move from x < 0, lets one from x > 0 through
+        // (PhysX culls back faces in sweeps and in capsule contacts).
+        let w = world_of(
+            facing(
+                quad(v(0.0, -5.0, -5.0), v(0.0, 10.0, 0.0), v(0.0, 0.0, 10.0)),
+                v(-1.0, 0.0, 0.0),
+            ),
+            vec![],
+        );
+        let c = player();
+        let front = w.move_and_slide(&c, v(-1.0, 0.0, 0.0), v(2.0, 0.0, 0.0));
+        assert!(front.position.x < -c.radius, "{:?}", front.position);
+        assert_eq!(front.contacts.len(), 1);
+        let back = w.move_and_slide(&c, v(1.0, 0.0, 0.0), v(-2.0, 0.0, 0.0));
+        assert!(back.contacts.is_empty());
+        assert!((back.position.x + 1.0).abs() < 1e-9);
+        // Halfway through, from behind: no overlap is reported.
+        assert!(w.clearance(&c, v(0.1, 0.0, 0.0), 1.0).is_none());
+        assert!(w.clearance(&c, v(-0.1, 0.0, 0.0), 1.0).unwrap().gap < 0.0);
+        // The path from behind through it is seen by `crossings`.
+        // (Off the quad's diagonal, where both triangles would count.)
+        let off = v(0.0, 0.5, -2.0);
+        assert_eq!(w.crossings(v(1.0, 0.0, 0.0) + off, back.position + off), 1);
+        assert_eq!(
+            w.crossings(v(-1.0, 0.0, 0.0) + off, front.position + off),
+            0
+        );
+        // A ray from behind passes too (`queriesHitBackfaces` is false).
+        assert!(
+            w.cast(MOVE, v(1.0, 0.0, 0.0), v(-1.0, 0.0, 0.0), 0.0, 3.0)
+                .is_none()
+        );
+        assert!(
+            w.cast(MOVE, v(-1.0, 0.0, 0.0), v(1.0, 0.0, 0.0), 0.0, 3.0)
+                .is_some()
+        );
     }
 
     #[test]
@@ -926,8 +1111,9 @@ mod tests {
                 let (x, z) = (f64::from(i), f64::from(k));
                 let p = |x: f64, z: f64| v(x, h(x, z), z);
                 let (a, b, cc, d) = (p(x, z), p(x + 1.0, z), p(x + 1.0, z + 1.0), p(x, z + 1.0));
-                tris.push([f(a), f(b), f(cc)]);
-                tris.push([f(a), f(cc), f(d)]);
+                // Facing up.
+                tris.push([f(a), f(cc), f(b)]);
+                tris.push([f(a), f(d), f(cc)]);
             }
         }
         let w = world_of(tris, vec![]);
@@ -961,8 +1147,13 @@ mod tests {
         tris.extend(quad(o + x, y, z));
         tris.extend(quad(o, x, y));
         tris.extend(quad(o + z, x, y));
-        // A tilted ramp.
-        tris.push([[-4.0, -5.0, -4.0], [4.0, -5.0, -4.0], [0.0, 0.0, 4.0]]);
+        let mut tris = facing(tris, V3::ZERO);
+        // A tilted ramp, a thin sheet: both sides.
+        tris.extend(two_sided([[
+            [-4.0, -5.0, -4.0],
+            [4.0, -5.0, -4.0],
+            [0.0, 0.0, 4.0],
+        ]]));
         let rot = std::f64::consts::FRAC_1_SQRT_2;
         let shapes = vec![
             Shape::Sphere {
@@ -1026,6 +1217,51 @@ mod tests {
         let w = World::new();
         assert!(w.sweep(&player(), V3::ZERO, v(1.0, 0.0, 0.0)).is_none());
         assert!(w.clearance(&player(), V3::ZERO, 10.0).is_none());
+    }
+
+    #[test]
+    fn groups_and_casts() {
+        let mut w = World::new();
+        // A wall the hand sees but the capsule passes, and a floor for both.
+        w.insert(
+            1,
+            Body::new(
+                facing(
+                    quad(v(2.0, -5.0, -5.0), v(0.0, 10.0, 0.0), v(0.0, 0.0, 10.0)),
+                    V3::ZERO,
+                ),
+                vec![],
+            )
+            .with_groups(HAND),
+        );
+        w.insert(
+            2,
+            Body::new(
+                facing(
+                    quad(
+                        v(-50.0, -1.0, -50.0),
+                        v(100.0, 0.0, 0.0),
+                        v(0.0, 0.0, 100.0),
+                    ),
+                    V3::ZERO,
+                ),
+                vec![],
+            ),
+        );
+        let c = player();
+        let s = w.move_and_slide(&c, V3::ZERO, v(5.0, 0.0, 0.0));
+        assert!(s.contacts.is_empty() && (s.position.x - 5.0).abs() < 1e-9);
+        let (d, hit) = w.cast(HAND, V3::ZERO, v(1.0, 0.0, 0.0), 0.0, 3.0).unwrap();
+        assert_eq!(hit.body, 1);
+        assert!((d - 2.0).abs() <= SKIN, "{d}");
+        assert!(w.cast(HAND, V3::ZERO, v(1.0, 0.0, 0.0), 0.0, 1.5).is_none());
+        // A sphere cast reaches the wall sooner by its radius.
+        let (d, _) = w.cast(HAND, V3::ZERO, v(1.0, 0.0, 0.0), 0.3, 3.0).unwrap();
+        assert!((d - 1.7).abs() <= SKIN, "{d}");
+        // Straight down: the floor, in both groups.
+        let (d, hit) = w.cast(MOVE, V3::ZERO, v(0.0, -1.0, 0.0), 0.0, 3.0).unwrap();
+        assert_eq!(hit.body, 2);
+        assert!((d - 1.0).abs() <= SKIN);
     }
 
     #[test]

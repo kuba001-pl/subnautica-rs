@@ -16,6 +16,7 @@ mod light;
 mod marmo;
 mod mesh;
 mod objects;
+mod physics;
 mod placeholder;
 mod prefab;
 mod reader;
@@ -39,9 +40,11 @@ pub use collider::{
     BOX_COLLIDER, CAPSULE_COLLIDER, Collider, ColliderShape, MESH_COLLIDER, SPHERE_COLLIDER,
 };
 pub use gameplay::{
-    AnalysisTech, BreakableResource, CompoundTech, EncyclopediaEntry, EntTechEntry, LiveMixin,
-    LiveMixinData, LogEntry, Oxygen, PdaData, PlayerController, PlayerFields, PlayerMotor,
-    RandomPrefab, ScannerEntry, StoryGoal, UnderwaterMotor, parse_ent_tech_data,
+    AnalysisTech, BreakableResource, CinematicModeTrigger, CompoundTech, EncyclopediaEntry,
+    EntTechEntry, EscapePodFirstUse, GroundMotor, LiveMixin, LiveMixinData, LogEntry, Oxygen,
+    PdaData, PersistentCall, PlayerCinematicController, PlayerController, PlayerFields,
+    PlayerMotor, RandomPrefab, ScannerEntry, StoryGoal, UnderwaterMotor, UseableDiveHatch,
+    parse_ent_tech_data,
 };
 pub use light::{
     BAKE_BAKED, BAKE_MIXED, BAKE_REALTIME, DayNightLight, Light, LightKind, ShadowKind,
@@ -50,6 +53,10 @@ pub use light::{
 pub use marmo::{MarmoSkiesPrefabs, MarmoSky, SH_CONSTANTS, SKIES_AUTO, SkyApplier};
 pub use mesh::{Channel, Mesh, MeshFilter, MeshGeometry, SubMesh, channel};
 pub use objects::{Material, MonoBehaviourHeader, MonoScript, PPtr, TexEnv};
+pub use physics::{
+    PHYSICS_MANAGER, PhysicsManager, RIGIDBODY, Rigidbody, TAG_MANAGER, TIME_MANAGER, TagManager,
+    TimeManager,
+};
 pub use placeholder::{PrefabPlaceholder, PrefabPlaceholdersGroup};
 pub use prefab::{
     AssetBundleManifest, GameObject, Lod, LodGroup, MeshRenderer, SkinnedMeshRenderer,

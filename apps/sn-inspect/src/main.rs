@@ -3,6 +3,7 @@
 
 mod biomes;
 mod code;
+mod collision;
 mod density;
 mod entities;
 mod game;
@@ -20,6 +21,7 @@ mod swim;
 mod texture;
 mod unity;
 mod voxel;
+mod walk;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -84,6 +86,9 @@ Commands:
   prefab --colliders     Collider components (box, sphere, capsule, mesh) on
                          every placed prefab, and the Pickupable and
                          BreakableResource scripts
+  prefab --winding       Which side of our collision triangles (terrain,
+                         mesh colliders) faces open space, by the PhysX
+                         convention
   prefab --materials     Every material drawn by the placed prefabs and the
                          startup scenes: uses, what our object shader takes
                          from it, its shader and the shader's first pass
@@ -100,6 +105,10 @@ Commands:
                          N, default 1) to the nearest Kelp Forest through
                          our collision, at most S simulated seconds
                          (default 600): contacts, penetrations, cost per step
+  walk [--seed <N>]      M9b: a scripted run with the player's rules: spawn
+                         in the lifepod, walk to the hatch, leave, swim
+                         away 10 s and back, enter; positions, motor
+                         changes, speeds next to the values read
   scene --startup        The scenes the game loads at start and what the
                          spawned ones draw in a new game
   terrain-materials      Terrain block types → materials → textures, checked
@@ -211,6 +220,7 @@ fn run(mut args: Vec<String>) -> Result<ExitCode> {
         ["prefab", "--placed"] => prefab::placed(&game, false),
         ["prefab", "--lights"] => prefab::lights(&game),
         ["prefab", "--colliders"] => gameplay::colliders(&game),
+        ["prefab", "--winding"] => gameplay::winding(&game),
         ["prefab", "--materials"] => prefab::materials(&game),
         ["prefab", "--placeholders"] => prefab::placeholders(&game),
         ["prefab", "--skinned"] => skinned::run(&game),
@@ -219,6 +229,7 @@ fn run(mut args: Vec<String>) -> Result<ExitCode> {
         ["prefab", key] => prefab::one(&game, key),
         ["scene", "--startup"] => scene::startup(&game),
         ["scene", "--lifepod"] => scene::lifepod(&game, seed),
+        ["walk"] => walk::run(&game, seed),
         ["swim"] => swim::run(&game, seed, 600.0),
         ["swim", "--seconds", s] => swim::run(
             &game,

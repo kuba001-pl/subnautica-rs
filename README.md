@@ -46,12 +46,19 @@ Tested on Windows 11 with game build 10 (Steam):
   `Assembly-CSharp.dll` with our own .NET reader (`sn-inspect code`): all
   793 tech type names, the 7 crafting menus (159 nodes; `--trees` prints
   them) and TechData's defaults; every method body of the DLL decodes.
-- Collision, headless (`sn-sim`, not used by the client yet): the
-  player's capsule swept against the full-resolution terrain and the
-  placed objects' colliders. `sn-inspect swim` swims from the lifepod
-  into the nearest Kelp Forest along the seabed; for seeds 1–5 it arrives
-  with 0 penetrations, at about 20–30 µs per step.
-- `sn-client`: a desktop window (Bevy) with a fly camera. Terrain streams in
+- Collision (`sn-sim`): the player's capsule swept against the
+  full-resolution terrain and the placed objects' colliders, one-sided as
+  the game's. `sn-inspect swim` swims from the lifepod into the nearest
+  Kelp Forest along the seabed; for seeds 1–5 it arrives with 0
+  penetrations, at about 13–19 µs per step.
+- The player, with the game's numbers: walking with gravity, steps and
+  slopes in the lifepod and on land; swimming with the game's speeds,
+  drag and surface rules. The lifepod's hatches take the player in and
+  out. `sn-inspect walk` runs pod → water → pod headless with 0
+  penetrations. In `sn-client` you are the player (the fly camera is
+  `--free-cam`). Playing it with keyboard and mouse is not tested by the
+  agent.
+- `sn-client`: a desktop window (Bevy), first person or a fly camera. Terrain streams in
   and out as you move, with four levels of detail out to 1.2 km, textured
   with the game's own terrain materials, blended between neighbouring
   materials the way the game does it (layers per chunk, soft ragged borders,
@@ -94,7 +101,7 @@ on screen yet). Flying from the lifepod
 The water clip map (no water inside the lifepod and bases,
 shore foam); water settings per pixel (the
 camera's are used everywhere); Lifepod 5's own interior light and sky,
-floating on the waves, the player's eye height; the Aurora's explosion over
+floating on the waves; the Aurora's explosion over
 time, its distant levels of
 detail, fire and smoke; terrain grass
 beyond ~100 m, and grass tufts in the game's exact spots (the amount and
@@ -105,8 +112,9 @@ blend shapes not applied), objects on shaders other than the game's main
 object shader (Lost River brine, sand and lava falls and other effect
 meshes not yet decoded are flat, Safe Shallows triplanar rocks white;
 `docs/formats/materials.md`), creatures (including the
-~100,000 the spawn slots would add); player, audio,
-multiplayer.
+~100,000 the spawn slots would add); the player's animations (the
+hatch cinematics, body, camera bob), tanks and fins changing speeds,
+oxygen and health; audio, multiplayer.
 Linux/macOS: not tested.
 
 ## Try it

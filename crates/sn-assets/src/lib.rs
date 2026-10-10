@@ -11,6 +11,7 @@
 
 mod code;
 mod collision;
+mod collision_world;
 mod gameplay;
 mod marmo;
 mod prefab;
@@ -29,13 +30,18 @@ use sn_unity::{Bundle, BundleDirectory, ObjectInfo, PPtr, SerializedFile};
 
 pub use code::{GAME_ASSEMBLY, GameCode, TechDefaults, game_code, read_assembly};
 pub use collision::{ColliderCounts, ColliderMeshes, PrefabCollider, WorldCollider};
+pub use collision_world::{
+    BatchBodies, BodyChanges, COLLISION_REACH, CollisionLoader, HATCH_BODY, LayerRules, Lifepod,
+    LifepodTrigger, LoaderStats, OBJECTS_BODY, PlacedCollider, SCENE_BODY, SPAWNED, SceneCollider,
+    SlotTables, bodies, body_kind, player_params,
+};
 pub use gameplay::{
-    Ingredient, PlayerData, TechData, TechEntry, ent_tech_data, parse_tech_data, player_data,
-    tech_data,
+    Ingredient, PhysicsSettings, PlayerData, TechData, TechEntry, ent_tech_data, parse_tech_data,
+    physics_settings, player_data, tech_data,
 };
 pub use marmo::{BiomeSky, MarmoSkies, marmo_skies};
 pub use prefab::{PlaceholderGroup, Prefab, PrefabNode, VolumetricGlow};
-pub use scene::{LIGHTMAPPED_PREFAB, Scene, SceneSpawn};
+pub use scene::{CinematicTrigger, DiveHatch, LIGHTMAPPED_PREFAB, Scene, SceneSpawn};
 pub use skin::{Mat4, skin};
 pub use slots::{LootTable, entity_infos, loot_table, parse_loot_table};
 pub use terrain::{

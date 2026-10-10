@@ -400,7 +400,7 @@ understand it, then write our own.
 | **P0** ✅ | Gameplay data, headless. **Done 2026-10-09** (MODLOG; facts in `docs/formats/gameplay.md`): TechData 463 entries, 0 errors; `PDAData` reached through the main scene's `Player`; player numbers from the main scene; collider census on placed prefabs (`sn-inspect prefab --colliders`). Not 1:1 yet: TechData defaults and tech type names wait for P1. Plan as written: Read `Balance/TechData` (JSON) and `EntTechData` in `sn-assets`; find `PDAData` and the player's prefab and read their fields; census of collider components on placed prefabs (`BoxCollider` 65, `SphereCollider` 135, `CapsuleCollider` 136, `MeshCollider` 64) and of `Pickupable` / `BreakableResource`. `sn-inspect techdata`, `sn-inspect player`. | `docs/formats/gameplay.md` lists every fact with its source, *confirmed* or *hypothesis*; real-data test: TechData parses with 0 errors and the entry count is logged; every ingredient's tech type is also an entry or logged as a miss; collider counts per kind logged. |
 | **P1** ✅ | **Done 2026-10-10** (MODLOG; facts in `docs/formats/dotnet.md`): all 21,383 method bodies of the game's DLL decode; 793 `TechType` names, every TechData entry named; 7 menus, 159 nodes (fabricator 100), every craft node has TechData; TechData's 17 defaults. The scheme reader also needed `newarr`/`dup`/`stelem.ref` (C# `params` arrays) and `ret`: still straight-line, no branches or locals. Plan as written: `sn-dotnet` (new crate, layer 1, pure): our own reader of .NET PE files: metadata tables (`TypeDef`, `Field`, `MethodDef`, `Constant`), string heaps, method bodies; `TechType` names from the enum's constants; the `CraftTree` menus by walking the IL of its tree methods (only the patterns used there: `ldstr`, `ldc.i4`, `newobj CraftNode`, `call AddNode`). Unit tests on synthetic bytes we encode ourselves (no game files as fixtures). **Stop and ask** if the IL needs more than a simple pattern reader. | Synthetic round-trip tests; real-data test: number of `TechType` names logged and every TechData entry has a name; the fabricator tree's node count logged; every craft node's tech type has a TechData entry. |
 | **M9a** ✅ | **Done 2026-10-10** (MODLOG; facts in `docs/formats/gameplay.md` § Collision; plan below). `sn-sim::collide` passes 12 unit tests. `sn-inspect swim` reaches the Kelp Forest from the lifepod for seeds 1–5: 0 penetrations, smallest gap ≥ 5.1 mm, 1,860–3,693 contacts, about 21–31 µs mean and 60–120 µs p99 per step. The client doesn't use it yet (M9b). Plan as written: Collision: a kinematic capsule swept against triangles. Terrain from the LOD 0 meshes already built around the camera; objects from their prefabs' colliders (box, sphere, capsule, mesh; read in `sn-unity`). Our own sweep in `sn-sim`, no physics engine yet (§ 3.3's physics decision waits for rigid bodies: floating lifepod, dropped items). | Unit tests of the sweep on synthetic meshes (slide, corner, thin wall); a scripted swim lifepod → Kelp Forest logs 0 penetrations and the contacts; cost per frame logged. |
-| **M9b** | Player: first-person camera at eye height, swimming, walking with gravity in the lifepod and above water, the lifepod hatch. Speeds from the player's serialized fields (P0). The fly camera stays as `--free-cam`. Collision gaps left by M9a that matter here: (1) read the physics layer collision matrix (`PhysicsManager`) and collide only with the layers the player's capsule hits; (2) colliders of the lifepod's spawned modules (fabricator, radio, …) and of what placeholders spawn (M7h), so walking inside the pod hits them; (3) find out whether the game's terrain and mesh colliders block from one side or both, and match it. | Movement rules unit-tested; speeds logged next to the values read; scripted run lifepod → water → lifepod (positions logged); the layer matrix logged and the colliders kept/dropped by layer counted; lifepod module and placeholder colliders counted in the run; one- vs two-sided recorded in `docs/formats/gameplay.md` with how it was checked. |
+| **M9b** ✅ | **Done 2026-10-10** (MODLOG; facts in `docs/formats/gameplay.md` § Player movement; plan and "as built" below). `sn-inspect walk`: pod → hatch → 10 s swim (71 m) → back in, 0 penetrations, 0 surfaces passed through; speeds 3.5 walking and 7.22 swimming against 3.5 and 7.6 read (7.22 is 7.6 after one step of drag 2.5). Layer 19 hits all layers but 9; every loaded collider is on layer 0 (none dropped yet). 46 pod and module colliders; placeholder spawns 10–216 per run. Colliders are one-sided, as PhysX's (source read; winding measured). The client plays as the player by default. Keyboard and mouse play are not tested by the agent. Plan as written: Player: first-person camera at eye height, swimming, walking with gravity in the lifepod and above water, the lifepod hatch. Speeds from the player's serialized fields (P0). The fly camera stays as `--free-cam`. Collision gaps left by M9a that matter here: (1) read the physics layer collision matrix (`PhysicsManager`) and collide only with the layers the player's capsule hits; (2) colliders of the lifepod's spawned modules (fabricator, radio, …) and of what placeholders spawn (M7h), so walking inside the pod hits them; (3) find out whether the game's terrain and mesh colliders block from one side or both, and match it. | Movement rules unit-tested; speeds logged next to the values read; scripted run lifepod → water → lifepod (positions logged); the layer matrix logged and the colliders kept/dropped by layer counted; lifepod module and placeholder colliders counted in the run; one- vs two-sided recorded in `docs/formats/gameplay.md` with how it was checked. |
 | **M9c** | Oxygen, health, depth: drain under water, refill at the surface and in the lifepod, suffocation → respawn in the lifepod, with the game's numbers. A minimal HUD of our own (bars and numbers; the game's UI sprites later). | Rules unit-tested; a scripted dive logs oxygen over time against the values read. |
 | **M10** | Multiplayer as planned (Phase D): `sn-protocol`, `sn-net`, `sn-server`, handshake with the build check, join, player sync. From here solo play also runs against an in-process server (§ 3.1, principle 5), so items and crafting below are written server-authoritative once. | M10's own row. |
 | **M9d** | Pick up and inventory: `Pickupable` objects within reach, outcrops break into their resource (`BreakableResource`), inventory of the game's size, item sizes from TechData; picked objects gone for every player (server state keyed by entity id and slot seed). | Inventory rules unit-tested; a scripted pick-up logs item counts; the object's drawn count −1 on both clients. |
@@ -471,8 +471,110 @@ nearest cell alone lies on the forest's edge. When the capsule is wedged
 (seed 1: a 0.5 m slot between a terrain wall and an overhanging object),
 the script detours sideways for 1.5 s, as a player would. Also not
 loaded in the swim: what placeholders spawn (M7h), the lifepod's spawned
-modules, creatures. Triangles collide on both sides (the game's: not
-checked).
+modules, creatures. Triangles collided on both sides; M9b made them
+one-sided, as the game's.
+
+#### M9b plan (written 2026-10-10)
+
+**What the game does** (read in the decompiled code; each fact goes to
+`docs/formats/gameplay.md` § Player movement, marked):
+- **Which motor.** `PlayerController.HandleControllerState`: under water
+  → `UnderwaterMotor` (a `Rigidbody` + `CapsuleCollider`, `FixedUpdate`),
+  otherwise `GroundMotor` (Unity's `CharacterMotor` on a
+  `CharacterController`). "Under water for swimming"
+  (`Player.UpdateIsUnderwater`): inside the lifepod (`escapePod` flag)
+  never; else against the ocean level (`Ocean.GetOceanLevel`, the `Ocean`
+  object's y): swimming starts below level − 0.1 and lasts while below
+  level + 0.1 when grounded (a ray down) or + 0.8 otherwise. Capsule
+  height `swimheight` or `standheight` − `cameraOffset`, eased at 2 m/s
+  when it grows, if there is room above.
+- **Swimming** (`UnderwaterMotor.UpdateMove`): input direction in the
+  camera's frame plus the up/down axis; max speed by direction (forward,
+  backward, strafe, vertical: the largest that applies) and `AlterMaxSpeed`
+  (tanks, fins, a held tool: none yet → unchanged; × 1.3 above water);
+  the velocity gains `acceleration × dt` along the input and is capped at
+  max(that speed, current speed); near the surface (from level − 0.5 to
+  level + 0.52) the upward speed is scaled by
+  clamp01((level + 0.52 − y) / 1.02)^0.3 unless diving; no gravity under
+  water (`SetMotorMode` sets 0); the body's drag is `swimDrag`. At the
+  surface, when blocked, it steps up onto land (1.85 m up, 0.3 m ahead,
+  down to a walkable floor).
+- **Walking** (`GroundMotor`): accelerate towards the input velocity (max
+  speeds by direction; ground/air acceleration), gravity, jumping, sliding
+  on slopes steeper than `slopeLimit`, step offset (pushed down by
+  max(step offset, horizontal move) while grounded so it follows the
+  floor), all through `CharacterController.Move`.
+- **The hatch** (`UseableDiveHatch.OnHandClick`): from inside, the player
+  goes to `outsideExit` and the `escapePod` flag clears; from outside, to
+  `insideSpawn` and the flag is set. The game plays a cinematic between;
+  its no-cinematic branch just sets the position, and that is what we do.
+- **Collision mask:** the player's own capsule casts use `−524289`, all
+  layers but 19; the rigid body collides by the layer matrix.
+
+**Steps:**
+1. **Data (headless).** Read `GroundMotor`'s own fields
+   (`CharacterMotorMovement`, `…Jumping`, `…Sliding`, `…Controller`:
+   step offset, slope limit); the hatch (`UseableDiveHatch`:
+   `outsideExit`, `insideSpawn`, `isForEscapePod`) in the escapepod scene;
+   the `PhysicsManager` (layer collision matrix, gravity, `queriesHitBackfaces`)
+   and the `TimeManager` (fixed time step) in `globalgamemanagers`; the
+   `Ocean` level. Move the swim's batch loader into `sn-assets` (terrain
+   + object colliders per batch, filtered by the player's layer row) and
+   add the lifepod's spawned modules and placeholder spawns. `sn-inspect
+   player` prints the new numbers.
+2. **`sn-sim::player` (pure).** State (position, velocity, motor, in the
+   pod, grounded, capsule height), parameters (all from step 1), input
+   (move axes, up/down, look yaw/pitch, jump, use). One fixed step: the
+   motor choice, the swim rules, the walk rules (a `CharacterController`
+   of our own: `move_and_slide` + step offset + slope limit + ground
+   check), the hatch. Velocity loses its component into what it hit (a
+   rigid body without bounce). Unit tests on synthetic worlds: swim speed
+   reaches 7.6 and no more; drag stops; surface damping; enter/leave
+   water switches motor at the game's thresholds; walking on a floor,
+   up a 0.3 m step but not a 0.5 m one; sliding on a 60° slope; the
+   hatch moves between its two points.
+3. **`sn-inspect walk`: scripted run, headless.** Spawn at the pod's
+   player spawn, walk to the hatch, leave, swim 10 s away and back,
+   enter. Logs positions, motor changes, speeds next to the values read.
+4. **Client.** The player is the default (`--free-cam` keeps the fly
+   camera): first-person camera at the player's position, WASD, Space up
+   / jump, C down, mouse look, E uses the hatch when it is within reach
+   in front of the camera. Collision bodies stream on a worker thread
+   (the same loader). Logs motor changes and the hatch.
+
+**Not 1:1 yet (planned here):** no cinematic for the hatch (position
+only); no animation of the body or the camera (bob, step smoothing);
+PhysX's solver replaced by our slide + velocity clipping; tanks, fins and
+tools don't change speeds yet (no inventory until M9d); the lifepod
+does not float or move (M7f4); mouse sensitivity and look limits our
+own until `MainCameraControl` is read.
+
+**As built (2026-10-10), where it differs from the plan:**
+- **The hatch.** The pod's `UseableDiveHatch` is on an inactive node and
+  not used. The player goes in and out through the pod's 8 cinematic hand
+  triggers (`CinematicModeTrigger`): E or a click within the hand's reach
+  (`Targeting.GetTarget`: a 2 m ray, then 0.15 m and 0.3 m sphere casts)
+  moves the player to the trigger's end point and sets the in-pod flag
+  from its enter/exit call. The first use swaps the first-use triggers
+  for their normal twins, as `EscapePodFirstUse`. The end points marked
+  VR-only are used too: without the animation they are the only target
+  we have.
+- **One-sided triangles.** PhysX 4.1 culls back faces in capsule–mesh
+  contacts, in mesh sweeps and (with `queriesHitBackfaces` false) in
+  rays. `sn-sim` now does the same. Mirroring scales swap the winding
+  back, as PhysX's `flipsNormal`. Because the clearance check no longer
+  sees a surface from behind, both scripts also count the surfaces the
+  capsule's centre passes through in a step (`World::crossings`); the
+  runs fail if it is not 0. The swims got quicker (seed 1: 39.9 s, no
+  detour, against 51.8 s): part of the 0.5 m slot that wedged it in M9a
+  was back faces.
+- **Shared pieces.** `sn-assets::collision_world`: the batch loader
+  (terrain, objects and their placeholder spawns, layer rules), the
+  lifepod's colliders and triggers, and the player's parameters, used by
+  both scripts and the client. `sn-sim::collide` bodies are in groups
+  (blocks movement, seen by the hand, or both) and gain `cast` for the
+  hand. The client streams collision bodies on a worker thread (4 batches
+  in about 2 s) and steps the player at the game's 50 Hz.
 
 **After Phase E** (order to be agreed then; each gets its own plan with
 steps before it starts):

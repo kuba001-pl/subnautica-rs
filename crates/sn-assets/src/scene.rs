@@ -139,6 +139,45 @@ impl Scene {
     }
 }
 
+/// A `CinematicModeTrigger` of a scene ([`Scene::cinematic_triggers`]).
+#[derive(Clone, Debug)]
+pub struct CinematicTrigger {
+    /// (root, node) of its GameObject.
+    pub node: (usize, usize),
+    pub name: String,
+    pub trigger: sn_unity::CinematicModeTrigger,
+    /// Used by hand (else by walking into its volume).
+    pub hand: bool,
+    /// The cinematic's `endTransform` in the world (`None`: the player
+    /// stays where the animation leaves it).
+    pub end: Option<Transform>,
+    /// The game goes to `end` only in VR; otherwise the animation's last
+    /// frame decides.
+    pub end_only_in_vr: bool,
+    /// The animator parameter that plays it (for logs).
+    pub animation: String,
+    /// Calls `EnterExitHelper.CinematicEnter` / `CinematicExit`.
+    pub enters: bool,
+    pub exits: bool,
+}
+
+/// A lifepod hatch's (normal, first use) trigger nodes, each (root, node).
+pub type HatchPair = ((usize, usize), (usize, usize));
+
+/// A `UseableDiveHatch` placed in a scene.
+#[derive(Clone, Debug)]
+pub struct DiveHatch {
+    pub hatch: sn_unity::UseableDiveHatch,
+    /// (root, node) of the hatch's GameObject.
+    pub node: (usize, usize),
+    /// The hatch's GameObject in the world.
+    pub at: Transform,
+    /// Where leaving puts the player.
+    pub outside_exit: Transform,
+    /// Where entering puts the player.
+    pub inside_spawn: Transform,
+}
+
 /// What a scene's spawner will put in the world in a new game.
 pub struct SceneSpawn {
     /// The spawner's GameObject name.
@@ -204,11 +243,144 @@ fn inverse_point(t: &Transform, p: [f32; 3]) -> [f32; 3] {
 
 impl Scene {
     /// (root, node) of a GameObject.
-    fn locate(&self, object: &ObjectRef) -> Option<(usize, usize)> {
+    /// (root, node) of a GameObject of the scene.
+    pub fn locate(&self, object: &ObjectRef) -> Option<(usize, usize)> {
         self.roots
             .iter()
             .enumerate()
             .find_map(|(r, root)| Some((r, root.node_of(object)?)))
+    }
+
+    /// (root, node) of the GameObject a script (MonoBehaviour) sits on.
+    pub fn behaviour_node(
+        &self,
+        assets: &Assets,
+        behaviour: &ObjectRef,
+    ) -> Result<Option<(usize, usize)>> {
+        let (_, data) = behaviour.data()?;
+        let header = MonoBehaviourHeader::parse(data, behaviour.file.file().big_endian)
+            .map_err(|e| e.to_string())?;
+        Ok(assets
+            .resolve(&behaviour.file, header.game_object)?
+            .and_then(|go| self.locate(&go)))
+    }
+
+    /// The scene's dive hatches (`UseableDiveHatch`), with their own and
+    /// their two end points' world placements (after the scene's objects
+    /// were placed, e.g. by [`Scene::place_escape_pod`]).
+    pub fn dive_hatches(&self, assets: &Assets) -> Result<Vec<DiveHatch>> {
+        let mut out = Vec::new();
+        for b in self.behaviours(assets, "UseableDiveHatch") {
+            let (_, data) = b.data()?;
+            let hatch = sn_unity::UseableDiveHatch::parse(data, b.file.file().big_endian)
+                .map_err(|e| format!("UseableDiveHatch: {e}"))?;
+            let node = self
+                .behaviour_node(assets, &b)?
+                .ok_or("UseableDiveHatch: object not in the scene")?;
+            let end = |pptr, what: &str| -> Result<Transform> {
+                let go = assets
+                    .resolve(&b.file, pptr)?
+                    .ok_or_else(|| format!("UseableDiveHatch.{what} is null"))?;
+                let (r, n) = self
+                    .locate(&go)
+                    .ok_or_else(|| format!("UseableDiveHatch.{what} not in the scene"))?;
+                Ok(self.roots[r].world(n))
+            };
+            out.push(DiveHatch {
+                at: self.roots[node.0].world(node.1),
+                outside_exit: end(hatch.outside_exit, "outsideExit")?,
+                inside_spawn: end(hatch.inside_spawn, "insideSpawn")?,
+                node,
+                hatch,
+            });
+        }
+        Ok(out)
+    }
+
+    /// The scene's `CinematicModeTrigger`s (how the lifepod is left and
+    /// boarded): where each is, its cinematic's end point and whether it
+    /// puts the player in or out (`EnterExitHelper.CinematicEnter` /
+    /// `CinematicExit` among its listeners).
+    pub fn cinematic_triggers(&self, assets: &Assets) -> Result<Vec<CinematicTrigger>> {
+        let mut out = Vec::new();
+        for b in self.behaviours(assets, "CinematicModeTrigger") {
+            let big_endian = b.file.file().big_endian;
+            let (_, data) = b.data()?;
+            let trigger = sn_unity::CinematicModeTrigger::parse(data, big_endian)
+                .map_err(|e| format!("CinematicModeTrigger: {e}"))?;
+            let Some(node) = self.behaviour_node(assets, &b)? else {
+                continue;
+            };
+            let controller = assets
+                .resolve(&b.file, trigger.cinematic_controller)?
+                .ok_or("CinematicModeTrigger.cinematicController is null")?;
+            let (_, cdata) = controller.data()?;
+            let cinematic = sn_unity::PlayerCinematicController::parse(cdata, big_endian)
+                .map_err(|e| format!("PlayerCinematicController: {e}"))?;
+            let end = self
+                .locate_transform(assets, cinematic.end_transform)?
+                .map(|(r, n)| self.roots[r].world(n));
+            let calls = || {
+                trigger
+                    .on_cinematic_start
+                    .iter()
+                    .chain(&trigger.on_cinematic_end)
+            };
+            let enters = calls().any(|c| c.method_name == "CinematicEnter");
+            let exits = calls().any(|c| c.method_name == "CinematicExit");
+            out.push(CinematicTrigger {
+                node,
+                name: self.roots[node.0].nodes[node.1].name.clone(),
+                hand: trigger.trigger_type == 0,
+                end,
+                end_only_in_vr: cinematic.only_use_end_transform_in_vr,
+                animation: cinematic.anim_param.clone(),
+                enters,
+                exits,
+                trigger,
+            });
+        }
+        Ok(out)
+    }
+
+    /// `EscapePodFirstUseCinematicsController.Initialize`: until a hatch
+    /// was used, its first-use trigger is active and the normal one not;
+    /// afterwards the other way round. Returns the (bottom, top) pairs of
+    /// (normal, first use) trigger nodes, after setting them for
+    /// `bottom_used` / `top_used`.
+    pub fn init_lifepod_hatches(
+        &mut self,
+        assets: &Assets,
+        bottom_used: bool,
+        top_used: bool,
+    ) -> Result<Option<[HatchPair; 2]>> {
+        let Some(b) = self
+            .behaviours(assets, "EscapePodFirstUseCinematicsController")
+            .into_iter()
+            .next()
+        else {
+            return Ok(None);
+        };
+        let (_, data) = b.data()?;
+        let first = sn_unity::EscapePodFirstUse::parse(data, b.file.file().big_endian)
+            .map_err(|e| format!("EscapePodFirstUseCinematicsController: {e}"))?;
+        let node_of = |pptr| -> Result<(usize, usize)> {
+            let script = assets
+                .resolve(&b.file, pptr)?
+                .ok_or("EscapePodFirstUseCinematicsController: null trigger")?;
+            self.behaviour_node(assets, &script)?.ok_or_else(|| {
+                "EscapePodFirstUseCinematicsController: trigger not in the scene".into()
+            })
+        };
+        let pairs = [
+            (node_of(first.bottom)?, node_of(first.bottom_first_use)?),
+            (node_of(first.top)?, node_of(first.top_first_use)?),
+        ];
+        for ((normal, first), used) in pairs.iter().zip([bottom_used, top_used]) {
+            self.roots[normal.0].set_active(normal.1, used);
+            self.roots[first.0].set_active(first.1, !used);
+        }
+        Ok(Some(pairs))
     }
 
     /// (root, node) of the GameObject a Transform reference belongs to.

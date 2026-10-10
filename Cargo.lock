@@ -4767,6 +4767,7 @@ version = "0.0.0"
 dependencies = [
  "sn-dotnet",
  "sn-install",
+ "sn-sim",
  "sn-terrain",
  "sn-unity",
  "sn-world",
@@ -4781,6 +4782,7 @@ dependencies = [
  "sn-install",
  "sn-mesh",
  "sn-octree",
+ "sn-sim",
  "sn-terrain",
  "sn-unity",
  "sn-world",
