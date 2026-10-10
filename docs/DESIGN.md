@@ -1,6 +1,9 @@
 # subnautica-rs — Design
 
-Status: **M1–M8a done** (2026-10-07). Everything after M8a is a plan, not code.
+Status (2026-10-10): **Phases A–B done up to M7f4g**, Phase C as first
+passes (§ 4), **Phase E up to M9c** (§ 4.3). Next: **M9g, the player's
+body** (§ 4.3, plan below M9c's), then M10. M7f4h moved after M11. Each
+row's own mark says what is done; everything else is a plan, not code.
 
 ## 1. Goal
 
@@ -402,7 +405,8 @@ understand it, then write our own.
 | **M9a** ✅ | **Done 2026-10-10** (MODLOG; facts in `docs/formats/gameplay.md` § Collision; plan below). `sn-sim::collide` passes 12 unit tests. `sn-inspect swim` reaches the Kelp Forest from the lifepod for seeds 1–5: 0 penetrations, smallest gap ≥ 5.1 mm, 1,860–3,693 contacts, about 21–31 µs mean and 60–120 µs p99 per step. The client doesn't use it yet (M9b). Plan as written: Collision: a kinematic capsule swept against triangles. Terrain from the LOD 0 meshes already built around the camera; objects from their prefabs' colliders (box, sphere, capsule, mesh; read in `sn-unity`). Our own sweep in `sn-sim`, no physics engine yet (§ 3.3's physics decision waits for rigid bodies: floating lifepod, dropped items). | Unit tests of the sweep on synthetic meshes (slide, corner, thin wall); a scripted swim lifepod → Kelp Forest logs 0 penetrations and the contacts; cost per frame logged. |
 | **M9b** ✅ | **Done 2026-10-10** (MODLOG; facts in `docs/formats/gameplay.md` § Player movement; plan and "as built" below). `sn-inspect walk`: pod → hatch → 10 s swim (71 m) → back in, 0 penetrations, 0 surfaces passed through; speeds 3.5 walking and 7.22 swimming against 3.5 and 7.6 read (7.22 is 7.6 after one step of drag 2.5). Layer 19 hits all layers but 9; every loaded collider is on layer 0 (none dropped yet). 46 pod and module colliders; placeholder spawns 10–216 per run. Colliders are one-sided, as PhysX's (source read; winding measured). The client plays as the player by default. Keyboard and mouse play are not tested by the agent. Plan as written: Player: first-person camera at eye height, swimming, walking with gravity in the lifepod and above water, the lifepod hatch. Speeds from the player's serialized fields (P0). The fly camera stays as `--free-cam`. Collision gaps left by M9a that matter here: (1) read the physics layer collision matrix (`PhysicsManager`) and collide only with the layers the player's capsule hits; (2) colliders of the lifepod's spawned modules (fabricator, radio, …) and of what placeholders spawn (M7h), so walking inside the pod hits them; (3) find out whether the game's terrain and mesh colliders block from one side or both, and match it. | Movement rules unit-tested; speeds logged next to the values read; scripted run lifepod → water → lifepod (positions logged); the layer matrix logged and the colliders kept/dropped by layer counted; lifepod module and placeholder colliders counted in the run; one- vs two-sided recorded in `docs/formats/gameplay.md` with how it was checked. |
 | **M9c** ✅ | **Done 2026-10-10** (MODLOG; facts in `docs/formats/gameplay.md` § Oxygen, health and death and § Mouse look; plan and "as built" below). `sn-sim::vitals` and `look` pass 14 unit tests; `sn-inspect dive` seeds 1–5: oxygen 0 at 42.26 s under water, death 8.02 s later, respawn in the pod 5.02 s, restore 1.02 s, controls 1.02 s; oxygen within one breath of the read rate; refill 0.56–0.74 s from surfacing; 0 penetrations. Look: 0.1125° per mouse count (sensitivity 0.15 from the DLL), pitch ±87° (scene; the code says ±80). The HUD and the look in play are not tested by the agent. Plan as written: Oxygen, health, depth: drain under water, refill at the surface and in the lifepod, suffocation → respawn in the lifepod, with the game's numbers. A minimal HUD of our own (bars and numbers; the game's UI sprites later). Also the mouse look as the game's (`MainCameraControl`: sensitivity, pitch limits, smoothing, read from its serialized fields and settings defaults), replacing our own values from M9b. | Rules unit-tested; a scripted dive logs oxygen over time against the values read; the look's values logged next to the ones read, its limits unit-tested. |
-| **M10** | Multiplayer as planned (Phase D): `sn-protocol`, `sn-net`, `sn-server`, handshake with the build check, join, player sync. From here solo play also runs against an in-process server (§ 3.1, principle 5), so items and crafting below are written server-authoritative once. | M10's own row. |
+| **M9g** | **The player's body** (plan written 2026-10-10, below M9c's; split into M9g1–M9g5): the game's player model from the `main` scene with the suit the equipment rule picks, its animator driven by the game's parameter rules (`ArmsController`, `Player`), the view model's turn and bob (`MainCameraControl`), the head drawn only in shadows in first person; then the hatch cinematics and death animation. Pulls forward "After Phase E" item 3 (all but tools/IK). Before M10 so remote players are drawn as bodies. | Each step's own list in the plan. |
+| **M10** | Multiplayer as planned (Phase D): `sn-protocol`, `sn-net`, `sn-server`, handshake with the build check, join, player sync (remote players drawn with M9g's body, animated by the same rules from synced state). From here solo play also runs against an in-process server (§ 3.1, principle 5), so items and crafting below are written server-authoritative once. | M10's own row. |
 | **M9d** | Pick up and inventory: `Pickupable` objects within reach, outcrops break into their resource (`BreakableResource`), inventory of the game's size, item sizes from TechData; picked objects gone for every player (server state keyed by entity id and slot seed). | Inventory rules unit-tested; a scripted pick-up logs item counts; the object's drawn count −1 on both clients. |
 | **M9e** | Crafting at the lifepod's fabricator: the menu from P1's tree, recipes and times from TechData, starting blueprints from `PDAData`; item names from the language files. | Crafting rules unit-tested on synthetic recipes; one real recipe crafted in a scripted run (counts before/after logged); menu node count equal to P1's. |
 | **M9f** | Save and load (player, inventory, removed objects, crafted items) on the server, in our own format, in the user's save folder (not `out/`, not the game folder). Becomes M11's persistence. | Round-trip unit test; server restart restores the logged state. |
@@ -680,6 +684,90 @@ settings (sensitivity, invert) are not read, the defaults are used.
   dive swims 8 m clear of the pod before going up: the exits end under
   it, and on seed 5 the seabed led back under it.
 
+#### M9g plan: the player's body (written 2026-10-10)
+
+**Why now:** the user wants the player's model and animations before
+multiplayer. M10 would otherwise show remote players as capsules, and the
+local player has no body or arms. The animation machinery is done (M7f4a–d:
+the player's 77,373 bindings all match its hierarchy; `sn-anim` runs its
+9-layer controller at about 50 µs per update), and the movement state that
+drives it exists (M9b, M9c). M7f4h (the floating pod) is not needed for
+this and moved after M11 (its row).
+
+**What the game has** (looked at 2026-10-10 with `sn-inspect scene main
+--tree 6` and the decompiled classes; to go to `docs/formats/gameplay.md`
+§ The player's body, each fact marked):
+- **The model is part of the `main` scene** (confirmed, scene tree):
+  `Player/body/player_view` holds the animator (`player_view_controller`,
+  avatar `player_viewAvatar`), the skeleton `export_skeleton` (with
+  `head_rig/Cam`) and `male_geo` with one group per suit: `diveSuit`
+  (body, hands, head), `radiationSuit`, `reinforcedSuit`, `stillSuit`,
+  `scubaSuit` (inactive), three fin models (`UltraGlideFins`,
+  `SwimChargeFins`, `generalSuit`). The camera is `camPivot/camRoot`
+  (`MainCameraControl`); `camRoot/player_head` is inactive. 134 nodes, 12
+  drawn, all skinned.
+- **Several suits are active in the stored scene** (confirmed, scene
+  tree). The game picks at run time (`Player.EquipmentChanged`, read in
+  the code): for each `Player.equipmentModels` entry (an equipment slot,
+  its models by tech type, a default model) the model whose tech type is
+  in the slot is active, the others not; the default model is active when
+  none matched. With nothing equipped (a new game) only the defaults show.
+  Which models those are: to read (the field is not read yet).
+- **The head in first person** (code): `Player.SetHeadVisible(false)` sets
+  `Player.head` to `ShadowCastingMode.ShadowsOnly`; only the Cyclops
+  cameras and the scanner room camera turn it visible. The head's stored
+  mode: **not checked**. M7f4e draws "shadows only" as a normal renderer.
+  Bevy 0.19's sun shadow pass picks casters by the light's `RenderLayers`
+  (`check_dir_light_mesh_visibility`, read), so a layer the sun sees and
+  the camera does not would draw shadows only (**not tested**).
+- **The parameters** (code, `ArmsController.Update` and
+  `SetPlayerSpeedParameters`): `move_speed` and `move_speed_x/y/z` from
+  the velocity relative to the view (under water the aiming transform's
+  frame; above water forward and right flattened), smoothed by
+  `Vector3.Slerp` at `smoothSpeedUnderWater`/`smoothSpeedAboveWater` × dt;
+  `view_pitch` (the camera's pitch); `view_turn` (yaw rate of the view
+  model, through `SetFloat` with `turnAnimationDampTime`: Unity's damped
+  set, which `sn-anim` does not have); `is_underwater` (and not in a
+  vehicle); `on_surface`, `holding_welder`, `using_mechsuit` (rules in
+  `InstallAnimationRules`); `diving`/`diving_land` (`UpdateDiving`:
+  falling out of water, a ray for obstacles below every scan interval);
+  `grab`, `bash` (0.4 s after being grabbed or bashed: false without
+  creatures); `cinematics_enabled` (not VR: true). `Player` sets
+  `vr_active` (false) and the death triggers `player_death`,
+  `player_death_fire`, `player_death_explosion` by damage type. 15 more
+  scripts set parameters (tools, PDA, vehicles, bed, bench, …): later,
+  with their items.
+- **IK** (code): the arms use FinalIK, a third-party plugin
+  (`FullBodyBipedIK`, `AimIK`). `UpdateHandIKWeights` sets the solver's
+  weight to 0 when neither hand has a target, and only tools, the PDA and
+  world targets (`SetWorldIKTarget`) set one, so with empty hands the IK
+  does nothing (**hypothesis** about the plugin at weight 0). IK comes
+  with the tools.
+- **The view model** (code, `MainCameraControl.OnUpdate`): `viewModel`
+  turns by the camera's yaw only, and takes the camera's local position:
+  the swim bob (`sin(6 t) − 1` × (0.02 + 0.15 × smoothed speed/5) ×
+  `swimCameraAnimation`), the landing bob (`impactForce`, from `OnLand`),
+  the step amount; the camera also tilts with strafing. Looking down
+  turns `camRoot`, looking up turns `cameraUPTransform` (the pivot M9c
+  left unmeasured).
+
+**Steps** (each ends with numbers, a MODLOG entry and, where it shows, a
+screenshot for the user; nothing is committed or pushed without the
+user's OK):
+
+| Step | Work | Done when |
+|---|---|---|
+| **M9g1** | **Data, headless.** `sn-unity`: the rest of `Player` (`equipmentModels`, `head`, `playerAnimator` and the fields between), `ArmsController` (smoothing speeds, `turnAnimationDampTime`, `ikToggleTime`, dive scan interval, …), `MainCameraControl`'s `viewModel` and bob/tilt fields if M9c did not keep them. `sn-assets`: the player's body (its prefab nodes from the `main` scene, the active models for an equipment set, the head node, the body renderers' shadow modes and shaders). `sn-inspect player --body`. In `gameplay.md`, each of the controller's 201 parameters marked: set by a rule ported here, left at its default with empty hands, or later (the script named). | Unit tests of the readers on synthetic bytes; real-data test of the reads; the models active in a new game logged; no parameter left unmarked; shaders of the body listed (unported ones logged, as § 4.2). |
+| **M9g2** | **Rules, pure.** `sn-sim::body`: `ArmsController`'s empty-hand rules (relative velocity, smoothing, the parameters above, `UpdateDiving` with `collide`'s ray) and the view model's transform (yaw, swim bob, landing bob, step amount, strafe tilt, the look-up pivot); output a list of parameter values and the view model's local transform. `sn-anim`: `set_float_damped` (Unity's damped `SetFloat`: its exact formula is a **hypothesis** until compared). | Unit tests: speeds and smoothing on known inputs, the dive flags, the bobs' ranges, the damped set's step response. |
+| **M9g3** | **Scripted check, headless.** `sn-inspect walk` and `dive` run the player's animator with these rules: each layer's state changes per phase (in the pod, walking, leaving, swimming, diving, at the surface, death, respawn). | Each phase reaches its states (names logged, the expected ones written in the plan before the run); no NaN, unit quaternions; cost per step logged. |
+| **M9g4** | **Client.** The `Player` hierarchy spawned from the `main` scene (equipment rule, camera culling mask), its root at the simulated player, the view model's transform each frame, the animator each frame with the rules (a rig as M7f4c, GPU skinning). "Shadows only" drawn as the game does (render layer seen by the sun, not the camera), for the head and for the M7f4e renderer. The camera's near plane from `MainCamera` (read in M7g1). `--third-person`: a debug orbit camera that shows the head (also what remote players will look like). | Body nodes, bones and active models counted in the log; head drawn only in the shadow pass (counted); CPU time of the body logged; screenshots in first person (looking down, swimming) and third person for the user. |
+| **M9g5** | **Cinematics.** The hatches as the game plays them (`PlayerCinematicController`: the player's animator state, the pod's hatch layer, the end at the animation's last frame), replacing M9b's end points (and the VR-only stand-ins); the death animation by damage type. Can come after M10 if the user prefers (cinematics then also need syncing). | `walk` boards and leaves with the cinematic, end poses logged next to M9b's end points; screenshots. |
+
+**Not 1:1 after M9g (planned elsewhere):** tools, the PDA and IK (with
+the tools, "After Phase E" item 1–2); the parameters the other 15 scripts
+set (with their items); the intro cinematic (item 3); sounds and effects
+(item 8, M7i); the player's saved field of view and VR mode (not read).
+
 **After Phase E** (order to be agreed then; each gets its own plan with
 steps before it starts):
 1. **Survival:** food and water (`Survival`, eating, the fabricator's food
@@ -687,7 +775,9 @@ steps before it starts):
 2. **Scanner and PDA:** fragments, blueprints unlocked by scanning
    (`analysisTech`, `TechFragment`), the databank text from the language
    files, the PDA screen.
-3. **The player's animations:** the hatch cinematics (`PlayerCinematicController`
+3. **The player's animations** (the body, its parameters, view model,
+   hatch cinematics and death pulled forward as M9g, above; what stays
+   here: the intro, tools and IK): the hatch cinematics (`PlayerCinematicController`
    plays an animation, then the end point; also the VR-only end points then
    come from the animation's last frame), the body and arms, the camera bob
    and step smoothing. Needs the `Animator` work deferred in M7f4; it is
@@ -761,7 +851,7 @@ user's OK):
 | **M7f4e** ✅ (2026-10-10; see "as built") | **Aurora on the game clock, its exterior cull, shadow flags.** `CrashedShipExploder`: `timeToStartCountdown` = start + `Random.Range(2.3, 4)` × 1,200 s (our seeded draw, `--aurora-countdown <s>` to choose), the model swap 27 s after it, on the client's game clock (`--aurora` stays as an override). `ShipExteriorCullManager`: the exploded exterior hidden while the camera is in one of its `ShipExteriorCull` volumes (every 10th frame, as the game). Renderers' `m_CastShadows` honoured (off → no sun shadow; shadows-only → shadow without colour), which is M8c6b's open item. | Countdown, swap time and cull volume count logged; real-data test of the cull volumes' read; swap seen at the logged time with `--time-scale` (screenshot pair); shadow casters counted by mode. |
 | **M7f4f** ✅ (2026-10-10; see "as built") | **LOD by distance.** `LODGroup` (each level's screen-relative height, size, reference point, fade mode) and `QualitySettings` (the current level's `lodBias`, `maximumLODLevel`) read; per instance per frame the level the game would show: the group's size in world space against the screen height at the camera's distance and field of view, divided by the bias (Unity's documented rule, **hypothesis** for the exact form until checked against the game). Replaces "always LOD 0" for every prefab and the scenes. | Real-data test of the reads; levels shown per distance band logged; the Aurora at 500 m and 1,500 m (screenshots); triangle count and frame time before and after. |
 | **M7f4g** ✅ (2026-10-10; see "as built"; not compared with the game on screen) | **The lifepod's own light.** `MarmoLifepodSky`: inside the pod the global sky is the pod's anchor sky, outside the Safe Shallows one. `LightingController`: its states, multi-state skies and lights, `LerpToState`; the pod's start state and its lights' animator (`Life_Pod_lights_controller`, from M7f4b). The pod's `AtmosphereVolume` waits for M8c7b (atmosphere volumes) and is listed there. | Sky switch logged on entering and leaving; light intensities per state logged against the read values; screenshot inside the pod. |
-| **M7f4h** | **The lifepod floats.** `WorldForces` (buoyancy above and below the water, its drag), `Stabilizer` (upright torque), `EscapePod.FixedUpdate` (pull back to the anchor), a rigid body for this one object in `sn-sim` (mass, drag and angular drag read from its `Rigidbody`; no contacts). The pod's colliders and triggers move with it. The player stands on it as on a moving platform (`GroundMotor` moving-platform rules, read in M9b). `MoveAndRotateWithTransform` every frame. | Unit tests of the forces; `sn-inspect walk` still boards and leaves the pod with the pod moving; pod height and tilt over 60 s logged; the client shows it bobbing. |
+| **M7f4h** (moved after M11, 2026-10-10, the user's OK: the body does not need it; the floating pod is an object every player sees, so it is built once with M11's simulation owner, as its first owned rigid body, instead of single-player physics redone for co-op; it would also move the floor under the scripted `walk`/`dive` runs M9g relies on) | **The lifepod floats.** `WorldForces` (buoyancy above and below the water, its drag), `Stabilizer` (upright torque), `EscapePod.FixedUpdate` (pull back to the anchor), a rigid body for this one object in `sn-sim` (mass, drag and angular drag read from its `Rigidbody`; no contacts). The pod's colliders and triggers move with it. The player stands on it as on a moving platform (`GroundMotor` moving-platform rules, read in M9b). `MoveAndRotateWithTransform` every frame. | Unit tests of the forces; `sn-inspect walk` still boards and leaves the pod with the pod moving; pod height and tilt over 60 s logged; the client shows it bobbing. |
 
 **As built (2026-10-10), where it differs from the plan:**
 - **M7f4a.** Every reader fails on leftover bytes, so "parses to its last
@@ -1067,8 +1157,8 @@ only, with the UI).
 
 | # | Goal | Done when |
 |---|---|---|
-| **M10** | `sn-protocol` + `sn-net` + `sn-server`: handshake (protocol + game build check), join, player transform sync over UDP. | Two clients on one machine see each other as capsules; packet loss/latency injected in tests. |
-| **M11** | Nitrox-style entity sync: simulation ownership + handoff, server persistence, pick up / drop an item. | Item state survives server restart; ownership handoff covered by headless tests. |
+| **M10** | `sn-protocol` + `sn-net` + `sn-server`: handshake (protocol + game build check), join, player transform sync over UDP (position, yaw, pitch, velocity and the body's flags; each client runs M9g's rules for the remote bodies). | Two clients on one machine see each other's animated bodies (M9g; capsules if M9g is not done); packet loss/latency injected in tests. |
+| **M11** | Nitrox-style entity sync: simulation ownership + handoff, server persistence, pick up / drop an item. Then M7f4h, the floating lifepod, as the first owned rigid body. | Item state survives server restart; ownership handoff covered by headless tests. |
 | **M12** | **Playable multiplayer desktop demo:** two+ players spawn in Safe Shallows, swim the textured, populated seabed, see each other, pick up items, chat. | A friend on another machine joins over the internet using their own install. |
 
 Beyond M12 (unordered): creatures + AI, inventory/crafting, PDA, vehicles,

@@ -2,6 +2,35 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-10 — Plan: M9g, the player's body; M7f4h moved after M11
+
+**What:** `docs/DESIGN.md` only. New M9g row in Phase E and "M9g plan"
+(§ 4.3, after M9c's): the player's model from the `main` scene, the
+equipment rule picking the suit, the animator driven by the game's
+parameter rules, the view model, the head drawn only in shadows, then the
+hatch cinematics and death animation (M9g1–M9g5). M7f4h (the floating
+lifepod) moved after M11, as the first rigid body with a simulation owner.
+M10 now plans remote players as animated bodies. "After Phase E" item 3
+points to M9g. The status line at the top was stale (said M1–M8a) and is
+updated.
+
+**Why:** the user wants the player's model and animations before
+multiplayer. The animation work (M7f4a–d) and the player's movement state
+(M9b, M9c) are there; what is missing was found today: the client never
+spawns the `main` scene's `Player`; every suit is active in the stored
+scene (`Player.equipmentModels` picks one at run time, not read yet); the
+head is "shadows only" in first person (M7f4e draws that mode as normal);
+nothing sets the animator's parameters (`ArmsController`); Unity's damped
+`SetFloat` is missing in `sn-anim`. The arms' IK (FinalIK) is at weight 0
+with empty hands, so it waits for the tools (**hypothesis** about the
+plugin). M7f4h is not needed for the body and would be redone for co-op.
+
+**How checked:** `sn-inspect scene main --tree 6` (the player's hierarchy,
+output in `out/`); the decompiled `ArmsController`, `Player`,
+`MainCameraControl`, `EscapePod` read (in `out/`, not committed); Bevy
+0.19.1's `check_dir_light_mesh_visibility` read for shadow casters by
+render layer. No code changed; nothing run besides the inspector.
+
 ## 2026-10-10 — M7f4g: Lifepod 5's own light
 
 **What:** seventh step of M7f4 (`docs/DESIGN.md` § 4.4, plan and "as
