@@ -1,8 +1,8 @@
 # subnautica-rs — Design
 
 Status (2026-10-10): **Phases A–B done up to M7f4g**, Phase C as first
-passes (§ 4), **Phase E up to M9c** (§ 4.3). Next: **M9g, the player's
-body** (§ 4.3, plan below M9c's), then M10. M7f4h moved after M11. Each
+passes (§ 4), **Phase E up to M9c and M9g4** (§ 4.3). Next: **M9g5, the
+hatch cinematics** (§ 4.3, plan below M9c's), then M10. M7f4h moved after M11. Each
 row's own mark says what is done; everything else is a plan, not code.
 
 ## 1. Goal
@@ -716,10 +716,12 @@ this and moved after M11 (its row).
 - **The head in first person** (code): `Player.SetHeadVisible(false)` sets
   `Player.head` to `ShadowCastingMode.ShadowsOnly`; only the Cyclops
   cameras and the scanner room camera turn it visible. The head's stored
-  mode: **not checked**. M7f4e draws "shadows only" as a normal renderer.
+  mode: shadows only (confirmed M9g1). M7f4e drew "shadows only" as a
+  normal renderer (fixed in M9g4).
   Bevy 0.19's sun shadow pass picks casters by the light's `RenderLayers`
   (`check_dir_light_mesh_visibility`, read), so a layer the sun sees and
-  the camera does not would draw shadows only (**not tested**).
+  the camera does not draws shadows only (confirmed M9g4: the head is
+  in the sun's shadow pass and off the camera's layer, counted).
 - **The parameters** (code, `ArmsController.Update` and
   `SetPlayerSpeedParameters`): `move_speed` and `move_speed_x/y/z` from
   the velocity relative to the view (under water the aiming transform's
@@ -760,7 +762,7 @@ user's OK):
 | **M9g1** ✅ (2026-10-10; see "as built") | **Data, headless.** `sn-unity`: the rest of `Player` (`equipmentModels`, `head`, `playerAnimator` and the fields between), `ArmsController` (smoothing speeds, `turnAnimationDampTime`, `ikToggleTime`, dive scan interval, …), `MainCameraControl`'s `viewModel` and bob/tilt fields if M9c did not keep them. `sn-assets`: the player's body (its prefab nodes from the `main` scene, the active models for an equipment set, the head node, the body renderers' shadow modes and shaders). `sn-inspect player --body`. In `gameplay.md`, each of the controller's 201 parameters marked: set by a rule ported here, left at its default with empty hands, or later (the script named). | Unit tests of the readers on synthetic bytes; real-data test of the reads; the models active in a new game logged; no parameter left unmarked; shaders of the body listed (unported ones logged, as § 4.2). |
 | **M9g2** ✅ (2026-10-10; see "as built") | **Rules, pure.** `sn-sim::body`: `ArmsController`'s empty-hand rules (relative velocity, smoothing, the parameters above, `UpdateDiving` with `collide`'s ray) and the view model's transform (yaw, swim bob, landing bob, step amount, strafe tilt, the look-up pivot); output a list of parameter values and the view model's local transform. `sn-anim`: `set_float_damped` (Unity's damped `SetFloat`: its exact formula is a **hypothesis** until compared). | Unit tests: speeds and smoothing on known inputs, the dive flags, the bobs' ranges, the damped set's step response. |
 | **M9g3** ✅ (2026-10-10; see "as built") | **Scripted check, headless.** `sn-inspect walk` and `dive` run the player's animator with these rules: each layer's state changes per phase (in the pod, walking, leaving, swimming, diving, at the surface, death, respawn). | Each phase reaches its states (names logged, the expected ones written in the plan before the run); no NaN, unit quaternions; cost per step logged. |
-| **M9g4** | **Client.** The `Player` hierarchy spawned from the `main` scene (equipment rule, camera culling mask), its root at the simulated player, the view model's transform each frame, the animator each frame with the rules (a rig as M7f4c, GPU skinning). "Shadows only" drawn as the game does (render layer seen by the sun, not the camera), for the head and for the M7f4e renderer. The camera's near plane from `MainCamera` (read in M7g1). `--third-person`: a debug orbit camera that shows the head (also what remote players will look like). | Body nodes, bones and active models counted in the log; head drawn only in the shadow pass (counted); CPU time of the body logged; screenshots in first person (looking down, swimming) and third person for the user. |
+| **M9g4** ✅ (2026-10-10; see "as built") | **Client.** The `Player` hierarchy spawned from the `main` scene (equipment rule, camera culling mask), its root at the simulated player, the view model's transform each frame, the animator each frame with the rules (a rig as M7f4c, GPU skinning). "Shadows only" drawn as the game does (render layer seen by the sun, not the camera), for the head and for the M7f4e renderer. The camera's near plane from `MainCamera` (read in M7g1). `--third-person`: a debug orbit camera that shows the head (also what remote players will look like). | Body nodes, bones and active models counted in the log; head drawn only in the shadow pass (counted); CPU time of the body logged; screenshots in first person (looking down, swimming) and third person for the user. |
 | **M9g5** | **Cinematics.** The hatches as the game plays them (`PlayerCinematicController`: the player's animator state, the pod's hatch layer, the end at the animation's last frame), replacing M9b's end points (and the VR-only stand-ins); the death animation by damage type. Can come after M10 if the user prefers (cinematics then also need syncing). | `walk` boards and leaves with the cinematic, end poses logged next to M9b's end points; screenshots. |
 
 **As built (2026-10-10), where it differs from the plan:**
@@ -819,6 +821,41 @@ user's OK):
   one breath period (42.26 → 45.18 s), within its check. Runs are
   stepped at the physics rate (50 Hz); the game updates the animator
   every frame.
+- **M9g4.** The objects worker loads `Assets::player_body` (new game
+  equipment) and sends it as one prefab; the client spawns it once and
+  tags its rig's base (`PlayerBodyRig`). `crate::player` runs
+  `sn_sim::body` every frame (`fixed_step` per physics step; `jumped`,
+  `landed`, `died` from the events) and hands `crate::body` the
+  parameters and the view model's world placement (player transform,
+  then `camRoot`'s position and yaw only, `MainCameraControl.OnUpdate`);
+  the animator runs in the existing `animate` system with the game's
+  culling mode (1, cull update transforms). The camera sits at
+  `CameraPose::eye` with the pose's rotation; the hand's ray starts
+  there. "Shadows only" (`m_CastShadows` 3) renderers go on render layer
+  1, which the sun sees and the camera (layer 0) does not; this covers
+  the head and M7f4e's one renderer. The near plane is the main
+  camera's 0.03 m (was Bevy's 0.1), in every mode. `--third-person`
+  puts the camera 2.5 m behind the eye and draws the head
+  (`SetHeadVisible(true)`); no collision for that camera (debug only).
+  Debug flags for checks: `--look-down DEG`, `--shot SECONDS NAME`.
+  Numbers: 134 nodes, 3 renderers drawn (4 sub-meshes, all skinned on
+  the rig, 1 shadows only); rig 113 nodes, 213 slots, skins of 43 / 36 /
+  5 bones; the head off the camera's layer and in the sun's shadow pass
+  (counted every 10 s); standing in the pod the animated nodes reach
+  1.53 m below the view model (the capsule's bottom is 1.50 m below);
+  base layer `Walking` in the pod and `Swim` in the water, 55–64 of 71
+  animated rotations away from the stored pose; skin 0's joint matrices
+  differ by up to 1.45 m in the swim pose (not drawn rigidly); rules and
+  drive 11–13 µs per frame (worst 78). Screenshots
+  `out/m9g4-pod-down.png` (legs, boots and hands looking straight
+  down), `out/m9g4-swim-down.png` (hands treading water),
+  `out/m9g4-swim-third.png` and `-third-b.png` (third person, 1.3 s
+  apart: the pose changes). Not 1:1: the body is lit with the global
+  sky (the game's `SkyApplier` on the player not read); the view model
+  and camera use the physics position (no interpolation, as before).
+  Not tested: motion against the game side by side (for the user);
+  looking down 60° in the pod shows no body (the body is below and
+  0.15 m ahead of the eye's pivot), not checked against the game.
 
 **M9g3 expected states (written 2026-10-10 before the run, from the
 controller's transitions in `sn-inspect anim scene:main --states`):**

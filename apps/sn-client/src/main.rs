@@ -5,6 +5,7 @@
 
 mod animation;
 mod aurora;
+mod body;
 mod effects;
 mod game_light;
 mod grass_look;
@@ -41,7 +42,7 @@ use sn_install::GameData;
 
 use crate::game_light::{GameLightPlugin, LightTextures, PendingLightTextures};
 use crate::object_look::ObjectLookPlugin;
-use crate::objects::{ObjectStreamer, SceneOptions};
+use crate::objects::{BodyOptions, ObjectStreamer, SceneOptions};
 use crate::sky_dome::{PendingSky, PendingStars, SkyDomePlugin, SkyWorld};
 use crate::terrain::{BlockSettings, LodRanges, TerrainStreamer};
 use crate::terrain_look::{PendingTerrainLook, SUN_ILLUMINANCE, TerrainLookPlugin};
@@ -109,6 +110,12 @@ Usage: sn-client [--game-dir <PATH>] [--start <X> <Y> <Z>] [--look <X> <Y> <Z>]
                  vsync, log frame times, save out/client-benchmark.png, exit
   --free-cam     a fly camera instead of the player (also with --benchmark
                  and --flythrough)
+  --third-person a debug camera 2.5 m behind the player's eye that shows
+                 the head (the player's body is drawn in either view)
+  --look-down    the player's starting pitch, degrees (negative looks up;
+                 clamped to the game's limits)
+  --shot         --shot <SECONDS> <NAME>: after SECONDS of play, save
+                 out/NAME.png and exit (a check for the human)
   --flythrough   once loaded, fly in a straight line to X Y Z (Unity world
                  coordinates) at --speed (default 40 m/s) without vsync, then
                  log frame times, memory and streaming latency, save
@@ -163,6 +170,12 @@ struct Args {
     aurora_countdown: Option<f32>,
     /// `--free-cam`: the fly camera instead of the player.
     free_cam: bool,
+    /// `--third-person`: the camera behind the player's eye (M9g4).
+    third_person: bool,
+    /// `--look-down`: the starting pitch, degrees down.
+    look_down: f32,
+    /// `--shot`: seconds of play, then `out/<name>.png`.
+    shot: Option<(f32, String)>,
     /// `--lifepod-state`: the pod's `LightingController` state.
     lifepod_state: usize,
 }
@@ -203,6 +216,9 @@ fn parse_args() -> Result<Args, String> {
         aurora_held: None,
         aurora_countdown: None,
         free_cam: false,
+        third_person: false,
+        look_down: 0.0,
+        shot: None,
         lifepod_state: sn_sim::lighting::DAMAGED,
     };
     let raw: Vec<String> = std::env::args().skip(1).collect();
@@ -286,6 +302,20 @@ fn parse_args() -> Result<Args, String> {
             }
             "--gpu-timings" => args.gpu_timings = true,
             "--free-cam" => args.free_cam = true,
+            "--third-person" => args.third_person = true,
+            "--look-down" => args.look_down = number(it.next(), "--look-down")?,
+            "--shot" => {
+                let seconds = number(it.next(), "--shot")?;
+                let name = it.next().ok_or("--shot takes <SECONDS> <NAME>")?;
+                if name.is_empty()
+                    || !name
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+                {
+                    return Err("--shot: NAME takes letters, digits, - and _".into());
+                }
+                args.shot = Some((seconds, name.clone()));
+            }
             "--time" => args.time = number(it.next(), "--time")?,
             "--fog-unit" => args.fog_unit = number(it.next(), "--fog-unit")?,
             "--color-grading" => {
@@ -658,6 +688,9 @@ fn main() -> AppExit {
                     args.slot_seed,
                     !args.no_placeholders,
                     args.scenes,
+                    play.then_some(BodyOptions {
+                        head_visible: args.third_person,
+                    }),
                     !args.no_animation,
                 ));
                 app.init_resource::<animation::AnimationStats>()
@@ -711,12 +744,30 @@ fn main() -> AppExit {
                     lifepod,
                     position: args.start.to_array(),
                     slot_seed: args.slot_seed,
+                    third_person: args.third_person,
+                    look_down: f64::from(args.look_down),
                 };
                 app.insert_resource(player::PlayerSim::start(game, start))
                     .init_resource::<hud::Hud>()
+                    .init_resource::<body::BodyDrive>()
+                    .add_systems(
+                        Update,
+                        body::drive
+                            .after(player::update)
+                            .after(objects::stream_objects)
+                            .before(animation::animate),
+                    )
                     .add_systems(Startup, hud::setup)
                     .add_systems(Update, player::update.before(terrain::stream))
                     .add_systems(Update, hud::update.after(player::update));
+                if let Some((seconds, name)) = args.shot.clone() {
+                    app.insert_resource(PlayShot {
+                        seconds: f64::from(seconds),
+                        name,
+                        taken: false,
+                    })
+                    .add_systems(Update, play_shot.after(player::update));
+                }
             }
             Err(e) => {
                 eprintln!("error: {e}");
@@ -781,6 +832,34 @@ fn camera_fov(game_dir: Option<PathBuf>) -> f32 {
             45.0
         }
     }
+}
+
+/// `--shot`: a screenshot after some seconds of play, then exit.
+#[derive(Resource)]
+struct PlayShot {
+    seconds: f64,
+    name: String,
+    taken: bool,
+}
+
+fn play_shot(mut commands: Commands, mut shot: ResMut<PlayShot>, sim: Res<player::PlayerSim>) {
+    if shot.taken || sim.play_seconds() < shot.seconds {
+        return;
+    }
+    shot.taken = true;
+    if let Err(e) = std::fs::create_dir_all("out") {
+        error!("out/: {e}");
+    }
+    let path = format!("out/{}.png", shot.name);
+    info!("shot: {path} after {:.1} s of play", sim.play_seconds());
+    commands
+        .spawn(Screenshot::primary_window())
+        .observe(save_to_disk(path))
+        .observe(
+            |_: On<ScreenshotCaptured>, mut exit: MessageWriter<AppExit>| {
+                exit.write(AppExit::Success);
+            },
+        );
 }
 
 #[derive(Resource)]
@@ -887,6 +966,9 @@ fn setup(
             ..default()
         },
         sun_cascades(),
+        // The camera's layer and the "shadows only" one: those renderers
+        // cast the sun's shadow without being drawn (M9g4).
+        bevy::camera::visibility::RenderLayers::from_layers(&[0, objects::SHADOW_ONLY_LAYER]),
         Transform::default().looking_to(direction, Vec3::Y),
     ));
 }

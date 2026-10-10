@@ -46,10 +46,14 @@ Tested on Windows 11 with game build 10 (Steam):
   starting blueprints and unlocks (`PDAData`) from the main scene
   (`sn-inspect techdata`, `sn-inspect player`), and every collider of the
   placed prefabs (`sn-inspect prefab --colliders`).
-- Reading the player's body (headless, not drawn yet): the suit models
-  the game shows in a new game, the head (drawn only in shadows), the
-  camera's nodes and the arms' animation numbers (`sn-inspect player
-  --body`).
+- The player's body: the suit models the game shows in a new game,
+  animated by the game's controller with its empty-hand rules (walking,
+  swimming, surface, falling, death), turned and bobbed with the view as
+  the game does; the head casts a shadow but is not drawn in first
+  person; the camera sits at the game's eye (`sn-inspect player
+  --body`; in `sn-client` look down to see it, `--third-person` for a
+  debug camera behind the player). Its motion has not been compared
+  with the game side by side.
 - Reading what the game keeps only in its code, from the player's own
   `Assembly-CSharp.dll` with our own .NET reader (`sn-inspect code`): all
   793 tech type names, the 7 crafting menus (159 nodes; `--trees` prints
@@ -142,9 +146,8 @@ animated lights, materials and script values, objects on shaders other than the 
 object shader (Lost River brine, sand and lava falls and other effect
 meshes not yet decoded are flat, Safe Shallows triplanar rocks white;
 `docs/formats/materials.md`), creatures (including the
-~100,000 the spawn slots would add); the player's animations (the
-hatch cinematics, body, camera bob), tanks and fins changing speeds,
-the game's own HUD, damage effects and the death animation; audio,
+~100,000 the spawn slots would add); the hatch cinematics, tools, the PDA and IK, tanks and fins changing
+speeds, the game's own HUD and damage effects; audio,
 multiplayer.
 Linux/macOS: not tested.
 

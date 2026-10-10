@@ -2,6 +2,73 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-10 — M9g4: the player's body in the client
+
+**What:** fourth step of M9g (`docs/DESIGN.md` § 4.3, "M9g plan" and "as
+built").
+- `objects.rs`: the worker loads `Assets::player_body` and sends it as
+  one prefab (`Update::Body`); the client spawns it once and tags its
+  rig's base (`PlayerBodyRig`, hidden until the player exists). The
+  main camera's near plane is sent (`Update::Camera`) and applied.
+  "Shadows only" renderers go on `SHADOW_ONLY_LAYER` (1) with a
+  `ShadowsOnly` marker.
+- `body.rs` (new): `BodyDrive` (what the player system hands over) and
+  the `drive` system: the rig's base at the view model, the animator's
+  parameters set, a status line every 10 s (parts drawn, shadows-only
+  parts off the camera's layer and in a shadow pass, base layer state,
+  rotations moved, skin 0's joint matrix spread, node bounds, CPU time).
+- `player.rs`: `sn_sim::body` per frame and per physics step (jump, land
+  and death events); the camera and the hand's ray at the game's eye;
+  `--third-person` camera; starting pitch; `play_seconds`. New unit test
+  `pose_rotation_matches_the_rules` (the camera rig's Unity rotation and
+  the view model's yaw-only turn against `CameraPose::rotate`).
+- `main.rs`: `--third-person`, `--look-down DEG`, `--shot SECONDS NAME`
+  (save `out/NAME.png` after that much play, then exit); the sun sees
+  layers 0 and 1; `body::drive` between `player::update` and `animate`.
+- Docs: DESIGN row and "as built", `gameplay.md` (shadow modes, the
+  body's rig numbers), README.
+- No new dependency.
+
+**Why:** M9g's "Done when" for this step: body nodes, bones and models
+counted, head only in the shadow pass (counted), CPU time logged,
+screenshots in first and third person.
+
+**How verified:**
+- `cargo test --workspace`: passes. `cargo clippy --workspace
+  --all-targets -- -D warnings`: clean. `cargo fmt --all`: applied.
+- `sn-client --look-down 85 --shot 12 m9g4-pod-down` (in the pod): body
+  134 nodes, 3 renderers drawn (diveSuit body, hands, head), 4
+  sub-meshes all skinned on the rig, 1 shadows only; rig 113 nodes, 213
+  slots, skins of 43 / 36 / 5 bones, culling mode 1; near plane 0.03 m
+  (was 0.1); base layer `Walking`; head off the camera's layer and in a
+  light's shadow pass; animated nodes down to 1.53 m below the view
+  model (capsule bottom 1.50 m); rules and drive 11–13 µs per frame.
+  Screenshot: legs, boots and hands on the pod floor.
+- `--start -115 -6 -40 --look-down 45 --shot 12 m9g4-swim-down`: base
+  layer `Swim`, 63 of 71 rotations moved; screenshot shows both hands
+  treading water in front of the camera.
+- `--start -115 -6 -40 --third-person --look-down 20 --shot 12` and
+  `--shot 13.3`: the head drawn; the two shots' poses differ (arms and a
+  leg moved), so the GPU skinning follows the animator.
+- `--benchmark 120` (fly camera, no body): 0 warnings, mean 26.75 ms
+  (M7f4g's clean run 25.0 ms; this machine's runs vary by several ms;
+  not A/B'd against the committed build).
+- **Not tested:** the body's motion against the game side by side (for
+  the user); playing it with keyboard and mouse; looking down 60° in
+  the pod shows no body at all, not compared with the game.
+
+**Dead ends:**
+- The first third-person shot from the pod showed only the pod's wall
+  (the camera is 2.5 m behind the eye and has no collision); shots are
+  taken in open water instead.
+- The first open-water shot looked like a bind pose (arms straight
+  out). Joint matrices, the animator's state and moved rotations were
+  logged: the animator was in `Swim` and skin 0's joint matrices
+  differed by 1.5 m, so the mesh was not drawn rigidly. A second shot
+  1.3 s later showed a different pose: arms out is the game's swim idle.
+  An A/B with `--no-animation` does not work for this: it builds no
+  rigs, so no body is spawned.
+
 ## 2026-10-10 — M9g3: the body in the scripted runs
 
 **What:** third step of M9g (`docs/DESIGN.md` § 4.3, "M9g plan", the

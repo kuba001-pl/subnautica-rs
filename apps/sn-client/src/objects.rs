@@ -21,7 +21,7 @@ use std::time::Instant;
 
 use bevy::asset::RenderAssetUsages;
 use bevy::camera::primitives::Aabb;
-use bevy::camera::visibility::{DynamicSkinnedMeshBounds, NoAutoAabb};
+use bevy::camera::visibility::{DynamicSkinnedMeshBounds, NoAutoAabb, RenderLayers};
 use bevy::math::Affine2;
 use bevy::mesh::morph::{MAX_MORPH_WEIGHTS, MeshMorphWeights, MorphAttributes};
 use bevy::mesh::skinning::{SkinnedMesh, SkinnedMeshInverseBindposes};
@@ -31,7 +31,7 @@ use bevy::render::render_resource::{Extent3d, Face, TextureDimension, TextureFor
 use sn_anim::{Animator, Program, SlotKind};
 use sn_assets::{
     Assets as GameAssets, AuroraShow, BiomeSky, LootTable, MarmoSkies, ObjectRef, Prefab,
-    SHADOWS_OFF, TerrainTexture, marmo_skies,
+    SHADOWS_OFF, SHADOWS_ON, SHADOWS_ONLY, TerrainTexture, marmo_skies,
 };
 use sn_install::GameData;
 use sn_unity::{Catalog, DayNightLight, LightKind, Material, SKIES_AUTO, Shader};
@@ -402,6 +402,36 @@ pub struct ExteriorCullVolume(pub Vec<sn_sim::aurora::CullBox>);
 #[derive(Component)]
 pub struct ShadowsOff;
 
+/// The render layer of "shadows only" renderers (`m_CastShadows` 3, M9g4):
+/// the sun sees it (its shadow pass picks casters by its `RenderLayers`),
+/// the camera (layer 0) does not, so they cast shadows and are not drawn.
+pub const SHADOW_ONLY_LAYER: usize = 1;
+
+/// A drawn part on [`SHADOW_ONLY_LAYER`].
+#[derive(Component)]
+pub struct ShadowsOnly;
+
+/// The base of the player body's rig (M9g4): `crate::body` moves it and
+/// sets its animator's parameters every frame.
+#[derive(Component)]
+pub struct PlayerBodyRig;
+
+/// The player's body (M9g4): the `Player` hierarchy of the main scene.
+#[derive(Clone, Copy)]
+pub struct BodyOptions {
+    /// Draw the head (the game's `Player.SetHeadVisible(true)`, as its
+    /// Cyclops cameras do; our third-person camera); else it casts
+    /// shadows only, as the game stores it.
+    pub head_visible: bool,
+}
+
+/// The body's prefab, and whether it was spawned.
+#[derive(Clone, Copy)]
+struct BodyObjects {
+    prefab: u32,
+    spawned: bool,
+}
+
 #[derive(Clone, Copy)]
 enum RigPart {
     Node { rig: u16, node: u16 },
@@ -567,6 +597,16 @@ enum Update {
         /// Lifepod 5's sky, lighting controller and lights (M7f4g).
         lifepod: Option<Box<crate::lifepod_light::PodLightData>>,
         ms: f32,
+    },
+    /// The player's body (M9g4; `None`: nothing to draw).
+    Body {
+        prefab: Option<u32>,
+        summary: String,
+        ms: f32,
+    },
+    /// The game's main camera: its near plane (m).
+    Camera {
+        near: f32,
     },
     Ready {
         ms: f32,
@@ -2166,6 +2206,67 @@ impl Library {
         self.assets.trim_cache(BUNDLE_CACHE_BYTES);
     }
 
+    /// The player's body (M9g4): the main scene's `Player` hierarchy with
+    /// the equipment rule for a new game, as one prefab at the identity
+    /// (the client moves its rig to the player). Its placeholders are not
+    /// spawned (it has none in use; the tools come with their items).
+    fn body(&mut self, options: &BodyOptions, out: &mut Vec<Update>) {
+        let start = Instant::now();
+        let mut body = match self.assets.player_body() {
+            Ok(b) => b,
+            Err(e) => {
+                out.push(Update::Warning(format!("player body: {e}")));
+                return;
+            }
+        };
+        if options.head_visible
+            && let Some(head) = body.prefab.nodes.get_mut(body.head_node)
+        {
+            head.cast_shadows = SHADOWS_ON;
+        }
+        // `MainCameraControl` turns and bobs the view model; the client
+        // moves the animator's parent, so the two must be the same node.
+        let parent = body
+            .prefab
+            .nodes
+            .get(body.animator_node)
+            .and_then(|n| n.parent);
+        if parent != Some(body.view_model_node) {
+            out.push(Update::Warning(format!(
+                "player body: the animator hangs on node {parent:?}, not the view model ({}); the body will not turn with the view",
+                body.view_model_node
+            )));
+        }
+        let mask = self.culling_mask;
+        let visible: Vec<&sn_assets::PrefabNode> = body.prefab.visible_nodes().collect();
+        let culled = visible
+            .iter()
+            .filter(|n| n.layer >= 32 || mask & (1 << n.layer) == 0)
+            .count();
+        let shadows_only = visible
+            .iter()
+            .filter(|n| n.cast_shadows == SHADOWS_ONLY)
+            .count();
+        let names: Vec<&str> = visible.iter().map(|n| n.name.as_str()).collect();
+        let summary = format!(
+            "player body: {} nodes, {} renderers drawn {names:?} ({culled} on layers the camera leaves out, {shadows_only} shadows only), head {:?}{}",
+            body.prefab.nodes.len(),
+            visible.len(),
+            body.prefab
+                .nodes
+                .get(body.head_node)
+                .map_or("?", |n| n.name.as_str()),
+            if options.head_visible { " drawn" } else { "" }
+        );
+        let prefab = self.prefab_parts_as(&body.prefab, false, out);
+        out.push(Update::Body {
+            prefab,
+            summary,
+            ms: start.elapsed().as_secs_f32() * 1000.0,
+        });
+        self.assets.trim_cache(BUNDLE_CACHE_BYTES);
+    }
+
     /// A prefab drawn as a still object: creatures move and animate, so
     /// they are left out (a later milestone).
     fn still_prefab(&mut self, path: &str, out: &mut Vec<Update>) -> Option<u32> {
@@ -2386,6 +2487,7 @@ struct Shared {
     shutdown: AtomicBool,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn worker(
     game: &'static GameData,
     shared: Arc<Shared>,
@@ -2393,6 +2495,7 @@ fn worker(
     slot_seed: Option<u64>,
     placeholders: bool,
     scenes: Option<SceneOptions>,
+    body: Option<BodyOptions>,
     animate: bool,
 ) {
     let start = Instant::now();
@@ -2464,6 +2567,7 @@ fn worker(
                 camera.culling_mask
             );
             library.culling_mask = camera.culling_mask;
+            let _ = tx.send(Update::Camera { near: camera.near });
         }
         Err(e) => {
             let _ = tx.send(Update::Warning(format!(
@@ -2518,6 +2622,15 @@ fn worker(
     if let Some(options) = scenes {
         let mut out = Vec::new();
         library.scenes(&options, &mut out);
+        for update in out {
+            if tx.send(update).is_err() {
+                return;
+            }
+        }
+    }
+    if let Some(options) = body {
+        let mut out = Vec::new();
+        library.body(&options, &mut out);
         for update in out {
             if tx.send(update).is_err() {
                 return;
@@ -2623,6 +2736,8 @@ pub struct ObjectStreamer {
     prefab_directional: HashMap<u32, Vec<DirectionalSource>>,
     batches: HashMap<BatchCoord, BatchObjects>,
     scenes: Vec<SceneObjects>,
+    /// The player's body (M9g4).
+    body: Option<BodyObjects>,
     /// What was last put in the worker's queue.
     requested: Vec<BatchCoord>,
     defaults: Option<Defaults>,
@@ -2640,6 +2755,7 @@ impl ObjectStreamer {
     /// the spawn slots with this world seed (`None`: leave them empty).
     /// `placeholders`: spawn what the objects' placeholders hold.
     /// `scenes`: load the scenes the game spawns at start (`None`: none).
+    /// `body`: spawn the player's body (M9g4; `None`: none).
     /// `animate`: run the objects' animators (M7f4c).
     pub fn start(
         game: GameData,
@@ -2647,6 +2763,7 @@ impl ObjectStreamer {
         slot_seed: Option<u64>,
         placeholders: bool,
         scenes: Option<SceneOptions>,
+        body: Option<BodyOptions>,
         animate: bool,
     ) -> ObjectStreamer {
         // The worker's asset index borrows the install for the whole run.
@@ -2666,6 +2783,7 @@ impl ObjectStreamer {
                 slot_seed,
                 placeholders,
                 scenes,
+                body,
                 animate,
             )
         });
@@ -2689,6 +2807,7 @@ impl ObjectStreamer {
             prefab_directional: HashMap::new(),
             batches: HashMap::new(),
             scenes: Vec::new(),
+            body: None,
             requested: Vec::new(),
             defaults: None,
             lights,
@@ -3119,6 +3238,7 @@ pub fn stream_objects(
     light: Res<GameLightImages>,
     water: Option<Res<WaterWorld>>,
     camera: Query<&Transform, With<Camera3d>>,
+    mut projection: Query<&mut Projection, With<Camera3d>>,
     shadows_off: Query<(), With<ShadowsOff>>,
     mut terrain_look: Option<ResMut<TerrainLook>>,
     mut effect_meshes: ResMut<EffectMeshes>,
@@ -3269,6 +3389,31 @@ pub fn stream_objects(
                     aurora,
                     shown: None,
                 });
+            }
+            Update::Body {
+                prefab,
+                summary,
+                ms,
+            } => {
+                info!("objects: {summary} ({ms:.0} ms)");
+                if prefab.is_none() {
+                    warn!("objects: the player body has nothing to draw");
+                }
+                streamer.body = prefab.map(|prefab| BodyObjects {
+                    prefab,
+                    spawned: false,
+                });
+            }
+            Update::Camera { near } => {
+                for mut p in &mut projection {
+                    if let Projection::Perspective(p) = &mut *p {
+                        info!(
+                            "camera: near plane {near} m (the game's main camera; was {})",
+                            p.near
+                        );
+                        p.near = near;
+                    }
+                }
             }
             Update::Warning(w) => {
                 streamer.warnings += 1;
@@ -3423,6 +3568,62 @@ pub fn stream_objects(
         }
         streamer.scenes[i].shown = Some(shown);
     }
+
+    // The player's body: spawned once, hidden until `crate::body` places it.
+    if let Some(prefab) = streamer.body.filter(|b| !b.spawned).map(|b| b.prefab) {
+        let inst = Instance {
+            level: 0,
+            prefab,
+            transform: Placement::default(),
+            from_slot: false,
+            pod_sky: false,
+        };
+        let mut entities = Vec::new();
+        streamer.spawn_instance(&inst, true, &mut spawner, &mut entities);
+        let rigs = streamer
+            .prefab_rigs
+            .get(&prefab)
+            .cloned()
+            .unwrap_or_default();
+        // `spawn_instance` spawns each rig's base first.
+        for &base in entities.iter().take(rigs.len()) {
+            spawner
+                .commands
+                .entity(base)
+                .insert((PlayerBodyRig, Visibility::Hidden));
+        }
+        let parts = streamer.prefabs.get(&prefab).map_or(&[][..], Vec::as_slice);
+        let skinned = parts
+            .iter()
+            .filter(|p| matches!(p.rig, Some(RigPart::Skin { .. })))
+            .count();
+        let still = parts.iter().filter(|p| p.rig.is_none()).count();
+        let only = parts.iter().filter(|p| p.shadows == SHADOWS_ONLY).count();
+        let rig_list: Vec<String> = rigs
+            .iter()
+            .map(|r| {
+                format!(
+                    "{}: {} nodes, {} slots, skins with {:?} bones, culling mode {}",
+                    r.name,
+                    r.nodes.len(),
+                    r.program.slots.len(),
+                    r.skins.iter().map(|s| s.joints.len()).collect::<Vec<_>>(),
+                    r.culling
+                )
+            })
+            .collect();
+        info!(
+            "objects: player body spawned: {} sub-meshes ({skinned} skinned, {still} not on a rig, {only} shadows only), rigs {rig_list:?}",
+            parts.len()
+        );
+        if still > 0 {
+            warn!("objects: {still} body sub-meshes are not on the rig and stay where spawned");
+        }
+        streamer.body = Some(BodyObjects {
+            prefab,
+            spawned: true,
+        });
+    }
 }
 
 /// Records a part of a LOD group; parts not in level 0 start hidden.
@@ -3544,7 +3745,12 @@ fn shadow_mode(commands: &mut Commands, entity: Entity, casting: bool, mode: u8)
     let mut e = commands.entity(entity);
     if mode == SHADOWS_OFF {
         e.insert((bevy::light::NotShadowCaster, ShadowsOff));
-    } else if !casting {
+        return;
+    }
+    if mode == SHADOWS_ONLY {
+        e.insert((RenderLayers::layer(SHADOW_ONLY_LAYER), ShadowsOnly));
+    }
+    if !casting {
         e.insert(bevy::light::NotShadowCaster);
     }
 }

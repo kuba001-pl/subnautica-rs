@@ -11,6 +11,12 @@
 //! Oxygen, health, suffocation and respawn (`sn_sim::vitals`, M9c) run
 //! with the player at the same step and fill the HUD (`crate::hud`).
 //!
+//! The body (M9g4): the game's empty-hand rules (`sn_sim::body`) run every
+//! frame; they give the player's animator its parameters and place the
+//! view model and the camera (`crate::body` applies them). The camera is
+//! at the game's eye (`CameraPose::eye`), or behind it with
+//! `--third-person` (a debug orbit camera that shows the head).
+//!
 //! Controls: click to capture the mouse (Esc releases it), mouse to look
 //! (the game's `MainCameraControl` rule, sensitivity and pitch limits,
 //! `sn_sim::look`), WASD to move, Space up / jump, C down, E or left click
@@ -26,11 +32,13 @@ use bevy::window::{CursorGrabMode, CursorOptions};
 use sn_assets::{BatchBodies, CollisionLoader, HATCH_BODY, LayerRules, SCENE_BODY};
 use sn_install::GameData;
 use sn_sim::V3;
-use sn_sim::collide::{Body, World};
+use sn_sim::body::{Body as PlayerBody, BodyFrame, BodyParams, CameraPose};
+use sn_sim::collide::{Body, MOVE, World};
 use sn_sim::look::{Look, LookParams};
 use sn_sim::player::{Event, HatchTrigger, Hatches, Input, Player, PlayerParams, hand_target};
 use sn_sim::vitals::{Situation, Vitals, VitalsEvent, VitalsParams, depth_of};
 
+use crate::body::BodyDrive;
 use crate::hud::Hud;
 
 /// The worker gets the player's position again after it moved this far.
@@ -38,6 +46,9 @@ const RESEND_DISTANCE: f64 = 4.0;
 
 /// Physics steps run at most per frame (a long frame drops the rest).
 const MAX_STEPS_PER_FRAME: usize = 10;
+
+/// `--third-person`: the camera this far behind the eye (m), our own.
+const THIRD_PERSON_DISTANCE: f32 = 2.5;
 
 /// A lifepod hatch trigger as the main thread needs it.
 struct TriggerInfo {
@@ -58,6 +69,9 @@ struct Init {
     pod_bodies: Vec<Body>,
     triggers: Vec<TriggerInfo>,
     hatches: Hatches,
+    /// The body's numbers (`None`: no body; the camera at the player's
+    /// transform, as before M9g4).
+    body: Option<BodyParams>,
     summary: String,
 }
 
@@ -84,6 +98,7 @@ struct State {
     respawn: (V3, bool),
     triggers: Vec<TriggerInfo>,
     hatches: Hatches,
+    body: Option<(BodyParams, PlayerBody)>,
 }
 
 #[derive(Resource)]
@@ -99,6 +114,8 @@ pub struct PlayerSim {
     last_sent: Option<V3>,
     /// Physics steps run, for the status log.
     steps: u64,
+    third_person: bool,
+    look_down: f64,
 }
 
 /// Lifepod 5 where the player starts (the client's own start choice).
@@ -108,6 +125,10 @@ pub struct Start {
     pub lifepod: Option<[f32; 3]>,
     pub position: [f32; 3],
     pub slot_seed: Option<u64>,
+    /// `--third-person`.
+    pub third_person: bool,
+    /// `--look-down`: the starting pitch, degrees down.
+    pub look_down: f64,
 }
 
 impl PlayerSim {
@@ -117,7 +138,16 @@ impl PlayerSim {
         self.state.as_ref().map(|s| s.player.in_pod)
     }
 
+    /// Seconds of play (physics steps run).
+    pub fn play_seconds(&self) -> f64 {
+        self.state
+            .as_ref()
+            .map_or(0.0, |s| self.steps as f64 * s.params.fixed_dt)
+    }
+
     pub fn start(game: GameData, start: Start) -> PlayerSim {
+        let third_person = start.third_person;
+        let look_down = start.look_down;
         let (to_worker, rx) = channel();
         let (tx, from_worker) = channel();
         std::thread::Builder::new()
@@ -138,6 +168,8 @@ impl PlayerSim {
             accumulator: 0.0,
             last_sent: None,
             steps: 0,
+            third_person,
+            look_down,
         }
     }
 }
@@ -156,6 +188,21 @@ fn worker(
     let vitals = sn_assets::vitals_params(&data, &code);
     let look = sn_assets::look_params(&data, &code);
     let rules = LayerRules::new(&settings, data.player_layer);
+    let (body, body_note) = match loader.assets().player_body() {
+        Ok(b) => {
+            let p = b.body_params(data.ocean_level);
+            let eye = p.camera_up_position + p.camera_offset_position;
+            let note = format!(
+                "body: eye at rest ({:.3}, {:.3}, {:.3}) from the player's transform, smoothing {} / {}",
+                eye.x, eye.y, eye.z, p.smooth_speed_under_water, p.smooth_speed_above_water
+            );
+            (Some(p), note)
+        }
+        Err(e) => (
+            None,
+            format!("body: not read ({e}); the camera stays at the player's transform"),
+        ),
+    };
     let init = match start.lifepod {
         Some(point) => {
             let pod = loader.lifepod(&rules, point)?;
@@ -199,7 +246,8 @@ fn worker(
                     })
                     .collect(),
                 hatches,
-                summary,
+                body,
+                summary: format!("{summary}; {body_note}"),
             }
         }
         None => Init {
@@ -213,7 +261,8 @@ fn worker(
             pod_bodies: Vec::new(),
             triggers: Vec::new(),
             hatches: Hatches::default(),
-            summary: "no lifepod".into(),
+            body,
+            summary: format!("no lifepod; {body_note}"),
         },
     };
     let mut pos = init.spawn.to_f32();
@@ -247,6 +296,34 @@ fn unity_to_bevy(p: V3) -> Vec3 {
     Vec3::new(p.x as f32, p.y as f32, -p.z as f32)
 }
 
+/// `Player.IsUnderwater` (no subs or bases yet: out of the pod and below
+/// the ocean level).
+fn underwater(params: &PlayerParams, p: &Player) -> bool {
+    !p.in_pod && p.position.y < params.ocean_level
+}
+
+/// The camera rig's rotation (Unity's `camRoot` Euler z-x-y, then
+/// `cameraUPTransform`'s pitch) as Bevy's: z mirrored, so the x and y
+/// angles change sign.
+fn pose_rotation(pose: &CameraPose) -> Quat {
+    let r = |deg: f64| deg.to_radians() as f32;
+    Quat::from_rotation_y(-r(pose.yaw))
+        * Quat::from_rotation_x(-r(pose.root_pitch))
+        * Quat::from_rotation_z(r(pose.roll))
+        * Quat::from_rotation_x(-r(pose.up_pitch))
+}
+
+/// The view model in the world: the player's transform (not rotated),
+/// then `MainCameraControl`'s local placement: `camRoot`'s position and
+/// its yaw only.
+fn view_model_transform(player: V3, pose: &CameraPose) -> Transform {
+    Transform {
+        translation: unity_to_bevy(player + V3::new(0.0, pose.root_y, 0.0)),
+        rotation: Quat::from_rotation_y(-(pose.yaw.to_radians() as f32)),
+        scale: Vec3::ONE,
+    }
+}
+
 /// Unity's yaw (about +y) and pitch (positive looks down) as a Bevy
 /// rotation (right-handed, the camera looks along −z).
 fn camera_rotation(yaw: f64, pitch: f64) -> Quat {
@@ -270,6 +347,7 @@ fn show_trigger(world: &mut World, triggers: &[TriggerInfo], i: usize, on: bool)
 #[allow(clippy::too_many_arguments)]
 pub fn update(
     mut hud: ResMut<Hud>,
+    mut drive: ResMut<BodyDrive>,
     time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,
     buttons: Res<ButtonInput<MouseButton>>,
@@ -326,12 +404,17 @@ pub fn update(
                     params: init.params,
                     player,
                     look_params: init.look,
-                    look: Look::facing(init.spawn_yaw),
+                    look: Look {
+                        rotation_y: (-sim.look_down)
+                            .clamp(init.look.minimum_y, init.look.maximum_y),
+                        ..Look::facing(init.spawn_yaw)
+                    },
                     vitals: Vitals::new(&init.vitals),
                     vitals_params: init.vitals,
                     respawn: (init.spawn, init.in_pod),
                     triggers: init.triggers,
                     hatches: init.hatches,
+                    body: init.body.map(|p| (p, PlayerBody::new(&p))),
                 });
             }
             FromWorker::Bodies {
@@ -398,7 +481,8 @@ pub fn update(
     let wants_use =
         keys.just_pressed(KeyCode::KeyE) || (captured && buttons.just_pressed(MouseButton::Left));
     if wants_use && sim.ready && controls {
-        let eye = state.player.position;
+        let eye =
+            state.player.position + state.body.as_ref().map_or(V3::ZERO, |(p, b)| b.pose.eye(p));
         match hand_target(&sim.world, eye, yaw, pitch) {
             Some((d, hit)) if hit.body & HATCH_BODY != 0 => {
                 let i = ((hit.body >> 8) & 0xff) as usize;
@@ -475,11 +559,21 @@ pub fn update(
             } else {
                 Vec::new()
             };
+            let now = sim.steps as f64 * dt;
             let mut landed = None;
             for e in events {
                 match e {
-                    Event::Landed { impact_y } => landed = Some(impact_y),
-                    Event::Jumped => {}
+                    Event::Landed { impact_y } => {
+                        landed = Some(impact_y);
+                        if let Some((_, b)) = state.body.as_mut() {
+                            b.landed(impact_y);
+                        }
+                    }
+                    Event::Jumped => {
+                        if let Some((_, b)) = state.body.as_mut() {
+                            b.jumped(now);
+                        }
+                    }
                     other => info!(
                         "player: {other:?} at ({:.2}, {:.2}, {:.2})",
                         state.player.position.x, state.player.position.y, state.player.position.z
@@ -504,11 +598,21 @@ pub fn update(
                     state.player.position.y,
                     state.player.position.z
                 );
+                if e == VitalsEvent::Died
+                    && let Some((_, b)) = state.body.as_mut()
+                {
+                    b.died();
+                }
                 if e == VitalsEvent::MoveToRespawn {
                     // `EscapePod.RespawnPlayer` (or the start point).
                     let (at, in_pod) = state.respawn;
                     state.player.teleport(&state.params, at, Some(in_pod));
                 }
+            }
+            // `Player.FixedUpdate`'s falling clock, `UnderWaterTracker`.
+            if let Some((_, b)) = state.body.as_mut() {
+                let p = &state.player;
+                b.fixed_step(now, underwater(&state.params, p), p.walk_grounded, false);
             }
         }
         if steps == MAX_STEPS_PER_FRAME {
@@ -526,11 +630,57 @@ pub fn update(
         let _ = sim.to_worker.send(p.to_f32());
     }
 
-    // The camera sits at the player's transform (the game's camRoot is at
-    // the player's origin and `MainCameraControl.skin` is 0).
+    // The body (M9g4): `ArmsController.Update` and
+    // `MainCameraControl.OnUpdate` once per frame, as the game's.
+    let pose = match state.body.as_mut() {
+        Some((params, body)) => {
+            let started = Instant::now();
+            let pl = &state.player;
+            let frame = BodyFrame {
+                dt: f64::from(time.delta_secs()),
+                time: sim.steps as f64 * state.params.fixed_dt + sim.accumulator,
+                position: pl.position,
+                velocity: pl.velocity,
+                grounded: pl.walk_grounded,
+                underwater: underwater(&state.params, pl),
+                swimming: pl.swimming,
+                inside: pl.in_pod,
+                look: state.look,
+                strafe: if controls { input.move_dir.x } else { 0.0 },
+                controls,
+                bobbing: true,
+            };
+            let world = &sim.world;
+            let mut ray = |o: V3, d: V3, l: f64| world.cast(MOVE, o, d, 0.0, l).is_some();
+            drive.values = body.update(params, &frame, &mut ray);
+            drive.rules_micros = started.elapsed().as_secs_f32() * 1e6;
+            Some((*params, body.pose))
+        }
+        None => None,
+    };
+    drive.shown = pose.is_some();
+    if let Some((_, pose)) = &pose {
+        drive.view_model = view_model_transform(p, pose);
+    }
+
+    // The camera: at the game's eye (the main camera hangs on
+    // `cameraOffsetTransform`, `AutoParent`), else at the player's
+    // transform.
+    let (eye, rotation) = match &pose {
+        Some((params, pose)) => (unity_to_bevy(p + pose.eye(params)), pose_rotation(pose)),
+        None => (
+            unity_to_bevy(p),
+            camera_rotation(state.look.yaw(), state.look.pitch()),
+        ),
+    };
     if let Ok(mut t) = camera.single_mut() {
-        t.translation = unity_to_bevy(p);
-        t.rotation = camera_rotation(state.look.yaw(), state.look.pitch());
+        t.rotation = rotation;
+        t.translation = if sim.third_person {
+            // Behind the eye along the view, looking at it.
+            eye - rotation * Vec3::NEG_Z * THIRD_PERSON_DISTANCE
+        } else {
+            eye
+        };
     }
 
     let v = &state.vitals;
@@ -551,6 +701,37 @@ pub fn update(
 mod tests {
     use super::*;
     use sn_sim::player::look_rotate;
+
+    #[test]
+    fn pose_rotation_matches_the_rules() {
+        let pose = CameraPose {
+            root_y: -0.1,
+            root_pitch: 20.0,
+            yaw: 135.0,
+            roll: 4.0,
+            up_pitch: -10.0,
+        };
+        let q = pose_rotation(&pose);
+        for v in [
+            V3::new(0.0, 0.0, 1.0),
+            V3::new(1.0, 0.0, 0.0),
+            V3::new(0.0, 1.0, 0.0),
+        ] {
+            let expect = unity_to_bevy(pose.rotate(v));
+            let got = q * unity_to_bevy(v);
+            assert!((got - expect).length() < 1e-5, "{v:?}: {got} vs {expect}");
+        }
+        // The view model takes the position and only the yaw.
+        let t = view_model_transform(V3::new(1.0, 2.0, 3.0), &pose);
+        assert!((t.translation - Vec3::new(1.0, 1.9, -3.0)).length() < 1e-5);
+        let yaw_only = CameraPose {
+            yaw: 135.0,
+            ..CameraPose::default()
+        };
+        let ahead = t.rotation * unity_to_bevy(V3::new(0.0, 0.0, 1.0));
+        let expect = unity_to_bevy(yaw_only.rotate(V3::new(0.0, 0.0, 1.0)));
+        assert!((ahead - expect).length() < 1e-5);
+    }
 
     #[test]
     fn camera_looks_where_the_rules_move() {

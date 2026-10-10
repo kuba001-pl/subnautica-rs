@@ -363,6 +363,12 @@ Reader: `sn_unity::PlayerFields` (now every field), `ArmsController`;
   `ArmsController`). `cameraUPTransform` is `camOffset`, 0.063 m above and
   0.15 m behind `camRoot` in the player's axes: looking up turns about
   that point. Where the drawn camera hangs: below (M9g2).
+- **Confirmed (real data, client M9g4):** the player's `Animator` has
+  culling mode 1 (cull update transforms); its rig is 113 nodes with 213
+  animated slots, and the three drawn skins use 43, 36 and 5 bones, all
+  inside the rig. Standing in the pod, the animated nodes reach 1.53 m
+  below the view model, matching the standing capsule's bottom (1.50 m
+  below the player's transform).
 - **Confirmed (real data, M9g2): where the camera is.** The scene's one
   `AutoParent` sits on the top-level `PlayerCameras` (which holds the
   camera tagged `MainCamera`, at identity in its object) and on `Start`
@@ -507,8 +513,11 @@ Reader: `sn_unity::PlayerFields` (now every field), `ArmsController`;
   prefabs by `m_CastShadows`: off 5,380 (29,145 placements), on 6,776
   (202,091), two-sided 0, shadows only 1 (1 placement). The Aurora scene:
   off 195, on 153. The client now leaves "off" renderers out of the sun's
-  shadow map; the shadows-only one is drawn as a normal renderer (not
-  1:1).
+  shadow map. Since M9g4 "shadows only" renderers (this one and the
+  player's head) are put on a render layer only the sun sees, so they
+  cast its shadow and are not drawn (**confirmed** in the client by
+  counting: off the camera's layer, in the sun's shadow pass). Local
+  lights cast no shadows in the client yet.
 
 ## The lifepod's light (M7f4g)
 
