@@ -74,6 +74,7 @@ pub fn rules() -> Arc<ItemRules> {
                 },
             ],
             default_class: "quartz".into(),
+            break_text: "BreakLime".into(),
         },
     );
     r.tech_class.insert(FOOD, "food".into());

@@ -302,6 +302,7 @@ impl Run<'_, '_> {
             strafe: if controls { input.move_dir.x } else { 0.0 },
             controls,
             bobbing: true,
+            time_grabbed: 0.0,
         };
         let world = &self.s.world;
         let mut ray =

@@ -81,6 +81,8 @@ pub struct BodyFrame {
     pub controls: bool,
     /// `MiscSettings.cameraBobbing` (the option; on by default).
     pub bobbing: bool,
+    /// `Player.timeGrabbed` (0: never), on `time`'s clock (M9d5).
+    pub time_grabbed: f64,
 }
 
 /// The camera rig after a frame: `camRoot`'s local placement (the view
@@ -335,7 +337,10 @@ impl Body {
             self.previous_yaw = yaw;
         }
         // `ArmsController.Update`.
-        out.push(("grab", AnimValue::Bool(false)));
+        out.push((
+            "grab",
+            AnimValue::Bool(crate::inventory::grab_active(f.time_grabbed, f.time)),
+        ));
         out.push(("bash", AnimValue::Bool(false)));
         out.push(("is_underwater", AnimValue::Bool(f.underwater)));
         out.push(("cinematics_enabled", AnimValue::Bool(true)));
@@ -512,6 +517,7 @@ mod tests {
             strafe: 0.0,
             controls: true,
             bobbing: true,
+            time_grabbed: 0.0,
         }
     }
 
@@ -876,5 +882,23 @@ mod tests {
         b.respawned();
         run(&mut b, &p, &mut f, 1);
         assert_eq!(b.pose.yaw, 45.0);
+    }
+
+    #[test]
+    fn grab_is_true_for_0_4_s_after_a_grab() {
+        let params = params();
+        let mut body = Body::new(&params);
+        let grab = |body: &mut Body, time: f64, grabbed: f64| {
+            let f = BodyFrame {
+                time,
+                time_grabbed: grabbed,
+                ..frame()
+            };
+            value(&body.update(&params, &f, &mut |_, _, _| false), "grab")
+        };
+        assert_eq!(grab(&mut body, 5.0, 0.0), AnimValue::Bool(false));
+        assert_eq!(grab(&mut body, 5.0, 4.9), AnimValue::Bool(true));
+        assert_eq!(grab(&mut body, 5.39, 5.0), AnimValue::Bool(true));
+        assert_eq!(grab(&mut body, 5.4, 5.0), AnimValue::Bool(false));
     }
 }

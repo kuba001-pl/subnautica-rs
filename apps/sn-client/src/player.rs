@@ -39,8 +39,8 @@ use bevy::prelude::*;
 use bevy::window::{CursorGrabMode, CursorOptions};
 use sn_anim::Animator;
 use sn_assets::{
-    BatchBodies, CollisionLoader, HATCH_BODY, LayerRules, PlayerAnimation, PodCinematics,
-    PosedNode, SCENE_BODY,
+    BatchBodies, CollisionLoader, HATCH_BODY, LOCKER_BODY, LayerRules, PlayerAnimation,
+    PodCinematics, PosedNode, SCENE_BODY, TARGET_BODY,
 };
 use sn_install::GameData;
 use sn_protocol::{AnimState, DeathCause, Life, PlayerEventKind, PlayerState, Tick, anim, quant};
@@ -83,6 +83,9 @@ struct Init {
     in_pod: bool,
     pod: Option<V3>,
     pod_bodies: Vec<Body>,
+    /// The lifepod locker's hand bodies and its node's place (M9d5).
+    locker_bodies: Vec<Body>,
+    locker_at: Option<V3>,
     triggers: Vec<TriggerInfo>,
     hatches: Hatches,
     /// The body's numbers (`None`: no body; the camera at the player's
@@ -197,6 +200,20 @@ pub struct PlayerSim {
     /// (their changes are the player's events).
     last_hatch: Option<usize>,
     last_life: Life,
+    /// `Player.timeGrabbed` on the body's clock (0: never; M9d5).
+    time_grabbed: f64,
+    /// Times the hand opened the lifepod's locker (M9d5; the panel reads
+    /// it).
+    pub locker_opened: u32,
+    /// The hand's last aim, logged when it changes.
+    last_aim: Option<String>,
+    /// The body's `grab` value last frame (logged when it changes).
+    grab_shown: bool,
+    /// `--use-item`'s target: where, what, and when to give up.
+    item_goal: Option<(V3, String, f64)>,
+    /// `--use-item`: seconds of play, latest first (taken when done).
+    use_item_at: Vec<f64>,
+    locker_at: Option<V3>,
 }
 
 /// Lifepod 5 where the player starts (the client's own start choice).
@@ -221,6 +238,9 @@ pub struct Start {
     pub hold_forward: Option<f64>,
     /// `--kill`: the player dies after this much play.
     pub kill: Option<f64>,
+    /// `--use-item`: seconds of play at which the hand turns to the
+    /// nearest item target or the locker and is used (debug, M9d5).
+    pub use_item: Vec<f64>,
     /// The item rules (M9d4: pickups and outcrops load as targets).
     pub items: Option<std::sync::Arc<sn_sim::inventory::ItemRules>>,
 }
@@ -304,6 +324,8 @@ impl PlayerSim {
         let kill_at = start.kill;
         let mut use_hatch_at = start.use_hatch.clone();
         use_hatch_at.sort_by(|a, b| b.total_cmp(a));
+        let mut use_item_at = start.use_item.clone();
+        use_item_at.sort_by(|a, b| b.total_cmp(a));
         let (hatch_name, hold_forward_from) = (start.hatch_name.clone(), start.hold_forward);
         let trace_hatches = !start.use_hatch.is_empty() || start.hold_forward.is_some();
         let (to_worker, rx) = channel();
@@ -342,6 +364,13 @@ impl PlayerSim {
             anim_values: Vec::new(),
             last_hatch: None,
             last_life: Life::Alive,
+            time_grabbed: 0.0,
+            locker_opened: 0,
+            last_aim: None,
+            use_item_at,
+            locker_at: None,
+            grab_shown: false,
+            item_goal: None,
         }
     }
 }
@@ -425,6 +454,8 @@ fn worker(
                 in_pod: start.in_pod,
                 pod: Some(V3::from_f32(point)),
                 pod_bodies: pod.bodies,
+                locker_at: pod.locker.as_ref().map(|l| V3::from_f32(l.at)),
+                locker_bodies: pod.locker.map(|l| l.bodies).unwrap_or_default(),
                 triggers: pod
                     .triggers
                     .into_iter()
@@ -451,6 +482,8 @@ fn worker(
             in_pod: false,
             pod: None,
             pod_bodies: Vec::new(),
+            locker_bodies: Vec::new(),
+            locker_at: None,
             triggers: Vec::new(),
             hatches: Hatches::default(),
             body,
@@ -767,6 +800,7 @@ pub fn update(
     mut sim: ResMut<PlayerSim>,
     mut session: ResMut<Session>,
     mut camera: Query<&mut Transform, With<Camera3d>>,
+    item_text: Option<Res<crate::items::Text>>,
 ) {
     let sim = &mut *sim;
     // Messages from the worker.
@@ -804,6 +838,20 @@ pub fn update(
                 );
                 for (i, b) in init.pod_bodies.into_iter().enumerate() {
                     sim.world.insert(SCENE_BODY | i as u64, b);
+                }
+                info!(
+                    "player: lifepod locker: {} hand bodies",
+                    init.locker_bodies.len()
+                );
+                sim.locker_at = init.locker_at;
+                info!(
+                    "player: lifepod locker node at {:?}, collider bounds {:?}; player spawn {:?}",
+                    init.locker_at,
+                    init.locker_bodies.first().and_then(Body::bounds),
+                    init.spawn
+                );
+                for (i, b) in init.locker_bodies.into_iter().enumerate() {
+                    sim.world.insert(LOCKER_BODY | i as u64, b);
                 }
                 for (i, t) in init.hatches.triggers.iter().enumerate() {
                     if t.active {
@@ -953,6 +1001,45 @@ pub fn update(
             None => info!("player: --use-hatch: no usable hatch"),
         }
     }
+    // `--use-item`: pick the nearest item target or the locker (below:
+    // turn to it, walk until it is within the hand's reach, then use the
+    // hand on it through the same path as a click).
+    if sim.ready && controls && sim.use_item_at.last().is_some_and(|&t| play >= t) {
+        sim.use_item_at.pop();
+        let pose = player_pose(&state.player);
+        let eye = state.body.as_ref().map_or(state.player.position, |(p, b)| {
+            b.camera(p, pose, None).position
+        });
+        let candidates = sim
+            .targets
+            .values()
+            .map(|t| {
+                (
+                    V3::from_f32(t.at.position),
+                    format!("{:?} {:?}", t.kind, t.key),
+                )
+            })
+            // The locker's collider, not its node (which is up by the top
+            // hatch).
+            .chain(
+                sim.world
+                    .get(LOCKER_BODY)
+                    .and_then(Body::bounds)
+                    .map(|(lo, hi)| ((lo + hi) * 0.5, "the locker".to_string())),
+            );
+        let nearest =
+            candidates.min_by(|a, b| (a.0 - eye).length().total_cmp(&(b.0 - eye).length()));
+        match nearest {
+            Some((at, what)) => {
+                info!(
+                    "player: --use-item at {play:.1} s: {what} at {:.2} m",
+                    (at - eye).length()
+                );
+                sim.item_goal = Some((at, what, play + 10.0));
+            }
+            None => info!("player: --use-item at {play:.1} s: no target"),
+        }
+    }
     // Aim at it; use it when the hand points at it, else walk towards it.
     let mut auto_walk = false;
     let mut forced_use: Option<usize> = None;
@@ -1022,18 +1109,106 @@ pub fn update(
             }
         }
     }
-    let auto_strafe = auto_walk && play < sim.auto_strafe_until;
-    let (yaw, pitch) = (state.look.yaw(), state.look.pitch());
-
-    // Use (the lifepod's hatches).
-    let wants_use = auto_use
-        || keys.just_pressed(KeyCode::KeyE)
-        || (captured && buttons.just_pressed(MouseButton::Left));
-    if (wants_use || forced_use.is_some()) && sim.ready && controls {
+    if let Some((at, what, give_up)) = sim.item_goal.clone()
+        && controls
+    {
         let pose = player_pose(&state.player);
         let eye = state.body.as_ref().map_or(state.player.position, |(p, b)| {
             b.camera(p, pose, None).position
         });
+        let d = at - eye;
+        let yaw = d.x.atan2(d.z);
+        let pitch = (-d.y).atan2((d.x * d.x + d.z * d.z).sqrt());
+        state.look = Look {
+            rotation_x: yaw.to_degrees(),
+            rotation_y: (-pitch.to_degrees())
+                .clamp(state.look_params.minimum_y, state.look_params.maximum_y),
+        };
+        // Use it once the hand's ray (`Targeting.GetTarget`, 2 m) reaches
+        // an item target or the locker.
+        let reaches = hand_target(&sim.world, eye, state.look.yaw(), state.look.pitch())
+            .filter(|(_, h)| h.body & (TARGET_BODY | LOCKER_BODY) != 0);
+        if let Some((t, _)) = reaches {
+            info!("player: --use-item: the hand reaches {what} ({t:.2} m)");
+            auto_use = true;
+            sim.item_goal = None;
+        } else if play > give_up {
+            let p = state.player.position;
+            info!(
+                "player: --use-item: gave up on {what} ({:.2} m away; player at ({:.2}, {:.2}, {:.2}))",
+                d.length(),
+                p.x,
+                p.y,
+                p.z
+            );
+            sim.item_goal = None;
+        } else {
+            auto_walk = true;
+            // Blocked for half a second: step aside for half a second (as
+            // `--use-hatch` does).
+            if (state.player.position - sim.auto_moved.0).length() > 0.1 {
+                sim.auto_moved = (state.player.position, play);
+            } else if play - sim.auto_moved.1 > 0.5 && play > sim.auto_strafe_until {
+                sim.auto_strafe_until = play + 0.5;
+                sim.auto_moved = (state.player.position, play + 0.5);
+            }
+        }
+    }
+    let auto_strafe = auto_walk && play < sim.auto_strafe_until;
+    let (yaw, pitch) = (state.look.yaw(), state.look.pitch());
+
+    // The hand (M9b: the lifepod's hatches; M9d5: items and the locker):
+    // what it is aimed at, every frame, as `GUIHand` asks `OnHandHover`.
+    let wants_use = auto_use
+        || keys.just_pressed(KeyCode::KeyE)
+        || (captured && buttons.just_pressed(MouseButton::Left));
+    let hover = if sim.ready && controls && state.hatch.is_none() {
+        let pose = player_pose(&state.player);
+        let eye = state.body.as_ref().map_or(state.player.position, |(p, b)| {
+            b.camera(p, pose, None).position
+        });
+        hand_target(&sim.world, eye, yaw, pitch)
+    } else {
+        None
+    };
+    let item_aim = match (hover, item_text.as_ref()) {
+        (Some((_, hit)), Some(text)) if hit.body & (TARGET_BODY | LOCKER_BODY) != 0 => {
+            let me = session.player();
+            session
+                .with_items(|items, _| {
+                    let own = me.and_then(|p| items.players.get(&p));
+                    crate::items::aim(
+                        &text.0,
+                        items.rules(),
+                        sim.targets.get(&hit.body),
+                        hit.body & LOCKER_BODY != 0,
+                        |tech| {
+                            own.is_some_and(|p| {
+                                p.inventory
+                                    .container
+                                    .has_room_for(&items.rules().techs, tech)
+                            })
+                        },
+                    )
+                })
+                .flatten()
+        }
+        _ => None,
+    };
+    hud.hand = item_aim
+        .as_ref()
+        .map(|a| (a.text.clone(), a.subscript.clone()));
+    let aim_line = item_aim
+        .as_ref()
+        .map(|a| format!("{:?} / {:?}", a.text, a.subscript));
+    if aim_line != sim.last_aim {
+        if let Some(line) = &aim_line {
+            info!("player: hand: {line}");
+        }
+        sim.last_aim = aim_line;
+    }
+    if (wants_use || forced_use.is_some()) && sim.ready && controls {
+        let pose = player_pose(&state.player);
         let aimed = match forced_use {
             Some(i) => Some((
                 0.0,
@@ -1044,7 +1219,7 @@ pub fn update(
                     body: HATCH_BODY | ((i as u64) << 8),
                 },
             )),
-            None => hand_target(&sim.world, eye, yaw, pitch),
+            None => hover,
         };
         match aimed {
             Some((d, hit)) if hit.body & HATCH_BODY != 0 => {
@@ -1101,6 +1276,29 @@ pub fn update(
                         }
                         None => info!("player: {name:?} cannot be used (no end point)"),
                     }
+                }
+            }
+            Some((d, hit)) if hit.body & (TARGET_BODY | LOCKER_BODY) != 0 => {
+                let now = sim.steps as f64 * state.params.fixed_dt + sim.accumulator;
+                match item_aim.map(|a| a.action) {
+                    Some(crate::items::AimAction::Request(request)) => {
+                        info!("player: hand on an item at {d:.2} m");
+                        session.request(request);
+                        // `Player.PlayGrab`, as the game does on a pick-up
+                        // and on a hit without a bash tool.
+                        sim.time_grabbed = now;
+                    }
+                    Some(crate::items::AimAction::OpenLocker) => {
+                        sim.locker_opened += 1;
+                        info!("player: opened the lifepod's locker from {d:.2} m");
+                    }
+                    Some(crate::items::AimAction::None) => {
+                        info!("player: the item cannot be taken (no room or not pickupable)");
+                    }
+                    None => info!(
+                        "player: nothing to use ({} at {d:.2} m; no item rule)",
+                        sn_assets::body_kind(hit.body)
+                    ),
                 }
             }
             Some((d, hit)) => info!(
@@ -1347,10 +1545,18 @@ pub fn update(
                 strafe: if controls { input.move_dir.x } else { 0.0 },
                 controls,
                 bobbing: true,
+                time_grabbed: sim.time_grabbed,
             };
             let world = &sim.world;
             let mut ray = |o: V3, d: V3, l: f64| world.cast(MOVE, o, d, 0.0, l).is_some();
             let values = body.update(params, &frame, &mut ray);
+            let grab = values
+                .iter()
+                .any(|&(n, v)| n == "grab" && v == AnimValue::Bool(true));
+            if grab != sim.grab_shown {
+                info!("player: body: grab {grab} at {:.2} s", frame.time);
+                sim.grab_shown = grab;
+            }
             // The same values for our own copy of the player's animator.
             if let Some((_, a)) = state.anim.as_mut() {
                 for &(name, v) in &values {
@@ -1436,6 +1642,8 @@ pub fn update(
         depth: depth_of(&state.vitals_params, p.y),
         overlay: v.overlay(),
         dead: !v.controls_enabled(),
+        // Set above, this frame.
+        hand: hud.hand.take(),
     };
 }
 

@@ -129,6 +129,9 @@ Usage: sn-client [--game-dir <PATH>] [--start <X> <Y> <Z>] [--look <X> <Y> <Z>]
                  clamped to the game's limits)
   --shot         --shot <SECONDS> <NAME>: after SECONDS of play, save
                  out/NAME.png and exit (a check for the human)
+  --use-item     --use-item <SECONDS[,SECONDS…]>: at each time, turn to the
+                 nearest pickup, outcrop or the lifepod's locker and use
+                 the hand on it, as a click (a debug check, M9d5)
   --use-hatch    --use-hatch <SECONDS[,SECONDS…]>: at each time (seconds of
                  play), aim at the nearest usable lifepod hatch and use it
                  (a debug check of the hatch cinematics, M9g5e)
@@ -220,6 +223,8 @@ struct Args {
     look_down: f32,
     /// `--use-hatch`: seconds of play at which to use the nearest hatch.
     use_hatch: Vec<f64>,
+    /// `--use-item` (M9d5).
+    use_item: Vec<f64>,
     /// `--hatch-name`: only hatches whose name contains this.
     hatch_name: Option<String>,
     /// `--hold-forward`: hold W from this much play on.
@@ -292,6 +297,7 @@ fn parse_args_from(raw: &[String]) -> Result<Args, String> {
         third_person: false,
         look_down: 0.0,
         use_hatch: Vec::new(),
+        use_item: Vec::new(),
         hatch_name: None,
         hold_forward: None,
         kill: None,
@@ -421,6 +427,17 @@ fn parse_args_from(raw: &[String]) -> Result<Args, String> {
             "--free-cam" => args.free_cam = true,
             "--third-person" => args.third_person = true,
             "--look-down" => args.look_down = number(it.next(), "--look-down")?,
+            "--use-item" => {
+                let list = it.next().ok_or("--use-item takes seconds")?;
+                args.use_item = list
+                    .split(',')
+                    .map(|t| {
+                        t.trim()
+                            .parse::<f64>()
+                            .map_err(|_| format!("--use-item: {t:?} is not a number"))
+                    })
+                    .collect::<Result<_, _>>()?;
+            }
             "--use-hatch" => {
                 let list = it.next().ok_or("--use-hatch takes seconds")?;
                 args.use_hatch = list
@@ -672,6 +689,23 @@ fn start_session(args: &Args, lifepod: bool) -> Result<Started, String> {
     let game = GameData::locate(args.game_dir.clone()).map_err(|e| e.to_string())?;
     let assets = sn_assets::Assets::index(&game)?;
     let rules = sn_assets::rules(&game, &assets)?;
+    // The item text (M9d5): English, the only language read for now.
+    let text = match sn_assets::read_assembly(&game)
+        .and_then(|dll| sn_assets::item_text(&game, &dll, "English"))
+    {
+        Ok(t) => {
+            println!(
+                "item text: {} tech type names, {} English strings",
+                t.tech_names.len(),
+                t.strings.len()
+            );
+            t
+        }
+        Err(e) => {
+            eprintln!("warning: item text not read ({e}); names show as keys");
+            sn_assets::ItemText::default()
+        }
+    };
     let joining = matches!(args.mode, session::Mode::Join { .. });
     let point = match (lifepod && !joining, args.lifepod) {
         (false, _) => None,
@@ -738,6 +772,7 @@ fn start_session(args: &Args, lifepod: bool) -> Result<Started, String> {
         pod,
         day_seconds: day,
         items: rules.items.clone(),
+        text: std::sync::Arc::new(text),
         build: rules.build,
         fingerprint: rules.fingerprint,
     })
@@ -752,6 +787,8 @@ struct Started {
     day_seconds: f32,
     /// The install's item rules (M9d3d).
     items: std::sync::Arc<sn_sim::inventory::ItemRules>,
+    /// Item names and the hand's text (M9d5).
+    text: std::sync::Arc<sn_assets::ItemText>,
     build: String,
     fingerprint: u64,
 }
@@ -780,6 +817,7 @@ fn main() -> AppExit {
         pod,
         day_seconds,
         items,
+        text,
         build,
         fingerprint,
     } = match start_session(&args, lifepod) {
@@ -1068,6 +1106,7 @@ fn main() -> AppExit {
                     third_person: args.third_person,
                     look_down: f64::from(args.look_down),
                     use_hatch: args.use_hatch.clone(),
+                    use_item: args.use_item.clone(),
                     hatch_name: args.hatch_name.clone(),
                     hold_forward: args.hold_forward.map(f64::from),
                     kill: args.kill.map(f64::from),
@@ -1095,6 +1134,8 @@ fn main() -> AppExit {
                     .add_systems(Startup, hud::setup)
                     .add_systems(Update, player::update.before(terrain::stream))
                     .add_systems(Update, hud::update.after(player::update))
+                    .add_systems(Update, hud::update_hand.after(player::update))
+                    .insert_resource(items::Text(text.clone()))
                     .insert_resource(items::ItemsView::new(
                         args.pick_up.map(f64::from),
                         args.drop.map(f64::from),

@@ -2138,6 +2138,11 @@ fn hand_targets_follow_the_items() {
         "targets hit by a cast from above: {} ({n_pick} pickups)",
         hit_self.len()
     );
+    // An outcrop near the pod, for the client's hand check (M9d5).
+    if let Some((ob, okey, _)) = hit_self.iter().find(|h| h.2 == TargetKind::Outcrop) {
+        let t = batches.target(*ob).unwrap();
+        println!("an outcrop {okey:?} ({}) at {:?}", t.class, t.at.position);
+    }
     let (body, key, _) = hit_self
         .iter()
         .find(|h| h.2 == TargetKind::Pickup)

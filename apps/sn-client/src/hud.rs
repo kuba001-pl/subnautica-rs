@@ -21,6 +21,9 @@ pub struct Hud {
     pub overlay: f64,
     /// Dead or respawning.
     pub dead: bool,
+    /// The hand's text and subscript (M9d5: `HandReticle`), when it is
+    /// on something.
+    pub hand: Option<(String, String)>,
 }
 
 #[derive(Component)]
@@ -37,6 +40,11 @@ pub struct HealthText;
 pub struct DepthText;
 #[derive(Component)]
 pub struct Overlay;
+/// The hand's text (M9d5), below the screen's centre.
+#[derive(Component)]
+pub struct HandText;
+#[derive(Component)]
+pub struct HandSubscript;
 
 const BAR_WIDTH: f32 = 220.0;
 const BAR_HEIGHT: f32 = 14.0;
@@ -120,6 +128,61 @@ pub fn setup(mut commands: Commands) {
                 DepthText,
             ));
         });
+    // The hand's text: centred, a little below the middle (our layout;
+    // the game's `HandReticle` comes with its UI, M9u).
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                width: Val::Percent(100.0),
+                top: Val::Percent(54.0),
+                flex_direction: FlexDirection::Column,
+                align_items: AlignItems::Center,
+                row_gap: Val::Px(2.0),
+                ..default()
+            },
+            GlobalZIndex(1),
+        ))
+        .with_children(|p| {
+            p.spawn((
+                Text::new(""),
+                TextFont::from_font_size(20.0),
+                TextColor(Color::WHITE),
+                HandText,
+            ));
+            p.spawn((
+                Text::new(""),
+                TextFont::from_font_size(16.0),
+                TextColor(Color::srgb(1.0, 0.75, 0.3)),
+                HandSubscript,
+            ));
+        });
+}
+
+/// The hand's text (M9d5).
+#[allow(clippy::type_complexity)]
+pub fn update_hand(
+    hud: Res<Hud>,
+    mut texts: Query<(&mut Text, Has<HandText>), Or<(With<HandText>, With<HandSubscript>)>>,
+) {
+    if !hud.is_changed() {
+        return;
+    }
+    for (mut text, main) in &mut texts {
+        let new = match (&hud.hand, hud.shown) {
+            (Some((t, s)), true) => {
+                if main {
+                    t.as_str()
+                } else {
+                    s.as_str()
+                }
+            }
+            _ => "",
+        };
+        if text.0 != new {
+            text.0 = new.to_string();
+        }
+    }
 }
 
 fn fraction(v: f64, of: f64) -> f32 {

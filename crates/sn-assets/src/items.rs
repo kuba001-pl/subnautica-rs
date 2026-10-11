@@ -347,6 +347,70 @@ pub fn player_items(assets: &Assets) -> Result<PlayerItems> {
     })
 }
 
+/// The text the item UI shows (M9d5): every tech type's name and a
+/// language file. Not rules: two players may read different languages.
+#[derive(Clone, Debug, Default)]
+pub struct ItemText {
+    /// `TechType` value → its name (the enum's, from the game's code).
+    pub tech_names: HashMap<i32, String>,
+    pub strings: HashMap<String, String>,
+}
+
+impl ItemText {
+    /// `Language.Get`: the text of `key`, or the key itself when the file
+    /// has none (as the game shows it).
+    pub fn get<'a>(&'a self, key: &'a str) -> &'a str {
+        self.strings.get(key).map_or(key, String::as_str)
+    }
+
+    /// `Language.Get(TechType)`: the text keyed by the tech type's name.
+    pub fn tech(&self, tech: i32) -> String {
+        match self.tech_names.get(&tech) {
+            Some(name) => self.get(name).to_string(),
+            None => format!("#{tech}"),
+        }
+    }
+
+    /// `Language.GetFormat(key, arg)`: `{0}` in the key's text replaced by
+    /// `arg` (C#'s `string.Format`: `{{` and `}}` are literal braces;
+    /// other placeholders are left as they are).
+    pub fn format(&self, key: &str, arg: &str) -> String {
+        let text = self.get(key);
+        let mut out = String::with_capacity(text.len() + arg.len());
+        let mut rest = text;
+        while let Some(i) = rest.find(['{', '}']) {
+            out.push_str(&rest[..i]);
+            let tail = &rest[i..];
+            if tail.starts_with("{{") || tail.starts_with("}}") {
+                out.push_str(&tail[..1]);
+                rest = &tail[2..];
+            } else if let Some(after) = tail.strip_prefix("{0}") {
+                out.push_str(arg);
+                rest = after;
+            } else {
+                out.push_str(&tail[..1]);
+                rest = &tail[1..];
+            }
+        }
+        out.push_str(rest);
+        out
+    }
+}
+
+/// Reads [`ItemText`]: tech type names from the game's code (`dll`, as
+/// `read_assembly` gives it) and the language file `language`.
+pub fn item_text(game: &GameData, dll: &[u8], language: &str) -> Result<ItemText> {
+    let e = |e: sn_dotnet::Error| format!("{GAME_ASSEMBLY}: {e}");
+    let asm = Assembly::parse(dll).map_err(e)?;
+    Ok(ItemText {
+        tech_names: sn_dotnet::tech_type_names(&asm)
+            .map_err(e)?
+            .into_iter()
+            .collect(),
+        strings: self::language(game, language)?,
+    })
+}
+
 /// A language file: key → text (`LanguageFiles/<name>.json`, read as
 /// `Language.LoadLanguageFile` does; console platform suffixes are not
 /// remapped on desktop).
@@ -421,5 +485,23 @@ mod tests {
         for n in 0..text.len() {
             let _ = parse_language(&text[..n]);
         }
+    }
+
+    #[test]
+    fn item_text_formats_as_the_game() {
+        let t = ItemText {
+            tech_names: HashMap::from([(5, "Titanium".to_string()), (6, "Bare".to_string())]),
+            strings: HashMap::from([
+                ("Titanium".to_string(), "Ti".to_string()),
+                ("PickUpFormat".to_string(), "Take {0} {{now}}".to_string()),
+            ]),
+        };
+        assert_eq!(t.tech(5), "Ti");
+        // No text: the key, as the game shows it.
+        assert_eq!(t.tech(6), "Bare");
+        assert_eq!(t.tech(7), "#7");
+        assert_eq!(t.format("PickUpFormat", &t.tech(5)), "Take Ti {now}");
+        assert_eq!(t.format("Missing", "x"), "Missing");
+        assert_eq!(t.format("{1} {0}", "x"), "{1} x");
     }
 }

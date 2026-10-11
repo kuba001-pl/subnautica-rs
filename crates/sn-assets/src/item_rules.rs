@@ -215,6 +215,7 @@ pub fn item_rules(
             num_chances: b.num_chances,
             list,
             default_class: resolve(&b.default_prefab)?,
+            break_text: b.break_text.clone(),
         };
         for class in &by_path[path] {
             outcrops.insert(class.clone(), info.clone());

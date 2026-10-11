@@ -2,6 +2,67 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-11 — M9d5a: the hand on items
+
+**What:**
+- `sn-sim`: `OutcropInfo.break_text` (the rules read it; part of the
+  rules fingerprint now); `BodyFrame.time_grabbed`, and the body's `grab`
+  value is `grab_active` (0.4 s after a grab) instead of always false.
+  1 new test.
+- `sn-assets`: `ItemText` (tech type names from the DLL, a language file;
+  `get`, `tech`, `format` as `Language.Get` / `GetFormat`) and
+  `item_text`; 1 new test.
+- `sn-client` `items.rs`: `aim` (what the hand shows over a pickup, an
+  outcrop or the locker, and the request a click sends), the own inventory
+  and unlocks logged after each change, the `Text` resource; 1 new test.
+- `player.rs`: the hand's ray every frame (also for the HUD); a click on an
+  item sends its request and sets `timeGrabbed`; the locker's bodies are in
+  the hand's world (`LOCKER_BODY`) and its click is counted
+  (`locker_opened`); `--use-item <SECONDS,…>` walks to the nearest target
+  and uses the hand when its ray reaches it.
+- `hud.rs`: the hand's text and subscript, centred. `main.rs`: reads the
+  item text (English) at start; the flag.
+- Real-data test `hand_targets_follow_the_items` also prints an outcrop
+  near the pod (used for the client's start point).
+- No new dependency or file type.
+
+**Why:** M9d5 of the M9d plan, split into a (the hand, this) and b (the
+inventory panel; DESIGN has its plan).
+
+**Verified:**
+- `cargo test --workspace`: 460 passed, 0 failed, 39 ignored. Clippy with
+  `-D warnings` and fmt pass.
+- `sn-client --start -197.3 -35.2 -10.2 --use-item 3,4,5 --shot 7`
+  (`out/m9d/m9d5a_client.log`): three times "Pick up Acid mushroom", the
+  request, and the inventory line: (0,0), then (1,0), then (2,0), 1×1 each.
+- `--start -283.5 -63.3 -114.4 --use-item 3,4,5,7,8`
+  (`out/m9d/m9d5a_outcrop.log`): "Break limestone outcrop", three hits; the
+  outcrop's key gone and one server object (copper ore) drawn; the hand on
+  it shows "Pick up Copper ore"; picked into (0,0). `grab` on for 0.39 to
+  0.40 s after each use.
+- In the pod, `--use-item 3 --shot 15` (`out/m9d/m9d5a_locker.log`): walked
+  round the ladder, the hand reaches the locker at 1.98 m, "Open storage
+  container", opened. Screenshot `out/m9d5a-locker.png` shows the text over
+  the locker.
+- `sn-server` + `sn-inspect coop --count 4 --presets lan --seconds 20`:
+  18,252 of 18,252 ticks exact, 128 hash checks, 0 differ
+  (`out/m9d/m9d5a_*.log`).
+
+**Dead ends and fixes:**
+1. `--use-item` first aimed at the locker node's position and used the
+   hand at once: the ray went up into the top hatch's trigger and started
+   its cinematic. Aiming at the locker's collider gave the same 3.41 m:
+   the locker is across the pod, out of reach. The flag now walks to the
+   target and uses the hand only when its ray reaches an item or the
+   locker.
+2. Walking straight there was blocked by the ladder (0.2 m in 10 s); the
+   `--use-hatch` rule (blocked 0.5 s: step aside 0.5 s) got round it.
+3. Checked in the code: `isValidHandTarget`'s 2 s after creation does not
+   apply to pickups, so no delay was added.
+
+**Not tested:** keyboard and mouse play; the "Inventory full" text on
+screen (unit test only).
+
 ## 2026-10-11 — M9d4b: the drawing follows the items
 
 **What:**

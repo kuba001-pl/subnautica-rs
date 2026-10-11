@@ -496,6 +496,7 @@ mod tests {
             strafe: 0.0,
             controls: true,
             bobbing: true,
+            time_grabbed: 0.0,
         };
         let mut set: Vec<&str> = body
             .update(&params, &frame, &mut |_, _, _| false)

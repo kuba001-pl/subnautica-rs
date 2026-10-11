@@ -35,6 +35,8 @@ pub struct OutcropInfo {
     pub num_chances: i32,
     pub list: Vec<OutcropDrop>,
     pub default_class: String,
+    /// `breakText`: the hand text's language key (M9d5).
+    pub break_text: String,
 }
 
 /// The item rules read from the install (`sn-assets::item_rules`, M9d3d;

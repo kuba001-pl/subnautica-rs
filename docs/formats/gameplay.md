@@ -841,6 +841,31 @@ Readers (M9d1): `sn-unity::items` (layouts), `sn-assets::items`
   every supply is a pickup of its listed tech type, and the 6 supplies fit
   the 4 × 8 locker.
 
+## The hand on items (M9d5)
+
+- **Confirmed (code):** `Pickupable.OnHandHover`: when `AllowedToPickUp`
+  (pickupable and room), the hand text is `PickUpFormat` formatted with
+  the item's name (`LanguageCache.GetPickupText`; `PackUpFormat` with
+  `usePackUpIcon`, on no prefab); pickupable without room: the name with
+  the subscript `InventoryFull`; not pickupable: the name only. A click
+  that picks up calls `Player.PlayGrab`. `BreakableResource.OnHandHover`
+  shows its `breakText`; a click without a bash tool plays the grab and
+  hits. The lifepod's locker (`GenericHandTarget` → `EscapePod`) shows
+  `EscapePodStorageOpen`; `StorageOpen` sets the pod animator's bool
+  `storage_open` and opens the storage 0.25 s later. These keys are
+  literals in the code.
+- **Confirmed (code):** `HandTarget.isValidHandTarget` (false for 2 s
+  after an object is created) is not asked by `GUIHand` before
+  `OnHandHover` / `OnHandClick`; only some targets (beds, benches,
+  chairs, consoles, cinematic triggers) check it themselves.
+  `Pickupable` and `BreakableResource` do not, so a fresh item can be
+  taken at once.
+- **Confirmed (real data, M9d5a):** the locker's hand collider is at
+  floor height on the side of the pod across from the player's spawn
+  (3.4 m from the spawn's camera, beyond the hand's 2 m), centred
+  0.78 m above the pod's origin; its node holds one collider. Reached by
+  walking round the ladder: the hand's ray hits it from 1.98 m.
+
 ## Fabricator menus: `CraftTree` (code only)
 
 - **Confirmed (code):** each crafting machine's menu (fabricator,
