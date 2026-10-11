@@ -413,7 +413,8 @@ understand it, then write our own.
 | **M9c** ✅ | **Done 2026-10-10** (MODLOG; facts in `docs/formats/gameplay.md` § Oxygen, health and death and § Mouse look; plan and "as built" below). `sn-sim::vitals` and `look` pass 14 unit tests; `sn-inspect dive` seeds 1–5: oxygen 0 at 42.26 s under water, death 8.02 s later, respawn in the pod 5.02 s, restore 1.02 s, controls 1.02 s; oxygen within one breath of the read rate; refill 0.56–0.74 s from surfacing; 0 penetrations. Look: 0.1125° per mouse count (sensitivity 0.15 from the DLL), pitch ±87° (scene; the code says ±80). The HUD and the look in play are not tested by the agent. Plan as written: Oxygen, health, depth: drain under water, refill at the surface and in the lifepod, suffocation → respawn in the lifepod, with the game's numbers. A minimal HUD of our own (bars and numbers; the game's UI sprites later). Also the mouse look as the game's (`MainCameraControl`: sensitivity, pitch limits, smoothing, read from its serialized fields and settings defaults), replacing our own values from M9b. | Rules unit-tested; a scripted dive logs oxygen over time against the values read; the look's values logged next to the ones read, its limits unit-tested. |
 | **M9g** ✅ (2026-10-10, M9g1–M9g5e; not compared with the game on screen) | **The player's body** (plan written 2026-10-10, below M9c's; split into M9g1–M9g5): the game's player model from the `main` scene with the suit the equipment rule picks, its animator driven by the game's parameter rules (`ArmsController`, `Player`), the view model's turn and bob (`MainCameraControl`), the head drawn only in shadows in first person; then the hatch cinematics and death animation. Pulls forward "After Phase E" item 3 (all but tools/IK). Before M10 so remote players are drawn as bodies. | Each step's own list in the plan. |
 | **M10** | Multiplayer as planned (Phase D, "M10 plan", steps M10a–M10i): `sn-protocol`, `sn-net`, `sn-session`, `sn-server`, handshake with the build and rules check, join, player sync (remote players drawn with M9g's body, animated by the values the owner's rules computed). From here solo play also runs against an in-process server (§ 3.1, principle 5), so items and crafting below are written server-authoritative once. | M10's own row. |
-| **M9d** | Pick up and inventory: `Pickupable` objects within reach, outcrops break into their resource (`BreakableResource`), inventory of the game's size, item sizes from TechData; picked objects gone for every player (server state keyed by entity id and slot seed). | Inventory rules unit-tested; a scripted pick-up logs item counts; the object's drawn count −1 on both clients. |
+| **M9d** | Pick up and inventory (plan below, steps M9d1–M9d6): `Pickupable` objects within reach, outcrops break into their resource (`BreakableResource`), inventory of the game's size, item sizes from TechData, equipment slots, blueprints unlocked by picking up, dropping, the lifepod's locker with its starting supplies, the `grab` animation; picked objects gone for every player (server state keyed by entity id and slot seed). What stays not 1:1 is listed in the plan with where each item goes. | Inventory rules unit-tested; a scripted pick-up logs item counts; the object's drawn count −1 on both clients. |
+| **M9u** | The game's UI (uGUI, sprites, TextMesh Pro): the HUD, hand reticle, PDA inventory tab and equipment screen, notifications; replaces our own panels. Proposed with M9d (below its plan); its own plan before it starts. | In its plan. |
 | **M9e** | Crafting at the lifepod's fabricator: the menu from P1's tree, recipes and times from TechData, starting blueprints from `PDAData`; item names from the language files. | Crafting rules unit-tested on synthetic recipes; one real recipe crafted in a scripted run (counts before/after logged); menu node count equal to P1's. |
 | **M9f** | Save and load (player, inventory, removed objects, crafted items) on the server, in our own format, in the user's save folder (not `out/`, not the game folder). Becomes M11's persistence. | Round-trip unit test; server restart restores the logged state. |
 
@@ -689,6 +690,167 @@ settings (sensitivity, invert) are not read, the defaults are used.
   same way the client does (no movement, use or look while dead). The
   dive swims 8 m clear of the pod before going up: the exits end under
   it, and on seed 5 the seabed led back under it.
+
+#### M9d plan: pick up and inventory (written 2026-10-11; approved by the user the same day with equipment slots, unlocks, dropping and the grab animation pulled in, and every gap left written down below)
+
+**Goal:** the player picks up loose items (titanium, quartz, …), breaks
+limestone and sandstone outcrops into their resource, finds the lifepod's
+starting supplies in its locker, and keeps items in a 6 × 8 inventory and
+the equipment slots, packed and placed as the game does; items can be
+dropped again. Every player sees the same world. Written server-first on
+M10: the server decides who got what; solo play goes through the
+in-process server like everything else.
+
+**What the game does** (read in the decompiled code; each fact goes to
+`docs/formats/gameplay.md` § Pick-ups and outcrops and a new § Inventory,
+marked *confirmed* only once M9d1/M9d2 check it on data):
+- **Pick up** (`Pickupable.OnHandClick` → `Inventory.Pickup`): allowed
+  when `isPickupable`, more than 1 s since the object was dropped
+  (`timeDropped`), and the inventory has room (`HasRoomFor` with the
+  item's size); else the hand shows "inventory full". The object is
+  deactivated and unregistered from its cell. Unless it is `Eatable`, the
+  item goes into the equipment first if a free slot takes its
+  `EquipmentType`, else into the 6 × 8 container (`new
+  ItemsContainer(6, 8, …)` in `Inventory.Awake`, a constant in the code).
+  `Player.PlayGrab` sets `timeGrabbed`; the body's animator bool `grab`
+  is true for 0.4 s after it (`ArmsController.Update`; our body rules
+  send it always false today).
+- **Unlocks on pick-up** (`Inventory.OnAddItem` → `KnownTech.Analyze`):
+  adding an item analyses its tech type, which unlocks the blueprints
+  `PDAData.analysisTech` lists for it (P0 reads `PDAData`).
+- **Tech type of an object** (`CraftData.GetTechType`): the nearest
+  `TechTag` component up the hierarchy, else the nearest
+  `PrefabIdentifier`'s class id looked up in the entity tech table
+  (`EntTechData`, read in P0). This settles P0's hypothesis in code; M9d1
+  checks it on data.
+- **The container** (`ItemsContainer`): items are grouped by tech type;
+  the size is TechData's `itemSize` (default from `TechData.defaults`,
+  P1). Every change re-packs the whole grid (`TrySort`): groups ordered
+  by larger side (bigger first), then area (bigger first), then, at equal
+  area, height (taller first), then tech type number; each item takes the
+  first free cell scanning rows top to bottom, columns left to right
+  (`GetRoomFor` / `NextFreeCell`). `HasRoomFor` packs a trial copy with
+  a ghost item of the new size. Positions are a pure function of the
+  contents.
+- **Equipment** (`Equipment`): named slots, each taking one
+  `EquipmentType` (`Equipment.slotMapping`, a static dictionary built in
+  code: "Head", "Body", "Gloves", "Foots", "Chip1", "Chip2", "Tank", …);
+  the player's equipment uses a subset of them. An item's type is
+  TechData's `equipmentType`.
+- **Drop** (`Inventory.InternalDropItem`): not allowed in a sub, in the
+  lifepod, while piloting, or out of water in a Precursor base
+  (`CanDropItemHere`). The point: a ray from the camera within 10° of
+  its forward, at a random 0.75–1.5 m, stopped 0.2 m before a hit
+  (`Inventory.RayCast`); then a 0.3 m sphere cast up to 5 m from the
+  camera to that point stops it 0.15 m before the first hit
+  (`Pickupable.FindDropPosition`). Random rotation if
+  `randomizeRotationWhenDropped`. The item becomes a pickup again with
+  `timeDropped` reset, a rigid body, and a `Smell` for creatures.
+- **Outcrops** (`BreakableResource`): each hand click is a hit
+  (`hitsToBreak`, 3 on all four prefabs) and plays the grab (or, with a
+  bash tool held, the bash); at 0 the outcrop is destroyed and
+  `numChances` times a resource is drawn from `prefabList` (first entry
+  whose chance passes); if none passed, `defaultPrefab`. Each draw is the
+  player's `PlayerEntropy` → `FairRandomizer.CheckChance`:
+  `entropy += chance; if entropy > Random.value { entropy −= 1; true }`
+  (luck evens out per tech type). The resource spawns at
+  `position + up × verticalSpawnOffset` as a rigid body with a torque of
+  3–6 and a push of 0.1 along `up`.
+- **The lifepod's locker** (`SpawnEscapePodSupplies.OnNewBorn`): a new
+  game fills the pod's `StorageContainer` with `LootSpawner`'s
+  `escapePodTechTypes` (serialized data), each added if it has room. The
+  locker is an `ItemsContainer` of its own size; moving items between
+  it and the inventory is `Inventory.AddOrSwap`.
+- **Death** (`Inventory.LoseItems`): every item with `destroyOnDeath` in
+  the container and the equipment is dropped (as above, so nothing
+  inside the lifepod), except that the loop stops one short
+  (`i < Count − 1`): one item is always kept. A game quirk; ported as it
+  is.
+
+**Who decides what (on M10's table):**
+
+| State | Decided by | Reaches others as |
+|---|---|---|
+| Which world objects are gone, and dropped or spawned ones | Server | Reliable world events; the full set in the join snapshot |
+| Every player's inventory, equipment and known blueprints | Server (it reads TechData and `PDAData` from its own install) | Reliable events to the owner; others see only the world change |
+| The lifepod locker's contents | Server | Reliable world events (shared: one pod for everyone, M10) |
+| Outcrop hits, the resource draw, each player's `FairRandomizer`, drop rays' random angle and distance | Server for the draw and hits; the owner computes the drop point with its collision and sends it | World events |
+| The `grab` animator bool | The owner (M9g's rules, sent in the player state like the other animator values) | Player states |
+
+The game's `Random` is unseeded, so any draw is the game's behaviour (as
+M7f3's start point); the server's random is its own seeded one. The game
+has one player, so two players reaching for one item has no rule to
+read: the server takes the first request in its order, the second is
+refused (our rule, written in `gameplay.md` as ours).
+
+**Object identity:** objects placed in the world's cells have the game's
+own id (`SavedObject.id`, a GUID string); slot-filled objects have none,
+so their key is (batch, cell, slot index) under the world's slot seed:
+stable because M10 already checks that every client's slot fill is equal
+(the per-batch fill hash); objects the server spawns or that are dropped
+get `Spawned(n)`. One `EntityKey` type in `sn-protocol` for all three.
+
+**Steps:**
+
+| Step | Work | Done when |
+|---|---|---|
+| **M9d1** | **Data (headless).** Per placed and slot prefab: `Pickupable` (`isPickupable`, `destroyOnDeath`, `randomizeRotationWhenDropped`), `TechTag`, its tech type by the game's rule, `Eatable` present; `BreakableResource` with its `AssetReference`s resolved to prefabs and their tech types; the player's `PlayerEntropy` randomizers and equipment slots (main scene); `LootSpawner.escapePodTechTypes` and the pod locker's size; `PDAData.analysisTech`; from the DLL's IL (P1 reader): the inventory size in `Inventory.Awake` and `Equipment.slotMapping` (**stop and ask** if either needs more than a straight-line pattern); item names from the language files (key format checked and recorded). `sn-inspect pickups`. | Real-data test: every pickupable prefab has a tech type (misses listed), every tech type has an item size or the default; all 4 outcrops' resource lists resolve; slot names and types, the pod's supplies and the analysis list logged; the facts in `gameplay.md`. |
+| **M9d2** | **`sn-sim::inventory` (pure).** The container (groups, the sort order, the packing, `HasRoomFor`, add, remove), the equipment (slots by type, equipment first, not for food), the pick-up rule (1 s after a drop, room), `AddOrSwap` between two containers, the analysis unlocks, `FairRandomizer`, the outcrop rule (hits, chances, default), the drop rules (where allowed; the point from the two casts, given `sn-sim::collide`), `LoseItems` with its quirk, the `grab` bool's 0.4 s. | Unit tests on synthetic data: hand-worked packings (mixed 1×1, 2×2, 3×3 …) give the expected cells; a full grid refuses; removal re-packs; a tank goes to an empty tank slot, food never does; swap between grid and locker; a seeded `FairRandomizer` run's hit rate converges on the chance; the outcrop falls back to the default; no drop in the pod; the drop point stops before a synthetic wall; death keeps one item. |
+| **M9d3** | **The protocol and the server.** `sn-protocol` 4: `EntityKey`; requests `PickUp {key}`, `Hit {key}`, `Drop {item, point, rotation}`, `Move {item, to}` (grid, slot, locker); world events `Removed {key, by}`, `Broken {key, spawned: [(id, prefab, position)]}`, `Dropped {id, prefab, point, rotation}`, locker changes; owner events `InventoryChanged`, `Unlocked {tech}`, `Refused {reason}`; the removed, dropped and spawned objects and the locker in the join snapshot (chunked if it outgrows a message: the `Welcome` is under 1,200 B today, the set can hold thousands). `sn-session::server` applies them in order; the world-state hash covers all of it. | Unit tests with simulated clients: two players pick the same item in the same tick → one gets it, the other `Refused`; a full inventory refuses; a drop then a pick-up by another player within 1 s refused, after 1 s allowed; a late joiner's snapshot equals the server's; hash 0 mismatches over 10,000 random ticks with picks, breaks, drops and locker moves; 1,000,000 bad inputs, 0 panics. |
+| **M9d4** | **Targets in the world.** `collision_world` tags each hand body with its `EntityKey` and kind (pickup, outcrop, locker); a removed key drops its bodies and its drawn instances on every machine; spawned and dropped items are drawn and get hand bodies. | Headless: after a `Removed`, the hand cast no longer hits the key; after a `Dropped`, it does; counts of targets per kind per loaded batch logged. |
+| **M9d5** | **Client.** Hand text "Pick up *name*" / "Break *name*" / "Inventory full" / the locker (our HUD, the language file's text); click or E sends the request; the `grab` bool drives the body; Tab opens our own inventory panel (Bevy UI: the 6 × 8 grid, the equipment slots, the locker beside it when open; each item a box of its size with its name; click to move, a key to drop). | Logs: requests, answers, the inventory after each change (cells per item), unlocks. Keyboard and mouse play **not tested by the agent**. |
+| **M9d6** | **Scripted proof.** `sn-inspect pickup`: from the pod, take the supplies from the locker, swim to the nearest pickup and outcrop (seeded), pick up, hit three times, pick up the resource, drop one item and pick it up again after 1 s, die and count what is kept; logs inventory, equipment and cells after each step. `sn-inspect coop` and two clients (`--host`, `--join`): bot A picks and drops, bot B logs the object's drawn count. | The scripted run logs the expected counts; on both clients the object's drawn count −1 (+1 after a drop) at the same world-event index; hashes 0 mismatches; solo trace unchanged (M10g's 453/453). |
+
+**Not 1:1 after M9d** (everything known; each goes where its subsystem
+is built; none is dropped):
+- **Physics** (§ 3.3's physics decision, first used in M11 with the
+  floating lifepod): dropped items, outcrop resources and death drops
+  stay where they appear instead of falling and tumbling (rigid body,
+  the break's torque and push, a drop's push velocity).
+- **Sounds** ("After Phase E" item 8): pick-up and drop sounds (TechData
+  `soundPickup` / `soundDrop`), the outcrop's hit and break sounds.
+- **Effects** (M7i, particle systems): the outcrop's hit and break
+  particles, `VFXBurstModel`'s break.
+- **The game's UI** (M9u, below): the PDA's inventory tab and equipment
+  screen with icons, dragging, the hand reticle's icons and text style,
+  the pick-up icon notifier, inventory notifications, "inventory full"
+  and "can't drop here" messages, the unlock message. M9d has our own
+  panels and text.
+- **Tools, quick slots and item use** ("After Phase E" item 1): quick
+  slots (tools are bound to 1–5 when picked up; scrap metal never), held
+  tools, the bash animation with a tool, eating, using and equipping
+  effects (tanks' oxygen through `Inventory.ChangeOxygen`, fins' speed,
+  suits).
+- **Per-item state** (with each item in item 1, saved in M9f): battery
+  charge, a tank's oxygen, food decay; M9d's items are tech types only.
+- **Supply crates** in the world (`SupplyCrate`, `LootSpawner`'s
+  `supplyTechTypes`): item 1.
+- **PDA and goals** (item 2 and item 7): the databank entry and PDA
+  message an unlock or pick-up starts (`GoalManager` custom goals,
+  encyclopedia).
+- **Creatures** (item 4): a dropped item's `Smell`; creatures attracted
+  to it.
+- **Vehicles and bases** (items 5 and 6): the Prawn suit's claw and the
+  propulsion cannon picking up and breaking; storage lockers in bases;
+  `SecureItems` and `destroyOnDeath` cleared inside a sub; water parks;
+  dropping inside a sub (`Place`).
+- **Look** (item 9): `SkyEnvironmentChanged` on items moved between
+  inside and outside lighting.
+
+#### M9u: the game's UI (proposed 2026-10-11 with M9d, agreed with it; plan to be written before it starts)
+
+The game's screens are uGUI (146 `uGUI_*` classes): canvases of
+`RectTransform`s, `Image`s with sliced sprites from `SpriteAtlas`es,
+TextMesh Pro text with SDF fonts, masks and animated panels. Reading and
+drawing that is a milestone of its own (about the size of M9g); the agent
+checks it by numbers (layout rectangles against the read values) and
+screenshots for the user. It comes after M9d (whose rules, sync and proof
+do not need it) and before M9e (the fabricator menu is UI, and building
+it on our own panels would draw it twice). It replaces M9c's HUD and
+M9d's panels with the game's: the HUD bars, the hand reticle, the PDA's
+inventory tab and equipment screen, the notifications. Its first slice,
+`SpriteAtlas` and `Sprite` reading for the item icons, is the smallest
+useful piece.
 
 #### M9g plan: the player's body (written 2026-10-10)
 
@@ -1080,7 +1242,9 @@ set (with their items); the intro cinematic (item 3); sounds and effects
 **After Phase E** (order to be agreed then; each gets its own plan with
 steps before it starts):
 1. **Survival:** food and water (`Survival`, eating, the fabricator's food
-   tab), knife and harvesting, first aid, tanks and fins.
+   tab), knife and harvesting, first aid, tanks and fins; quick slots,
+   held tools and item use; per-item state (battery charge, tank oxygen,
+   food decay); supply crates (the gaps M9d leaves, listed in its plan).
 2. **Scanner and PDA:** fragments, blueprints unlocked by scanning
    (`analysisTech`, `TechFragment`), the databank text from the language
    files, the PDA screen.

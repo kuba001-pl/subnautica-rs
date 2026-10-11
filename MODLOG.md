@@ -2,6 +2,27 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-11 — M9d plan: pick up and inventory (docs only)
+
+**What:** `docs/DESIGN.md` § 4.3: the M9d plan (steps M9d1–M9d6, who
+decides what, object identity) with equipment slots, unlocks on
+pick-up, dropping, the lifepod's locker and the `grab` animation pulled
+in, and every known gap from the game listed with the milestone it goes
+to; a new row **M9u**, the game's UI, after M9d and before M9e; "After
+Phase E" item 1 lists the gaps M9d leaves there. No code.
+
+**Why:** M10's basis is in; M9d is next and too big for one step. The
+user asked for the plan to be as close to 1:1 as possible and for every
+remaining difference to be written down for later.
+
+**How verified:** the game's rules quoted in the plan were read in the
+decompiled code (`Pickupable`, `Inventory`, `ItemsContainer`,
+`BreakableResource`, `PlayerEntropy`, `FairRandomizer`,
+`CraftData.GetTechType`, `SpriteManager`); they become *confirmed* in
+`gameplay.md` only when M9d1/M9d2 check them (also read: `Equipment`,
+`KnownTech`, `QuickSlots`, `ArmsController`, `SpawnEscapePodSupplies`,
+`LootSpawner`). Approved by the user 2026-10-11.
+
 ## 2026-10-11 — M10h3: other players' hatch cinematics and the pod's doors
 
 **What:**
