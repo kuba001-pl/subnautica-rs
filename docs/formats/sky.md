@@ -95,9 +95,34 @@ dimmed by clouds (`1 − saturate(5 × cloud × horizon fade)`); a soft disc
 ## How we render it (M8c2)
 
 `sky_dome.rs` builds the uniform from the scene values every frame (cloud
-rotation from the time since start-up, the planet from `--time` on day 0).
+rotation from the time since start-up, the planet from continuous session
+game days since M8h).
 One pass draws the sky map and its mips, another the dome where the depth
 buffer is empty, before the fog pass. Our sky value 1 = one game light
 unit (see `docs/formats/water.md`). Stars: `stars.rs`/`stars.wgsl`, after the fog, before the water (M8c5).
 **Not done:** the eclipse/end-sequence and rocket effects; the
 planet's texture detail is chosen from its size on screen.
+
+## Shared-clock inputs (M8h)
+
+**Confirmed by read-only inspection** of the installed game's
+`DayNightCycle.GetDay`, `GetDayScalar`, `GetDayNightCycleTime` and
+`uSkyManager.Update`, `PlanetPos`, `SetVaryingMaterialProperties`:
+clock days are continuous game seconds divided by 1200; the day scalar
+wraps in double precision before conversion to float. The sky timeline
+comes from the day/night cycle each update; an exact 24-hour timeline is
+wrapped to zero before sky evaluation. M8h corrects the old equality edge
+case in the client. Planet orbit uses continuous
+days, so midnight must not reset its orbit. Cloud rotation uses elapsed
+`Time.time`, independently of day/night speed. The scene's absent moon
+light still leaves the existing fixed moon orientation; no new lunar
+orbit rule is inferred.
+
+The client retains decoded sky rules and evaluates them after its session
+clock, before fog, sky/stars, water reflection inputs and shafts. The
+marked directional sun follows the same state for shadows. Light texture
+parameters follow fog; extracted particle data follows the main update.
+`--log-sky` samples these rules at fixed session ticks for peer comparisons;
+these diagnostic samples are not claims that peers render simultaneously.
+Clouds, star twinkle, caustics and water simulation keep elapsed-time rules.
+Eclipse and ending overrides remain incomplete.

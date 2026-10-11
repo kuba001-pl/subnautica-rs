@@ -103,10 +103,11 @@ Usage: sn-client [--game-dir <PATH>] [--start <X> <Y> <Z>] [--look <X> <Y> <Z>]
   --no-water-surface  no water surface (for comparisons)
   --water-quality  medium | high: the game's option of that name (default
                  high: simulated waves; medium: the 64 baked frames)
+  --log-sky      log sky samples at fixed session ticks (--log-ticks interval)
   --gpu-timings  with --benchmark/--flythrough: log GPU time per render pass
   --time         game clock in hours for the sun and sky (default 9.6, i.e.
                  09:36, when a new game starts); the clock runs from there
-                 (the sun and sky stay at the start time for now)
+                 (sun and sky follow the shared session clock)
   --time-scale   game seconds per real second (default 1, as the game)
   --view         view distance in metres (default 1200); level-of-detail
                  ranges scale with it
@@ -201,6 +202,7 @@ struct Args {
     time: f32,
     /// `--time-scale`: the clock's speed.
     time_scale: f32,
+    log_sky: bool,
     /// `--aurora`: held intact (false) or exploded (true).
     aurora_held: Option<bool>,
     /// `--aurora-countdown`, seconds after the start.
@@ -275,6 +277,7 @@ fn parse_args_from(raw: &[String]) -> Result<Args, String> {
         gpu_timings: false,
         time: sky::NEW_GAME_HOURS,
         time_scale: 1.0,
+        log_sky: false,
         aurora_held: None,
         aurora_countdown: None,
         free_cam: false,
@@ -385,6 +388,7 @@ fn parse_args_from(raw: &[String]) -> Result<Args, String> {
             "--aurora-countdown" => {
                 args.aurora_countdown = Some(number(it.next(), "--aurora-countdown")?);
             }
+            "--log-sky" => args.log_sky = true,
             "--time-scale" => args.time_scale = number(it.next(), "--time-scale")?,
             "--no-water-fog" => args.no_water_fog = true,
             "--no-water-surface" => args.no_water_surface = true,
@@ -944,7 +948,22 @@ fn main() -> AppExit {
             state.top_ambient,
             state.local_light
         );
-        app.insert_resource(state);
+        app.insert_resource(state)
+            .insert_resource(sky::SkyCycle {
+                manager: manager.clone(),
+                light: light.clone(),
+                day_seconds: f64::from(day_seconds),
+            })
+            .add_systems(
+                Update,
+                sky::update_cycle
+                    .in_set(sky::SkyUpdated)
+                    .after(aurora::tick_clock),
+            );
+        if args.log_sky {
+            app.init_resource::<sky::ClockProbe>()
+                .add_systems(Update, sky::log_clock.after(sky::SkyUpdated));
+        }
         if let Some(textures) = sky_textures {
             // A new game's first day: the clock's fraction of it (the
             // planet's orbit depends on the day).
@@ -1286,15 +1305,7 @@ fn setup(
     // The game's sun when we have its sky (one game light unit is
     // SUN_ILLUMINANCE), else a fixed white one.
     let (direction, colour, illuminance) = match sky.as_deref() {
-        Some(s) => {
-            let peak = s.sun.max_element().max(1e-6);
-            let c = s.sun / peak;
-            (
-                -s.to_sun,
-                Color::linear_rgb(c.x, c.y, c.z),
-                SUN_ILLUMINANCE * peak,
-            )
-        }
+        Some(s) => sky::sun_light(s),
         None => (
             Vec3::new(30.0, -100.0, -50.0).normalize(),
             Color::WHITE,
@@ -1309,6 +1320,7 @@ fn setup(
             shadow_maps_enabled: true,
             ..default()
         },
+        sky::GameSun,
         sun_cascades(),
         // The camera's layer and the "shadows only" one: those renderers
         // cast the sun's shadow without being drawn (M9g4).

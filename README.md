@@ -102,8 +102,8 @@ Tested on Windows 11 with game build 10 (Steam):
   map of valid starts; seeded, `--lifepod-seed`, or `--lifepod X Z`) with
   its fabricator, radio, medical cabinet and power cells; the camera starts
   where the player does; seen through the game's own water fog model (colours and distances
-  per biome) under the game's sun and sky light for a time of day
-  (`--time`), with the game's water surface (simulated or baked waves, foam,
+  per biome) under the game's sun and sky light following the session clock
+  (`--time` sets the start; `--time-scale 0` freezes it), with the game's water surface (simulated or baked waves, foam,
   reflection, refraction, sun glint; from above and below) under the
   game's sky (scattering, sun, clouds, planet, moon; day to night), lit
   the way the game lights surfaces (caustics, sunlight dimmed under water,
@@ -140,7 +140,7 @@ the game on screen yet). Flying from the lifepod
 The water clip map (no water inside the lifepod and bases,
 shore foam); water settings per pixel (the
 camera's are used everywhere); Lifepod 5 floating on the waves, its
-intro, and its modules' emission by power state; the sun and sky following the running game clock;
+intro, and its modules' emission by power state;
 the Aurora's explosion effects, sounds and warnings, fire and smoke;
 the player's saved detail level and field-of-view options (High and 60°
 assumed); terrain grass

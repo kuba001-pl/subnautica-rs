@@ -126,6 +126,7 @@ impl Plugin for SunShaftsPlugin {
             .add_systems(
                 Update,
                 update_shafts
+                    .after(crate::sky::SkyUpdated)
                     .run_if(resource_exists::<SkyState>)
                     .run_if(resource_exists::<WaterWorld>),
             );

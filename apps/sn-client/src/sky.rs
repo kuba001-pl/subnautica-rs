@@ -9,6 +9,80 @@ use sn_unity::{SkyLight, SkyManager};
 /// Clock time of a new game: 09:36 (`DayNightCycle.dateOrigin`).
 pub const NEW_GAME_HOURS: f32 = 9.6;
 
+/// Retained scene rules; the clock itself belongs to the session.
+#[derive(Resource)]
+pub struct SkyCycle {
+    pub manager: SkyManager,
+    pub light: SkyLight,
+    pub day_seconds: f64,
+}
+
+/// All consumers must see this frame's clock evaluation.
+#[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SkyUpdated;
+
+#[derive(Component)]
+pub struct GameSun;
+
+/// Opt-in fixed-tick samples for comparing peers with different frame rates.
+#[derive(Resource, Default)]
+pub struct ClockProbe(Option<u64>);
+
+pub fn log_clock(
+    session: Res<crate::session::Session>,
+    clock: Res<crate::aurora::GameClock>,
+    cycle: Res<SkyCycle>,
+    mut probe: ResMut<ClockProbe>,
+) {
+    let stride = u64::from(session.log_every.max(1));
+    let tick = (session.server_tick().max(0.0) as u64 / stride) * stride;
+    if probe.0 == Some(tick) {
+        return;
+    }
+    probe.0 = Some(tick);
+    let seconds = clock.start + tick as f64 * session.tick_seconds() * clock.speed;
+    let (hours, days) = clock_parts(seconds, cycle.day_seconds);
+    let sample = state(&cycle.manager, &cycle.light, hours);
+    info!("sky clock probe: tick={tick} game_seconds={seconds:.9} days={days:.9} state={sample:?}");
+}
+
+fn clock_parts(seconds: f64, day_seconds: f64) -> (f32, f64) {
+    (
+        (seconds.rem_euclid(day_seconds) * 24.0 / day_seconds) as f32,
+        seconds / day_seconds,
+    )
+}
+
+pub fn sun_light(s: &SkyState) -> (Vec3, Color, f32) {
+    let peak = s.sun.max_element().max(1e-6);
+    let c = s.sun / peak;
+    (
+        -s.to_sun,
+        Color::linear_rgb(c.x, c.y, c.z),
+        crate::SUN_ILLUMINANCE * peak,
+    )
+}
+
+pub fn update_cycle(
+    clock: Res<crate::aurora::GameClock>,
+    cycle: Res<SkyCycle>,
+    mut sky: ResMut<SkyState>,
+    world: Option<ResMut<crate::sky_dome::SkyWorld>>,
+    mut sun: Query<(&mut DirectionalLight, &mut Transform), With<GameSun>>,
+) {
+    let (hours, days) = clock_parts(clock.seconds, cycle.day_seconds);
+    *sky = state(&cycle.manager, &cycle.light, hours);
+    if let Some(mut world) = world {
+        world.day = days;
+    }
+    let (direction, color, illuminance) = sun_light(&sky);
+    for (mut light, mut transform) in &mut sun {
+        light.color = color;
+        light.illuminance = illuminance;
+        transform.look_to(direction, Vec3::Y);
+    }
+}
+
 /// What the rest of the client needs from the sky, in Bevy coordinates and
 /// linear colour (the game's units: 1 = a light of intensity 1).
 #[derive(Resource, Clone, Copy, Debug)]
@@ -78,7 +152,8 @@ pub fn timeline_from_clock(hours: f32) -> f32 {
     } else {
         let d = if day < set { day + 1.0 } else { day };
         let t = (d - set) / (1.0 - span) * 0.5 + 0.75;
-        if t > 1.0 { t - 1.0 } else { t }
+        // uSkyManager wraps a timeline of exactly 24 back to zero.
+        if t >= 1.0 { t - 1.0 } else { t }
     };
     t * 24.0
 }
@@ -257,8 +332,112 @@ pub fn state(m: &SkyManager, l: &SkyLight, clock_hours: f32) -> SkyState {
 mod tests {
     use super::*;
 
+    fn cycle() -> SkyCycle {
+        let manager = manager();
+        let g = manager.mean_sky_color.clone();
+        SkyCycle {
+            manager,
+            light: SkyLight {
+                sun_intensity: 1.0,
+                moon_intensity: 0.05,
+                light_color: g.clone(),
+                sky_color: g.clone(),
+                equator_color: g.clone(),
+                ground_color: g,
+                ambient_light: 0.5,
+            },
+            day_seconds: 1200.0,
+        }
+    }
+
+    #[test]
+    fn clock_wrap_preserves_continuous_planet_days() {
+        for hours in [0.0, 3.0, 9.6, 12.0, 21.0, 23.5] {
+            for day in [-2.0, 0.0, 1.0, 100000.0] {
+                let seconds = (day + hours / 24.0) * 1200.0;
+                let (h, d) = clock_parts(seconds, 1200.0);
+                assert!((f64::from(h) - hours).abs() < 1e-5);
+                assert!((d - day - hours / 24.0).abs() < 1e-10);
+            }
+        }
+        assert_eq!(clock_parts(1200.0, 1200.0), (0.0, 1.0));
+    }
+
+    #[derive(Resource, Default)]
+    struct Observed(f32);
+
+    fn observe(sky: Res<SkyState>, mut observed: ResMut<Observed>) {
+        observed.0 = sky.timeline;
+    }
+
+    fn test_app() -> App {
+        let cycle = cycle();
+        let mut app = App::new();
+        app.insert_resource(state(&cycle.manager, &cycle.light, 9.6))
+            .insert_resource(crate::sky_dome::SkyWorld {
+                manager: cycle.manager.clone(),
+                day: 0.4,
+            })
+            .insert_resource(cycle)
+            .insert_resource(crate::aurora::GameClock::new(480.0, 1.0))
+            .init_resource::<Observed>()
+            // Register the consumer first to test the explicit dependency.
+            .add_systems(Update, observe.after(SkyUpdated))
+            .add_systems(Update, update_cycle.in_set(SkyUpdated));
+        app.world_mut()
+            .spawn((GameSun, DirectionalLight::default(), Transform::default()));
+        app
+    }
+
+    #[test]
+    fn shared_clock_drives_sun_and_consumers_without_frame_lag() {
+        let mut host = test_app();
+        let mut join = test_app();
+        // Different frame histories must not integrate different sky phases.
+        for seconds in [0.0, 150.0, 480.0, 600.0, 1050.0, 1200.0, 1800.0] {
+            host.world_mut()
+                .resource_mut::<crate::aurora::GameClock>()
+                .seconds = seconds;
+            host.update();
+            let cycle = host.world().resource::<SkyCycle>();
+            let hours = (seconds / 50.0) as f32;
+            let expected = state(&cycle.manager, &cycle.light, hours);
+            let actual = host.world().resource::<SkyState>();
+            assert_eq!(format!("{actual:?}"), format!("{expected:?}"));
+            assert_eq!(host.world().resource::<Observed>().0, expected.timeline);
+        }
+        join.world_mut()
+            .resource_mut::<crate::aurora::GameClock>()
+            .seconds = 1800.0;
+        join.update();
+        for app in [&mut host, &mut join] {
+            let sky = *app.world().resource::<SkyState>();
+            assert_eq!(app.world().resource::<Observed>().0, 12.0);
+            assert_eq!(sky.timeline, 12.0);
+            assert_eq!(app.world().resource::<crate::sky_dome::SkyWorld>().day, 1.5);
+            let (direction, color, illuminance) = sun_light(&sky);
+            let mut query = app
+                .world_mut()
+                .query_filtered::<(&DirectionalLight, &Transform), With<GameSun>>();
+            let (light, transform) = query.single(app.world()).unwrap();
+            assert_eq!(light.color, color);
+            assert_eq!(light.illuminance, illuminance);
+            assert!(transform.rotation.is_finite());
+            assert!((transform.forward().as_vec3() - direction).length() < 1e-5);
+            let frozen = format!("{sky:?}");
+            app.update();
+            assert_eq!(format!("{:?}", app.world().resource::<SkyState>()), frozen);
+        }
+        assert_eq!(
+            format!("{:?}", host.world().resource::<SkyState>()),
+            format!("{:?}", join.world().resource::<SkyState>())
+        );
+    }
+
     #[test]
     fn clock_to_timeline() {
+        assert_eq!(timeline_from_clock(0.0), 0.0);
+        assert_eq!(timeline_from_clock(24.0), 0.0);
         // Noon stays noon, sunrise (03:00 on the clock) is 06:00 on the sky.
         assert!((timeline_from_clock(12.0) - 12.0).abs() < 1e-4);
         assert!((timeline_from_clock(3.0) - 6.0).abs() < 1e-3);

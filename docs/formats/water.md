@@ -175,7 +175,8 @@ full-screen pass before tone mapping implementing steps 1–4 above in world
 space (water plane y = `waterOffset` = 0). The CPU blends the coefficients of
 the 8 surrounding 16 m cell centres at the camera every frame (the game
 blurs and upsamples its volume; our blend is simpler). `apps/sn-client/src/sky.rs`
-computes the sky state for `--time` (default 09:36) and drives both the fog
+computes the sky state from the running session clock (starting at `--time`,
+default 09:36; M8h) before updating fog, and drives both the fog
 and Bevy's sun (direction, colour, illuminance = 8000 lux per game light
 unit).
 

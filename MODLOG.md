@@ -2,6 +2,39 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-11 — M8h: shared-clock sky and lighting
+
+**What/why:** evaluate retained sky rules from the session clock each frame,
+update the marked sun/shadow transform and continuous planet days, and order
+fog, sky/stars, water reflections and shafts after evaluation. Existing light
+parameters follow fog; material emission and ambient inputs use that state.
+Keep clouds, twinkle, waves and caustics on their existing elapsed clocks.
+Correct exact midnight from sky timeline 24 to 0, confirmed by read-only
+inspection of the game's manager. Add opt-in `--log-sky` fixed-tick samples.
+No dependency, architecture or whitelist change. Format notes and README
+updated; full acceptance gaps remain explicit in DESIGN.
+
+**Verified:** `cargo test --workspace`: 405 passed, 37 ignored;
+`cargo clippy --workspace --all-targets -- -D warnings` and
+`cargo fmt --all -- --check` pass; release build passes. Six sky tests cover
+synthetic evaluation/clock/sun behavior. Three frozen performance runs match
+previous sky/fog/scene values; means 17.640–18.136 ms, p99 19.461–22.168 ms.
+No speedup claimed. Noon/sunset/midnight and a 240× midnight crossing have
+300-frame reports and captures in ignored `out/`; clock values agree with
+existing evaluation, except the intentional exact-midnight correction.
+Host/join: 82 identical fixed-tick samples, including eight midnight wraps.
+Exact commands, expected outputs and GPU numbers are in DESIGN M8h.
+Original-game visual matching and isolated sky CPU cost: **not tested**.
+
+**Verification dead ends:** an initial PowerShell background launcher exposed
+an unset exit code after `WaitForExit`, stopping a repetition loop early;
+using `Start-Process -Wait -PassThru` completed the missing runs. The peer
+launcher combined `--free-cam` with player-only `--shot`, so timed shutdown
+did not run; after successful comparisons only those two owned processes
+were stopped manually. This is not evidence of normal peer shutdown.
+Initial midnight capture exposed the pre-existing 24→0 boundary error;
+corrected it and reran midnight/crossing captures as `-final`.
+
 ## 2026-10-11 — M8g0a: named visual performance baselines
 
 **What:** `sn-client --baseline NAME --baseline-revision LABEL` with a solo

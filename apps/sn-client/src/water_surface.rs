@@ -347,6 +347,7 @@ impl Plugin for WaterSurfacePlugin {
             (
                 update_water_sim,
                 update_water_surface
+                    .after(crate::sky::SkyUpdated)
                     .run_if(resource_exists::<WaterWorld>)
                     .run_if(resource_exists::<SkyState>),
             )

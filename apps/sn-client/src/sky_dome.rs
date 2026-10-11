@@ -342,6 +342,7 @@ impl Plugin for SkyDomePlugin {
         .add_systems(
             Update,
             update_sky
+                .after(crate::sky::SkyUpdated)
                 .run_if(resource_exists::<SkyWorld>)
                 .run_if(resource_exists::<SkyState>)
                 .run_if(resource_exists::<WaterWorld>),

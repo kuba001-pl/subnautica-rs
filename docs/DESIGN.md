@@ -1784,11 +1784,90 @@ Update dependent fog, water reflections and lighting in a consistent frame
 order. This replaces the unnamed "sky on the clock" gap in M7f4e; it does not
 change the already-fixed Aurora countdown origin (M10g).
 
+Implementation sequence (2026-10-11):
+
+1. Retain the decoded sky manager/light and evaluate the existing sky rules
+   from session game seconds each frame. Wrap hours in double precision;
+   retain continuous days for the planet orbit. Match the manager's exact
+   midnight wrap (24 to 0 before gradient evaluation).
+2. Update only the marked game sun, including its shadow direction. Order
+   sky evaluation after the clock and before fog, sky/stars, water reflection
+   inputs and shafts; light parameters already follow fog. Keep cloud,
+   twinkle, caustic and wave elapsed-time rules unchanged.
+3. Test wrap, frozen time, frame-history independence and same-frame ECS
+   propagation with synthetic data. Run workspace checks and real-data
+   frozen/advancing-clock measurements. Record remaining comparison gaps
+   explicitly; do not call the milestone complete without its checklist.
+
 **Done when:** synthetic checks cover day wrap and multiple clock times;
 logged sky/light values at fixed times equal the existing evaluation rules;
 host and joiner evaluate the same values at the same session tick; cases at
 day, sunset and night have recorded comparisons; affected GPU/CPU costs are
 logged. Eclipse and ending overrides remain with story presentation below.
+
+**Implementation status (2026-10-11):** shared-clock updates implemented;
+full milestone acceptance remains open for original-game matched visual
+comparisons and isolated CPU profiling. No eclipse/ending override added.
+
+- [x] Synthetic day wrap, negative/multiple days, fixed-time evaluation,
+  frozen state, different peer frame histories and same-frame consumer/sun
+  propagation. Workspace: 405 passed, 37 opt-in tests ignored; fmt and Clippy
+  with warnings denied pass.
+- [x] Frozen 09:36 reports have identical sky, fog, object and terrain values
+  to M8g0a (terrain cache occupancy excluded as before). Three 300-frame
+  1600×900 runs, 120 settled warm-up frames, 1200 m view: means
+  18.136/17.640/17.651 ms versus 17.936/17.946/18.021 ms before; p99
+  21.246/19.461/22.168 ms versus 20.314/19.273/20.524 ms. These measurements
+  do not establish a speedup or a 60 fps result. First new run enabled tick
+  logging; the other two did not.
+- [x] Recent GPU sky costs 0.047–0.053 ms (previously 0.046), fog
+  0.032–0.034 ms (0.032), water surface 0.129–0.130 ms (0.127–0.128),
+  shafts 0.845–0.868 ms (0.837–0.848). Full reports retain all pass samples;
+  these are recent diagnostic averages, not whole-run GPU distributions.
+- [x] Fixed noon/sunset/midnight at 400 m view: sky timelines 12/18/0,
+  means 8.513/9.139/8.371 ms. Accelerated 240× run crossed midnight during
+  measurement: game seconds 1008.989→1647.763, sky timeline
+  17.453186→9.970176, mean 8.872 ms. All four reports: 300 frames, zero
+  unsettled frames, 1600×900 captures. This compares numerical rules and
+  records captures; original-game visual comparison is **not tested**.
+- [x] Local host/join at 120×: all 82 common sampled ticks (150–4200,
+  stride 50) had identical complete sky states and continuous planet days,
+  including eight midnight crossings. Samples evaluate fixed ticks, not
+  simultaneous render frames. Clients were manually stopped after logging:
+  `--shot` is player-only and does not terminate free-camera runs.
+- [ ] Matched original-game day/sunset/night visual comparisons; **not tested**.
+- [ ] Isolated CPU cost of sky evaluation; **not tested**. Above CPU-facing
+  measurements are whole-frame wall intervals, not isolated system timings.
+
+Reproduce the frozen performance run with the M8g0a command in §4.5 using
+new baseline names `m8h-shallows-N` and revision label `203f27a-m8h`.
+For the recorded clock cases (choose a fresh NAME; existing names refuse
+replacement):
+
+```powershell
+$env:SUBNAUTICA_DIR = 'D:\SteamLibrary\steamapps\common\Subnautica'
+.\target\release\sn-client.exe --benchmark 300 --baseline NAME --baseline-revision 203f27a-m8h --warmup 120 --resolution 1600 900 --start 0 5 0 --look 60 5 60 --fov 60 --view 400 --lifepod-seed 1 --slot-seed 1 --time 12 --time-scale 0 --aurora intact --water-quality high --color-grading off --gpu-timings --log-sky
+```
+
+Use `--time 21` for sunset, `--time 0` for midnight, or `--time 0
+--time-scale 240` for a crossing. Expected: saved report/300 CSV rows/capture,
+zero unsettled frames, fixed timelines 12/18/0 or a changing wrapped timeline.
+Records: ignored `out/baselines/run-m8h-{shallows-1,shallows-2,shallows-3,
+day,sunset,night-final,cycle-final}/`. Earlier `night`/`cycle` runs predate the
+exact-midnight correction; use the `-final` results for that edge case.
+
+Peer verification uses these two commands in separate terminals (stop both
+after collecting overlapping samples):
+
+```powershell
+.\target\release\sn-client.exe --host 27420 --name m8h-host --view 400 --resolution 960 540 --free-cam --time 0 --time-scale 120 --lifepod-seed 1 --slot-seed 1 --aurora intact --log-sky --log-ticks 50
+.\target\release\sn-client.exe --join 127.0.0.1:27420 --name m8h-join --view 400 --resolution 960 540 --free-cam --log-sky --log-ticks 50
+```
+
+Expected: identical text after `sky clock probe: tick=N` for each shared N;
+at ticks divisible by 500, timeline/day scalar are zero and continuous days
+increase. `cargo test --workspace`, `cargo clippy --workspace --all-targets
+-- -D warnings`, and `cargo fmt --all -- --check` must pass without game data.
 
 #### M4c — Terrain geometry fidelity (new explicit milestone)
 

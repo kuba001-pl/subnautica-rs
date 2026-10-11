@@ -289,6 +289,7 @@ impl Plugin for WaterFogPlugin {
         .add_systems(
             Update,
             update_water_fog
+                .after(crate::sky::SkyUpdated)
                 .run_if(resource_exists::<WaterWorld>)
                 .run_if(resource_exists::<SkyState>),
         );

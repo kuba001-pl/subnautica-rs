@@ -19,8 +19,7 @@ use crate::session::Session;
 
 /// `DayNightCycle.timePassed`: game seconds, `start` at the server's tick
 /// 0, advancing `speed` (`dayNightSpeed`; `--time-scale`) times the
-/// server's time. The sky does not follow it yet (it stays at its start
-/// time).
+/// server's time. Sky and lighting consume this clock after it updates.
 #[derive(Resource, Debug)]
 pub struct GameClock {
     pub start: f64,
