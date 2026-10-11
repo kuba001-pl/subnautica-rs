@@ -142,6 +142,7 @@ fn run(preset: &str, seed: u64) -> Report {
             settings: settings(),
             tick_us: TICK_US,
             max_speed: 30.0,
+            rules: Default::default(),
         },
         0,
     );
@@ -166,6 +167,7 @@ fn run(preset: &str, seed: u64) -> Report {
                         password: None,
                         tick_us: TICK_US,
                         max_speed: 30.0,
+                        rules: Default::default(),
                     },
                     0,
                 ),

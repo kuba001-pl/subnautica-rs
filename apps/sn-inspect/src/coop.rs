@@ -248,6 +248,7 @@ fn replay(
                         password: None,
                         tick_us: rules.tick_us,
                         max_speed: rules.max_speed,
+                        rules: Default::default(),
                     },
                     now(),
                 ),

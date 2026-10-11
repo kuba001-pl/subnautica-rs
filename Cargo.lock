@@ -4869,6 +4869,7 @@ name = "sn-session"
 version = "0.0.0"
 dependencies = [
  "sn-protocol",
+ "sn-sim",
 ]
 
 [[package]]

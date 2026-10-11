@@ -5,16 +5,20 @@
 //! applying each event in `seq` order. Its hash is the check.
 //!
 //! In M10 it holds the players (id, name, ready, the cinematic they are
-//! in). Positions are not here: they are each owner's, and drawn from
-//! states (promise 3).
+//! in); from M9d3b also every item ([`ItemsState`]). Positions are not
+//! here: they are each owner's, and drawn from states (promise 3).
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::sync::Arc;
 
+use sn_protocol::codec::Reader;
 use sn_protocol::{
-    AuroraStart, Fnv64, PlayerEventKind, PlayerId, PlayerInfo, Tick, WorldEvent, WorldEventKind,
-    WorldSettings,
+    AuroraStart, Fnv64, PlayerEventKind, PlayerId, PlayerInfo, RefuseReason, Tick, WorldEvent,
+    WorldEventKind, WorldSettings,
 };
+
+use crate::items::{ItemRules, ItemsState};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PlayerRecord {
@@ -30,6 +34,7 @@ pub struct WorldState {
     /// World events applied: the `seq` the next one must have.
     pub events: u32,
     pub players: BTreeMap<PlayerId, PlayerRecord>,
+    pub items: ItemsState,
 }
 
 /// An event that does not fit the state: a bug at the sender, or a lost
@@ -49,9 +54,11 @@ pub enum ApplyError {
         seq: u32,
         player: PlayerId,
     },
-    /// An event this version does not apply yet.
-    NotYet {
+    /// An item event the items do not allow (the server refuses the
+    /// request for this reason; on a client it means the states differ).
+    Item {
         seq: u32,
+        reason: RefuseReason,
     },
 }
 
@@ -67,7 +74,9 @@ impl fmt::Display for ApplyError {
             ApplyError::PlayerExists { seq, player } => {
                 write!(f, "world event {seq} adds player {} again", player.0)
             }
-            ApplyError::NotYet { seq } => write!(f, "world event {seq} is not applied yet"),
+            ApplyError::Item { seq, reason } => {
+                write!(f, "world event {seq}: item event refused ({reason:?})")
+            }
         }
     }
 }
@@ -75,17 +84,31 @@ impl fmt::Display for ApplyError {
 impl std::error::Error for ApplyError {}
 
 impl WorldState {
-    pub fn new(settings: WorldSettings) -> WorldState {
+    /// A new world: with a lifepod, its locker gets the supplies.
+    pub fn new(settings: WorldSettings, rules: Arc<ItemRules>) -> WorldState {
         WorldState {
             settings,
             events: 0,
             players: BTreeMap::new(),
+            items: ItemsState::new(rules, settings.lifepod.is_some()),
         }
     }
 
     /// The state a `Welcome` describes (after its `next_seq` events).
-    pub fn from_welcome(settings: WorldSettings, next_seq: u32, players: &[PlayerInfo]) -> Self {
+    /// The items are each listed player's starting ones until
+    /// [`WorldState::load_items`] puts the ones the `WorldChunk`s carry.
+    pub fn from_welcome(
+        settings: WorldSettings,
+        next_seq: u32,
+        players: &[PlayerInfo],
+        rules: Arc<ItemRules>,
+    ) -> Self {
+        let mut items = ItemsState::new(rules, false);
+        for p in players {
+            items.join(p.id);
+        }
         WorldState {
+            items,
             settings,
             events: next_seq,
             players: players
@@ -102,6 +125,16 @@ impl WorldState {
                 })
                 .collect(),
         }
+    }
+
+    /// Replaces the items with the ones `bytes` encode (the joined
+    /// `WorldChunk`s).
+    pub fn load_items(&mut self, bytes: &[u8]) -> sn_protocol::Result<()> {
+        let mut r = Reader::new(bytes);
+        let items = ItemsState::decode(self.items.rules().clone(), &mut r)?;
+        r.finish()?;
+        self.items = items;
+        Ok(())
     }
 
     /// Applies the next event. On an error the state is unchanged.
@@ -130,6 +163,7 @@ impl WorldState {
                         cinematic: None,
                     },
                 );
+                self.items.join(*player);
             }
             WorldEventKind::PlayerReady { player } => {
                 self.players.get_mut(player).ok_or(unknown(*player))?.ready = true;
@@ -137,8 +171,14 @@ impl WorldState {
             WorldEventKind::PlayerLeft { player, .. } => {
                 self.players.remove(player).ok_or(unknown(*player))?;
             }
-            // Items are M9d3b's; the server sends none yet.
-            WorldEventKind::Item { .. } => return Err(ApplyError::NotYet { seq }),
+            WorldEventKind::Item { player, event, .. } => {
+                if !self.players.contains_key(player) {
+                    return Err(unknown(*player));
+                }
+                self.items
+                    .apply(*player, event)
+                    .map_err(|reason| ApplyError::Item { seq, reason })?;
+            }
             WorldEventKind::Player { player, event } => {
                 let p = self.players.get_mut(player).ok_or(unknown(*player))?;
                 match event {
@@ -185,6 +225,7 @@ impl WorldState {
                 None => h.u64(0),
             };
         }
+        self.items.hash_into(&mut h);
         h.finish()
     }
 }
@@ -204,6 +245,10 @@ mod tests {
         }
     }
 
+    fn rules() -> Arc<ItemRules> {
+        Arc::new(ItemRules::default())
+    }
+
     fn ev(seq: u32, tick: u32, kind: WorldEventKind) -> WorldEvent {
         WorldEvent {
             seq,
@@ -214,7 +259,7 @@ mod tests {
 
     #[test]
     fn events_build_the_state_and_a_welcome_reproduces_it() {
-        let mut w = WorldState::new(settings());
+        let mut w = WorldState::new(settings(), rules());
         let a = PlayerId(0);
         let log = [
             ev(
@@ -252,14 +297,15 @@ mod tests {
                 cinematic: p.cinematic,
             })
             .collect();
-        let copy = WorldState::from_welcome(settings(), w.events, &infos);
+        let mut copy = WorldState::from_welcome(settings(), w.events, &infos, rules());
+        copy.load_items(&w.items.to_bytes()).unwrap();
         assert_eq!(copy, w);
         assert_eq!(copy.hash(), w.hash());
     }
 
     #[test]
     fn bad_events_are_refused_and_change_nothing() {
-        let mut w = WorldState::new(settings());
+        let mut w = WorldState::new(settings(), rules());
         let before = w.clone();
         assert_eq!(
             w.apply(&ev(
@@ -290,20 +336,20 @@ mod tests {
 
     #[test]
     fn every_field_moves_the_hash() {
-        let base = WorldState::new(settings());
+        let base = WorldState::new(settings(), rules());
         let mut variants = Vec::new();
         let mut s = settings();
         s.slot_seed = Some(2);
-        variants.push(WorldState::new(s));
+        variants.push(WorldState::new(s, rules()));
         let mut s = settings();
         s.lifepod = Some([10.0, 0.5, -20.000_002]);
-        variants.push(WorldState::new(s));
+        variants.push(WorldState::new(s, rules()));
         let mut s = settings();
         s.aurora = AuroraStart::Held { exploded: false };
-        variants.push(WorldState::new(s));
+        variants.push(WorldState::new(s, rules()));
         let mut s = settings();
         s.clock_start = 480.5;
-        variants.push(WorldState::new(s));
+        variants.push(WorldState::new(s, rules()));
         let mut w = base.clone();
         w.events = 1;
         variants.push(w);

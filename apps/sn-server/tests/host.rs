@@ -26,6 +26,7 @@ fn server_config() -> ServerConfig {
         },
         tick_us: 20_000,
         max_speed: 100.0,
+        rules: Default::default(),
     }
 }
 
@@ -59,6 +60,7 @@ fn join(build: &str) -> (Vec<ClientNotice>, Vec<String>) {
             password: None,
             tick_us: 20_000,
             max_speed: 100.0,
+            rules: Default::default(),
         },
         now(),
     );
@@ -111,9 +113,10 @@ fn another_build_is_refused_with_its_reason() {
 fn the_same_build_is_welcomed() {
     let (notices, log) = join("10");
     println!("client: {notices:?}; server: {log:?}");
+    // Welcomed, then the world state (protocol 4).
     assert!(matches!(
         notices.as_slice(),
-        [ClientNotice::Welcomed { .. }]
+        [ClientNotice::Welcomed { .. }, ClientNotice::Loaded { .. }]
     ));
     assert!(
         log.iter()

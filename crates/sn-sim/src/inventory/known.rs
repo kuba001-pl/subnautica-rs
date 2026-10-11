@@ -46,6 +46,22 @@ impl KnownTech {
         self.analyzed.contains(&tech)
     }
 
+    /// The analysed tech types, in order.
+    pub fn analyzed_all(&self) -> impl Iterator<Item = TechType> + '_ {
+        self.analyzed.iter().copied()
+    }
+
+    /// The state with exactly these known and analysed types.
+    pub fn from_sets(
+        known: impl IntoIterator<Item = TechType>,
+        analyzed: impl IntoIterator<Item = TechType>,
+    ) -> KnownTech {
+        KnownTech {
+            known: known.into_iter().collect(),
+            analyzed: analyzed.into_iter().collect(),
+        }
+    }
+
     /// `Analyze`: the tech types newly known, in the order the game adds
     /// them.
     pub fn analyze(&mut self, table: &[AnalysisEntry], tech: TechType) -> Vec<TechType> {

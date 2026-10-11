@@ -189,6 +189,7 @@ fn run(args: Args) -> Result<(), String> {
         settings,
         tick_us: rules.tick_us,
         max_speed: rules.max_speed,
+        rules: Default::default(),
     };
     let clock = Instant::now();
     let now = || clock.elapsed().as_micros() as u64;

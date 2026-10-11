@@ -255,6 +255,17 @@ impl Inner {
                     Level::WARN,
                     format!("session: server ignored a message: {why}"),
                 ),
+                Notice::Refused {
+                    player,
+                    req,
+                    reason,
+                } => (
+                    Level::INFO,
+                    format!(
+                        "session: refused player {}'s request {req} ({reason:?})",
+                        player.0
+                    ),
+                ),
             });
         }
         for n in self.client.take_notices() {
@@ -274,6 +285,14 @@ impl Inner {
                 ClientNotice::Ignored(why) => (
                     Level::WARN,
                     format!("session: client ignored a message: {why}"),
+                ),
+                ClientNotice::Loaded { bytes } => (
+                    Level::INFO,
+                    format!("session: world state loaded ({bytes} B)"),
+                ),
+                ClientNotice::Refused { req, reason } => (
+                    Level::INFO,
+                    format!("session: request {req} refused ({reason:?})"),
                 ),
             });
         }
@@ -373,6 +392,7 @@ impl Session {
                 password: config.password.clone(),
                 tick_us: config.tick_us,
                 max_speed: config.max_speed,
+                rules: config.rules.clone(),
             },
             0,
         );

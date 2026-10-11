@@ -5,10 +5,12 @@
 //! headless in tests with as many simulated clients as wanted.
 
 pub mod client;
+pub mod items;
 pub mod server;
 pub mod world;
 
 pub use client::{Client, ClientConfig, ClientNotice, ClientStats, RemoteSample, SampleKind};
+pub use items::{ItemRules, ItemsState};
 pub use server::{Action, Notice, Server, ServerConfig, ServerStats};
 pub use world::{ApplyError, PlayerRecord, WorldState};
 

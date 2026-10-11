@@ -157,9 +157,58 @@ origin), `rotation: 4 × i16`, 14 bytes, so 56 of them fit one message.
 - 3 `Moved { item, to, target }`.
 - 4 `Lost { origin, drops: count ≤ 56 × (item, death drop) }`.
 
-How the state changes with each event, and the world state's encoding
-that `WorldChunk` carries, are M9d3b's (below, when written). Until then
-a client treats an `Item` event as not applicable.
+### Items state (M9d3b)
+
+Part of the [world state](#world-state) (`crates/sn-session`,
+`ItemsState`): the next item number; the world objects that are gone
+(placed or slot-filled keys); the objects the server made that are in the
+world (number → prefab class, point, rotation); the prefab of every item
+in a store; the outcrops hit and not broken (key → hits left); the
+lifepod's locker; per player (kept after a leave, since a rejoin is the
+same player): the grid, the slots, the known and analysed tech types, the
+luck randomizers. A new world (with a lifepod) fills the locker with the
+supplies, each numbered and added if it has room. A player's items are
+made when it first joins (the starting known tech, the starting luck).
+
+Each item event applies through the M9d2 rules (`sn-sim::inventory`) or
+is refused and changes nothing:
+- `PickedUp`: a world key must not be gone and its class must be a
+  pickupable prefab; the item gets the next number. A `Spawned` key must
+  be an object in the world with that class, and keeps its number. Then
+  `Inventory.Pickup` (no room: refused).
+- `Hit`: not a `Spawned` key, not gone, an outcrop class. Not breaking:
+  the hits left are stored and `draws` must be empty. Breaking: the
+  draws feed the player's luck in the rules' order and must be used up
+  exactly; each resource becomes an object with the next number at
+  `spawn` (no rotation); the key is gone.
+- `Dropped`: the item must be in the player's grid or slots; it becomes
+  an object at the point.
+- `Moved`: `Inventory.AddOrSwap` among the player's grid, slots and the
+  locker; an item that reaches the player's grid is analysed
+  (`Inventory.OnAddItem`).
+- `Lost`: each listed item must be the player's; each becomes an object
+  at origin + offset ÷ 1,000.
+
+**Encoding** (the snapshot; canonical): `next_item: varint u32`; gone:
+`count`, keys in order; objects: `count` × (`item`, `class: text ≤ 64`,
+`point`, `rotation: 4 × i16`); item classes: `count` × (`item`, `class`);
+outcrops: `count` × (`key`, `hits: signed varint`); the locker; `count`
+players × (`id: varint u16`, the grid, per slot of the player's slots in
+order `Option<item>`, known: `count` × signed varint (increasing),
+analysed: the same, luck: `count` × (`tech: signed varint`,
+`entropy: f32`)). A container: `width`, `height` (signed varints), its
+dictionary entries (`count` × `Option<tech, width, height, count ×
+item>`), and the freed entries in reuse order (`count` × varint). This
+keeps the order the game would walk it in. An item: `id: varint`,
+`tech: signed varint`, `flags: u8` (1 lost on death, 2 eatable, 4 has a
+charge), then `charge: f32` if flagged. Repeated keys, a bad free list,
+an empty or mixed group are errors with their offset.
+
+**Hash part:** the next number; for each of the four large maps (gone,
+objects, item classes, outcrops) its size and the wrap-around sum of
+each entry's FNV-1a 64 (of the entry's encoding above); then the bytes of
+the locker and the players. The sums are kept as entries change, so the
+hash costs the same however many objects are gone.
 
 ## State lists
 
@@ -308,9 +357,9 @@ or `0`); lifepod (`1`, then x, y, z as `f32` bits, or `0`); Aurora (`0`,
 seconds as `f32` bits; or `1`, exploded); clock start as `f64` bits, time
 scale as `f32` bits; events applied; player count; then per player in id
 order: id, name (length-prefixed), ready, cinematic (`1`, hatch, start
-tick, or `0`). Clients report it as `WorldHash { events, hash }`; the
-server keeps its own after each of the last 4,096 event counts and
-compares.
+tick, or `0`); then the [items part](#items-state-m9d3b) (protocol 4).
+Clients report it as `WorldHash { events, hash }`; the server keeps its
+own after each of the last 4,096 event counts and compares.
 
 ## Server rules (M10c)
 
@@ -319,8 +368,9 @@ compares.
   `max_players`, never above 8), name (not empty, no leading or trailing
   spaces, no control characters, not in use by a present player, case
   ignored). A failure answers `Reject` and closes the connection 1 s
-  later. Success answers `Welcome`, then the world event `PlayerJoined`
-  (to everyone, the joiner included). A name keeps its player id for the
+  later. Success answers `Welcome`, then the items state's encoding in
+  `WorldChunk`s of at most 1,024 bytes (at least one; protocol 4), then
+  the world event `PlayerJoined` (to everyone, the joiner included). A name keeps its player id for the
   server's life. No `Hello` within 5 s: closed.
 - **Ready:** `PlayerReady` to everyone. Before it, a player's states and
   events are ignored (others do not see it yet).
@@ -339,13 +389,29 @@ compares.
   next tick (latest channel, key 65,535).
 - **Checks:** `WorldHash` against the server's hash after the same event
   count; `SlotFillHash` against the first report for that batch.
+- **Item requests** (protocol 4, M9d3c): refused `NotReady` before
+  `Ready`. The server fills in what it decides: the class of a `Spawned`
+  object (gone: refused); a hit's luck draws (its own seeded random,
+  `Random.value`s in [0, 1)); a death's list (`LoseItems` on its state,
+  each item given the client's point in order, the origin for any
+  missing; nothing to drop: no event). It checks what only it knows,
+  from the player's newest state: no `Drop` in the lifepod (`NotHere`);
+  no death drops in it; the locker only from inside it (`NotHere`; **our
+  rule**, the game's locker is reached by its hand target in the pod).
+  Then it applies the event to its own state. Accepted: the event goes to
+  everyone. Refused: `Refused { req, reason }` to the sender only. Two
+  requests for one object are taken in arrival order; the second is
+  `Gone` (our rule: the game has one player).
 
 ## Client rules (M10d)
 
 `crates/sn-session`, `Client`: a state machine on the caller's clock.
 
 - **Join:** `Hello` is queued at creation; `Welcome` gives the player id
-  and the world state; `ready()` sends `Ready` once.
+  and the world state without its items, the `WorldChunk`s that follow
+  give the items (`Loaded` once all have come; a count outside 1–65,536
+  is ignored); `ready()` sends `Ready` once. Events and hash reports wait
+  for the items (an event before them is ignored and logged).
 - **Clock:** pings every 50 ms for the first 20, then every 250 ms. Each
   `Pong` gives a sample: round trip = now − `client_time`; offset = the
   server's time + half the round trip − now. The sample with the
@@ -379,6 +445,9 @@ compares.
   after it).
 - **Checks:** every 50 ticks of the server's clock, `WorldHash` with the
   event count.
+- **Requests:** `request(r)` sends `Request` with the client's next
+  number and returns it; a `Refused` comes back as a notice with that
+  number.
 
 ## Packets (`sn-net`)
 

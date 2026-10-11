@@ -6,7 +6,7 @@ use super::{EQUIPMENT_NONE, Item, ItemId, TechType, Techs};
 /// game's code) and the three `EquipmentType` values
 /// `Equipment.IsCompatible` names: a `VehicleModule` item also fits
 /// `SeamothModule` and `ExosuitModule` slots.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct SlotTable {
     pub slots: Vec<(String, i32)>,
     pub vehicle_module: i32,

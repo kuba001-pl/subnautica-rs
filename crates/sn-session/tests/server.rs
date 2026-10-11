@@ -1,12 +1,16 @@
-//! M10c's checks of the server's logic, with simulated clients that keep
-//! their own copy of the world state from what they receive. Messages go
+//! M10c's checks of the server's logic (and M9d3c's of the item requests),
+//! with simulated clients that keep their own copy of the world state from
+//! what they receive. Messages go
 //! through the codec both ways, as on the wire. Counts are printed
 //! (`cargo test -p sn-session -- --nocapture`).
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use sn_protocol::*;
 use sn_session::*;
+
+mod common;
 
 const TICK_US: u64 = 20_000;
 
@@ -25,6 +29,15 @@ fn config() -> ServerConfig {
         },
         tick_us: TICK_US,
         max_speed: 30.0,
+        rules: Default::default(),
+    }
+}
+
+/// [`config`] with the synthetic item rules.
+fn item_config() -> ServerConfig {
+    ServerConfig {
+        rules: common::rules(),
+        ..config()
     }
 }
 
@@ -46,6 +59,11 @@ struct Client {
     /// World events received, in order.
     log: Vec<WorldEvent>,
     rejected: Option<RejectReason>,
+    /// The `WorldChunk`s, and whether all came.
+    chunks: Vec<Vec<u8>>,
+    loaded: bool,
+    refused: Vec<(u32, RefuseReason)>,
+    rules: Arc<ItemRules>,
     /// States received per player (on the latest channel).
     states: BTreeMap<PlayerId, Vec<Tick>>,
     pongs: Vec<(Tick, u16)>,
@@ -67,13 +85,35 @@ impl Client {
             } => {
                 assert_eq!(channel, Channel::Reliable);
                 self.player = Some(player);
-                self.world = Some(WorldState::from_welcome(settings, next_seq, &players));
+                self.world = Some(WorldState::from_welcome(
+                    settings,
+                    next_seq,
+                    &players,
+                    self.rules.clone(),
+                ));
             }
-            ServerMessage::Refused { .. } | ServerMessage::WorldChunk { .. } => {
-                panic!("item messages before M9d3c: {m:?}")
+            ServerMessage::Refused { req, reason } => {
+                assert_eq!(channel, Channel::Reliable);
+                self.refused.push((req, reason));
+            }
+            ServerMessage::WorldChunk {
+                index,
+                total,
+                bytes,
+            } => {
+                assert_eq!(channel, Channel::Reliable);
+                assert_eq!(index as usize, self.chunks.len(), "chunks in order");
+                self.chunks.push(bytes);
+                if index + 1 == total {
+                    let all: Vec<u8> = self.chunks.concat();
+                    let w = self.world.as_mut().expect("a chunk before Welcome");
+                    w.load_items(&all).unwrap_or_else(|e| panic!("{e}"));
+                    self.loaded = true;
+                }
             }
             ServerMessage::Event(e) => {
                 assert_eq!(channel, Channel::Reliable);
+                assert!(self.loaded, "an event before the world state");
                 let w = self.world.as_mut().expect("an event before Welcome");
                 w.apply(&e).unwrap_or_else(|err| panic!("{err}"));
                 self.log.push(e);
@@ -99,6 +139,7 @@ struct World {
     clients: BTreeMap<ConnId, Client>,
     next_conn: u32,
     now: u64,
+    rules: Arc<ItemRules>,
 }
 
 impl World {
@@ -108,6 +149,7 @@ impl World {
 
     fn with(config: ServerConfig) -> World {
         World {
+            rules: config.rules.clone(),
             server: Server::new(config, 1_000_000),
             clients: BTreeMap::new(),
             next_conn: 0,
@@ -118,7 +160,13 @@ impl World {
     fn connect(&mut self) -> ConnId {
         let c = ConnId(self.next_conn);
         self.next_conn += 1;
-        self.clients.insert(c, Client::default());
+        self.clients.insert(
+            c,
+            Client {
+                rules: self.rules.clone(),
+                ..Client::default()
+            },
+        );
         self.server.connected(c, self.now);
         c
     }
@@ -567,4 +615,386 @@ fn slot_fill_hashes_are_compared_per_batch() {
     }
     let s = w.server.stats();
     assert_eq!((s.slot_fill_checks, s.slot_fill_mismatches), (4, 1));
+}
+
+impl World {
+    /// Joined and ready.
+    fn ready(&mut self, name: &str) -> ConnId {
+        let c = self.join(name);
+        self.send(c, &ClientMessage::Ready);
+        c
+    }
+
+    fn ask(&mut self, c: ConnId, req: u32, request: Request) {
+        self.send(c, &ClientMessage::Request { req, request });
+    }
+
+    /// The player's newest state says whether it is in the lifepod.
+    fn in_pod(&mut self, c: ConnId, on: bool) {
+        // The server keeps only a newer tick's state.
+        self.advance(TICK_US);
+        let mut s = state(self.tick(), 0.0);
+        s.in_pod = on;
+        self.send(c, &ClientMessage::States(vec![s]));
+    }
+
+    /// Every client still connected holds the server's state.
+    fn all_equal(&self) {
+        let sw = self.server.world();
+        for c in self.clients.values().filter(|c| !c.closed && c.loaded) {
+            let w = c.world.as_ref().unwrap();
+            assert_eq!(w, sw);
+            assert_eq!(w.hash(), sw.hash());
+        }
+    }
+
+    fn player(&self, c: ConnId) -> PlayerId {
+        self.clients[&c].player.unwrap()
+    }
+}
+
+fn placed(n: u32) -> EntityKey {
+    EntityKey::Placed(format!("obj-{n}"))
+}
+
+fn pick(key: EntityKey, class: &str) -> Request {
+    Request::PickUp {
+        key,
+        class: class.into(),
+    }
+}
+
+const AT: DropAt = DropAt {
+    point: [1.0, 2.0, 3.0],
+    rotation: [0, 0, 0, 32_767],
+};
+
+#[test]
+fn two_players_reach_for_one_item_and_one_gets_it() {
+    let mut w = World::with(item_config());
+    let a = w.ready("a");
+    let b = w.ready("b");
+    // The same tick: the server takes them in its order.
+    w.ask(a, 0, pick(placed(1), "quartz"));
+    w.ask(b, 0, pick(placed(1), "quartz"));
+    assert!(w.clients[&a].refused.is_empty());
+    assert_eq!(w.clients[&b].refused, [(0, RefuseReason::Gone)]);
+    let pa = w.player(a);
+    assert!(w.server.world().items.owns(pa, ItemId(3)));
+    // Before Ready: refused.
+    let c = w.join("c");
+    w.ask(c, 5, pick(placed(2), "quartz"));
+    assert_eq!(w.clients[&c].refused, [(5, RefuseReason::NotReady)]);
+    w.all_equal();
+}
+
+#[test]
+fn a_full_inventory_refuses() {
+    let mut w = World::with(item_config());
+    let a = w.ready("a");
+    for n in 0..48 {
+        w.ask(a, n, pick(placed(n), "quartz"));
+    }
+    w.ask(a, 48, pick(placed(48), "quartz"));
+    assert_eq!(w.clients[&a].refused, [(48, RefuseReason::NoRoom)]);
+    w.all_equal();
+}
+
+#[test]
+fn a_dropped_item_can_be_picked_up_by_another_at_once() {
+    let mut w = World::with(item_config());
+    let a = w.ready("a");
+    let b = w.ready("b");
+    w.ask(a, 0, pick(placed(1), "quartz"));
+    w.ask(
+        a,
+        1,
+        Request::Drop {
+            item: ItemId(3),
+            at: AT,
+        },
+    );
+    // The same tick, no wait (the game's rule, M9d2); the class the
+    // client gives for a spawned object does not matter.
+    w.ask(b, 0, pick(EntityKey::Spawned(ItemId(3)), ""));
+    assert!(w.clients[&a].refused.is_empty() && w.clients[&b].refused.is_empty());
+    assert!(w.server.world().items.owns(w.player(b), ItemId(3)));
+    // Gone now.
+    w.ask(a, 2, pick(EntityKey::Spawned(ItemId(3)), ""));
+    assert_eq!(w.clients[&a].refused, [(2, RefuseReason::Gone)]);
+    w.all_equal();
+}
+
+#[test]
+fn the_pod_decides_drops_and_the_locker() {
+    let mut w = World::with(item_config());
+    let a = w.ready("a");
+    w.ask(a, 0, pick(placed(1), "quartz"));
+    // The locker (supplies 0–2) only from inside the pod.
+    let take = Request::Move {
+        item: ItemId(0),
+        to: Store::Grid,
+        target: MoveTarget::Store,
+    };
+    w.ask(a, 1, take.clone());
+    assert_eq!(w.clients[&a].refused, [(1, RefuseReason::NotHere)]);
+    w.in_pod(a, true);
+    w.ask(a, 2, take);
+    // No drop inside it.
+    w.ask(
+        a,
+        3,
+        Request::Drop {
+            item: ItemId(3),
+            at: AT,
+        },
+    );
+    assert_eq!(
+        w.clients[&a].refused,
+        [(1, RefuseReason::NotHere), (3, RefuseReason::NotHere)]
+    );
+    // Dying in it drops nothing; outside, all but one.
+    w.ask(
+        a,
+        4,
+        Request::Lose {
+            origin: [0.0; 3],
+            drops: vec![],
+        },
+    );
+    let pa = w.player(a);
+    assert_eq!(
+        w.server.world().items.players[&pa]
+            .inventory
+            .container
+            .len(),
+        2
+    );
+    w.in_pod(a, false);
+    w.ask(
+        a,
+        5,
+        Request::Lose {
+            origin: [0.0; 3],
+            drops: vec![],
+        },
+    );
+    assert_eq!(
+        w.server.world().items.players[&pa]
+            .inventory
+            .container
+            .len(),
+        1
+    );
+    assert_eq!(w.server.world().items.objects.len(), 1);
+    w.all_equal();
+}
+
+#[test]
+fn a_late_joiner_gets_the_servers_state() {
+    let mut w = World::with(item_config());
+    let a = w.ready("a");
+    for n in 0..30 {
+        w.ask(
+            a,
+            n,
+            pick(placed(n), if n % 4 == 0 { "big" } else { "quartz" }),
+        );
+    }
+    for n in 0..3 {
+        w.ask(
+            a,
+            100 + n,
+            Request::Hit {
+                key: placed(500),
+                class: "lime".into(),
+                kind: HitKind::Hand,
+                spawn: [0.0; 3],
+            },
+        );
+    }
+    w.ask(
+        a,
+        200,
+        Request::Drop {
+            item: ItemId(5),
+            at: AT,
+        },
+    );
+    let late = w.ready("late");
+    assert!(w.clients[&late].loaded);
+    w.all_equal();
+    let stats = w.server.stats();
+    println!(
+        "late joiner: {} chunks, {} B; world {} gone, {} objects",
+        stats.chunks,
+        stats.chunk_bytes,
+        w.server.world().items.gone.len(),
+        w.server.world().items.objects.len()
+    );
+}
+
+/// A request a client might send, from its own copy of the world.
+fn random_request(rng: &mut Rng, w: &WorldState, me: PlayerId) -> Request {
+    let items = &w.items;
+    let mine: Vec<ItemId> = items.classes.keys().copied().collect();
+    let any = |rng: &mut Rng| {
+        if mine.is_empty() {
+            ItemId(0)
+        } else {
+            mine[rng.below(mine.len() as u64) as usize]
+        }
+    };
+    match rng.below(10) {
+        0..=2 => {
+            let class = ["quartz", "big", "tank", "food", "prop"][rng.below(5) as usize];
+            pick(placed(rng.below(400) as u32), class)
+        }
+        3 => match items
+            .objects
+            .keys()
+            .nth(rng.below(items.objects.len().max(1) as u64) as usize)
+        {
+            Some(id) => pick(EntityKey::Spawned(*id), ""),
+            None => pick(placed(0), "quartz"),
+        },
+        4..=5 => Request::Hit {
+            key: placed(1000 + rng.below(30) as u32),
+            class: "lime".into(),
+            kind: [HitKind::Hand, HitKind::Hand, HitKind::Bash][rng.below(3) as usize],
+            spawn: [rng.below(100) as f32, 0.0, 0.0],
+        },
+        6 => Request::Drop {
+            item: any(rng),
+            at: AT,
+        },
+        7..=8 => Request::Move {
+            item: any(rng),
+            to: [Store::Grid, Store::Slots, Store::PodLocker][rng.below(3) as usize],
+            target: match rng.below(3) {
+                0 => MoveTarget::Store,
+                1 => MoveTarget::Item(any(rng)),
+                _ => MoveTarget::Slot(
+                    ["Head", "Tank", "Chip1", "Nope"][rng.below(4) as usize].into(),
+                ),
+            },
+        },
+        _ => {
+            let n = items
+                .lose_list(me, sn_sim::inventory::DropPlace::default())
+                .len();
+            Request::Lose {
+                origin: [5.0, -3.0, 2.0],
+                drops: vec![
+                    DeathDrop {
+                        offset: [100, -200, 300],
+                        rotation: [0, 0, 0, 32_767],
+                    };
+                    n
+                ],
+            }
+        }
+    }
+}
+
+#[test]
+fn four_players_and_10000_ticks_of_items_keep_every_state_equal() {
+    let mut w = World::with(item_config());
+    let mut rng = Rng(7);
+    let mut conns: Vec<ConnId> = (0..4).map(|i| w.ready(&format!("p{i}"))).collect();
+    let mut req = 0u32;
+    let mut hash_reports = 0u64;
+    let mut rejoins = 0;
+    for tick in 0..10_000u32 {
+        w.advance(TICK_US);
+        let k = rng.below(4) as usize;
+        let c = conns[k];
+        match rng.below(100) {
+            0..=59 => {
+                let me = w.player(c);
+                let q = random_request(&mut rng, w.clients[&c].world.as_ref().unwrap(), me);
+                w.ask(c, req, q);
+                req += 1;
+            }
+            60..=64 => w.in_pod(c, rng.below(2) == 0),
+            65 => {
+                // Leaves and comes back: the same player, its items kept.
+                w.send(c, &ClientMessage::Bye);
+                conns[k] = w.ready(&format!("p{k}"));
+                rejoins += 1;
+            }
+            66..=75 => {
+                let world = w.clients[&c].world.as_ref().unwrap();
+                let m = ClientMessage::WorldHash {
+                    events: world.events,
+                    hash: world.hash(),
+                };
+                w.send(c, &m);
+                hash_reports += 1;
+            }
+            _ => {}
+        }
+        if tick % 500 == 0 {
+            w.all_equal();
+        }
+    }
+    w.all_equal();
+    let stats = w.server.stats();
+    let items = &w.server.world().items;
+    let refused: usize = w.clients.values().map(|c| c.refused.len()).sum();
+    println!(
+        "10,000 ticks, 4 players: {} requests, {} refused ({refused} seen by clients), {} events, {rejoins} rejoins; {} gone, {} objects, {} items held; hash reports {hash_reports}: {} checked, {} mismatches; {} chunks ({} B)",
+        stats.requests,
+        stats.refused,
+        stats.events,
+        items.gone.len(),
+        items.objects.len(),
+        items.classes.len(),
+        stats.hash_checks,
+        stats.hash_mismatches,
+        stats.chunks,
+        stats.chunk_bytes
+    );
+    assert_eq!(stats.hash_mismatches, 0);
+    assert!(stats.hash_checks > 500);
+    assert!(stats.requests > 5000 && stats.refused > 500 && stats.events > 1000);
+    assert_eq!(refused as u64, stats.refused);
+}
+
+#[test]
+fn a_million_bad_requests_never_panic() {
+    let mut w = World::with(item_config());
+    let a = w.ready("a");
+    let mut rng = Rng(9);
+    let mut valid: Vec<Vec<u8>> = Vec::new();
+    for _ in 0..200 {
+        let me = w.player(a);
+        let q = random_request(&mut rng, w.server.world(), me);
+        valid.push(ClientMessage::Request { req: 1, request: q }.encode());
+    }
+    for i in 0..1_000_000u32 {
+        let mut b = valid[rng.below(valid.len() as u64) as usize].clone();
+        match i % 3 {
+            0 => {
+                let at = rng.below(b.len() as u64) as usize;
+                b[at] ^= 1 << rng.below(8);
+            }
+            1 => b.truncate(rng.below(b.len() as u64 + 1) as usize),
+            _ => {
+                let at = rng.below(b.len() as u64) as usize;
+                b[at] = rng.below(256) as u8;
+            }
+        }
+        w.server.received(a, &b, w.now);
+        if i % 1000 == 0 {
+            w.server.take_actions();
+            w.server.take_notices();
+        }
+    }
+    let stats = w.server.stats();
+    println!(
+        "1,000,000 bad requests: {} decoded as requests, {} refused, {} events, {} ignored",
+        stats.requests, stats.refused, stats.events, stats.ignored_messages
+    );
+    assert!(stats.requests > 10_000);
 }

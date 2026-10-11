@@ -17,6 +17,21 @@ struct Group {
     items: Vec<Item>,
 }
 
+/// A container's exact contents, for saving and sending: each
+/// dictionary entry (`None` for a freed one) with its tech type, size and
+/// items, and the freed entries in the order they are reused (last
+/// first).
+/// One group in [`ContainerParts`]: tech type, width, height, items.
+pub type GroupParts = (TechType, i32, i32, Vec<Item>);
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ContainerParts {
+    pub width: i32,
+    pub height: i32,
+    pub entries: Vec<Option<GroupParts>>,
+    pub free: Vec<usize>,
+}
+
 /// An item's cells after packing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Placed {
@@ -63,6 +78,71 @@ impl Container {
 
     pub fn size(&self) -> (i32, i32) {
         (self.width, self.height)
+    }
+
+    pub fn to_parts(&self) -> ContainerParts {
+        ContainerParts {
+            width: self.width,
+            height: self.height,
+            entries: self
+                .groups
+                .entries
+                .iter()
+                .map(|e| {
+                    e.as_ref()
+                        .map(|g| (g.tech, g.width, g.height, g.items.clone()))
+                })
+                .collect(),
+            free: self.groups.free.clone(),
+        }
+    }
+
+    /// The container [`Container::to_parts`] described, or why the parts
+    /// cannot be one: a free entry that is out of range, taken or listed
+    /// twice, an empty group, a tech type in two groups, or an item whose
+    /// tech type is not its group's.
+    pub fn from_parts(p: ContainerParts) -> Result<Container, String> {
+        let n = p.entries.len();
+        let mut seen = vec![false; n];
+        for &f in &p.free {
+            match p.entries.get(f) {
+                Some(None) if !seen[f] => seen[f] = true,
+                _ => return Err(format!("free entry {f} of {n} is not a free one")),
+            }
+        }
+        if p.entries.iter().filter(|e| e.is_none()).count() != p.free.len() {
+            return Err("a freed entry is not in the free list".into());
+        }
+        let mut techs = std::collections::BTreeSet::new();
+        let mut count = 0;
+        let mut entries = Vec::with_capacity(n);
+        for e in p.entries {
+            entries.push(match e {
+                None => None,
+                Some((tech, width, height, items)) => {
+                    if items.is_empty() || !techs.insert(tech) {
+                        return Err(format!("group {tech}: empty or repeated"));
+                    }
+                    if items.iter().any(|i| i.tech != tech) {
+                        return Err(format!("group {tech}: an item of another tech type"));
+                    }
+                    count += items.len();
+                    Some(Group {
+                        tech,
+                        width,
+                        height,
+                        items,
+                    })
+                }
+            });
+        }
+        let mut c = Container::new(p.width, p.height);
+        c.groups = DictOrder {
+            entries,
+            free: p.free,
+        };
+        c.count = count;
+        Ok(c)
     }
 
     pub fn len(&self) -> usize {
@@ -526,6 +606,33 @@ mod tests {
         assert_eq!(group_order(&p(1, 2, 1), &p(2, 1, 2)), Ordering::Greater);
         // Same shape: lower id first.
         assert_eq!(group_order(&p(9, 1, 1), &p(2, 1, 1)), Ordering::Greater);
+    }
+
+    #[test]
+    fn parts_round_trip_with_freed_entries() {
+        let t = techs();
+        let mut c = Container::new(6, 8);
+        for (i, tech) in [1, 2, 3, 4, 5].into_iter().enumerate() {
+            c.add(&t, Item::new(i as u64, tech)).unwrap();
+        }
+        c.remove(ItemId(1));
+        c.remove(ItemId(3));
+        let back = Container::from_parts(c.to_parts()).unwrap();
+        assert_eq!(back, c);
+        // The next insert reuses the same entry in both.
+        let (mut a, mut b) = (c.clone(), back);
+        a.add(&t, Item::new(9, 4)).unwrap();
+        b.add(&t, Item::new(9, 4)).unwrap();
+        assert_eq!(a, b);
+        let mut bad = c.to_parts();
+        bad.free.push(0);
+        assert!(Container::from_parts(bad).is_err());
+        let mut bad = c.to_parts();
+        bad.free.push(99);
+        assert!(Container::from_parts(bad).is_err());
+        let mut bad = c.to_parts();
+        bad.free.pop();
+        assert!(Container::from_parts(bad).is_err());
     }
 
     #[test]

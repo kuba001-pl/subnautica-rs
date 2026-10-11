@@ -114,6 +114,14 @@ impl<T: Transport> Host<T> {
                     e.1 = e.1.max(speed);
                 }
                 Notice::Ignored { .. } => self.ignored += 1,
+                Notice::Refused {
+                    player,
+                    req,
+                    reason,
+                } => log.push(format!(
+                    "refused: player {} request {req} ({reason:?})",
+                    player.0
+                )),
             }
         }
         self.endpoint.update(now_us);

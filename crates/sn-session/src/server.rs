@@ -1,18 +1,24 @@
 //! The server's logic (M10c): join checks and player ids, the clock,
 //! relaying states, ordering events into the world event log, the
-//! world-state and slot-fill checks. A state machine: the caller feeds it
+//! world-state and slot-fill checks; from M9d3c the item requests (checked
+//! by applying them to its own state) and the world state's snapshot for
+//! a joiner. A state machine: the caller feeds it
 //! connections, received bytes and the time, and sends what it returns.
 //! The same code runs in `sn-server` and inside the client (solo and
 //! `--host`).
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::sync::Arc;
 
 use sn_protocol::{
-    ClientMessage, LeaveReason, MAX_PLAYERS, PROTOCOL_VERSION, PlayerEvent, PlayerId, PlayerInfo,
-    PlayerState, RejectReason, ServerMessage, Tick, WorldEvent, WorldEventKind, WorldSettings,
+    ClientMessage, DeathDrop, EntityKey, ItemEvent, LeaveReason, MAX_CHUNK, MAX_PLAYERS,
+    PROTOCOL_VERSION, PlayerEvent, PlayerId, PlayerInfo, PlayerState, RefuseReason, RejectReason,
+    Request, ServerMessage, Store, Tick, WorldEvent, WorldEventKind, WorldSettings,
 };
+use sn_sim::inventory::DropPlace;
 
-use crate::world::WorldState;
+use crate::items::ItemRules;
+use crate::world::{ApplyError, WorldState};
 use crate::{Channel, ConnId, PING_KEY};
 
 /// A connection that has not said `Hello` within this long is closed.
@@ -42,6 +48,8 @@ pub struct ServerConfig {
     /// implausible (metres per second; not rejected, `docs/DESIGN.md`
     /// § 9, decision 6).
     pub max_speed: f64,
+    /// The item rules of the host's install (M9d3).
+    pub rules: Arc<ItemRules>,
 }
 
 /// What the caller does after feeding the server.
@@ -90,6 +98,12 @@ pub enum Notice {
         player: PlayerId,
         speed: f64,
     },
+    /// An item request refused.
+    Refused {
+        player: PlayerId,
+        req: u32,
+        reason: RefuseReason,
+    },
     /// A message that could not be decoded or made no sense now.
     Ignored {
         conn: ConnId,
@@ -113,6 +127,11 @@ pub struct ServerStats {
     pub slot_fill_mismatches: u64,
     pub implausible_moves: u64,
     pub ignored_messages: u64,
+    pub requests: u64,
+    pub refused: u64,
+    /// `WorldChunk`s sent, and their bytes.
+    pub chunks: u64,
+    pub chunk_bytes: u64,
 }
 
 enum Stage {
@@ -143,12 +162,27 @@ pub struct Server {
     actions: Vec<Action>,
     notices: Vec<Notice>,
     stats: ServerStats,
+    /// The server's own random (SplitMix64) for the luck draws.
+    random: u64,
+}
+
+/// The server's random: SplitMix64, as a `Random.value` in [0, 1).
+fn next_value(state: &mut u64) -> f32 {
+    *state = state.wrapping_add(0x9e37_79b9_7f4a_7c15);
+    let mut z = *state;
+    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    ((z ^ (z >> 31)) >> 40) as f32 / (1u64 << 24) as f32
 }
 
 impl Server {
     /// A new world whose tick 0 is `now_us` on the caller's clock.
     pub fn new(config: ServerConfig, now_us: u64) -> Server {
-        let world = WorldState::new(config.settings);
+        // Items get their rules in M9d3c.
+        let world = WorldState::new(config.settings, config.rules.clone());
+        // Seeded from the world, so a test run repeats; the game's own
+        // random is unseeded, so any seed is the game's behaviour.
+        let random = config.settings.slot_seed.unwrap_or(0) ^ 0x6c75_636b;
         let mut hashes = VecDeque::new();
         hashes.push_back((0, world.hash()));
         Server {
@@ -164,6 +198,7 @@ impl Server {
             actions: Vec::new(),
             notices: Vec::new(),
             stats: ServerStats::default(),
+            random,
         }
     }
 
@@ -212,16 +247,21 @@ impl Server {
     /// Appends an event to the log, applies it and sends it to every
     /// joined client.
     fn emit(&mut self, tick: Tick, kind: WorldEventKind) {
+        // The server makes these itself, so they always fit.
+        if let Err(err) = self.try_emit(tick, kind) {
+            debug_assert!(false, "server event does not apply: {err}");
+        }
+    }
+
+    /// [`Server::emit`] for an event that may not apply (an item
+    /// request): then nothing is logged or sent.
+    fn try_emit(&mut self, tick: Tick, kind: WorldEventKind) -> Result<(), ApplyError> {
         let e = WorldEvent {
             seq: self.world.events,
             tick,
             kind,
         };
-        // The server makes every event itself, so it always fits.
-        if let Err(err) = self.world.apply(&e) {
-            debug_assert!(false, "server event does not apply: {err}");
-            return;
-        }
+        self.world.apply(&e)?;
         self.stats.events += 1;
         self.hashes
             .push_back((self.world.events, self.world.hash()));
@@ -232,6 +272,7 @@ impl Server {
         for conn in to {
             self.send(conn, Channel::Reliable, ServerMessage::Event(e.clone()));
         }
+        Ok(())
     }
 
     /// A transport connection opened.
@@ -369,8 +410,9 @@ impl Server {
                     None => self.stats.hash_unchecked += 1,
                 }
             }
-            // Items are M9d3b–c's.
-            ClientMessage::Request { .. } => self.ignore(conn, "requests not handled yet"),
+            ClientMessage::Request { req, request } => {
+                self.request(conn, player, req, request, now_us)
+            }
             ClientMessage::Bye => {
                 self.conns.remove(&conn);
                 self.leave(player, LeaveReason::Left, now_us);
@@ -465,6 +507,27 @@ impl Server {
                 players,
             },
         );
+        // The items after the same events, in chunks (at least one).
+        let bytes = self.world.items.to_bytes();
+        let chunks: Vec<&[u8]> = if bytes.is_empty() {
+            vec![&[]]
+        } else {
+            bytes.chunks(MAX_CHUNK).collect()
+        };
+        let total = chunks.len() as u32;
+        for (index, c) in chunks.into_iter().enumerate() {
+            self.stats.chunks += 1;
+            self.stats.chunk_bytes += c.len() as u64;
+            self.send(
+                conn,
+                Channel::Reliable,
+                ServerMessage::WorldChunk {
+                    index: index as u32,
+                    total,
+                    bytes: c.to_vec(),
+                },
+            );
+        }
         self.conns.insert(conn, Stage::Joined { player });
         self.players.insert(player, Joined { conn, state: None });
         self.stats.joins += 1;
@@ -540,6 +603,116 @@ impl Server {
                     states: kept.clone(),
                 },
             );
+        }
+    }
+
+    fn refuse(&mut self, conn: ConnId, player: PlayerId, req: u32, reason: RefuseReason) {
+        self.stats.refused += 1;
+        self.notices.push(Notice::Refused {
+            player,
+            req,
+            reason,
+        });
+        self.send(
+            conn,
+            Channel::Reliable,
+            ServerMessage::Refused { req, reason },
+        );
+    }
+
+    /// An item request: the server fills in what it decides (the luck
+    /// draws, the death list, a spawned object's prefab), checks what
+    /// only it knows (where the player is, from its newest state), and
+    /// emits the event if the shared state takes it. The state's own
+    /// checks are the rules; these are ours (`docs/formats/protocol.md`
+    /// § Server rules).
+    fn request(&mut self, conn: ConnId, player: PlayerId, req: u32, q: Request, now_us: u64) {
+        self.stats.requests += 1;
+        let ready = self.world.players.get(&player).is_some_and(|p| p.ready);
+        if !ready {
+            self.refuse(conn, player, req, RefuseReason::NotReady);
+            return;
+        }
+        let in_pod = self
+            .players
+            .get(&player)
+            .and_then(|j| j.state)
+            .is_some_and(|s| s.in_pod);
+        let items = &self.world.items;
+        let event = match q {
+            Request::PickUp { key, class } => {
+                let class = match &key {
+                    EntityKey::Spawned(id) => match items.objects.get(id) {
+                        Some(o) => o.class.clone(),
+                        None => return self.refuse(conn, player, req, RefuseReason::Gone),
+                    },
+                    _ => class,
+                };
+                ItemEvent::PickedUp { key, class }
+            }
+            Request::Hit {
+                key,
+                class,
+                kind,
+                spawn,
+            } => {
+                let mut random = self.random;
+                let draws = items
+                    .draws_for_hit(player, &key, &class, kind, &mut || next_value(&mut random));
+                match draws {
+                    Ok(draws) => {
+                        self.random = random;
+                        ItemEvent::Hit {
+                            key,
+                            class,
+                            kind,
+                            spawn,
+                            draws,
+                        }
+                    }
+                    Err(reason) => return self.refuse(conn, player, req, reason),
+                }
+            }
+            Request::Drop { item, at } => {
+                if in_pod {
+                    return self.refuse(conn, player, req, RefuseReason::NotHere);
+                }
+                ItemEvent::Dropped { item, at }
+            }
+            Request::Move { item, to, target } => {
+                // Ours: the locker only from inside the lifepod.
+                if (to == Store::PodLocker || items.in_locker(item)) && !in_pod {
+                    return self.refuse(conn, player, req, RefuseReason::NotHere);
+                }
+                ItemEvent::Moved { item, to, target }
+            }
+            Request::Lose { origin, drops } => {
+                let place = DropPlace {
+                    in_escape_pod: in_pod,
+                    ..DropPlace::default()
+                };
+                let list = items.lose_list(player, place);
+                if list.is_empty() {
+                    return;
+                }
+                // Points the client did not send (its state differed):
+                // at the origin.
+                let drops = list
+                    .into_iter()
+                    .zip(
+                        drops
+                            .into_iter()
+                            .chain(std::iter::repeat(DeathDrop::default())),
+                    )
+                    .collect();
+                ItemEvent::Lost { origin, drops }
+            }
+        };
+        let tick = self.clock(now_us).0;
+        match self.try_emit(tick, WorldEventKind::Item { player, req, event }) {
+            Ok(()) => {}
+            Err(ApplyError::Item { reason, .. }) => self.refuse(conn, player, req, reason),
+            Err(_) => self.refuse(conn, player, req, RefuseReason::Unknown),
         }
     }
 

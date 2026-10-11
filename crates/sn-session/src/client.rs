@@ -6,12 +6,14 @@
 //! A state machine on the caller's clock, like [`crate::Server`].
 
 use std::collections::{BTreeMap, VecDeque};
+use std::sync::Arc;
 
 use sn_protocol::{
     ClientMessage, PROTOCOL_VERSION, PlayerEvent, PlayerEventKind, PlayerId, PlayerState,
-    RejectReason, ServerMessage, Tick, WorldEvent, WorldEventKind, quant,
+    RefuseReason, RejectReason, Request, ServerMessage, Tick, WorldEvent, WorldEventKind, quant,
 };
 
+use crate::items::ItemRules;
 use crate::world::{ApplyError, WorldState};
 use crate::{Channel, PING_KEY};
 
@@ -72,6 +74,8 @@ pub struct ClientConfig {
     /// Faster than this between two states that are more than a tick
     /// apart is a teleport: not interpolated (metres per second).
     pub max_speed: f64,
+    /// The item rules of this client's install (M9d3).
+    pub rules: Arc<ItemRules>,
 }
 
 /// How a drawn state was made.
@@ -116,6 +120,15 @@ pub enum ClientNotice {
     /// A message from the server that could not be decoded or made no
     /// sense now.
     Ignored(String),
+    /// The world state's items arrived (after `Welcome`).
+    Loaded {
+        bytes: usize,
+    },
+    /// This client's item request `req` was refused.
+    Refused {
+        req: u32,
+        reason: RefuseReason,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -163,6 +176,11 @@ pub struct Client {
     own_pushed: u32,
     next_step: Option<u32>,
     last_hash_tick: Option<u32>,
+    /// The `WorldChunk`s so far, until all have come (then `None` and
+    /// `loaded`).
+    chunks: Option<Vec<Option<Vec<u8>>>>,
+    loaded: bool,
+    next_req: u32,
     outgoing: Vec<(Channel, ClientMessage)>,
     notices: Vec<ClientNotice>,
     stats: ClientStats,
@@ -200,6 +218,9 @@ impl Client {
             own_pushed: 0,
             next_step: None,
             last_hash_tick: None,
+            chunks: None,
+            loaded: false,
+            next_req: 0,
             outgoing: vec![(Channel::Reliable, hello)],
             notices: Vec::new(),
             stats: ClientStats::default(),
@@ -360,7 +381,13 @@ impl Client {
                     return;
                 }
                 self.player = Some(player);
-                self.world = Some(WorldState::from_welcome(settings, next_seq, &players));
+                self.world = Some(WorldState::from_welcome(
+                    settings,
+                    next_seq,
+                    &players,
+                    self.config.rules.clone(),
+                ));
+                self.chunks = Some(Vec::new());
                 for p in &players {
                     let r = self.remotes.entry(p.id).or_default();
                     if let Some(s) = p.state {
@@ -411,18 +438,25 @@ impl Client {
                     }
                 }
             }
-            // Items are M9d3b–c's.
-            ServerMessage::Refused { .. } | ServerMessage::WorldChunk { .. } => {
-                self.notices.push(ClientNotice::Ignored(
-                    "item messages not handled yet".into(),
-                ));
+            ServerMessage::Refused { req, reason } => {
+                self.notices.push(ClientNotice::Refused { req, reason });
             }
+            ServerMessage::WorldChunk {
+                index,
+                total,
+                bytes,
+            } => self.chunk(index, total, bytes),
             ServerMessage::Event(e) => {
                 let Some(w) = self.world.as_mut() else {
                     self.notices
                         .push(ClientNotice::Ignored("event before Welcome".into()));
                     return;
                 };
+                if !self.loaded {
+                    self.notices
+                        .push(ClientNotice::Ignored("event before the world state".into()));
+                    return;
+                }
                 if let Err(err) = w.apply(&e) {
                     self.notices.push(ClientNotice::Apply(err));
                     return;
@@ -436,6 +470,58 @@ impl Client {
                 self.pending.push_back(e);
             }
         }
+    }
+
+    /// One part of the world state's items; with the last one, they
+    /// replace the world's.
+    fn chunk(&mut self, index: u32, total: u32, bytes: Vec<u8>) {
+        let (Some(parts), Some(world)) = (self.chunks.as_mut(), self.world.as_mut()) else {
+            self.notices
+                .push(ClientNotice::Ignored("world chunk outside a join".into()));
+            return;
+        };
+        let total = total as usize;
+        if parts.is_empty() && parts_len_ok(total) {
+            parts.resize(total, None);
+        }
+        let Some(slot) = parts
+            .get_mut(index as usize)
+            .filter(|_| parts_len_ok(total))
+        else {
+            self.notices.push(ClientNotice::Ignored(format!(
+                "world chunk {index} of {total}"
+            )));
+            return;
+        };
+        *slot = Some(bytes);
+        if parts.len() != total || parts.iter().any(Option::is_none) {
+            return;
+        }
+        let all: Vec<u8> = parts.iter().flatten().flatten().copied().collect();
+        self.chunks = None;
+        match world.load_items(&all) {
+            Ok(()) => {
+                self.loaded = true;
+                self.notices.push(ClientNotice::Loaded { bytes: all.len() });
+            }
+            Err(e) => self
+                .notices
+                .push(ClientNotice::Ignored(format!("world state: {e}"))),
+        }
+    }
+
+    /// Whether the world state has arrived (events apply from then on).
+    pub fn loaded(&self) -> bool {
+        self.loaded
+    }
+
+    /// Sends an item request; its number, which a `Refused` names.
+    pub fn request(&mut self, request: Request) -> u32 {
+        let req = self.next_req;
+        self.next_req = self.next_req.wrapping_add(1);
+        self.outgoing
+            .push((Channel::Reliable, ClientMessage::Request { req, request }));
+        req
     }
 
     /// Pings, the clock's slew, the delay, hash reports, pruning.
@@ -500,7 +586,9 @@ impl Client {
             }
         }
         // Hash report.
-        if let (Some(t), Some(w)) = (self.server_tick(now_us), self.world.as_ref()) {
+        if let (Some(t), Some(w), true) =
+            (self.server_tick(now_us), self.world.as_ref(), self.loaded)
+        {
             let bucket = (t.max(0.0) as u32) / HASH_EVERY;
             if self.last_hash_tick != Some(bucket) {
                 self.last_hash_tick = Some(bucket);
@@ -670,6 +758,12 @@ fn mix(a: PlayerState, b: PlayerState, u: f64, p: [f64; 3], kind: SampleKind) ->
     }
 }
 
+/// A chunk count the client accepts (the server sends one per 1,024
+/// bytes; this bounds what a bad count can allocate).
+fn parts_len_ok(total: usize) -> bool {
+    (1..=1 << 16).contains(&total)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -683,6 +777,7 @@ mod tests {
             password: None,
             tick_us: 20_000,
             max_speed: 30.0,
+            rules: Default::default(),
         }
     }
 
@@ -722,6 +817,13 @@ mod tests {
             players: vec![],
         };
         c.received(&welcome.encode(), 0);
+        let chunk = ServerMessage::WorldChunk {
+            index: 0,
+            total: 1,
+            bytes: crate::items::ItemsState::new(Default::default(), false).to_bytes(),
+        };
+        c.received(&chunk.encode(), 0);
+        assert!(c.loaded());
         c
     }
 

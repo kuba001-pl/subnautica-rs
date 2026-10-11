@@ -700,6 +700,8 @@ fn start_session(args: &Args, lifepod: bool) -> Result<Started, String> {
         },
         tick_us: rules.tick_us,
         max_speed: rules.max_speed,
+        // The install's item rules come in M9d3d.
+        rules: Default::default(),
     };
     let mut session = session::Session::start(config, &args.mode, &args.name, args.net_sim)?;
     session.log_every = args.log_ticks;

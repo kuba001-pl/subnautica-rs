@@ -2,6 +2,62 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-11 — M9d3b + M9d3c: items as shared state, server and client
+
+**What:**
+- `sn-session::items`: `ItemRules` (pure, from the install in M9d3d) and
+  `ItemsState`. This is every player's grid, slots, blueprints and luck,
+  the lifepod locker, gone objects, server-made objects and outcrop hits.
+  Each `Item` world event replays through `sn-sim::inventory`; a refusal
+  changes nothing. It has a canonical encoding for the join snapshot and
+  a hash part with running sums for the large maps.
+- `WorldState` holds the items; new worlds fill the locker.
+- The server takes `Request`s: it fills in the draws, the death list and
+  spawned classes, checks the pod from the player's newest state, applies
+  the event or sends `Refused`, and sends the items in `WorldChunk`s after
+  `Welcome`.
+- The client assembles the chunks, holds events and hash reports until
+  then, and has `request()` and the `Refused`/`Loaded` notices.
+- `sn-sim`: `Container::to_parts`/`from_parts`, `KnownTech::from_sets`,
+  `SlotTable: Default`.
+- Configs gained `rules`; the apps pass empty rules until M9d3d.
+- New dependency: `sn-session` → `sn-sim`, so every machine replays the
+  same item rules (pure, ours). Tests share synthetic rules in
+  `tests/common/mod.rs`.
+
+**Why:** M9d3b and M9d3c of the plan. They land together because b alone
+broke two M10 tests: the server keeps a left player's items, and a late
+joiner cannot know them without c's snapshot.
+
+**Verified:**
+- `cargo test --workspace`: 456 passed, 0 failed, 37 ignored. `cargo
+  clippy --workspace --all-targets -- -D warnings` and `cargo fmt --all
+  --check` pass.
+- `cargo test -p sn-session --release -- --nocapture` prints the numbers
+  in DESIGN's M9d3b/c rows. Highlights: 10,000 ticks with 4 players, 0
+  hash mismatches in 1,026 reports; 5,000 random events, with the server,
+  a client and a halfway joiner equal; 1,000,000 bad requests, 0 panics;
+  200,000 corrupted snapshots, 0 panics.
+- Real game data: **not tested** (M9d3d).
+
+**Dead ends and fixes:**
+1. **b's first version** changed the world hash, and the M10 sync oracle
+   and two server tests then reported mismatches. A client built from
+   `Welcome` had no items for players already present, and a joiner could
+   not know a left player's. First fix: `from_welcome` makes starting
+   items for the listed players. Final fix: the snapshot.
+2. **Hashing** the whole items encoding after every event made the
+   1,000,000-bad-request test take 28 s. Accepted fuzzed pick-ups grow the
+   gone set, so each event cost more. The large maps now keep a sum of
+   per-entry hashes; the test takes 0.65 s. The change is the same for a
+   long real game.
+3. **The client's chunk handler** sized its buffer from the message's
+   `total` before checking it: a bad count could have allocated gigabytes.
+   Caught in review before any test; the check now comes first.
+4. **Test mistakes, not code bugs:** the pod test sent two states in one
+   tick (the server keeps only a newer tick's state), and one count
+   threshold was a guess (events > 3,000; the run had 1,688).
+
 ## 2026-10-11 — M9d3a: protocol 4, items
 
 **What:** M9d3 is planned in DESIGN ("M9d3 plan", four steps; decision 10

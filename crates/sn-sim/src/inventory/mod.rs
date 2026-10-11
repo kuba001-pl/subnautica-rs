@@ -24,7 +24,7 @@ mod known;
 mod luck;
 mod moves;
 
-pub use container::{Container, Placed};
+pub use container::{Container, ContainerParts, GroupParts, MAX_SIDE, Placed};
 pub use drop::{DropPlace, can_drop_here, drop_ray, find_drop_position};
 pub use equipment::{Equipment, SlotTable};
 pub use known::{AnalysisEntry, KnownTech};

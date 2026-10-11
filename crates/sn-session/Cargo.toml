@@ -10,6 +10,8 @@ publish.workspace = true
 [dependencies]
 # The messages the session reads and writes.
 sn-protocol.workspace = true
+# The item rules every machine replays (pure).
+sn-sim.workspace = true
 
 [lints]
 workspace = true
