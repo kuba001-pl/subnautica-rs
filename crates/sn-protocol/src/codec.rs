@@ -6,29 +6,29 @@ use crate::{Error, Result};
 
 /// Appends values to a buffer.
 #[derive(Default)]
-pub(crate) struct Writer {
-    pub(crate) out: Vec<u8>,
+pub struct Writer {
+    pub out: Vec<u8>,
 }
 
 impl Writer {
-    pub(crate) fn u8(&mut self, v: u8) {
+    pub fn u8(&mut self, v: u8) {
         self.out.push(v);
     }
 
-    pub(crate) fn u16(&mut self, v: u16) {
+    pub fn u16(&mut self, v: u16) {
         self.out.extend_from_slice(&v.to_le_bytes());
     }
 
-    pub(crate) fn i16(&mut self, v: i16) {
+    pub fn i16(&mut self, v: i16) {
         self.out.extend_from_slice(&v.to_le_bytes());
     }
 
-    pub(crate) fn u64_fixed(&mut self, v: u64) {
+    pub fn u64_fixed(&mut self, v: u64) {
         self.out.extend_from_slice(&v.to_le_bytes());
     }
 
     /// LEB128: 7 bits per byte, low bits first.
-    pub(crate) fn varint(&mut self, mut v: u64) {
+    pub fn varint(&mut self, mut v: u64) {
         loop {
             let byte = (v & 0x7f) as u8;
             v >>= 7;
@@ -41,40 +41,45 @@ impl Writer {
     }
 
     /// Zigzag, then LEB128.
-    pub(crate) fn varint_signed(&mut self, v: i64) {
+    pub fn varint_signed(&mut self, v: i64) {
         self.varint(((v << 1) ^ (v >> 63)) as u64);
     }
 
-    pub(crate) fn bool(&mut self, v: bool) {
+    pub fn bool(&mut self, v: bool) {
         self.out.push(u8::from(v));
     }
 
-    pub(crate) fn f32(&mut self, v: f32) {
+    pub fn f32(&mut self, v: f32) {
         self.out.extend_from_slice(&v.to_bits().to_le_bytes());
     }
 
-    pub(crate) fn f64(&mut self, v: f64) {
+    pub fn f64(&mut self, v: f64) {
         self.out.extend_from_slice(&v.to_bits().to_le_bytes());
     }
 
-    pub(crate) fn str(&mut self, s: &str) {
-        self.varint(s.len() as u64);
-        self.out.extend_from_slice(s.as_bytes());
+    pub fn str(&mut self, s: &str) {
+        self.bytes(s.as_bytes());
+    }
+
+    /// A varint length, then the bytes.
+    pub fn bytes(&mut self, b: &[u8]) {
+        self.varint(b.len() as u64);
+        self.out.extend_from_slice(b);
     }
 }
 
 /// Reads values from bytes; every failure names its byte offset.
-pub(crate) struct Reader<'a> {
+pub struct Reader<'a> {
     data: &'a [u8],
-    pub(crate) pos: usize,
+    pub pos: usize,
 }
 
 impl<'a> Reader<'a> {
-    pub(crate) fn new(data: &'a [u8]) -> Reader<'a> {
+    pub fn new(data: &'a [u8]) -> Reader<'a> {
         Reader { data, pos: 0 }
     }
 
-    pub(crate) fn error(&self, at: usize, message: impl Into<String>) -> Error {
+    pub fn error(&self, at: usize, message: impl Into<String>) -> Error {
         Error::new(at, message)
     }
 
@@ -102,24 +107,24 @@ impl<'a> Reader<'a> {
         Ok(a)
     }
 
-    pub(crate) fn u8(&mut self, what: &str) -> Result<u8> {
+    pub fn u8(&mut self, what: &str) -> Result<u8> {
         Ok(self.array::<1>(what)?[0])
     }
 
-    pub(crate) fn u16(&mut self, what: &str) -> Result<u16> {
+    pub fn u16(&mut self, what: &str) -> Result<u16> {
         Ok(u16::from_le_bytes(self.array(what)?))
     }
 
-    pub(crate) fn i16(&mut self, what: &str) -> Result<i16> {
+    pub fn i16(&mut self, what: &str) -> Result<i16> {
         Ok(i16::from_le_bytes(self.array(what)?))
     }
 
-    pub(crate) fn u64_fixed(&mut self, what: &str) -> Result<u64> {
+    pub fn u64_fixed(&mut self, what: &str) -> Result<u64> {
         Ok(u64::from_le_bytes(self.array(what)?))
     }
 
     /// A minimal LEB128 of at most 10 bytes that fits in 64 bits.
-    pub(crate) fn varint(&mut self, what: &str) -> Result<u64> {
+    pub fn varint(&mut self, what: &str) -> Result<u64> {
         let start = self.pos;
         let mut v = 0u64;
         for i in 0..10 {
@@ -139,26 +144,26 @@ impl<'a> Reader<'a> {
         Err(self.error(start, format!("{what}: varint longer than 10 bytes")))
     }
 
-    pub(crate) fn varint_u32(&mut self, what: &str) -> Result<u32> {
+    pub fn varint_u32(&mut self, what: &str) -> Result<u32> {
         let at = self.pos;
         let v = self.varint(what)?;
         u32::try_from(v).map_err(|_| self.error(at, format!("{what}: {v} is above 32 bits")))
     }
 
-    pub(crate) fn varint_u16(&mut self, what: &str) -> Result<u16> {
+    pub fn varint_u16(&mut self, what: &str) -> Result<u16> {
         let at = self.pos;
         let v = self.varint(what)?;
         u16::try_from(v).map_err(|_| self.error(at, format!("{what}: {v} is above 16 bits")))
     }
 
-    pub(crate) fn varint_i32(&mut self, what: &str) -> Result<i32> {
+    pub fn varint_i32(&mut self, what: &str) -> Result<i32> {
         let at = self.pos;
         let z = self.varint(what)?;
         let v = ((z >> 1) as i64) ^ -((z & 1) as i64);
         i32::try_from(v).map_err(|_| self.error(at, format!("{what}: {v} is outside 32 bits")))
     }
 
-    pub(crate) fn bool(&mut self, what: &str) -> Result<bool> {
+    pub fn bool(&mut self, what: &str) -> Result<bool> {
         let at = self.pos;
         match self.u8(what)? {
             0 => Ok(false),
@@ -167,7 +172,7 @@ impl<'a> Reader<'a> {
         }
     }
 
-    pub(crate) fn f32(&mut self, what: &str) -> Result<f32> {
+    pub fn f32(&mut self, what: &str) -> Result<f32> {
         let at = self.pos;
         let v = f32::from_bits(u32::from_le_bytes(self.array(what)?));
         if v.is_finite() {
@@ -177,7 +182,7 @@ impl<'a> Reader<'a> {
         }
     }
 
-    pub(crate) fn f64(&mut self, what: &str) -> Result<f64> {
+    pub fn f64(&mut self, what: &str) -> Result<f64> {
         let at = self.pos;
         let v = f64::from_bits(u64::from_le_bytes(self.array(what)?));
         if v.is_finite() {
@@ -188,7 +193,7 @@ impl<'a> Reader<'a> {
     }
 
     /// UTF-8 text of at most `max` bytes.
-    pub(crate) fn str(&mut self, max: usize, what: &str) -> Result<String> {
+    pub fn str(&mut self, max: usize, what: &str) -> Result<String> {
         let at = self.pos;
         let n = self.count(max, what)?;
         let bytes = self.take(n, what)?;
@@ -198,8 +203,14 @@ impl<'a> Reader<'a> {
         }
     }
 
+    /// At most `max` bytes, after their varint length.
+    pub fn bytes(&mut self, max: usize, what: &str) -> Result<Vec<u8>> {
+        let n = self.count(max, what)?;
+        Ok(self.take(n, what)?.to_vec())
+    }
+
     /// A count of at most `max`.
-    pub(crate) fn count(&mut self, max: usize, what: &str) -> Result<usize> {
+    pub fn count(&mut self, max: usize, what: &str) -> Result<usize> {
         let at = self.pos;
         let n = self.varint(what)?;
         match usize::try_from(n) {
@@ -209,7 +220,7 @@ impl<'a> Reader<'a> {
     }
 
     /// Every byte must have been read.
-    pub(crate) fn finish(&self) -> Result<()> {
+    pub fn finish(&self) -> Result<()> {
         if self.pos == self.data.len() {
             Ok(())
         } else {

@@ -411,6 +411,12 @@ impl Client {
                     }
                 }
             }
+            // Items are M9d3b–c's.
+            ServerMessage::Refused { .. } | ServerMessage::WorldChunk { .. } => {
+                self.notices.push(ClientNotice::Ignored(
+                    "item messages not handled yet".into(),
+                ));
+            }
             ServerMessage::Event(e) => {
                 let Some(w) = self.world.as_mut() else {
                     self.notices

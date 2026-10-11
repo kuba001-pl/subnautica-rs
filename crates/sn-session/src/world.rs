@@ -49,6 +49,10 @@ pub enum ApplyError {
         seq: u32,
         player: PlayerId,
     },
+    /// An event this version does not apply yet.
+    NotYet {
+        seq: u32,
+    },
 }
 
 impl fmt::Display for ApplyError {
@@ -63,6 +67,7 @@ impl fmt::Display for ApplyError {
             ApplyError::PlayerExists { seq, player } => {
                 write!(f, "world event {seq} adds player {} again", player.0)
             }
+            ApplyError::NotYet { seq } => write!(f, "world event {seq} is not applied yet"),
         }
     }
 }
@@ -132,6 +137,8 @@ impl WorldState {
             WorldEventKind::PlayerLeft { player, .. } => {
                 self.players.remove(player).ok_or(unknown(*player))?;
             }
+            // Items are M9d3b's; the server sends none yet.
+            WorldEventKind::Item { .. } => return Err(ApplyError::NotYet { seq }),
             WorldEventKind::Player { player, event } => {
                 let p = self.players.get_mut(player).ok_or(unknown(*player))?;
                 match event {

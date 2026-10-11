@@ -5,6 +5,10 @@
 
 use crate::anim::{AnimState, BOOL_MASK, FLOATS, TRIGGERS};
 use crate::codec::{Reader, Writer};
+use crate::items::{
+    ItemEvent, RefuseReason, Request, read_item_event, read_refuse, read_request, write_item_event,
+    write_refuse, write_request,
+};
 use crate::{PlayerId, Result, Tick};
 
 /// Longest player name, game build text and password, in UTF-8 bytes.
@@ -16,6 +20,8 @@ pub const MAX_STATES: usize = 8;
 /// Most players in a world (`docs/DESIGN.md` § 9, decision 8), and so
 /// the most a `Welcome` lists.
 pub const MAX_PLAYERS: usize = 8;
+/// Most bytes of the world state in one `WorldChunk` (one packet).
+pub const MAX_CHUNK: usize = 1024;
 
 /// Where a player is in the death and respawn timeline
 /// (`sn_sim::vitals::Life` without its times).
@@ -213,6 +219,13 @@ pub enum WorldEventKind {
         player: PlayerId,
         event: PlayerEventKind,
     },
+    /// A player's accepted request (protocol 4, M9d3); `req` is the
+    /// player's own number for it.
+    Item {
+        player: PlayerId,
+        req: u32,
+        event: ItemEvent,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -257,6 +270,11 @@ pub enum ClientMessage {
         hash: u64,
     },
     Bye,
+    /// Something done to items, numbered by the client (protocol 4).
+    Request {
+        req: u32,
+        request: Request,
+    },
 }
 
 /// Server → client.
@@ -287,6 +305,18 @@ pub enum ServerMessage {
         states: Vec<PlayerState>,
     },
     Event(WorldEvent),
+    /// The request `req` of this client was refused (protocol 4).
+    Refused {
+        req: u32,
+        reason: RefuseReason,
+    },
+    /// Part `index` of `total` of the world state's encoding, sent after
+    /// `Welcome` (protocol 4).
+    WorldChunk {
+        index: u32,
+        total: u32,
+        bytes: Vec<u8>,
+    },
 }
 
 // Tags. Never reuse a retired number.
@@ -299,12 +329,15 @@ mod tag {
     pub const SLOT_FILL_HASH: u8 = 6;
     pub const WORLD_HASH: u8 = 7;
     pub const BYE: u8 = 8;
+    pub const REQUEST: u8 = 9;
 
     pub const REJECT: u8 = 1;
     pub const WELCOME: u8 = 2;
     pub const PONG: u8 = 3;
     pub const SERVER_STATES: u8 = 4;
     pub const WORLD_EVENT: u8 = 5;
+    pub const REFUSED: u8 = 6;
+    pub const WORLD_CHUNK: u8 = 7;
 }
 
 // The state's flag bits (u16).
@@ -370,6 +403,11 @@ impl ClientMessage {
                 w.u64_fixed(*hash);
             }
             ClientMessage::Bye => w.u8(tag::BYE),
+            ClientMessage::Request { req, request } => {
+                w.u8(tag::REQUEST);
+                w.varint(u64::from(*req));
+                write_request(&mut w, request);
+            }
         }
         w.out
     }
@@ -418,6 +456,10 @@ impl ClientMessage {
                 hash: r.u64_fixed("world hash")?,
             },
             tag::BYE => ClientMessage::Bye,
+            tag::REQUEST => ClientMessage::Request {
+                req: r.varint_u32("request number")?,
+                request: read_request(&mut r)?,
+            },
             t => return Err(r.error(at, format!("unknown client message tag {t}"))),
         };
         r.finish()?;
@@ -527,7 +569,28 @@ impl ServerMessage {
                         w.varint(u64::from(player.0));
                         write_player_event(&mut w, event);
                     }
+                    WorldEventKind::Item { player, req, event } => {
+                        w.u8(4);
+                        w.varint(u64::from(player.0));
+                        w.varint(u64::from(*req));
+                        write_item_event(&mut w, event);
+                    }
                 }
+            }
+            ServerMessage::Refused { req, reason } => {
+                w.u8(tag::REFUSED);
+                w.varint(u64::from(*req));
+                write_refuse(&mut w, *reason);
+            }
+            ServerMessage::WorldChunk {
+                index,
+                total,
+                bytes,
+            } => {
+                w.u8(tag::WORLD_CHUNK);
+                w.varint(u64::from(*index));
+                w.varint(u64::from(*total));
+                w.bytes(bytes);
             }
         }
         w.out
@@ -632,9 +695,31 @@ impl ServerMessage {
                         player: PlayerId(r.varint_u16("player id")?),
                         event: read_player_event(&mut r)?,
                     },
+                    4 => WorldEventKind::Item {
+                        player: PlayerId(r.varint_u16("player id")?),
+                        req: r.varint_u32("request number")?,
+                        event: read_item_event(&mut r)?,
+                    },
                     k => return Err(r.error(at, format!("unknown world event kind {k}"))),
                 };
                 ServerMessage::Event(WorldEvent { seq, tick, kind })
+            }
+            tag::REFUSED => ServerMessage::Refused {
+                req: r.varint_u32("request number")?,
+                reason: read_refuse(&mut r)?,
+            },
+            tag::WORLD_CHUNK => {
+                let index = r.varint_u32("chunk index")?;
+                let at = r.pos;
+                let total = r.varint_u32("chunk total")?;
+                if index >= total {
+                    return Err(r.error(at, format!("chunk {index} of {total}")));
+                }
+                ServerMessage::WorldChunk {
+                    index,
+                    total,
+                    bytes: r.bytes(MAX_CHUNK, "chunk bytes")?,
+                }
             }
             t => return Err(r.error(at, format!("unknown server message tag {t}"))),
         };

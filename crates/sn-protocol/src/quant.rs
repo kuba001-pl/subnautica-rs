@@ -49,6 +49,9 @@ pub const PITCH_SCALE: f64 = 100.0;
 /// A unit quaternion's component → ±32,767.
 pub const QUATERNION_SCALE: f64 = 32_767.0;
 
+/// A death drop's offset from its origin: millimetres.
+pub const DROP_OFFSET_SCALE: f64 = 1000.0;
+
 #[cfg(test)]
 mod tests {
     use super::*;

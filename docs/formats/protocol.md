@@ -10,9 +10,11 @@ Messages carry ids, numbers, seeds and hashes only. They never carry game
 data (AGENTS.md rule 5): every player reads the world from their own
 install.
 
-Protocol version: **3** (`PROTOCOL_VERSION`; 3 added the cinematic signal events, M10h3). Any change to an encoding or
+Protocol version: **4** (`PROTOCOL_VERSION`). Any change to an encoding or
 to a table below raises it. History: 1 (M10a); 2 (M10c): `WorldHash`
-carries the number of world events applied instead of a tick.
+carries the number of world events applied instead of a tick; 3 (M10h3):
+the cinematic signal events; 4 (M9d3a): [items](#items) (`Request`,
+`Refused`, `WorldChunk`, the `Item` world event).
 
 ## Scope
 
@@ -21,7 +23,8 @@ carries the number of world events applied instead of a tick.
 channels are `sn-net`'s ([Packets](#packets-sn-net), M10b). Which channel
 each message uses (decided by M10c's session code): the reliable channel
 for `Hello`, `Ready`, `Event`, `SlotFillHash`, `WorldHash`, `Bye`,
-`Reject`, `Welcome` and world `Event`s; the **unordered** channel for
+`Request`, `Reject`, `Welcome`, world `Event`s, `Refused` and
+`WorldChunk`; the **unordered** channel for
 `States` (both ways: they carry their ticks, so order does not matter and
 an overtaken message still has ticks to give; M10d); the latest-only
 channel for `Ping`/`Pong` (key 65,535; matched by `client_time`).
@@ -60,6 +63,7 @@ happens to decode. Every decoding error names its byte offset.
 | 6 | `SlotFillHash` | `batch: 3 × signed varint i32`, `hash: u64 fixed` |
 | 7 | `WorldHash` | `events: varint u32` (world events applied), `hash: u64 fixed` (the [world state](#world-state)'s) |
 | 8 | `Bye` | — |
+| 9 | `Request` | `req: varint u32` (the client's own number for it), a [request](#requests) |
 
 **Stable forever:** `Hello`'s tag 1 and its `protocol` in bytes 1–2, so a
 server of any version can read the version and answer with `Reject`.
@@ -72,7 +76,9 @@ server of any version can read the version and answer with `Reject`.
 | 2 | `Welcome` | `player: varint u16`, `tick: varint u32` (the server's tick when sent), `next_seq: varint u32`, [world settings](#world-settings), `players: count ≤ 8` × [player info](#player-info) |
 | 3 | `Pong` | `client_time: varint`, `tick: varint u32`, `fraction: u16` (of the next tick, in 1/65,536) |
 | 4 | `States` | `player: varint u16`, a [state list](#state-lists) |
-| 5 | `Event` | `seq: varint u32` (0, 1, 2, … without gaps), `tick: varint u32`, `kind: u8`, then: 0 `PlayerJoined { player: varint u16, name: text ≤ 32 }`, 1 `PlayerReady { player }`, 2 `PlayerLeft { player, reason: u8 }` (0 left, 1 timed out, 2 kicked), 3 `Player { player, event: player event }` |
+| 5 | `Event` | `seq: varint u32` (0, 1, 2, … without gaps), `tick: varint u32`, `kind: u8`, then: 0 `PlayerJoined { player: varint u16, name: text ≤ 32 }`, 1 `PlayerReady { player }`, 2 `PlayerLeft { player, reason: u8 }` (0 left, 1 timed out, 2 kicked), 3 `Player { player, event: player event }`, 4 `Item { player, req: varint u32, event: item event }` (an accepted [request](#item-events)) |
+| 6 | `Refused` | `req: varint u32`, `reason: u8`: 0 gone, 1 unknown, 2 no room, 3 not here, 4 no item, 5 not allowed, 6 not ready |
+| 7 | `WorldChunk` | `index: varint u32`, `total: varint u32` (index < total), `bytes: varint length ≤ 1,024, then the bytes`: part of the world state's encoding, sent after `Welcome` |
 
 **Stable forever:** `Reject`'s tag 1 and reason 0 `Protocol` with its
 `u16`, so a client of any version can tell the user which version the
@@ -104,6 +110,56 @@ signals at the owner's step: `prepare` is the pod animator's
 `interpolateAnimParam`, `play` its `animParam` and the player's
 `playerViewAnimationName`; the hatch is the one of the player's open
 `HatchUsed`).
+
+## Items
+
+Protocol 4 (M9d3a; the plan is `docs/DESIGN.md` "M9d3 plan"). A request
+names a world object by its key and the prefab class id the client
+believes it is; the server answers with a world event (accepted) or
+`Refused` (to the requester only). Every machine replays accepted
+requests through the same rules (`sn-sim::inventory`), so the world
+event carries what the replay needs, including the server's random draws.
+
+**Key:** `kind: u8`, then 0 `Placed { id: text ≤ 64 }` (the object's
+`SavedObject.id`), 1 `Slot { placeholder: text ≤ 64, slot: varint u16,
+copy: varint u16 }` (a slot filler: the placeholder's id, the slot's index
+in it, the copy), 2 `Spawned { item: varint u32 }` (made by the server).
+
+**Item:** `varint u32`, numbered by the server. A spawned world object and
+the item it becomes share the number.
+
+**Drop point:** `point: 3 × f32`, `rotation: 4 × i16` (x, y, z, w, each ×
+32,767). **Death drop:** `offset: 3 × i16` (millimetres from the list's
+origin), `rotation: 4 × i16`, 14 bytes, so 56 of them fit one message.
+
+### Requests
+
+`kind: u8`, then:
+- 0 `PickUp { key, class: text ≤ 64 }` (empty for `Spawned`).
+- 1 `Hit { key, class, kind: u8, spawn: 3 × f32 }`: `kind` 0 hand,
+  1 bash, 2 mech; `spawn` is where resources appear if it breaks.
+- 2 `Drop { item, point }`.
+- 3 `Move { item, to: u8, target }`: `to` 0 the grid, 1 the equipment
+  slots, 2 the lifepod's locker; `target: u8`, then 0 the store itself,
+  1 `Item { item }` (swap), 2 `Slot { name: text ≤ 32 }`.
+- 4 `Lose { origin: 3 × f32, drops: count ≤ 56 × death drop }`: after a
+  death, where each item the rules drop lands, in their order.
+
+### Item events
+
+`kind: u8`, then:
+- 0 `PickedUp { key, class }`.
+- 1 `Hit { key, class, kind, spawn, draws: count ≤ 64 × f32 }`: `draws`
+  are the `Random.value`s (0…1; outside is an error) the server drew for
+  the luck when the outcrop broke, in the order the rules ask for them;
+  empty otherwise.
+- 2 `Dropped { item, point }`.
+- 3 `Moved { item, to, target }`.
+- 4 `Lost { origin, drops: count ≤ 56 × (item, death drop) }`.
+
+How the state changes with each event, and the world state's encoding
+that `WorldChunk` carries, are M9d3b's (below, when written). Until then
+a client treats an `Item` event as not applicable.
 
 ## State lists
 

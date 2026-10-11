@@ -1,4 +1,4 @@
-//! M10a's checks: every message round-trips and re-encodes to the same
+//! M10a's checks (M9d3a's for the item messages): every message round-trips and re-encodes to the same
 //! bytes; the largest messages fit in a 1,200-byte packet; a million
 //! seeded random, truncated and bit-flipped inputs never panic. Sizes are
 //! printed (`cargo test -p sn-protocol -- --nocapture`).
@@ -141,8 +141,137 @@ fn client_samples(rng: &mut Rng) -> Vec<ClientMessage> {
             kind,
         }));
     }
+    for (i, request) in requests(rng).into_iter().enumerate() {
+        v.push(ClientMessage::Request {
+            req: [0, 1, u32::MAX][i % 3],
+            request,
+        });
+    }
     v
 }
+
+/// Every key kind, at its longest where it has text.
+fn keys() -> Vec<EntityKey> {
+    vec![
+        EntityKey::Placed("a1b2c3d4-0000-4000-8000-0123456789ab".into()),
+        EntityKey::Placed("x".repeat(items::MAX_ID)),
+        EntityKey::Slot {
+            placeholder: "p".repeat(items::MAX_ID),
+            slot: u16::MAX,
+            copy: 3,
+        },
+        EntityKey::Spawned(ItemId(u32::MAX)),
+    ]
+}
+
+fn drop_at(rng: &mut Rng) -> DropAt {
+    DropAt {
+        point: [0; 3].map(|_| quant::position(rng.unit() * 4000.0 - 2000.0)),
+        rotation: [0; 4].map(|_| (rng.next() as u16) as i16),
+    }
+}
+
+fn death_drops(rng: &mut Rng, n: usize) -> Vec<DeathDrop> {
+    (0..n)
+        .map(|_| DeathDrop {
+            offset: [0; 3].map(|_| quant::fixed(rng.unit() * 3.0 - 1.5, quant::DROP_OFFSET_SCALE)),
+            rotation: [0; 4].map(|_| (rng.next() as u16) as i16),
+        })
+        .collect()
+}
+
+fn requests(rng: &mut Rng) -> Vec<Request> {
+    let mut v = Vec::new();
+    for key in keys() {
+        v.push(Request::PickUp {
+            key: key.clone(),
+            class: "c".repeat(items::MAX_ID),
+        });
+        for kind in [HitKind::Hand, HitKind::Bash, HitKind::Mech] {
+            v.push(Request::Hit {
+                key: key.clone(),
+                class: String::new(),
+                kind,
+                spawn: [1.0, -2.5, 3.25],
+            });
+        }
+    }
+    v.push(Request::Drop {
+        item: ItemId(7),
+        at: drop_at(rng),
+    });
+    for to in [Store::Grid, Store::Slots, Store::PodLocker] {
+        for target in [
+            MoveTarget::Store,
+            MoveTarget::Item(ItemId(300)),
+            MoveTarget::Slot("s".repeat(items::MAX_SLOT)),
+        ] {
+            v.push(Request::Move {
+                item: ItemId(9),
+                to,
+                target,
+            });
+        }
+    }
+    for n in [0, 1, items::MAX_DROPS] {
+        v.push(Request::Lose {
+            origin: [10.0, -5.0, 20.0],
+            drops: death_drops(rng, n),
+        });
+    }
+    v
+}
+
+fn item_events(rng: &mut Rng) -> Vec<ItemEvent> {
+    let mut v = Vec::new();
+    for key in keys() {
+        v.push(ItemEvent::PickedUp {
+            key: key.clone(),
+            class: "c".into(),
+        });
+        for n in [0, 1, items::MAX_DRAWS] {
+            v.push(ItemEvent::Hit {
+                key: key.clone(),
+                class: "c".into(),
+                kind: HitKind::Hand,
+                spawn: [0.0, 0.5, 0.0],
+                draws: (0..n)
+                    .map(|i| [0.0, 1.0, rng.unit() as f32][i % 3])
+                    .collect(),
+            });
+        }
+    }
+    v.push(ItemEvent::Dropped {
+        item: ItemId(1),
+        at: drop_at(rng),
+    });
+    v.push(ItemEvent::Moved {
+        item: ItemId(2),
+        to: Store::PodLocker,
+        target: MoveTarget::Slot("Tank".into()),
+    });
+    for n in [0, items::MAX_DROPS] {
+        v.push(ItemEvent::Lost {
+            origin: [1.0, 2.0, 3.0],
+            drops: death_drops(rng, n)
+                .into_iter()
+                .enumerate()
+                .map(|(i, d)| (ItemId(1_000_000 + i as u32), d))
+                .collect(),
+        });
+    }
+    v
+}
+
+const REASONS: [RefuseReason; 7] = [
+    RefuseReason::Gone,
+    RefuseReason::Unknown,
+    RefuseReason::NoRoom,
+    RefuseReason::NotHere,
+    RefuseReason::NoItem,
+    RefuseReason::NotAllowed,
+    RefuseReason::NotReady,
+];
 
 fn welcome(rng: &mut Rng, players: usize, long: bool) -> ServerMessage {
     ServerMessage::Welcome {
@@ -233,6 +362,23 @@ fn server_samples(rng: &mut Rng) -> Vec<ServerMessage> {
             event,
         });
     }
+    for (i, event) in item_events(rng).into_iter().enumerate() {
+        kinds.push(WorldEventKind::Item {
+            player: PlayerId(7),
+            req: i as u32 * 1000,
+            event,
+        });
+    }
+    for reason in REASONS {
+        v.push(ServerMessage::Refused { req: 77, reason });
+    }
+    for (index, total, n) in [(0, 1, 0), (2, 3, 100), (0, u32::MAX, MAX_CHUNK)] {
+        v.push(ServerMessage::WorldChunk {
+            index,
+            total,
+            bytes: (0..n).map(|i| (i * 31) as u8).collect(),
+        });
+    }
     for (i, kind) in kinds.into_iter().enumerate() {
         v.push(ServerMessage::Event(WorldEvent {
             seq: i as u32,
@@ -309,6 +455,80 @@ fn malformed_messages_name_their_offset() {
 }
 
 #[test]
+fn malformed_item_messages_name_their_offset() {
+    // A chunk whose index is not below its total: the error is at the
+    // total.
+    let mut bytes = ServerMessage::WorldChunk {
+        index: 1,
+        total: 2,
+        bytes: vec![],
+    }
+    .encode();
+    bytes[2] = 1;
+    let e = ServerMessage::decode(&bytes).unwrap_err();
+    assert_eq!(e.offset, 2, "{e}");
+    // A luck draw above 1.
+    let mut rng = Rng(5);
+    let m = ServerMessage::Event(WorldEvent {
+        seq: 0,
+        tick: Tick(0),
+        kind: WorldEventKind::Item {
+            player: PlayerId(0),
+            req: 0,
+            event: ItemEvent::Hit {
+                key: EntityKey::Spawned(ItemId(1)),
+                class: String::new(),
+                kind: HitKind::Hand,
+                spawn: [0.0; 3],
+                draws: vec![0.5],
+            },
+        },
+    });
+    let mut bytes = m.encode();
+    let at = bytes.len() - 4;
+    bytes[at..].copy_from_slice(&1.5f32.to_le_bytes());
+    let e = ServerMessage::decode(&bytes).unwrap_err();
+    assert_eq!(e.offset, at, "{e}");
+    assert!(e.message.contains("draw"), "{e}");
+    // Unknown kinds of key, store, request; too many drops; an unknown
+    // refusal.
+    let req = |request| ClientMessage::Request { req: 0, request }.encode();
+    let mut bytes = req(Request::PickUp {
+        key: EntityKey::Spawned(ItemId(0)),
+        class: String::new(),
+    });
+    bytes[3] = 9;
+    let e = ClientMessage::decode(&bytes).unwrap_err();
+    assert_eq!(e.offset, 3, "{e}");
+    assert!(e.message.contains("key kind"), "{e}");
+    let mut bytes = req(Request::Move {
+        item: ItemId(0),
+        to: Store::Grid,
+        target: MoveTarget::Store,
+    });
+    bytes[4] = 3;
+    let e = ClientMessage::decode(&bytes).unwrap_err();
+    assert_eq!(e.offset, 4, "{e}");
+    let mut bytes = req(Request::Lose {
+        origin: [0.0; 3],
+        drops: death_drops(&mut rng, 1),
+    });
+    bytes[2] = 5;
+    let e = ClientMessage::decode(&bytes).unwrap_err();
+    assert_eq!(e.offset, 2, "{e}");
+    let mut bytes = req(Request::Lose {
+        origin: [0.0; 3],
+        drops: vec![],
+    });
+    let n = bytes.len() - 1;
+    bytes[n] = items::MAX_DROPS as u8 + 1;
+    let e = ClientMessage::decode(&bytes).unwrap_err();
+    assert_eq!(e.offset, n, "{e}");
+    let e = ServerMessage::decode(&[6, 0, 7]).unwrap_err();
+    assert_eq!(e.offset, 2, "{e}");
+}
+
+#[test]
 fn largest_messages_fit_one_packet_and_sizes_are_logged() {
     let mut rng = Rng(3);
     let one = ClientMessage::States(states(&mut rng, 1)).encode().len();
@@ -329,6 +549,16 @@ fn largest_messages_fit_one_packet_and_sizes_are_logged() {
     println!("player upload at 25 packets/s with 4 states each: {up} B/s");
     assert!(max_states <= 1200, "{max_states}");
     assert!(welcome <= 1200, "{welcome}");
+    // Every message fits `sn-net`'s largest message (1,161 B).
+    let mut largest = 0;
+    for m in client_samples(&mut rng) {
+        largest = largest.max(m.encode().len());
+    }
+    for m in server_samples(&mut rng) {
+        largest = largest.max(m.encode().len());
+    }
+    println!("largest message of all samples (items included): {largest} B");
+    assert!(largest <= 1161, "{largest}");
 }
 
 /// Decodes and, if that works, checks the canonical round trip.

@@ -369,6 +369,8 @@ impl Server {
                     None => self.stats.hash_unchecked += 1,
                 }
             }
+            // Items are M9d3b–c's.
+            ClientMessage::Request { .. } => self.ignore(conn, "requests not handled yet"),
             ClientMessage::Bye => {
                 self.conns.remove(&conn);
                 self.leave(player, LeaveReason::Left, now_us);

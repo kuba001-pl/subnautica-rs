@@ -2,6 +2,39 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-11 — M9d3a: protocol 4, items
+
+**What:** M9d3 is planned in DESIGN ("M9d3 plan", four steps; decision 10
+records its four choices). This is step a: `sn-protocol` 4 with
+`EntityKey` (placed id, slot filler by placeholder/slot/copy, spawned
+number), `ItemId`, the requests `PickUp`, `Hit`, `Drop`, `Move` and `Lose`
+in `ClientMessage::Request {req, …}`, the world event `Item {player, req,
+event}` (`PickedUp`, `Hit` with the server's luck draws, `Dropped`,
+`Moved`, `Lost`), and `Refused {req, reason}` and `WorldChunk` from the
+server. `codec` is public now, so the snapshot can reuse it. In
+`sn-session`, the new messages are only logged as ignored; handling them
+is M9d3b–c. No new dependency or file type.
+
+**Why:** M9d3a of the plan.
+
+**Verified:** `cargo test -p sn-protocol --release -- --nocapture`: all
+pass. Every new message and variant round-trips and re-encodes to the
+same bytes; malformed fields name their offsets (chunk index, a draw
+above 1, unknown key/store/request/refusal, too many drops); the 1,000,000
+random, truncated and bit-flipped inputs (the item samples included)
+cause no panic. The largest message of all the samples is 1,033 B, under
+`sn-net`'s 1,161 B. `cargo test --workspace`: 439 passed, 0 failed, 37
+ignored; `cargo clippy --workspace --all-targets -- -D warnings` and
+`cargo fmt --all --check` pass. Note: the protocol version is now 4, so a
+client of this build and one of the previous build refuse each other
+(by design).
+
+**Dead end:** the first encoding gave each death drop a full point and an
+`f32` rotation (28 B). A full inventory's drops (54) would have been about
+1.6 kB, over `sn-net`'s message limit. Each drop is now a millimetre
+offset from one origin with an i16 rotation (14 B). This is exact for the
+rules, which put every drop within 1.5 m of the camera.
+
 ## 2026-10-11 — M9d2: inventory rules, pure
 
 **What:** `sn-sim::inventory`. Ports `ItemsContainer` (groups, `GroupComparer`,

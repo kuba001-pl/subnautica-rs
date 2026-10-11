@@ -69,6 +69,9 @@ impl Client {
                 self.player = Some(player);
                 self.world = Some(WorldState::from_welcome(settings, next_seq, &players));
             }
+            ServerMessage::Refused { .. } | ServerMessage::WorldChunk { .. } => {
+                panic!("item messages before M9d3c: {m:?}")
+            }
             ServerMessage::Event(e) => {
                 assert_eq!(channel, Channel::Reliable);
                 let w = self.world.as_mut().expect("an event before Welcome");
