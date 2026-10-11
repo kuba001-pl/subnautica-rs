@@ -2,6 +2,47 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-11 — M9d4a: hand targets in the collision world
+
+**What:**
+- `sn-assets::collision_world`: with item rules
+  (`CollisionLoader::set_item_rules`), every pickup and outcrop placed in
+  a cell, an object batch or a spawn slot is a `Target` with its own
+  bodies (`TARGET_BODY` ids) tagged with its `EntityKey` (placed id; slot
+  as placeholder, slot, copy) and class.
+- `BatchBodies` gains `target(body)`, `target_counts()`, `remove_key(key)`,
+  `sync_spawned(...)` (bodies for the server's objects) and
+  `update_with(..., gone)` (gone keys left out at load).
+- `objects()` returns `BatchObjects { statics, targets }`. `Lifepod.locker`
+  holds the locker's bodies (`LOCKER_BODY`), found through the scene's one
+  `GenericHandTarget`.
+- `sn-world`'s `SlotSpawn` has its `copy` index.
+- `sn-sim`'s `World` has `get(id)` and a broad-phase grid for small bodies.
+- No new dependency or file type.
+
+**Why:** M9d4 of the plan, split into a (headless bodies, this) and b
+(the client's drawing); DESIGN has b's plan.
+
+**Verified:**
+- `cargo test --workspace`: 457 passed, 0 failed, 39 ignored. Clippy with
+  `-D warnings` and fmt pass.
+- Real-data tests: 39 passed. The new `hand_targets_follow_the_items`
+  prints its numbers (see DESIGN's M9d4a row).
+- A new unit test compares the grid with a body-by-body brute force on
+  3,000 random casts and sweeps, with removals: equal.
+- `sn-inspect coop` with 4 bots on lan against `sn-server`: 18,252 of
+  18,252 ticks exact, 128 hash checks with 0 differing, so the movement
+  traces are unchanged (logs in `out/m9d/m9d4a_*.log`).
+
+**Dead ends and fixes:**
+1. The locker was first looked for under the `StorageContainer`'s node.
+   It has no collider there (0 found). The scene dump showed a
+   `StorageHandTarget` node, and the code showed its `GenericHandTarget`
+   events call `EscapePod.StorageOpen`.
+2. One body per target put about 1,800 bodies around the pod, and every
+   query checked each one's bounds: a sweep went from 0.59 µs to 7.35 µs.
+   The grid brought it to 0.89 µs.
+
 ## 2026-10-11 — M9d3d: item rules from the install
 
 **What:**

@@ -298,6 +298,10 @@ impl SlotRng {
 pub struct SlotSpawn<'a> {
     /// Index of the slot in its placeholder.
     pub slot: usize,
+    /// Which copy of the slot's filler (0 for the first; a filler can
+    /// place several). With the placeholder's id and `slot`, the object's
+    /// identity across machines (`sn_protocol::EntityKey::Slot`).
+    pub copy: u32,
     pub class_id: &'a str,
     /// Relative to the placeholder.
     pub transform: Transform,
@@ -334,6 +338,7 @@ pub fn fill_slots<'a>(
             }
             out.push(SlotSpawn {
                 slot: i,
+                copy,
                 class_id: filler.class_id,
                 transform: Transform {
                     position,

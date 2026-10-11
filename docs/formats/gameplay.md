@@ -819,6 +819,13 @@ Readers (M9d1): `sn-unity::items` (layouts), `sn-assets::items`
 - **Confirmed (real data):** `PDAData.analysisTech` has 126 entries (86
   unlocks); 19 of them are for a pick-up tech type, so picking those up
   unlocks blueprints.
+- **Confirmed (code and real data, M9d4a):** the lifepod's locker is
+  opened by the escape pod scene's one `GenericHandTarget`, on the node
+  `StorageHandTarget` (a child of `EscapePod`). Its hover and click events
+  call `EscapePod.StorageHover` (hand text `EscapePodStorageOpen`) and
+  `EscapePod.StorageOpen` (the animator bool `storage_open`). The
+  `StorageContainer` node itself has no collider; the hand target's node
+  has 1.
 - **Confirmed (code):** the prefab spawned for a tech type
   (`CraftData.GetPrefabForTechTypeAsync`, the lifepod's supplies) is
   `techMapping[tech]`. `PreparePrefabIDCache` builds it by walking

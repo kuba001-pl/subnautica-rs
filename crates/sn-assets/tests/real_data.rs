@@ -2058,3 +2058,186 @@ fn item_rules_from_install() {
     let (again, _) = sn_assets::item_rules(&game, &assets, &dll).unwrap();
     assert_eq!(again, rules);
 }
+
+/// M9d4a: hand targets around Lifepod 5 (lifepod and slot seed 1). Every
+/// target's bodies carry its key; a cast at a target hits it; after its
+/// key is removed the cast no longer does; a dropped item (a server-made
+/// object of a pickup's class) is hit after it appears and not after it
+/// goes; a gone key is left out when a batch loads. Counts are printed.
+#[test]
+#[ignore = "needs SUBNAUTICA_DIR pointing at a Subnautica install"]
+fn hand_targets_follow_the_items() {
+    use sn_assets::{BatchBodies, CollisionLoader, LayerRules, TargetKind};
+    use sn_protocol::{EntityKey, ItemId};
+    use sn_sim::V3;
+    use sn_sim::collide::{HAND, World};
+    let Some(dir) = std::env::var_os("SUBNAUTICA_DIR") else {
+        eprintln!("SUBNAUTICA_DIR not set; skipping");
+        return;
+    };
+    let game = GameData::locate(Some(PathBuf::from(dir))).unwrap();
+    let assets = Assets::index(&game).unwrap();
+    let dll = sn_assets::read_assembly(&game).unwrap();
+    let (rules, _) = sn_assets::item_rules(&game, &assets, &dll).unwrap();
+    let rules = std::sync::Arc::new(rules);
+    let (point, _) = sn_assets::lifepod_point(&assets, 1).unwrap();
+    let mut loader = CollisionLoader::new(&game, Some(1)).unwrap();
+    loader.set_item_rules(rules.clone());
+    let data = sn_assets::player_data(loader.assets()).unwrap();
+    let settings = sn_assets::physics_settings(loader.assets()).unwrap();
+    let layers = LayerRules::new(&settings, data.player_layer);
+
+    let mut batches = BatchBodies::new();
+    let mut world = World::new();
+    let changes = batches.update(&mut loader, &layers, point).unwrap();
+    for (id, b) in changes.add {
+        world.insert(id, b);
+    }
+    let [pickups, outcrops] = batches.target_counts();
+    println!(
+        "around the pod: {} batches; targets: {pickups} pickups, {outcrops} outcrops (loader: {:?} placed as targets)",
+        batches.loaded(),
+        loader.stats().targets
+    );
+    assert!(pickups > 0 && outcrops > 0);
+    let pod = loader.lifepod(&layers, point).unwrap();
+    let locker = pod.locker.as_ref().expect("the lifepod's locker");
+    println!(
+        "lifepod locker at {:?}: {} colliders, {} bodies",
+        locker.at,
+        locker.colliders,
+        locker.bodies.len()
+    );
+    assert!(!locker.bodies.is_empty());
+
+    // Cast down at each target from above its bodies; count those hit
+    // first (others may sit under rock or another object).
+    let ids: Vec<u64> = world.ids().collect();
+    let cast_down = |world: &World, body: u64| -> Option<u64> {
+        let (lo, hi) = world_bounds(world, body)?;
+        let c = V3::lerp(lo, hi, 0.5);
+        let from = V3::new(c.x, hi.y + 1.0, c.z);
+        world
+            .cast(HAND, from, V3::new(0.0, -1.0, 0.0), 0.0, hi.y - lo.y + 2.0)
+            .map(|(_, h)| h.body)
+    };
+    let mut hit_self = Vec::new();
+    for &id in &ids {
+        let Some(t) = batches.target(id) else {
+            continue;
+        };
+        if cast_down(&world, id) == Some(id) {
+            hit_self.push((id, t.key.clone(), t.kind));
+        }
+    }
+    let n_pick = hit_self
+        .iter()
+        .filter(|h| h.2 == TargetKind::Pickup)
+        .count();
+    println!(
+        "targets hit by a cast from above: {} ({n_pick} pickups)",
+        hit_self.len()
+    );
+    let (body, key, _) = hit_self
+        .iter()
+        .find(|h| h.2 == TargetKind::Pickup)
+        .cloned()
+        .expect("a pickup the hand can reach from above");
+    let class = batches.target(body).unwrap().class.clone();
+    // Removed: its bodies go, the cast no longer finds it.
+    let before = world_bounds(&world, body).unwrap();
+    let removed = batches.remove_key(&key);
+    assert!(removed.contains(&body));
+    for id in &removed {
+        world.remove(*id);
+    }
+    let c = V3::lerp(before.0, before.1, 0.5);
+    let again = world
+        .cast(
+            HAND,
+            V3::new(c.x, before.1.y + 1.0, c.z),
+            V3::new(0.0, -1.0, 0.0),
+            0.0,
+            before.1.y - before.0.y + 2.0,
+        )
+        .map(|(_, h)| h.body);
+    assert!(again.is_none_or(|b| batches.target(b).is_none_or(|t| t.key != key)));
+    assert!(batches.target(body).is_none());
+
+    // Dropped (a server-made object of the same class, at the same
+    // place): hit; then gone again.
+    let at = before.0;
+    let drop = ItemId(7);
+    let c = batches.sync_spawned(
+        &mut loader,
+        &layers,
+        [(drop, class.as_str(), at.to_f32(), [0, 0, 0, 32_767])],
+    );
+    assert!(!c.add.is_empty());
+    for (id, b) in c.add {
+        world.insert(id, b);
+    }
+    let spawned: Vec<u64> = world
+        .ids()
+        .filter(|id| {
+            batches
+                .target(*id)
+                .is_some_and(|t| t.key == EntityKey::Spawned(drop))
+        })
+        .collect();
+    assert!(!spawned.is_empty());
+    assert!(spawned.iter().any(|&b| cast_down(&world, b) == Some(b)));
+    let c = batches.sync_spawned(&mut loader, &layers, []);
+    assert_eq!(c.remove.len(), spawned.len());
+    for id in c.remove {
+        world.remove(id);
+    }
+
+    // The cost: player-sized sweeps among the bodies, with targets and
+    // without (a loader with no item rules), same batches.
+    let capsule = sn_sim::collide::Capsule::unity(0.3, 1.8, 1, V3::ZERO);
+    let time_sweeps = |world: &World| {
+        let start = std::time::Instant::now();
+        let mut hits = 0;
+        for i in 0..20_000 {
+            let a = i as f64 * 0.37;
+            let from = V3::new(
+                f64::from(point[0]) + 30.0 * a.cos(),
+                -6.0,
+                f64::from(point[2]) + 30.0 * a.sin(),
+            );
+            let d = V3::new(a.sin(), 0.1, -a.cos());
+            hits += usize::from(world.sweep(&capsule, from, d).is_some());
+        }
+        (start.elapsed().as_secs_f64() * 1e6 / 20_000.0, hits)
+    };
+    let (with, hits_with) = time_sweeps(&world);
+    let mut plain_loader = CollisionLoader::new(&game, Some(1)).unwrap();
+    let mut plain = World::new();
+    for (id, b) in BatchBodies::new()
+        .update(&mut plain_loader, &layers, point)
+        .unwrap()
+        .add
+    {
+        plain.insert(id, b);
+    }
+    let (without, hits_without) = time_sweeps(&plain);
+    println!(
+        "sweeps: {with:.2} µs each with targets ({} bodies), {without:.2} µs without ({} bodies); hits {hits_with} / {hits_without}",
+        world.len(),
+        plain.len()
+    );
+
+    // A fresh load leaves the gone key out.
+    let mut fresh = BatchBodies::new();
+    let c = fresh
+        .update_with(&mut loader, &layers, point, &|k| *k == key)
+        .unwrap();
+    assert_eq!(c.gone, 1);
+    assert_eq!(fresh.target_counts(), [pickups - 1, outcrops]);
+}
+
+/// A body's bounds in the world.
+fn world_bounds(world: &sn_sim::collide::World, id: u64) -> Option<(sn_sim::V3, sn_sim::V3)> {
+    world.get(id)?.bounds()
+}

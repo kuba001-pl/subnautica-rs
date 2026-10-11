@@ -578,11 +578,32 @@ pub struct Slide {
     pub contacts: Vec<Hit>,
 }
 
+/// Side of the broad-phase grid's cells, metres.
+const GRID: f64 = 8.0;
+/// Bodies spanning at most this many cells per axis go into the grid;
+/// bigger ones (terrain batches, merged object bodies) are checked on
+/// every query.
+const GRID_SPAN: i64 = 4;
+/// Queries spanning more cells per axis check every body.
+const QUERY_SPAN: i64 = 16;
+
+fn cells(lo: V3, hi: V3) -> Option<([i64; 3], [i64; 3])> {
+    if !lo.is_finite() || !hi.is_finite() {
+        return None;
+    }
+    let c = |v: f64| (v / GRID).floor() as i64;
+    Some(([c(lo.x), c(lo.y), c(lo.z)], [c(hi.x), c(hi.y), c(hi.z)]))
+}
+
 /// Everything the capsule can hit, as bodies keyed by the caller's ids.
+/// Small bodies (M9d4: each pickup and outcrop is one) are also kept in a
+/// grid, so a query looks only at those near it.
 #[derive(Clone, Debug, Default)]
 pub struct World {
     /// Ordered, so that results do not depend on hashing.
     bodies: BTreeMap<u64, Body>,
+    large: std::collections::BTreeSet<u64>,
+    grid: std::collections::HashMap<[i64; 3], Vec<u64>>,
 }
 
 impl World {
@@ -592,15 +613,52 @@ impl World {
 
     /// Adds or replaces the body `id`.
     pub fn insert(&mut self, id: u64, body: Body) -> Option<Body> {
-        self.bodies.insert(id, body)
+        let old = self.remove(id);
+        match body.bounds.and_then(|(lo, hi)| cells(lo, hi)) {
+            Some((a, b)) if (0..3).all(|i| b[i] - a[i] < GRID_SPAN) => {
+                for x in a[0]..=b[0] {
+                    for y in a[1]..=b[1] {
+                        for z in a[2]..=b[2] {
+                            self.grid.entry([x, y, z]).or_default().push(id);
+                        }
+                    }
+                }
+            }
+            _ => {
+                self.large.insert(id);
+            }
+        }
+        self.bodies.insert(id, body);
+        old
     }
 
     pub fn remove(&mut self, id: u64) -> Option<Body> {
-        self.bodies.remove(&id)
+        let body = self.bodies.remove(&id)?;
+        if !self.large.remove(&id)
+            && let Some((a, b)) = body.bounds.and_then(|(lo, hi)| cells(lo, hi))
+        {
+            for x in a[0]..=b[0] {
+                for y in a[1]..=b[1] {
+                    for z in a[2]..=b[2] {
+                        if let Some(list) = self.grid.get_mut(&[x, y, z]) {
+                            list.retain(|&i| i != id);
+                            if list.is_empty() {
+                                self.grid.remove(&[x, y, z]);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Some(body)
     }
 
     pub fn contains(&self, id: u64) -> bool {
         self.bodies.contains_key(&id)
+    }
+
+    pub fn get(&self, id: u64) -> Option<&Body> {
+        self.bodies.get(&id)
     }
 
     pub fn ids(&self) -> impl Iterator<Item = u64> + '_ {
@@ -618,8 +676,31 @@ impl World {
     /// Calls `f` for every shape of a body in `groups` whose cells overlap
     /// the box.
     fn each_candidate(&self, groups: u32, lo: V3, hi: V3, mut f: impl FnMut(u64, Shape)) {
+        // The bodies to look at, in id order (as a full scan would meet
+        // them, so ties resolve the same way).
+        let near: Option<Vec<u64>> = cells(lo, hi)
+            .filter(|(a, b)| (0..3).all(|i| b[i] - a[i] < QUERY_SPAN))
+            .map(|(a, b)| {
+                let mut near: Vec<u64> = self.large.iter().copied().collect();
+                for x in a[0]..=b[0] {
+                    for y in a[1]..=b[1] {
+                        for z in a[2]..=b[2] {
+                            if let Some(list) = self.grid.get(&[x, y, z]) {
+                                near.extend(list);
+                            }
+                        }
+                    }
+                }
+                near.sort_unstable();
+                near.dedup();
+                near
+            });
+        let all: Box<dyn Iterator<Item = (&u64, &Body)>> = match &near {
+            Some(near) => Box::new(near.iter().filter_map(|id| self.bodies.get_key_value(id))),
+            None => Box::new(self.bodies.iter()),
+        };
         let mut ids = Vec::new();
-        for (&id, body) in &self.bodies {
+        for (&id, body) in all {
             if body.groups & groups == 0 || !body.bounds.is_some_and(|b| overlaps(b, (lo, hi))) {
                 continue;
             }
@@ -1132,6 +1213,61 @@ mod tests {
         let travelled = pos.x + 15.0;
         assert!(contacts > 0);
         assert!(travelled > 0.9 * asked, "{travelled} of {asked}");
+    }
+
+    #[test]
+    fn the_grid_finds_what_checking_every_body_finds() {
+        // Spheres of 0.2–3 m (in the grid) and 30–60 m (too big for it),
+        // over 200 m; casts and sweeps compared with the nearest hit over
+        // each body alone.
+        let mut seed: u64 = 99;
+        let mut r = move || {
+            seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            (seed >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let mut world = World::new();
+        let mut single: Vec<(u64, World)> = Vec::new();
+        for id in 0..400u64 {
+            let big = id % 40 == 0;
+            let radius = if big {
+                30.0 + r() * 30.0
+            } else {
+                0.2 + r() * 2.8
+            };
+            let center = V3::new(r() * 200.0 - 100.0, r() * 40.0 - 20.0, r() * 200.0 - 100.0);
+            let body =
+                Body::new([], vec![Shape::Sphere { center, radius }]).with_groups(MOVE | HAND);
+            world.insert(id, body.clone());
+            let mut w = World::new();
+            w.insert(id, body);
+            single.push((id, w));
+        }
+        // Remove some, as targets go.
+        for id in (0..400).step_by(7) {
+            world.remove(id);
+            single.retain(|(i, _)| *i != id);
+        }
+        let capsule = Capsule::unity(0.3, 1.8, 1, V3::ZERO);
+        for _ in 0..3000 {
+            let from = V3::new(r() * 220.0 - 110.0, r() * 50.0 - 25.0, r() * 220.0 - 110.0);
+            let dir = V3::new(r() - 0.5, r() - 0.5, r() - 0.5);
+            let len = if r() < 0.1 { 300.0 } else { r() * 6.0 };
+            let got = world
+                .cast(HAND, from, dir, 0.0, len)
+                .map(|(d, h)| (d, h.body));
+            let want = single
+                .iter()
+                .filter_map(|(_, w)| w.cast(HAND, from, dir, 0.0, len).map(|(d, h)| (d, h.body)))
+                .min_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+            assert_eq!(got, want);
+            let delta = dir * len.min(5.0);
+            let got = world.sweep(&capsule, from, delta).map(|h| (h.t, h.body));
+            let want = single
+                .iter()
+                .filter_map(|(_, w)| w.sweep(&capsule, from, delta).map(|h| (h.t, h.body)))
+                .min_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+            assert_eq!(got, want);
+        }
     }
 
     #[test]

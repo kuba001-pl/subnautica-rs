@@ -45,9 +45,10 @@ pub use code::{
 };
 pub use collision::{ColliderCounts, ColliderMeshes, PrefabCollider, WorldCollider};
 pub use collision_world::{
-    BatchBodies, BodyChanges, COLLISION_REACH, CollisionLoader, HATCH_BODY, LayerRules, Lifepod,
-    LifepodTrigger, LoaderStats, OBJECTS_BODY, PlacedCollider, SCENE_BODY, SPAWNED, SceneCollider,
-    SlotTables, bodies, body_kind, look_params, player_params, vitals_params,
+    BatchBodies, BatchObjects, BodyChanges, COLLISION_REACH, CollisionLoader, HATCH_BODY,
+    LOCKER_BODY, LayerRules, Lifepod, LifepodLocker, LifepodTrigger, LoaderStats, OBJECTS_BODY,
+    PlacedCollider, SCENE_BODY, SPAWNED, SceneCollider, SlotTables, TARGET_BODY, Target,
+    TargetBody, TargetKind, bodies, body_kind, look_params, player_params, vitals_params,
 };
 pub use gameplay::{
     Ingredient, PhysicsSettings, PlayerData, TechData, TechEntry, ent_tech_data, parse_tech_data,

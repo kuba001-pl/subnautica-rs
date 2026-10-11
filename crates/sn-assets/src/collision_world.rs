@@ -6,12 +6,22 @@
 //!
 //! Creatures are left out (they move; a later milestone). The caller
 //! filters by physics layer and trigger flag.
+//!
+//! With item rules ([`CollisionLoader::set_item_rules`], M9d4), every
+//! pickup and outcrop placed in a cell or filled into a slot is a
+//! [`Target`]: its own bodies, tagged with its `EntityKey`, so the hand's
+//! cast tells which object it is on and a removed key drops just its
+//! bodies. Objects the server made (dropped items, outcrop resources) get
+//! target bodies too. Objects that a placed prefab's own placeholders
+//! spawn have no key and stay static.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::time::Instant;
 
 use sn_install::GameData;
+use sn_protocol::{EntityKey, ItemId};
+use sn_sim::inventory::ItemRules;
 use sn_terrain::{Neighbourhood, TerrainBatch, batch_voxels, collision_triangles};
 use sn_unity::Catalog;
 use sn_world::{BatchCoord, EntityInfo, SLOTS_COMPONENT, Transform, WorldIndex};
@@ -45,6 +55,34 @@ pub struct SceneCollider {
     pub node: Option<(usize, usize)>,
 }
 
+/// What a [`Target`] is to the hand.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum TargetKind {
+    /// `Pickupable` (with `isPickupable`).
+    Pickup,
+    /// `BreakableResource`.
+    Outcrop,
+}
+
+/// An object the hand can act on, with its own colliders.
+#[derive(Clone, Debug)]
+pub struct Target {
+    pub key: EntityKey,
+    /// Its prefab's class id (what a request names).
+    pub class: String,
+    pub kind: TargetKind,
+    /// Where it is placed.
+    pub at: Transform,
+    pub colliders: Vec<PlacedCollider>,
+}
+
+/// A batch's objects: the static colliders and the targets.
+#[derive(Clone, Debug, Default)]
+pub struct BatchObjects {
+    pub statics: Vec<PlacedCollider>,
+    pub targets: Vec<Target>,
+}
+
 /// Counts over everything loaded so far.
 #[derive(Clone, Debug, Default)]
 pub struct LoaderStats {
@@ -62,6 +100,9 @@ pub struct LoaderStats {
     pub placeholders_already_saved: usize,
     pub terrain_ms: f64,
     pub objects_ms: f64,
+    /// Targets placed, by kind (pickups, outcrops), and placements of an
+    /// item class with no key (inside another prefab: not targetable).
+    pub targets: [usize; 2],
 }
 
 /// The game's spawn-slot tables (`sn_world::fill_slots`).
@@ -88,6 +129,8 @@ pub struct CollisionLoader<'a> {
     /// Per batch, a hash of what its spawn slots were filled with (M10f:
     /// multiplayer clients report it, the server compares).
     slot_fills: std::collections::BTreeMap<BatchCoord, u64>,
+    /// Which class ids are targets (M9d4).
+    items: Option<Arc<ItemRules>>,
 }
 
 /// A saved tree's objects by parent id.
@@ -148,7 +191,25 @@ impl<'a> CollisionLoader<'a> {
             meshes: ColliderMeshes::new(),
             stats: LoaderStats::default(),
             slot_fills: std::collections::BTreeMap::new(),
+            items: None,
         })
+    }
+
+    /// From now on, pickups and outcrops load as [`Target`]s.
+    pub fn set_item_rules(&mut self, rules: Arc<ItemRules>) {
+        self.items = Some(rules);
+    }
+
+    /// What the hand can do with an object of this class.
+    pub fn target_kind(&self, class: &str) -> Option<TargetKind> {
+        let r = self.items.as_ref()?;
+        if r.outcrops.contains_key(class) {
+            Some(TargetKind::Outcrop)
+        } else if r.pickups.get(class).is_some_and(|p| p.pickupable) {
+            Some(TargetKind::Pickup)
+        } else {
+            None
+        }
     }
 
     pub fn assets(&self) -> &Assets<'a> {
@@ -369,23 +430,85 @@ impl<'a> CollisionLoader<'a> {
         found > missing
     }
 
-    fn place(&mut self, path: &str, spawn: bool, at: &Transform, out: &mut Vec<PlacedCollider>) {
-        let Some(list) = self.prefab(path, spawn) else {
+    fn colliders(
+        &mut self,
+        path: &str,
+        spawn: bool,
+        at: &Transform,
+    ) -> Option<Vec<PlacedCollider>> {
+        let list = self.prefab(path, spawn)?;
+        self.stats.objects_placed += 1;
+        Some(
+            list.iter()
+                .map(|c| PlacedCollider {
+                    collider: c.world(at),
+                    layer: c.layer,
+                    trigger: c.trigger,
+                })
+                .collect(),
+        )
+    }
+
+    /// Places an object: a target if it has a key and its class is one,
+    /// else static.
+    #[allow(clippy::too_many_arguments)]
+    fn place(
+        &mut self,
+        path: &str,
+        spawn: bool,
+        at: &Transform,
+        class: &str,
+        key: Option<EntityKey>,
+        out: &mut BatchObjects,
+    ) {
+        let Some(colliders) = self.colliders(path, spawn, at) else {
             return;
         };
-        self.stats.objects_placed += 1;
-        out.extend(list.iter().map(|c| PlacedCollider {
-            collider: c.world(at),
-            layer: c.layer,
-            trigger: c.trigger,
-        }));
+        match (key, self.target_kind(class)) {
+            (Some(key), Some(kind)) => {
+                self.stats.targets[kind as usize] += 1;
+                out.targets.push(Target {
+                    key,
+                    class: class.to_owned(),
+                    kind,
+                    at: *at,
+                    colliders,
+                });
+            }
+            _ => out.statics.extend(colliders),
+        }
+    }
+
+    /// An object the server made (`Spawned(id)`), at `point` with the
+    /// wire's rotation, as a target (`None`: its class has no prefab).
+    pub fn spawned_target(
+        &mut self,
+        id: ItemId,
+        class: &str,
+        point: [f32; 3],
+        rotation: [i16; 4],
+    ) -> Option<Target> {
+        let path = self.class_paths.get(class)?.clone();
+        let at = Transform {
+            position: point,
+            rotation: rotation.map(|c| f32::from(c) / 32_767.0),
+            scale: [1.0; 3],
+        };
+        let colliders = self.colliders(&path, true, &at)?;
+        Some(Target {
+            key: EntityKey::Spawned(id),
+            class: class.to_owned(),
+            kind: self.target_kind(class).unwrap_or(TargetKind::Pickup),
+            at,
+            colliders,
+        })
     }
 
     /// The colliders of every object of a batch the client draws: its
     /// cells' objects with their slot spawns, and its batch objects.
-    pub fn objects(&mut self, c: BatchCoord) -> Result<Vec<PlacedCollider>> {
+    pub fn objects(&mut self, c: BatchCoord) -> Result<BatchObjects> {
         let start = Instant::now();
-        let mut out = Vec::new();
+        let mut out = BatchObjects::default();
         let mut fill = sn_protocol::Fnv64::new();
         if let Some(file) = self.game.read_batch_cells(c).map_err(|e| e.to_string())? {
             for cell in &file.cells {
@@ -415,15 +538,28 @@ impl<'a> CollisionLoader<'a> {
                                 fill.f32(*v);
                             }
                         }
-                        let wanted: Vec<(String, Transform)> = spawns
+                        let wanted: Vec<(String, Transform, String, Option<EntityKey>)> = spawns
                             .iter()
                             .filter_map(|s| {
                                 let path = self.class_paths.get(s.class_id)?;
-                                Some((path.clone(), transform.then(&s.transform)))
+                                let key = match (u16::try_from(s.slot), u16::try_from(s.copy)) {
+                                    (Ok(slot), Ok(copy)) => Some(EntityKey::Slot {
+                                        placeholder: object.id.clone(),
+                                        slot,
+                                        copy,
+                                    }),
+                                    _ => None,
+                                };
+                                Some((
+                                    path.clone(),
+                                    transform.then(&s.transform),
+                                    s.class_id.to_owned(),
+                                    key,
+                                ))
                             })
                             .collect();
-                        for (path, at) in wanted {
-                            self.place(&path, true, &at, &mut out);
+                        for (path, at, class, key) in wanted {
+                            self.place(&path, true, &at, &class, key, &mut out);
                         }
                     }
                     let Some(path) = self.class_paths.get(&object.class_id).cloned() else {
@@ -434,7 +570,8 @@ impl<'a> CollisionLoader<'a> {
                     if !spawn {
                         self.stats.placeholders_already_saved += 1;
                     }
-                    self.place(&path, spawn, &transform, &mut out);
+                    let key = Some(EntityKey::Placed(object.id.clone()));
+                    self.place(&path, spawn, &transform, &object.class_id, key, &mut out);
                 }
             }
         }
@@ -461,7 +598,8 @@ impl<'a> CollisionLoader<'a> {
                 if !spawn {
                     self.stats.placeholders_already_saved += 1;
                 }
-                self.place(&path, spawn, &transform, &mut out);
+                let key = Some(EntityKey::Placed(object.id.clone()));
+                self.place(&path, spawn, &transform, &object.class_id, key, &mut out);
             }
         }
         self.stats.objects_ms += start.elapsed().as_secs_f64() * 1000.0;
@@ -694,6 +832,11 @@ pub const OBJECTS_BODY: u64 = 1 << 62;
 pub const SCENE_BODY: u64 = 1 << 61;
 /// Hatch triggers: `HATCH_BODY | trigger index << 8 | body index`.
 pub const HATCH_BODY: u64 = 1 << 60;
+/// Targets (M9d4): `TARGET_BODY | target number << 2 | body index`; the
+/// number counts up for the loader's life.
+pub const TARGET_BODY: u64 = 1 << 59;
+/// The lifepod's locker: `LOCKER_BODY | body index`.
+pub const LOCKER_BODY: u64 = 1 << 58;
 
 fn coord_bits(c: BatchCoord) -> u64 {
     ((c.x as u64 & 0xffff) << 32) | ((c.y as u64 & 0xffff) << 16) | (c.z as u64 & 0xffff)
@@ -701,7 +844,11 @@ fn coord_bits(c: BatchCoord) -> u64 {
 
 /// What kind of thing a body id is (for logs).
 pub fn body_kind(id: u64) -> &'static str {
-    if id & HATCH_BODY != 0 {
+    if id & LOCKER_BODY != 0 {
+        "locker"
+    } else if id & TARGET_BODY != 0 {
+        "target"
+    } else if id & HATCH_BODY != 0 {
         "hatch"
     } else if id & SCENE_BODY != 0 {
         "lifepod"
@@ -724,13 +871,32 @@ pub struct BodyChanges {
     pub object_triangles: usize,
     pub object_shapes: usize,
     pub skipped: usize,
+    /// Targets added, by kind (pickups, outcrops), and those left out
+    /// because their key is gone.
+    pub targets: [usize; 2],
+    pub gone: usize,
+}
+
+/// A target's bodies' entry: what the hand's cast hit.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TargetBody {
+    pub key: EntityKey,
+    pub class: String,
+    pub kind: TargetKind,
+    pub at: Transform,
 }
 
 /// Which batches have bodies in the world, kept to those within
-/// [`COLLISION_REACH`] of the player.
+/// [`COLLISION_REACH`] of the player; and the targets among them, plus the
+/// objects the server made.
 #[derive(Default)]
 pub struct BatchBodies {
     loaded: HashMap<BatchCoord, Vec<u64>>,
+    targets: HashMap<u64, TargetBody>,
+    by_key: HashMap<EntityKey, Vec<u64>>,
+    next_target: u64,
+    /// Objects the server made, with bodies (not tied to a batch).
+    spawned: BTreeMap<ItemId, Vec<u64>>,
 }
 
 impl BatchBodies {
@@ -742,6 +908,111 @@ impl BatchBodies {
         self.loaded.len()
     }
 
+    /// The target a body belongs to.
+    pub fn target(&self, body: u64) -> Option<&TargetBody> {
+        self.targets.get(&body)
+    }
+
+    /// Targets with bodies now, by kind (pickups, outcrops).
+    pub fn target_counts(&self) -> [usize; 2] {
+        let mut n = [0; 2];
+        for ids in self.by_key.values() {
+            if let Some(t) = ids.first().and_then(|b| self.targets.get(b)) {
+                n[t.kind as usize] += 1;
+            }
+        }
+        n
+    }
+
+    /// Adds a target's bodies; their ids.
+    fn add_target(&mut self, t: Target, rules: &LayerRules, out: &mut BodyChanges) -> Vec<u64> {
+        let n = self.next_target;
+        self.next_target += 1;
+        let mut ids = Vec::new();
+        for (i, body) in bodies(&t.colliders, rules).into_iter().enumerate() {
+            out.object_triangles += body.triangle_count();
+            out.object_shapes += body.shape_count();
+            out.skipped += body.skipped();
+            let id = TARGET_BODY | (n << 2) | i as u64;
+            ids.push(id);
+            out.add.push((id, body));
+            self.targets.insert(
+                id,
+                TargetBody {
+                    key: t.key.clone(),
+                    class: t.class.clone(),
+                    kind: t.kind,
+                    at: t.at,
+                },
+            );
+        }
+        out.targets[t.kind as usize] += 1;
+        self.by_key.entry(t.key).or_default().extend(&ids);
+        ids
+    }
+
+    /// Lets go of the bodies `ids` (and their targets).
+    fn forget(&mut self, ids: &[u64]) {
+        for id in ids {
+            if let Some(t) = self.targets.remove(id) {
+                if let Some(list) = self.by_key.get_mut(&t.key) {
+                    list.retain(|b| b != id);
+                    if list.is_empty() {
+                        self.by_key.remove(&t.key);
+                    }
+                }
+            }
+        }
+    }
+
+    /// The object `key` left the world: the ids of its bodies, to remove
+    /// from the `sn-sim` world (empty if it has none loaded).
+    pub fn remove_key(&mut self, key: &EntityKey) -> Vec<u64> {
+        let ids = self.by_key.get(key).cloned().unwrap_or_default();
+        self.forget(&ids);
+        for list in self.loaded.values_mut() {
+            list.retain(|b| !ids.contains(b));
+        }
+        if let EntityKey::Spawned(id) = key {
+            self.spawned.remove(id);
+        }
+        ids
+    }
+
+    /// Makes the server-made objects with bodies exactly `objects` (id,
+    /// class, point, rotation): new ones get target bodies, missing ones
+    /// lose theirs.
+    pub fn sync_spawned<'o>(
+        &mut self,
+        loader: &mut CollisionLoader,
+        rules: &LayerRules,
+        objects: impl IntoIterator<Item = (ItemId, &'o str, [f32; 3], [i16; 4])>,
+    ) -> BodyChanges {
+        let mut out = BodyChanges::default();
+        let mut present = std::collections::BTreeSet::new();
+        for (id, class, point, rotation) in objects {
+            present.insert(id);
+            if self.spawned.contains_key(&id) {
+                continue;
+            }
+            let ids = match loader.spawned_target(id, class, point, rotation) {
+                Some(t) => self.add_target(t, rules, &mut out),
+                None => Vec::new(),
+            };
+            self.spawned.insert(id, ids);
+        }
+        let gone: Vec<ItemId> = self
+            .spawned
+            .keys()
+            .filter(|id| !present.contains(*id))
+            .copied()
+            .collect();
+        for id in gone {
+            out.remove.extend(self.remove_key(&EntityKey::Spawned(id)));
+        }
+        out
+    }
+
     /// Loads the batches within reach of `pos` not loaded yet and lets go
     /// of the others.
     pub fn update(
@@ -749,6 +1020,17 @@ impl BatchBodies {
         loader: &mut CollisionLoader,
         rules: &LayerRules,
         pos: [f32; 3],
+    ) -> Result<BodyChanges> {
+        self.update_with(loader, rules, pos, &|_| false)
+    }
+
+    /// [`BatchBodies::update`], leaving out targets whose key is `gone`.
+    pub fn update_with(
+        &mut self,
+        loader: &mut CollisionLoader,
+        rules: &LayerRules,
+        pos: [f32; 3],
+        gone: &dyn Fn(&EntityKey) -> bool,
     ) -> Result<BodyChanges> {
         let want = loader.batches_around(pos, COLLISION_REACH);
         let mut out = BodyChanges::default();
@@ -766,7 +1048,7 @@ impl BatchBodies {
                 out.add.push((coord_bits(c), body));
             }
             let objects = loader.objects(c)?;
-            for (i, body) in bodies(&objects, rules).into_iter().enumerate() {
+            for (i, body) in bodies(&objects.statics, rules).into_iter().enumerate() {
                 out.object_triangles += body.triangle_count();
                 out.object_shapes += body.shape_count();
                 out.skipped += body.skipped();
@@ -774,16 +1056,26 @@ impl BatchBodies {
                 ids.push(id);
                 out.add.push((id, body));
             }
+            for t in objects.targets {
+                if gone(&t.key) {
+                    out.gone += 1;
+                    continue;
+                }
+                ids.extend(self.add_target(t, rules, &mut out));
+            }
             self.loaded.insert(c, ids);
             out.load_ms.push(start.elapsed().as_secs_f64() * 1000.0);
         }
+        let mut dropped = Vec::new();
         self.loaded.retain(|c, ids| {
             let keep = want.contains(c);
             if !keep {
+                dropped.extend_from_slice(ids);
                 out.remove.append(ids);
             }
             keep
         });
+        self.forget(&dropped);
         loader.trim(&want);
         Ok(out)
     }
@@ -857,6 +1149,17 @@ pub struct Lifepod {
     pub first_use: Vec<(usize, usize)>,
     /// The hatches' cinematics (M9g5d), `names` in `triggers`' order.
     pub cinematics: Option<crate::PodCinematics>,
+    /// The locker (M9d4): the node of the scene's one
+    /// `GenericHandTarget`, which opens it; where it is and the bodies of
+    /// that node and its children.
+    pub locker: Option<LifepodLocker>,
+}
+
+/// The lifepod's locker as a hand target.
+pub struct LifepodLocker {
+    pub at: [f32; 3],
+    pub colliders: usize,
+    pub bodies: Vec<sn_sim::collide::Body>,
 }
 
 impl CollisionLoader<'_> {
@@ -873,10 +1176,32 @@ impl CollisionLoader<'_> {
             .into_iter()
             .filter(|t| t.hand)
             .collect();
-        let nodes: Vec<(usize, usize)> = found.iter().map(|t| t.node).collect();
+        let mut nodes: Vec<(usize, usize)> = found.iter().map(|t| t.node).collect();
         let refs: Vec<&crate::CinematicTrigger> = found.iter().collect();
         let cinematics = crate::PodCinematics::load(assets, &scene, &refs)?;
-        let (rest, per_trigger) = self.scene_split(&mut scene, &nodes)?;
+        // The locker opens by the scene's one `GenericHandTarget` (its
+        // events call `EscapePod.StorageHover` / `StorageOpen`); the
+        // `StorageContainer` node itself has no collider.
+        let lockers = scene.behaviours(assets, "GenericHandTarget");
+        let locker_node = match lockers.as_slice() {
+            [one] => scene.behaviour_node(assets, one)?,
+            _ => None,
+        };
+        if let Some(n) = locker_node {
+            nodes.push(n);
+        }
+        let (rest, mut per_trigger) = self.scene_split(&mut scene, &nodes)?;
+        let locker = match locker_node {
+            Some((r, n)) => {
+                let colliders = per_trigger.pop().unwrap_or_default();
+                Some(LifepodLocker {
+                    at: scene.roots[r].world(n).position,
+                    colliders: colliders.len(),
+                    bodies: bodies(&colliders, rules),
+                })
+            }
+            None => None,
+        };
         let triggers: Vec<LifepodTrigger> = found
             .into_iter()
             .zip(per_trigger)
@@ -904,6 +1229,7 @@ impl CollisionLoader<'_> {
             triggers,
             first_use,
             cinematics,
+            locker,
         })
     }
 }
