@@ -2,6 +2,48 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-11 — M9d2: inventory rules, pure
+
+**What:** `sn-sim::inventory`. Ports `ItemsContainer` (groups, `GroupComparer`,
+`TrySort` / `GetRoomFor` / `NextFreeCell`, `HasRoomFor` with its ghost and
+`ignore`, `RemoveItem(TechType)`'s battery rule), `Equipment` (`GetFreeSlot`,
+`GetCompatibleSlotDefault`, `IsCompatible`), `Inventory.Pickup`, `AddOrSwap`
+(grid, slot, locker, with the game's undo), `KnownTech.Analyze` / `Add`,
+`FairRandomizer`, `PlayerEntropy`, `BreakableResource` (hits, draws,
+default), `CanDropItemHere`, `Inventory.RayCast` and `FindDropPosition` on
+`sn-sim::collide`, `LoseItems` with the one-item quirk, the escape pod
+supplies and the `grab` bool's 0.4 s. Random draws are parameters, as in
+`aurora`. No new dependency, crate or file type.
+
+**Why:** M9d2 of the M9d plan.
+
+**Plan corrections (read in the code):** the "1 s after a drop" pick-up
+rule never applies, because `Pickupable.Drop` sets `timeDropped = 0` rather
+than the time. It is not ported, and the M9d3 and M9d6 checks are changed
+to match. The resource's torque is `Random.Range(3, 6)` with ints (3–5),
+about the world x axis. `PlayerEntropy.CheckChance` is false for a tech
+type without a randomizer, even at chance 1. Facts are in `gameplay.md`
+§ Inventory; the plan text is in DESIGN.
+
+**Verified:** `cargo test --workspace`: 438 passed, 0 failed, 37 ignored
+(33 new in `sn-sim::inventory`). `cargo clippy --workspace --all-targets --
+-D warnings` and `cargo fmt --all --check` pass. The tests are the M9d2
+"Done when" list: hand-worked packings, a full grid refusing, removal
+re-packing, tank to its slot and food never, swap between grid and locker
+(and undone when it cannot fit), a seeded `FairRandomizer` at 0.1, 0.25,
+0.5 and 0.9 within 0.001 of the chance over 100,000 tries, the outcrop
+default, no drop in the pod, the drop point before a synthetic wall, and
+death keeping one item. Also 20,000 random drags between grid, locker and
+slots: no item lost or copied, and no grid over-full. Against the real game's
+behaviour: **not tested** (no real-data step in M9d2).
+
+**Dead ends:** two of my first test expectations were wrong; the code was
+right. (1) "42 of 48 cells taken leaves no room for a 2×2" is false: every
+check re-packs bigger items first, so 46 cells fit. The test now uses 45.
+(2) Exact drop distances failed by 5 mm because our casts stop between
+`SKIN / 2` and `SKIN` before a surface. The test allows `SKIN`, and the
+difference from the game (up to 1 cm) is recorded in the code and DESIGN.
+
 ## 2026-10-11 — M8h: shared-clock sky and lighting
 
 **What/why:** evaluate retained sky rules from the session clock each frame,

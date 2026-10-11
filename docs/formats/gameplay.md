@@ -732,14 +732,83 @@ Readers (M9d1): `sn-unity::items` (layouts), `sn-assets::items`
   chips, tank), all in the table. A slot takes an item whose
   `EquipmentType` equals its own (vehicle modules also fit Seamoth and
   Prawn suit slots: `Equipment.IsCompatible`).
-- **Confirmed (code):** rules M9d2 ports (read in the decompiled code, not
-  yet checked against the game's behaviour): `Inventory.Pickup` (room
-  check, equipment first unless `Eatable`), `ItemsContainer`'s packing
-  (`TrySort`, `GroupComparer`, `GetRoomFor`), `InternalDropItem` /
-  `CanDropItemHere` / `RayCast` / `FindDropPosition`, `LoseItems` (one
-  item always kept), `KnownTech.Analyze` on every add, the 0.4 s `grab`
-  animator bool after `PlayGrab` (`ArmsController.Update`). Details in
-  `docs/DESIGN.md` "M9d plan".
+- **Confirmed (code), ported in M9d2 (`sn-sim::inventory`), not yet
+  checked against the game's behaviour:**
+  - **Packing** (`ItemsContainer.TrySort`): items are grouped by tech
+    type (each group's size is TechData's `itemSize`, default 1 × 1).
+    Groups are ordered by `GroupComparer`: larger long side first, then
+    larger area, at equal area the taller first, then the lower tech type
+    number. Each item takes the first box that is free (`GetRoomFor`:
+    rows top to bottom, in each row left to right, jumping past the item
+    found in the way, `NextFreeCell`). Every check and every change
+    re-packs the whole grid, so a container can take an item that would
+    not fit in the cells left free by the current layout.
+  - **`HasRoomFor`** packs a trial with a "ghost" group of the new size
+    (id 0, `TechType.None`); a swap leaves one item out of the trial
+    (`ignoreForSorting`).
+  - **Enumeration order** (what `LoseItems` walks): the groups in the
+    `Dictionary<TechType, ItemGroup>`'s order, each group's items in the
+    order added, then the equipment's slots in the order they were added.
+    A .NET dictionary reuses a removed entry's slot for the next insert,
+    last freed first (from the runtime's source; **not tested** in the
+    game).
+  - **`RemoveItem(TechType)`** takes the group's last item, except that
+    among the batteries at the end of the group the one with the least
+    charge goes.
+  - **Equipment:** `GetFreeSlot` walks the slots type by type (types in
+    the order their first slot was added) and takes the first empty
+    compatible one; `GetCompatibleSlotDefault` does the same but, if none
+    is empty, gives the first slot of the first compatible type (a swap).
+    An item of `EquipmentType.None` fits no player slot.
+  - **`Inventory.Pickup`:** refuses unless the **grid** has room, even
+    for an item that would go to a free slot. Then, unless the object has
+    an `Eatable`, the item goes into a free slot of its type, else into
+    the grid; then `KnownTech.Analyze`. Picked up inside a sub or base
+    (`Utils.GetSubRoot()`), `destroyOnDeath` is cleared.
+  - **The 1 s after a drop does not apply:** `AllowedToPickUp` asks
+    `Time.time − timeDropped > 1`, but `Pickupable.Drop` sets
+    `timeDropped = 0` (the field is never set to a time). So a dropped
+    item can be picked up at once (from 1 s after the game started).
+    This corrects the M9d plan.
+  - **`KnownTech.Analyze(tech)`:** only the first `analysisTech` entry for
+    the type counts (the type is then in `analyzedTech`); each unlocked
+    type is `Add`ed, and `Add` analyses it in turn (chains). The default
+    tech is added the same way at start (`AddRange`). Compound tech,
+    scanner entries and story goals are not ported.
+  - **`AddOrSwap`:** moving onto a taken target removes it first, moves
+    the dragged item, then puts the removed item where the dragged one
+    was; if that fails, both go back. Moving within the same grid is
+    refused; within the same equipment only to another slot.
+  - **Drop:** `CanDropItemHere` refuses in a sub or base (unless in a
+    water park), in the lifepod, while piloting, and out of the water in
+    a Precursor base. `Inventory.RayCast(camera, forward, 10, 0.75, 1.5)`
+    turns the camera's forward by `Quaternion.Euler(10 cx, 10 cy, 0)`
+    (`cx, cy` = `Random.insideUnitCircle`, about the **world's** axes),
+    casts `Random.Range(0.75, 1.5) + 0.2` m (layers: all but Player and
+    TouchScreen) and stops 0.2 m before a hit. `FindDropPosition` then
+    casts a 0.3 m sphere from the camera **5 m** towards that point
+    (not just to it; triggers ignored, the player's colliders skipped,
+    contacts at distance 0 skipped) and, at the nearest contact, puts the
+    item 0.15 m back from the contact point along the cast.
+  - **`LoseItems`:** collects every item with `destroyOnDeath` (grid,
+    then slots) and drops all but the last (`i < Count − 1`).
+  - **Outcrops:** a bare-hand click is a hit (`hitsToBreak--`; it breaks
+    only when that reaches exactly 0, so an outcrop with 0 never breaks by
+    hand); with a bashing tool the bash breaks it at once, so does a
+    Prawn suit. A broken outcrop never breaks again. Each of `numChances`
+    draws takes the first `prefabList` entry whose
+    `PlayerEntropy.CheckChance(tech, chance)` passes; if no draw found
+    one, `defaultPrefab` once. `PlayerEntropy.CheckChance` is **false
+    for a tech type without a randomizer, even at chance 1**; with
+    several for one type all are tried and the last answers.
+    `FairRandomizer.CheckChance`: true at ≥ 1, false at ≤ 0 (no draw);
+    else `entropy += chance; if entropy > Random.value { entropy −= 1;
+    true }`. The resource appears at `position + up × verticalSpawnOffset`
+    with a torque about the **world x axis** of `Random.Range(3, 6)`
+    (the int overload: 3, 4 or 5) and a force of `up × 0.1`.
+  - **The lifepod's supplies:** each item goes in if `HasRoomFor`, else
+    it is destroyed.
+  - **`grab`:** `timeGrabbed != 0 && timeGrabbed + 0.4 > Time.time`.
 - **Confirmed (real data):** the lifepod's locker is the escape pod
   scene's one `StorageContainer`, the one `SpawnEscapePodSupplies`
   points to: 4 wide, 8 high, its hover and label keys in `English.json`.
