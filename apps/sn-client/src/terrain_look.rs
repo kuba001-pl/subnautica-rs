@@ -104,6 +104,7 @@ pub struct TerrainLookPlugin;
 
 impl Plugin for TerrainLookPlugin {
     fn build(&self, app: &mut App) {
+        bevy::shader::load_shader_library!(app, "triplanar.wgsl");
         bevy::asset::embedded_asset!(app, "terrain.wgsl");
         app.add_plugins(MaterialPlugin::<TerrainMaterial>::default())
             .add_systems(Startup, build_look);
@@ -217,6 +218,8 @@ impl TerrainLook {
 /// A grass type's material: the ported grass shader, or (for shaders not
 /// ported yet) our object material.
 #[derive(Clone)]
+// At most 256 cached grass types; keep the material values inline.
+#[allow(clippy::large_enum_variant)]
 enum GrassLookMaterial {
     Grass(GrassMaterial),
     Object(ObjectMaterial),
@@ -271,6 +274,9 @@ fn first_pass_material(
             normal_map: normal.unwrap_or_else(|| flat.clone()),
             spec_map: white.clone(),
             illum_map: white.clone(),
+            sig_albedo: white.clone(),
+            side_albedo: white.clone(),
+            side_normal: flat.clone(),
             light_params: light.params.clone(),
             caustics: light.caustics.clone(),
             spot_cookie: light.spot_cookie.clone(),

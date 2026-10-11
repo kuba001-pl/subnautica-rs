@@ -149,6 +149,7 @@ pub(crate) struct MaterialDesc {
     double_sided: bool,
     /// MarmosetUBER's values; `None` for materials of other shaders.
     pub(crate) uber: Option<UberValues>,
+    sig: Option<crate::sig::SigLook>,
     /// Values of a shader drawn by our effect pass (`effects.rs`).
     pub(crate) effect: Option<EffectLook>,
 }
@@ -713,7 +714,7 @@ struct Library {
 /// How far a shader is ported (`docs/formats/materials.md`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ShaderPort {
-    /// MarmosetUBER: our object shader is its port.
+    /// MarmosetUBER or the two opaque SIG families: a supported surface path.
     Ported,
     /// A MarmosetUBER variant: drawn as UBER, its own properties not read.
     AsUber,
@@ -885,7 +886,7 @@ fn particles_values(
 
 pub(crate) fn shader_port(name: &str) -> ShaderPort {
     match name {
-        "MarmosetUBER" => ShaderPort::Ported,
+        "MarmosetUBER" | crate::sig::PLAIN | crate::sig::CAPPED => ShaderPort::Ported,
         "UWE/Marmoset/IonCrystal" | "UWE/Marmoset/Mesmer" => ShaderPort::AsUber,
         "UWE/Particles/WBOIT-FakeVolumetricLight" => ShaderPort::Effect,
         _ => ShaderPort::NotPorted,
@@ -932,6 +933,7 @@ impl Library {
         }
         let (_, data) = object.data().ok()?;
         let material = Material::parse(data, object.file.file().big_endian).ok()?;
+        let shader = self.shader_info(object, &material, out);
         let slot = |name: &str| {
             material.texture(name).map(|t| {
                 (
@@ -940,13 +942,19 @@ impl Library {
                 )
             })
         };
-        let texture = |name: &str, srgb: Option<bool>| {
+        let mut texture = |name: &str, srgb: Option<bool>| {
             let (pptr, st) = slot(name)?;
             let target = self.assets.resolve(&object.file, pptr).ok()??;
             Some((self.texture(&target, srgb, out)?, st))
         };
-        let mut desc = material_desc(&material, texture);
-        let shader = self.shader_info(object, &material, out);
+        let mut desc = material_desc(&material, &mut texture);
+        desc.sig = crate::sig::read(&material, &shader, &mut texture);
+        if let Some(sig) = &desc.sig {
+            desc.color = sig.color;
+            desc.alpha = Alpha::Opaque;
+            desc.double_sided = false;
+            desc.uber = None;
+        }
         if shader_port(&shader.name) == ShaderPort::Effect {
             let values = effect_values(&material, &shader);
             info!(
@@ -2547,6 +2555,7 @@ pub(crate) fn material_desc(
         spec_st: st(spec),
         illum_st: st(illum),
         uber,
+        sig: None,
         effect: None,
         alpha,
         // `_MyCullVariable`: 0 = two-sided, 2 = back faces culled.
@@ -2797,6 +2806,8 @@ pub struct ObjectStats {
     pub warnings: usize,
     /// MarmosetUBER materials, those with a specular map, with a glow map.
     pub uber: [usize; 3],
+    /// Plain SIG, capped SIG, enabled SIG maps, missing required albedo slots.
+    pub sig: [usize; 4],
     /// Materials made per sky (a material is made once per sky it's lit by),
     /// by sky name.
     pub per_sky: Vec<(String, usize)>,
@@ -3017,6 +3028,12 @@ impl ObjectStreamer {
             s.uber[0] += 1;
             s.uber[1] += usize::from(d.spec.is_some());
             s.uber[2] += usize::from(d.illum.is_some());
+        }
+        for look in self.material_descs.values().filter_map(|d| d.sig.as_ref()) {
+            s.sig[usize::from(look.capped)] += 1;
+            s.sig[2] += usize::from(look.enabled);
+            s.sig[3] += usize::from(look.albedo.is_none());
+            s.sig[3] += usize::from(look.capped && look.side.is_none());
         }
         let mut per_sky: HashMap<String, usize> = HashMap::new();
         for (_, sky) in self.materials.keys() {
@@ -3321,8 +3338,8 @@ pub(crate) fn object_material(
 ) -> ObjectMaterial {
     let texture = |t: Option<u32>| t.and_then(|t| textures.get(&t).cloned());
     let albedo = texture(desc.albedo);
-    let normal = texture(desc.normal);
-    let spec = texture(desc.spec);
+    let normal = texture(desc.sig.as_ref().map_or(desc.normal, |s| s.normal));
+    let spec = texture(desc.sig.as_ref().map_or(desc.spec, |s| s.map));
     let illum = texture(desc.illum);
     let [sx, sy, ox, oy] = desc.albedo_st;
     let c = linear(desc.color);
@@ -3374,6 +3391,23 @@ pub(crate) fn object_material(
         );
         apply_sky(&mut params, sky);
     }
+    if let Some(s) = &desc.sig {
+        params.sig_settings = Vec4::new(
+            if s.capped { 2.0 } else { 1.0 },
+            s.gloss,
+            s.emission,
+            f32::from(u8::from(s.enabled)),
+        );
+        params.spec_color = linear(s.specular);
+        params.spec_st = Vec4::from(s.map_st);
+        params.cap_color = linear(s.cap_color);
+        params.cap_specular = linear(s.cap_specular);
+        params.border_tint = linear(s.border_tint);
+        params.cap_scales = Vec4::from(if s.capped { s.scales } else { desc.albedo_st });
+        params.glow_color = linear(desc.color);
+        params.cap_border = Vec4::from(s.cap_border);
+        params.inner_border = Vec4::from(s.inner_border);
+    }
     ObjectMaterial {
         base,
         extension: ObjectExtension {
@@ -3381,6 +3415,12 @@ pub(crate) fn object_material(
             normal_map: normal.unwrap_or_else(|| defaults.flat.clone()),
             spec_map: spec.unwrap_or_else(|| defaults.white.clone()),
             illum_map: illum.unwrap_or_else(|| defaults.white.clone()),
+            sig_albedo: texture(desc.sig.as_ref().and_then(|s| s.albedo))
+                .unwrap_or_else(|| defaults.white.clone()),
+            side_albedo: texture(desc.sig.as_ref().and_then(|s| s.side))
+                .unwrap_or_else(|| defaults.white.clone()),
+            side_normal: texture(desc.sig.as_ref().and_then(|s| s.side_normal))
+                .unwrap_or_else(|| defaults.flat.clone()),
             light_params: light.params.clone(),
             caustics: light.caustics.clone(),
             spot_cookie: light.spot_cookie.clone(),
@@ -3392,6 +3432,10 @@ pub(crate) fn object_material(
 /// Marmoset's defaults (exposures 1, no ambient, outdoors and affected by
 /// the day).
 pub(crate) fn apply_sky(params: &mut ObjectParams, sky: Option<&SkyLook>) {
+    // A global sky switch must not turn SIG into a Marmoset material.
+    if params.sig_settings.x != 0.0 {
+        return;
+    }
     let sky = sky.copied().unwrap_or(SkyLook {
         exposure: [1.0; 4],
         rotation: [0.0, 0.0, 0.0, 1.0],

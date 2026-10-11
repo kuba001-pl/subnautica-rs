@@ -268,9 +268,49 @@ come out flat `_Color`, which is white for all of the ones above.
 - Textures `_CapTexture`, `_CapBumpMap`, `_CapSIGMap`, `_SideTexture`,
   `_SideBumpMap`, `_SideSIGMap`; no `_MainTex`. 976 placements, mostly in
   the Safe Shallows and the Crash Zone.
-- Us: no `_MainTex`, so flat white. The terrain's own shader is also
-  triplanar (`docs/formats/terrain-materials.md`); whether the two share
-  their formula is **not checked**.
+- Before M7g5: no `_MainTex`, so flat white. M7g5 explicitly loads the cap
+  and side albedos and normal maps and draws their world-space projections.
+
+### World-object SIG surfaces (M7g5) — confirmed from compiled programs
+
+Read-only D3D11 deferred/HDR program inspection, with texture and constant
+bindings from the installed shader objects, confirms the following. Shader
+property defaults were checked separately from their serialized declarations.
+Disassembly and property inspection stay in ignored `out/m7g5/`.
+
+`UWE/SIG` uses UV coordinates, each map's own scale/offset, and DXT5nm normal
+packing. Albedo is `_MainTex.rgb` times the linear `_Color`. With `UWE_SIG`,
+the SIG map's red multiplies linear `_SpecColor`, green multiplies the tinted
+albedo and `_EmissionScale` for emission, and blue supplies gloss (minimum
+0.01). Without that keyword, raw albedo red and blue supply specular strength
+and gloss; emission is zero. `_EnableSIG` alone does not select the compiled
+variant. The declared SIG map default is **black**, not Marmoset's white.
+Both object families are opaque, back-face culled, and output alpha one.
+
+For capping, cap UV is world XZ times `_CapScale`; side UVs are YZ/XZ/YX
+times `_SideScale`. The normalized projection weights, slope/alpha cap blend
+and normal-map projection frames agree with terrain's documented formulas.
+The geometric normal is the interpolated world normal; the surface shader
+also converts the blended mapped normal to tangent space and back. The
+object's inner border tint uses the terrain border formula at weight one,
+but there is no terrain-layer alpha blend. Albedo includes the cap/side
+tints and then the inner border tint. Gloss is `_Gloss`.
+
+Its specular rule differs from terrain: multiply the final tinted albedo's
+**red** by the interpolated cap/side specular colour. When the side weight is
+exactly zero, the compiled branch uses `_SpecColor` rather than
+`_CapSpecColor`; the client preserves this edge case. No inspected capping
+program samples `_CapSIGMap`/`_SideSIGMap`, and the HDR emission target is
+zero. Declared SIG/emission properties therefore must not enable invented
+glow on these rocks.
+
+The client shares its own normal unpacking, projection frames and border
+function through `triplanar.wgsl`; terrain sampling and its layer blending
+are unchanged. The object path uses existing game lighting, fog and shadows.
+Global Marmoset sky changes must not reclassify SIG surfaces as Marmoset.
+Missing capping albedo textures are counted explicitly; the white error
+fallback is not claimed to reproduce the shader's named green/yellow defaults.
+Matched original-game rock/coral images remain **not tested**.
 
 ### Precursor door force fields — confirmed
 

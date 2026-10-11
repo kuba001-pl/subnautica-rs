@@ -1,3 +1,5 @@
+#import sn_client::triplanar::{unpack_normal, from_x, from_y, from_z, border}
+
 // World-object shader: Bevy's standard material inputs (albedo, tint,
 // alpha), the game's normal maps, which keep X in alpha and Y in green
 // ("DXT5nm") and so can't use Bevy's own normal mapping, and a port of the
@@ -45,6 +47,13 @@ struct ObjectParams {
     sky_flags: vec4<f32>,
     // _SH0 … _SH8.
     sh: array<vec4<f32>, 9>,
+    sig_settings: vec4<f32>,
+    cap_color: vec4<f32>,
+    cap_specular: vec4<f32>,
+    border_tint: vec4<f32>,
+    cap_scales: vec4<f32>,
+    cap_border: vec4<f32>,
+    inner_border: vec4<f32>,
     has_normal: u32,
     has_spec: u32,
     has_illum: u32,
@@ -57,6 +66,12 @@ struct ObjectParams {
 @group(#{MATERIAL_BIND_GROUP}) @binding(104) var spec_sampler: sampler;
 @group(#{MATERIAL_BIND_GROUP}) @binding(105) var illum_map: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(106) var illum_sampler: sampler;
+@group(#{MATERIAL_BIND_GROUP}) @binding(107) var sig_albedo: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(108) var sig_albedo_sampler: sampler;
+@group(#{MATERIAL_BIND_GROUP}) @binding(109) var side_albedo: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(110) var side_albedo_sampler: sampler;
+@group(#{MATERIAL_BIND_GROUP}) @binding(111) var side_normal: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(112) var side_normal_sampler: sampler;
 @group(#{MATERIAL_BIND_GROUP}) @binding(120) var light_params: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(121) var caustics: texture_2d_array<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(122) var caustics_sampler: sampler;
@@ -88,7 +103,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
 #endif
 #ifdef VERTEX_TANGENTS
 #ifdef VERTEX_UVS_A
-    if object.has_normal != 0u {
+    if object.has_normal != 0u && object.sig_settings.x != 2.0 {
         let t = textureSample(normal_map, normal_sampler, uv * object.normal_st.xy + object.normal_st.zw);
         let xy = vec2<f32>(t.a * t.r, t.g) * 2.0 - 1.0;
         let nt = vec3<f32>(xy, sqrt(1.0 - min(dot(xy, xy), 1.0)));
@@ -161,13 +176,64 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         // Not yet: the reflection of the sky's specular cube.
     }
 
+    if object.sig_settings.x == 1.0 {
+        var sig_value = textureSample(sig_albedo, sig_albedo_sampler, uv * object.cap_scales.xy + object.cap_scales.zw).rgb;
+        if object.sig_settings.w != 0.0 {
+            // SIG declares a black default, unlike Marmoset's white maps.
+            sig_value = vec3<f32>(0.0);
+            if object.has_spec != 0u {
+                sig_value = textureSample(spec_map, spec_sampler, uv * object.spec_st.xy + object.spec_st.zw).rgb;
+            }
+            let unit = textureLoad(light_params, vec2<i32>(1, 0), 0).w;
+            emission = surface.albedo * sig_value.g * object.sig_settings.z * unit;
+        }
+        surface.specular = sig_value.r * object.spec_color.rgb;
+        surface.gloss = max(sig_value.b, 0.01);
+    } else if object.sig_settings.x == 2.0 {
+        let flip = vec3<f32>(1.0, 1.0, -1.0);
+        let world = in.world_position.xyz * flip;
+        let geometric = in.world_normal * flip;
+        let cap_uv = world.xz * object.cap_scales.x;
+        let cap = textureSample(sig_albedo, sig_albedo_sampler, cap_uv);
+        let edge = clamp(1.0 - (geometric.y + object.cap_border.y) * object.cap_border.z - cap.a, -1.0, 1.0);
+        let side = saturate((edge + object.cap_border.x) / max(2.0 * object.cap_border.x, 1e-4));
+        var weights = pow(max(1.96 * geometric * geometric, vec3<f32>(1e-8)), vec3<f32>(object.cap_scales.z));
+        weights /= dot(weights, vec3<f32>(1.0));
+        let p = world * object.cap_scales.y;
+        let side_color = textureSample(side_albedo, side_albedo_sampler, p.yz) * weights.x
+            + textureSample(side_albedo, side_albedo_sampler, p.xz) * weights.y
+            + textureSample(side_albedo, side_albedo_sampler, p.yx) * weights.z;
+        let side_n = normalize(
+            from_x(unpack_normal(textureSample(side_normal, side_normal_sampler, p.yz)), geometric) * weights.x
+            + from_y(unpack_normal(textureSample(side_normal, side_normal_sampler, p.xz)), geometric) * weights.y
+            + from_z(unpack_normal(textureSample(side_normal, side_normal_sampler, p.yx)), geometric) * weights.z);
+        let cap_n = normalize(from_y(unpack_normal(textureSample(normal_map, normal_sampler, cap_uv)), geometric));
+        var normal = normalize(mix(cap_n, side_n, side)) * flip;
+#ifdef VERTEX_TANGENTS
+        // The original surface shader converts to tangent space and back.
+        let basis = calculate_tbn_mikktspace(in.world_normal, in.world_tangent);
+        normal = normalize(basis * normalize(transpose(basis) * normal));
+#endif
+        let color = mix(cap * object.cap_color, side_color * object.glow_color, side);
+        let inner = border(1.0, color.a, object.inner_border.x, object.inner_border.y);
+        surface.albedo = mix(object.border_tint.rgb, color.rgb, inner);
+        surface.normal = normal;
+        // The compiled cap-only branch uses _SpecColor (not _CapSpecColor).
+        var specular = object.spec_color.rgb;
+        if side > 0.0 {
+            specular = mix(object.cap_specular.rgb, object.spec_color.rgb, side);
+        }
+        surface.specular = surface.albedo.r * specular;
+        surface.gloss = object.sig_settings.y;
+    }
+
     var colour = emission
         + game_local_lights(surface, in.position, light_params, spot_cookie, spot_cookie_sampler);
     if lit {
         colour += game_lighting(surface, in.position, light_params, caustics, caustics_sampler);
     }
     var out: FragmentOutput;
-    out.color = vec4<f32>(colour, base.a);
+    out.color = vec4<f32>(colour, select(base.a, 1.0, object.sig_settings.x != 0.0));
 #endif
     return out;
 }

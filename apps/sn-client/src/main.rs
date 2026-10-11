@@ -18,6 +18,7 @@ mod objects;
 mod player;
 mod remote;
 mod session;
+mod sig;
 mod sky;
 mod sky_dome;
 mod stars;
@@ -1494,6 +1495,10 @@ fn log_stats(
         info!(
             "objects: {} MarmosetUBER materials ({} with specular maps, {} with glow maps); made per sky: {:?}",
             o.uber[0], o.uber[1], o.uber[2], o.per_sky
+        );
+        info!(
+            "objects: SIG materials: {} plain, {} capped, {} with SIG keyword; {} missing albedo slots",
+            o.sig[0], o.sig[1], o.sig[2], o.sig[3]
         );
         if let Some(a) = animation {
             info!(

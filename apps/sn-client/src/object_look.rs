@@ -1,7 +1,7 @@
 //! Materials for world objects: Bevy's standard material with the game's
 //! albedo, tint and alpha, plus what `object.wgsl` needs to port the game's
-//! object shader (MarmosetUBER): normal, specular and glow maps, the
-//! material's values and the Marmoset sky it is lit with.
+//! object shaders (MarmosetUBER and opaque SIG): normal, specular and glow
+//! maps, cap/side projections and the Marmoset sky where applicable.
 
 use bevy::pbr::{ExtendedMaterial, MaterialExtension};
 use bevy::prelude::*;
@@ -35,6 +35,14 @@ pub struct ObjectParams {
     pub sky_flags: Vec4,
     /// The sky's `_SH0…_SH8` (RGB).
     pub sh: [Vec4; 9],
+    /// 0: ordinary, 1: UV SIG, 2: capped triplanar; gloss, emission, SIG keyword.
+    pub sig_settings: Vec4,
+    pub cap_color: Vec4,
+    pub cap_specular: Vec4,
+    pub border_tint: Vec4,
+    pub cap_scales: Vec4,
+    pub cap_border: Vec4,
+    pub inner_border: Vec4,
     pub has_normal: u32,
     pub has_spec: u32,
     pub has_illum: u32,
@@ -53,6 +61,15 @@ pub struct ObjectExtension {
     #[texture(105)]
     #[sampler(106)]
     pub illum_map: Handle<Image>,
+    #[texture(107)]
+    #[sampler(108)]
+    pub sig_albedo: Handle<Image>,
+    #[texture(109)]
+    #[sampler(110)]
+    pub side_albedo: Handle<Image>,
+    #[texture(111)]
+    #[sampler(112)]
+    pub side_normal: Handle<Image>,
     /// The game's lighting values and caustics (`game_light.rs`).
     #[texture(120, sample_type = "float", filterable = false)]
     pub light_params: Handle<Image>,

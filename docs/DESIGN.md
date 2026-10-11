@@ -2008,6 +2008,78 @@ groups above must receive smaller numbered steps and measurable checklists
 before implementation. No untested item becomes complete merely because it
 has been assigned a home.
 
+#### M7g5 implementation plan (2026-10-11)
+
+1. Decode the installed `UWE/SIG` and `UWE/SIG Triplanar with Capping`
+   deferred variants and declared defaults. Record their surface rules in
+   `docs/formats/materials.md`; keep all bytecode/disassembly in `out/`.
+2. Add explicit material selection by shader name, retain the required
+   textures and defaults, and extend the existing object surface shader.
+   Share only confirmed projection/normal/border math with terrain; object
+   capping has different specular rules and no terrain-layer alpha blend.
+3. Cover keyword/default/texture selection with synthetic tests. Log loaded
+   SIG/capping counts and missing albedo slots. Compile both real GPU paths,
+   run workspace checks, and compare three matching performance runs.
+
+**Done when:** both families use their confirmed albedo/normal/specular/gloss
+and emission rules; no loaded capping material silently falls back to white
+because `_MainTex` is absent; synthetic tests and GPU validation pass; counts,
+timings and exact reproduction commands are recorded. Matched original-game
+rock/coral captures remain a separate open acceptance item until supplied.
+No architecture change, unrelated material variants or terrain mesher work.
+
+**Implemented and checked (2026-10-11):** the object material loader selects
+the two exact shader names and retains their texture inputs, keyword and
+declared scalar/colour defaults. Plain SIG now supplies specular, gloss and
+emission; capped objects use cap/side textures, projected normals, inner tint
+and the compiled specular branch. The capping shader's unused SIG slots do
+not generate glow. Shared terrain math moved unchanged into `triplanar.wgsl`.
+Sky changes cannot reclassify these materials as Marmoset.
+
+- [x] Four synthetic tests cover exact shader selection, keyword gating,
+  texture slots/colour spaces, defaults/overrides, a missing SIG map and
+  Marmoset sky-switch isolation. `cargo test --workspace`: 464 passed,
+  39 ignored. Clippy with warnings denied, fmt and release build pass.
+- [x] Three alternating before/after runs against current committed control
+  `86ee42a`, at 1600×900, 1200 m view, 120 settled warm-up frames and 300
+  measured frames: all completed with no shader errors, zero unsettled
+  frames and matching terrain/object/light/sky/fog counts. Loaded materials:
+  12 plain SIG, 5 capped, 7 SIG-enabled; zero missing albedo slots. Texture
+  uploads increase from 2242 to 2265, as expected for the added maps.
+- [x] Before mean times: 18.912/19.638/19.878 ms; after:
+  20.422/19.183/18.819 ms. Before p99: 25.346/25.955/26.153 ms;
+  after: 30.321/26.685/22.458 ms. Recent opaque GPU pass averages:
+  1.610–1.684 ms before, 1.689–1.824 ms after. The distributions overlap;
+  neither a speedup nor meeting the 16.7 ms target is established.
+- [ ] User-supplied matched original-game rock/coral comparisons:
+  **not tested**. Full M7g5 visual acceptance remains open.
+- [x] Normal player smoke with a running 120× clock: death, restoration and
+  controls-return logs, then timed capture and clean exit. Command:
+  `sn-client --view 400 --resolution 960 540 --time-scale 120 --lifepod-seed 1
+  --slot-seed 1 --kill 3 --shot 10 m7g5-player`; expected `Restored`,
+  `ControlsBack` and `out/m7g5-player.png`. Keyboard play: **not tested**.
+
+Reproduce after `cargo build -p sn-client --release` with a fresh baseline
+name per run (existing names are deliberately rejected):
+
+```powershell
+$env:SUBNAUTICA_DIR = 'D:\SteamLibrary\steamapps\common\Subnautica'
+.\target\release\sn-client.exe --benchmark 300 --baseline m7g5-check-1 --baseline-revision 86ee42a-m7g5 --warmup 120 --resolution 1600 900 --start 0 -10 0 --look 60 -40 60 --fov 60 --view 1200 --lifepod-seed 1 --slot-seed 1 --time 9.6 --time-scale 0 --aurora intact --water-quality high --color-grading off --gpu-timings
+```
+
+Expected: `SIG materials: 12 plain, 5 capped, 7 with SIG keyword; 0 missing
+albedo slots`, no shader errors, saved report/300 CSV samples/1600×900 capture.
+Evidence is under ignored `out/baselines/run-m7g5-{before,after}-{1,2,3}/`;
+`out/m7g5/build-provenance.txt` records the archived control commit and binary
+hashes. Mistyped caller revision labels were corrected to the archived commit;
+the original labels remain in the reports and timing samples are unchanged.
+The initial `m7g5-shallows-1` smoke capture predates the sky-switch guard and
+had elevated unrelated GPU costs; it is not the final comparison set.
+
+Verification commands: `cargo test --workspace`,
+`cargo clippy --workspace --all-targets -- -D warnings`,
+`cargo fmt --all -- --check`, and `git diff --check`; expect success.
+
 #### Proposed order for visual work
 
 1. M8g0 baselines, then M8h shared-clock sky/light updates.

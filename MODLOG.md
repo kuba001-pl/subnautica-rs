@@ -2,6 +2,50 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-11 — M7g5: SIG coral and capped rock surfaces
+
+**What/why:** replace the flat or incomplete world-object fallback for
+`UWE/SIG` and `UWE/SIG Triplanar with Capping`. Load explicit texture slots,
+shader defaults and the SIG keyword; implement specular/gloss/emission for
+UV SIG, and world-space cap/side colour, normals, tint and specular for
+capping. Preserve the compiled cap-only specular edge case and ignore its
+unused SIG properties. Reuse our existing terrain projection/border helpers
+without changing terrain sampling. Prevent global sky relighting from
+turning SIG into Marmoset. Log SIG counts and missing albedo slots; update
+README, DESIGN and confirmed format findings. No dependency or whitelist
+change; no architecture change. Inline grass-material caches remain bounded
+by 256 types, with a documented large-enum lint allowance after the added
+object uniforms increased their size.
+
+**Verified:** `cargo test --workspace`: 464 passed, 39 ignored; four new
+synthetic tests cover selection, keywords, defaults, texture slots and sky
+isolation. `cargo clippy --workspace --all-targets -- -D warnings`,
+`cargo fmt --all -- --check`, release build and `git diff --check` pass.
+Six real GPU runs (three alternating controls/changes) completed with no
+shader errors, 300 measured frames and zero unsettled frames each. All
+after runs: 12 plain/5 capped materials, 7 SIG-enabled, no missing albedo
+slots, 23 additional textures; other scene/sky/fog counts match. Means
+18.912–19.878 ms before, 18.819–20.422 ms after; opaque GPU pass averages
+1.610–1.684 ms before, 1.689–1.824 ms after. No speedup or 60 fps claim.
+Exact commands, counts and tail times are in DESIGN's M7g5 implementation
+plan. Original-game matched rock/coral comparisons: **not tested**.
+Normal play smoke (`--view 400 --resolution 960 540 --time-scale 120
+--lifepod-seed 1 --slot-seed 1 --kill 3 --shot 10 m7g5-player`) also exits
+cleanly after logging death, restoration and returned controls and saving
+the capture. Keyboard play: **not tested**.
+
+**Dead ends/corrections:** the first compile caught the grass fallback's
+additional required texture handles; supplied them. Clippy flagged the
+enlarged cached-material enum; its bounded inline storage is now documented.
+The initial smoke run had elevated costs across unrelated GPU passes, so
+fresh alternating controls were built from an archive of current HEAD
+`86ee42a`, rather than relying on old M8h measurements. Caller revision
+labels mistakenly used the older M8h hash; corrected metadata retains both
+labels, and a provenance file records the archive commit and executable
+hashes. Reading the disassembly confirmed SIG's missing-map default is
+black, and capping does not use its declared SIG maps; neither is treated
+as Marmoset's white-map/default-glow behavior.
+
 ## 2026-10-11 — M9d5a: the hand on items
 
 **What:**

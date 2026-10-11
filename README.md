@@ -107,7 +107,8 @@ Tested on Windows 11 with game build 10 (Steam):
   reflection, refraction, sun glint; from above and below) under the
   game's sky (scattering, sun, clouds, planet, moon; day to night), lit
   the way the game lights surfaces (caustics, sunlight dimmed under water,
-  the game's ambient; objects with their specular maps, glow maps with day
+  the game's ambient; SIG coral/rocks with their specular and glow channels,
+  capped rocks with separate top/side textures and normal maps; objects with their specular maps, glow maps with day
   and night strengths, and each biome's ambient settings; renderers on layers the game's camera
 skips, e.g. the alien bases' occluder shells, left out; the point, spot and
 directional lights placed objects carry, e.g. glowing coral, without their
@@ -147,9 +148,9 @@ assumed); terrain grass
 beyond ~100 m, and grass tufts in the game's exact spots (the amount and
 spread follow its rules; our own random numbers); for world objects: reflections of the biome
 sky's cube map, cave/interior skies chosen by atmosphere volumes,
-animated lights, materials and script values, objects on shaders other than the game's main
-object shader (Lost River brine, sand and lava falls and other effect
-meshes not yet decoded are flat, Safe Shallows triplanar rocks white;
+animated lights, materials and script values, remaining unsupported object
+shaders (Lost River brine, sand and lava falls and other effect
+meshes not yet decoded are flat; matched original-game SIG rock/coral comparisons are not tested;
 `docs/formats/materials.md`), creatures (including the
 ~100,000 the spawn slots would add); the intro cinematic, tools, the PDA and IK, tanks and fins changing
 speeds, the game's own HUD and damage effects; audio,
