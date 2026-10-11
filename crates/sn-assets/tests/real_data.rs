@@ -1885,3 +1885,96 @@ fn multiplayer_rules_are_stable() {
     let c = sn_assets::aurora_countdown(&a.exploder, 1);
     assert!((2.3 * 1200.0..=4.0 * 1200.0).contains(&c), "{c}");
 }
+
+/// M9d1: the item data. Prefabs checked here are the ones the spawn slots
+/// can place (the placed ones are counted by `sn-inspect pickups`).
+#[test]
+#[ignore = "needs SUBNAUTICA_DIR pointing at a Subnautica install"]
+fn item_data() {
+    let Some(dir) = std::env::var_os("SUBNAUTICA_DIR") else {
+        eprintln!("SUBNAUTICA_DIR not set; skipping");
+        return;
+    };
+    let game = GameData::locate(Some(PathBuf::from(dir))).unwrap();
+    let assets = Assets::index(&game).unwrap();
+
+    // The rules in the code.
+    let dll = sn_assets::read_assembly(&game).unwrap();
+    let code = sn_assets::item_code(&dll).unwrap();
+    assert_eq!(code.inventory_size, [6, 8]);
+    assert_eq!(code.slot_types.len(), 38);
+    assert_eq!(
+        code.player_slots,
+        ["Head", "Body", "Gloves", "Foots", "Chip1", "Chip2", "Tank"]
+    );
+    assert!(
+        code.player_slots
+            .iter()
+            .all(|s| code.slot_types.iter().any(|(n, _)| n == s))
+    );
+
+    // Every slot prefab with a Pickupable has a tech type.
+    let catalog = assets.catalog().unwrap();
+    let class_paths = game.read_prefab_database().unwrap();
+    let ent = sn_assets::ent_tech_data(&assets).unwrap();
+    let lookup = sn_assets::TechLookup::new(&ent, class_paths.clone());
+    let loot = sn_assets::loot_table(&assets).unwrap();
+    let mut keys = std::collections::BTreeSet::new();
+    for (_, entries) in loot.distribution.biomes() {
+        for e in entries {
+            if let Some(p) = class_paths.get(&e.class_id) {
+                keys.insert(p.clone());
+            }
+        }
+    }
+    let (mut pickups, mut misses, mut outcrops) = (0, Vec::new(), 0);
+    for key in &keys {
+        let prefab = assets.prefab(&catalog, key).unwrap();
+        let item = sn_assets::item_prefab(&assets, &prefab, &lookup).unwrap();
+        if item.pickupables > 0 {
+            pickups += 1;
+            if item.tech_type == 0 {
+                misses.push(key.clone());
+            }
+        }
+        let Some(b) = item.breakable else { continue };
+        outcrops += 1;
+        let rolls = b
+            .prefab_list
+            .iter()
+            .map(|r| (r.prefab.clone(), r.tech_type))
+            .chain([(b.default_prefab.clone(), b.default_tech_type)]);
+        for (guid, listed) in rolls {
+            let p = sn_assets::addressable_prefab(&assets, &catalog, &guid)
+                .unwrap()
+                .unwrap_or_else(|| panic!("{key}: {guid} does not resolve"));
+            let drop = sn_assets::item_prefab(&assets, &p, &lookup).unwrap();
+            assert_eq!(drop.tech_type, listed, "{key}: {}", p.key);
+        }
+    }
+    eprintln!(
+        "slot prefabs {}, with a Pickupable {pickups}, outcrops {outcrops}, misses {misses:?}",
+        keys.len()
+    );
+    assert!(misses.is_empty(), "{misses:?}");
+    assert_eq!((keys.len(), pickups, outcrops), (189, 108, 3));
+
+    // The player's luck, the lifepod's locker and its supplies.
+    let p = sn_assets::player_items(&assets).unwrap();
+    assert_eq!(p.entropy.len(), 8);
+    assert!(
+        p.entropy
+            .iter()
+            .all(|(_, f)| f.entropy == 0.0 && f.time_last_check == -1.0)
+    );
+    assert_eq!(p.loot.escape_pod.len(), 6);
+    assert_eq!(p.loot.supply.len(), 6);
+    assert_eq!((p.pod_locker.width, p.pod_locker.height), (4, 8));
+
+    // Text.
+    let english = sn_assets::language(&game, "English").unwrap();
+    assert_eq!(english.len(), 3818);
+    for key in ["PickUpFormat", "InventoryFull", "InventoryCantDropHere"] {
+        assert!(english.contains_key(key), "{key}");
+    }
+}

@@ -110,6 +110,25 @@ to the console only).
   call. The reader accepts only that pattern, exactly once. Read for
   `OxygenManager.oxygenUnitsPerSecondSurface`: 30.
 
+## Item rules (M9d1)
+
+Reader: `sn-dotnet::items`; used by `sn-assets::item_code`. Each pattern
+is matched exactly; anything else is an error.
+- **Confirmed (IL):** `Inventory.Awake` builds the player's container as
+  `ldc.i4 6; ldc.i4 8; ldloc; ldstr; ldnull; newobj
+  ItemsContainer::.ctor (5 params); stfld _container`. The method has
+  branches elsewhere; the reader only takes the arguments of the one
+  `newobj` stored into that field, each pushed by one instruction
+  (constant, string, null, local or argument). Read: 6 × 8.
+- **Confirmed (IL):** `Equipment.slotMapping`, a static
+  `Dictionary<string, EquipmentType>` with a collection initialiser, is
+  in `.cctor` as `newobj Dictionary::.ctor(); (dup; ldstr; ldc.i4;
+  callvirt Add)*; stsfld slotMapping`. Read: 38 entries, in source order.
+- **Confirmed (IL):** `Inventory.UnlockDefaultEquipmentSlots` is
+  `ldc.i4 7; newarr String; (dup; ldc.i4 i; ldstr; stelem.ref)*` with the
+  indices in order, then `Equipment.AddSlots`. Read: 7 slot names.
+- `EquipmentType`'s names come from the enum's constants, as `TechType`'s.
+
 ## `TechData` defaults
 
 - **Confirmed (IL):** `TechData`'s static constructor sets

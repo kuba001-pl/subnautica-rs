@@ -13,6 +13,7 @@ mod camera;
 mod classes;
 mod collider;
 mod gameplay;
+mod items;
 pub mod json;
 mod light;
 mod marmo;
@@ -61,6 +62,11 @@ pub use gameplay::{
     LogEntry, MainCameraControl, Oxygen, PdaData, PersistentCall, PlayerCinematicController,
     PlayerController, PlayerFields, PlayerMotor, RandomPrefab, ScannerEntry, StoryGoal,
     UnderwaterMotor, UseableDiveHatch, parse_ent_tech_data,
+};
+pub use items::{
+    FairRandomizer, LootSpawner, Pickupable, PrefabIdentifier, StorageContainer,
+    parse_player_entropy, parse_prefab_list_spawner, parse_spawn_escape_pod_supplies,
+    parse_tech_tag,
 };
 pub use light::{
     BAKE_BAKED, BAKE_MIXED, BAKE_REALTIME, DayNightLight, Light, LightKind, ShadowKind,

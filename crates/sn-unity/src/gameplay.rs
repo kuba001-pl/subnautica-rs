@@ -12,14 +12,14 @@ use crate::reader::Reader;
 use crate::water_surface::AnimationCurve;
 use crate::{ErrorKind, Result};
 
-fn fields<'a>(data: &'a [u8], big_endian: bool) -> Result<Reader<'a>> {
+pub(crate) fn fields<'a>(data: &'a [u8], big_endian: bool) -> Result<Reader<'a>> {
     let header = MonoBehaviourHeader::parse(data, big_endian)?;
     let mut r = Reader::new(data, big_endian);
     r.seek(header.fields_offset)?;
     Ok(r)
 }
 
-fn at_end(r: &Reader, data: &[u8]) -> Result<()> {
+pub(crate) fn at_end(r: &Reader, data: &[u8]) -> Result<()> {
     if r.pos() != data.len() {
         return Err(r.error(ErrorKind::Invalid(format!(
             "{} bytes after the last field",
@@ -31,13 +31,13 @@ fn at_end(r: &Reader, data: &[u8]) -> Result<()> {
 
 impl Reader<'_> {
     /// A serialized `bool`: one byte, then aligned to 4.
-    fn bool4(&mut self) -> Result<bool> {
+    pub(crate) fn bool4(&mut self) -> Result<bool> {
         let b = self.u8()? != 0;
         self.align(4)?;
         Ok(b)
     }
 
-    fn i32_list(&mut self) -> Result<Vec<i32>> {
+    pub(crate) fn i32_list(&mut self) -> Result<Vec<i32>> {
         let n = self.count(4)?;
         (0..n).map(|_| self.i32()).collect()
     }
@@ -859,7 +859,7 @@ pub struct PersistentCall {
 }
 
 /// A serialized `UnityEvent`'s persistent calls.
-fn unity_event(r: &mut Reader) -> Result<Vec<PersistentCall>> {
+pub(crate) fn unity_event(r: &mut Reader) -> Result<Vec<PersistentCall>> {
     let n = r.count(40)?;
     let mut calls = Vec::with_capacity(n);
     for _ in 0..n {
@@ -1182,7 +1182,7 @@ pub struct BreakableResource {
 
 /// An `AssetReference`: the asset GUID, then the sub-object name and type
 /// (both empty on every reference seen).
-fn asset_reference(r: &mut Reader) -> Result<String> {
+pub(crate) fn asset_reference(r: &mut Reader) -> Result<String> {
     let guid = r.aligned_string()?;
     r.aligned_string()?;
     r.aligned_string()?;

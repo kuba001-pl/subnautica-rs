@@ -28,16 +28,16 @@ const MAX_DEPTH: usize = 32;
 /// Largest `params` array accepted.
 const MAX_ARRAY: i32 = 4096;
 
-fn err(message: impl Into<String>) -> Error {
+pub(crate) fn err(message: impl Into<String>) -> Error {
     Error::new(0, message)
 }
 
-fn find_type(asm: &Assembly, namespace: &str, name: &str) -> Result<u32> {
+pub(crate) fn find_type(asm: &Assembly, namespace: &str, name: &str) -> Result<u32> {
     asm.find_type(namespace, name)?
         .ok_or_else(|| err(format!("no type {namespace}.{name}")))
 }
 
-fn method_code(asm: &Assembly, type_row: u32, name: &str) -> Result<Vec<Instr>> {
+pub(crate) fn method_code(asm: &Assembly, type_row: u32, name: &str) -> Result<Vec<Instr>> {
     let method = asm.find_method(type_row, name)?.ok_or_else(|| {
         err(format!(
             "type {}: no method {name}",

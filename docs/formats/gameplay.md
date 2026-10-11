@@ -663,8 +663,41 @@ Reader: `sn_unity::PlayerFields` (now every field), `ArmsController`;
 
 ## Pick-ups and outcrops
 
+Readers (M9d1): `sn-unity::items` (layouts), `sn-assets::items`
+(`item_prefab`, `TechLookup`, `addressable_prefab`, `player_items`,
+`language`). Tool: `sn-inspect pickups`.
+
 - **Confirmed (census):** `Pickupable` is on 50 placed prefabs (23,832
-  placements) and on 106 more prefabs that only the spawn slots place.
+  placements) and on 106 more prefabs that only the spawn slots place
+  (P0; the same numbers again in M9d1). No prefab has more than one.
+- **Confirmed (code, M9d1 layout check):** `Pickupable`'s serialized
+  fields are five bools: `isPickupable`, `destroyOnDeath`,
+  `randomizeRotationWhenDropped`, `activateRigidbodyWhenDropped`,
+  `usePackUpIcon` (its base `HandTarget` has none; the protobuf fields are
+  `[NonSerialized]`). All 156 parse to their last byte. Counts: 59 have
+  `isPickupable` false (the hand cannot take them: `AllowedToPickUp`),
+  70 `destroyOnDeath` false, 54 `randomizeRotationWhenDropped` false, 0
+  `usePackUpIcon`; 20 have an `Eatable`.
+- **Confirmed (code):** an object's tech type is `CraftData.GetTechType`:
+  from the object up its parents, the first `TechTag` (`type`) or
+  `PrefabIdentifier`; for the identifier, its class id → the prefab
+  database's file name without extension → `EntTechData` by that name,
+  case-insensitive (`OrdinalIgnoreCase`); unknown → `None`. This settles
+  P0's hypothesis: `Pickupable` has no tech type of its own.
+- **Confirmed (layouts, real data):** `TechTag` is one `i32`;
+  `PrefabIdentifier` holds only the class id string (72 bytes for a
+  36-character id; an earlier guess of two strings failed on all 1,543
+  prefabs, the object's own id is not in the asset).
+- **Confirmed (real data, M9d1):** of the 156 pick-up prefabs, 72 get
+  their tech type from a `TechTag`, 84 from the class id. One has `None`:
+  a prop inside `DeepGrandReefAbandonedBase` (`discovery_lab_props_02`,
+  `isPickupable` true, 1 placement), whose nearest identifier is the
+  base's own. **Hypothesis:** the game gives `None` too (by the rule
+  above; not checked in the running game). 101 distinct tech types; all
+  101 have a name in `English.json`; 70 have a TechData entry, 15 give an
+  `itemSize` (all 2×2), the other 86 are the default 1×1. Equipment types
+  among them (value: tech types): 0 (none) 66, 1 31, 8, 9, 11, 13 one
+  each.
 - **Confirmed (parser):** `BreakableResource` (`prefabList` of
   `AssetReference` + tech type + chance, a default prefab and tech type,
   `verticalSpawnOffset`, `numChances`, `hitsToBreak`, four PPtrs,
@@ -672,9 +705,51 @@ Reader: `sn_unity::PlayerFields` (now every field), `ArmsController`;
   slots); all parse to their last byte; `hitsToBreak` is 3 on all.
   An `AssetReference` is three strings (GUID, sub-object name, sub-object
   type).
-- **Hypothesis:** the tech type of a pick-up comes from its prefab
-  (`EntTechData` or the world entity info), not from `Pickupable`, which
-  has no tech type field. Checked in M9d.
+- **Confirmed (real data, M9d1):** each `AssetReference` GUID is a key of
+  the Addressables catalog naming a GameObject; all 9 resources of the 4
+  outcrops resolve, and each prefab's tech type by the rule above equals
+  the tech type listed next to it. All 4 have `numChances` 1 and
+  `verticalSpawnOffset` 0.2; limestone has 1 chance entry, sandstone and
+  shale 2, the placed coral piece only a default; their `breakText` keys
+  are all in `English.json`. The placed coral piece's own tech type is
+  `None` (it only needs its `breakText`).
+- **Confirmed (code):** the draws use `PlayerEntropy.CheckChance`, which
+  goes to the `FairRandomizer` of the entry's tech type (none → false).
+  `FairRandomizer` serializes `timeLastCheck` and `entropy` (`version` is
+  `[NonSerialized]`).
+- **Confirmed (real data):** the main scene's `PlayerEntropy` has 8
+  randomizers, each pointing to its own `FairRandomizer`, all with
+  `entropy` 0 and `timeLastCheck` −1. Every chance entry of the 4 outcrops
+  names one of these 8 tech types.
+
+## Inventory (M9d)
+
+- **Confirmed (code, IL read in M9d1):** the player's container is
+  `new ItemsContainer(6, 8, …)` in `Inventory.Awake`: 6 wide, 8 high.
+- **Confirmed (code, IL):** `Equipment.slotMapping` has 38 slots (slot
+  name → `EquipmentType`); the player's are the 7 of
+  `Inventory.UnlockDefaultEquipmentSlots` (head, body, gloves, feet, two
+  chips, tank), all in the table. A slot takes an item whose
+  `EquipmentType` equals its own (vehicle modules also fit Seamoth and
+  Prawn suit slots: `Equipment.IsCompatible`).
+- **Confirmed (code):** rules M9d2 ports (read in the decompiled code, not
+  yet checked against the game's behaviour): `Inventory.Pickup` (room
+  check, equipment first unless `Eatable`), `ItemsContainer`'s packing
+  (`TrySort`, `GroupComparer`, `GetRoomFor`), `InternalDropItem` /
+  `CanDropItemHere` / `RayCast` / `FindDropPosition`, `LoseItems` (one
+  item always kept), `KnownTech.Analyze` on every add, the 0.4 s `grab`
+  animator bool after `PlayGrab` (`ArmsController.Update`). Details in
+  `docs/DESIGN.md` "M9d plan".
+- **Confirmed (real data):** the lifepod's locker is the escape pod
+  scene's one `StorageContainer`, the one `SpawnEscapePodSupplies`
+  points to: 4 wide, 8 high, its hover and label keys in `English.json`.
+  A new game fills it with `LootSpawner.escapePodTechTypes`: 6 items
+  (two each of three tech types). `LootSpawner` is on a prefab that the
+  `essentials` scene's `PrefabListSpawner` creates (one of 21); its
+  `supplyTechTypes` (supply crates, later) has 6 entries.
+- **Confirmed (real data):** `PDAData.analysisTech` has 126 entries (86
+  unlocks); 19 of them are for a pick-up tech type, so picking those up
+  unlocks blueprints.
 
 ## Fabricator menus: `CraftTree` (code only)
 
@@ -700,4 +775,12 @@ Reader: `sn_unity::PlayerFields` (now every field), `ArmsController`;
 ## Text
 
 - **Confirmed (file listing):** `StreamingAssets/SNUnmanagedData/LanguageFiles/`
-  holds one JSON file per language. Not opened yet; key format not checked.
+  holds one JSON file per language.
+- **Confirmed (code, M9d1):** `Language.LoadLanguageFile` reads
+  `<language>.json` with LitJson into one object of key → string, and on
+  consoles copies keys ending in a platform suffix (`.PS4`, …) over the
+  plain key; on desktop nothing is remapped. A tech type's text key is
+  its `TechType` name; "Pick up X" is the `PickUpFormat` key formatted
+  with that text (`LanguageCache.GetPickupText`).
+- **Confirmed (real data):** `English.json` starts with `//` comments
+  (our JSON reader skips them) and parses to 3,818 string keys.

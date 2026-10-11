@@ -20,6 +20,7 @@ mod materials;
 mod mesh;
 mod octree;
 mod orient;
+mod pickups;
 mod prefab;
 mod scene;
 mod skinned;
@@ -158,6 +159,11 @@ Commands:
                          prefab → tech type map (EntTechData), with checks
   player                 The player's numbers from the main scene (oxygen,
                          health, motors, speeds) and PDAData (unlocks)
+  pickups                M9d1: item data: every placed and slot prefab that
+                         can be picked up (tech type by the game's rule,
+                         sizes, food), outcrops and what they break into,
+                         the player's luck, the lifepod's locker and
+                         supplies, the rules in the code, the item text
   player --body          M9g1: the player's body: suit models by the
                          equipment rule, drawn renderers and their shaders,
                          the head, the camera's nodes, ArmsController, the
@@ -365,6 +371,7 @@ fn run(mut args: Vec<String>) -> Result<ExitCode> {
         ["code", "--il", ty, method] => code::il(&game, ty, method),
         ["techdata"] => gameplay::techdata(&game),
         ["player"] => gameplay::player(&game),
+        ["pickups"] => pickups::run(&game),
         ["player", "--body"] => gameplay::player_body(&game),
         ["orient"] => orient::run(&game, BatchCoord::new(12, 18, 12)),
         ["orient", x, y, z] => orient::run(&game, parse_coord(x, y, z)?),

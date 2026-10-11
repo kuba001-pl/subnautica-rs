@@ -2,6 +2,56 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-11 — M9d1: item data, headless
+
+**What:**
+- `sn-unity::items` (new): layouts of `Pickupable` (5 bools), `TechTag`,
+  `PrefabIdentifier` (class id only), `PlayerEntropy`, `FairRandomizer`,
+  `LootSpawner`, `StorageContainer`, `SpawnEscapePodSupplies`,
+  `PrefabListSpawner`; 6 tests (synthetic objects, every prefix an
+  error, a trailing byte an error, byte flips never panic). A few
+  `gameplay.rs` helpers became `pub(crate)`.
+- `sn-dotnet::items` (new): `constructor_args`,
+  `static_string_int_dictionary`, `string_array`: exact IL patterns for
+  `Inventory.Awake`'s container size, `Equipment.slotMapping` and
+  `Inventory.UnlockDefaultEquipmentSlots`; 4 tests on synthetic
+  assemblies (including a wrong pattern of each kind and damaged bytes).
+- `sn-assets::items` (new): `item_code`, `TechLookup` + `item_prefab`
+  (the game's `CraftData.GetTechType` rule), `addressable_prefab` (an
+  `AssetReference` GUID to its prefab), `player_items` (luck, the
+  `LootSpawner` found through the essentials scene's spawner, the pod's
+  locker through `SpawnEscapePodSupplies`), `language`; 2 tests. Real-data
+  test `item_data`.
+- `sn-inspect pickups` (new).
+- Docs: `gameplay.md` § Pick-ups and outcrops (rewritten), § Inventory
+  (new), § Text; `dotnet.md` § Item rules; DESIGN M9d1 row.
+- No new dependency.
+
+**Why:** M9d1 of the M9d plan.
+
+**How verified:**
+- `cargo test --workspace`: 398 passed, 0 failed; clippy
+  (`--all-targets -D warnings`) and fmt clean.
+- `SUBNAUTICA_DIR=… cargo test --release -p sn-assets -p sn-dotnet -p
+  sn-unity -- --ignored`: all passed (sn-assets 32 including `item_data`:
+  189 slot prefabs, 108 with a `Pickupable`, 0 without a tech type, 3
+  outcrops whose 8 resources resolve to their listed tech type).
+- `sn-inspect pickups` (`out/m9d/pickups.log`, 13 s): 1,543 prefabs, 0
+  read errors; `Pickupable` on 156 prefabs (50 placed, 23,832
+  placements, 106 slot-only: P0's census numbers again); tech type from
+  `TechTag` 72, class id 84; 1 `None`; 101 tech types, all named in
+  English; sizes 1×1 86, 2×2 15; 4 outcrops, 9 of 9 resources match;
+  inventory 6 × 8; 38 slots, the player's 7 all in the table; 8
+  randomizers; pod locker 4 × 8, 6 starting items; 126 analysis entries.
+- **Dead end:** `PrefabIdentifier` was first read as two strings (class
+  id, id), from `UniqueIdentifier`'s fields; every one of the 1,543
+  prefabs failed 4 bytes short. The asset holds the class id only.
+- **Found:** one placed pick-up (a prop inside
+  `DeepGrandReefAbandonedBase`) has tech type `None` by the game's rule;
+  that the game also gives `None` is a hypothesis (not checked in the
+  game).
+- `git status --short`: only our source and docs.
+
 ## 2026-10-11 — M9d plan: pick up and inventory (docs only)
 
 **What:** `docs/DESIGN.md` § 4.3: the M9d plan (steps M9d1–M9d6, who

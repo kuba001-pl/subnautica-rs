@@ -12,6 +12,7 @@ mod assembly;
 mod encode;
 mod game;
 mod il;
+mod items;
 mod reader;
 mod tables;
 
@@ -23,6 +24,7 @@ pub use game::{
     multiplier_f32, random_range_f32, static_initializer_f32, tech_data_defaults, tech_type_names,
 };
 pub use il::{Instr, Operand, decode, opcode_name};
+pub use items::{Arg, constructor_args, static_string_int_dictionary, string_array};
 pub use tables::{Table, TableId};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
