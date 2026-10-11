@@ -260,7 +260,7 @@ struct Shown {
     grass_triangles: usize,
 }
 
-#[derive(Default, Clone, Copy)]
+#[derive(Default, Clone, Copy, Debug)]
 pub struct StreamStats {
     pub shown_batches: usize,
     pub shown_triangles: usize,

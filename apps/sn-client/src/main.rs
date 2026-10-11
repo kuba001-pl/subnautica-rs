@@ -5,6 +5,7 @@
 
 mod animation;
 mod aurora;
+mod baseline;
 mod body;
 mod effects;
 mod game_light;
@@ -111,6 +112,13 @@ Usage: sn-client [--game-dir <PATH>] [--start <X> <Y> <Z>] [--look <X> <Y> <Z>]
                  ranges scale with it
   --benchmark    once the start area is loaded, render FRAMES frames without
                  vsync, log frame times, save out/client-benchmark.png, exit
+  --baseline     NAME: with --benchmark, save report.txt, frames.csv and
+                 capture.png in out/baselines/run-NAME (must be a new name)
+  --baseline-revision  LABEL: source revision/build label, required for --baseline
+                 (names/labels: 1–96 letters, digits, - or _)
+  --resolution   WIDTH HEIGHT: physical pixels (default 1600 900)
+  --warmup       FRAMES: consecutive settled frames before measurement
+                 (default 120 for --baseline, 0 otherwise; 0 skips warm-up)
   --free-cam     a fly camera instead of the player (also with --benchmark
                  and --flythrough)
   --third-person a debug camera 2.5 m behind the player's eye that shows
@@ -163,6 +171,11 @@ struct Args {
     look: Option<Vec3>,
     view: f32,
     benchmark: Option<usize>,
+    baseline: Option<String>,
+    baseline_revision: Option<String>,
+    resolution: [u32; 2],
+    resolution_given: bool,
+    warmup: Option<usize>,
     flythrough: Option<Vec3>,
     speed: f32,
     debug_colours: bool,
@@ -221,6 +234,10 @@ struct Args {
 }
 
 fn parse_args() -> Result<Args, String> {
+    parse_args_from(&std::env::args().skip(1).collect::<Vec<_>>())
+}
+
+fn parse_args_from(raw: &[String]) -> Result<Args, String> {
     let mut args = Args {
         game_dir: None,
         start: Vec3::new(0.0, -10.0, 0.0),
@@ -230,6 +247,11 @@ fn parse_args() -> Result<Args, String> {
         look: None,
         view: 1200.0,
         benchmark: None,
+        baseline: None,
+        baseline_revision: None,
+        resolution: [1600, 900],
+        resolution_given: false,
+        warmup: None,
         flythrough: None,
         speed: 40.0,
         debug_colours: false,
@@ -271,7 +293,6 @@ fn parse_args() -> Result<Args, String> {
         net_sim: None,
         log_ticks: 50,
     };
-    let raw: Vec<String> = std::env::args().skip(1).collect();
     let mut it = raw.iter().peekable();
     let number = |s: Option<&String>, what: &str| -> Result<f32, String> {
         s.ok_or(format!("{what} needs a value"))?
@@ -307,7 +328,37 @@ fn parse_args() -> Result<Args, String> {
             }
             "--look" => args.look = Some(vec3(&mut it, "--look")?),
             "--view" => args.view = number(it.next(), "--view")?,
-            "--benchmark" => args.benchmark = Some(number(it.next(), "--benchmark")? as usize),
+            "--benchmark" => {
+                args.benchmark = Some(baseline::positive_integer(it.next(), "--benchmark")?);
+            }
+            "--baseline" | "--baseline-revision" => {
+                let value = it
+                    .next()
+                    .filter(|v| baseline::valid_label(v))
+                    .ok_or_else(|| format!("{arg} needs 1–96 letters, digits, - or _"))?;
+                if arg == "--baseline" {
+                    args.baseline = Some(value.clone());
+                } else {
+                    args.baseline_revision = Some(value.clone());
+                }
+            }
+            "--resolution" => {
+                args.resolution_given = true;
+                for dim in &mut args.resolution {
+                    *dim = it
+                        .next()
+                        .and_then(|v| v.parse::<u32>().ok())
+                        .filter(|&n| (64..=8192).contains(&n))
+                        .ok_or("--resolution needs WIDTH HEIGHT, each 64–8192 physical pixels")?;
+                }
+            }
+            "--warmup" => {
+                args.warmup = Some(
+                    it.next()
+                        .and_then(|v| v.parse::<usize>().ok())
+                        .ok_or("--warmup needs a whole number, 0 or more")?,
+                );
+            }
             "--flythrough" => args.flythrough = Some(vec3(&mut it, "--flythrough")?),
             "--speed" => args.speed = number(it.next(), "--speed")?,
             "--debug-colours" => args.debug_colours = true,
@@ -452,6 +503,35 @@ fn parse_args() -> Result<Args, String> {
         .is_some_and(|s| !(s >= 0.0 && s.is_finite()))
     {
         return Err("--aurora-countdown must be 0 or more seconds".into());
+    }
+    if args.benchmark.is_some() && args.flythrough.is_some() {
+        return Err("choose --benchmark or --flythrough".into());
+    }
+    if args.warmup.is_some() && args.benchmark.is_none() && args.flythrough.is_none() {
+        return Err("--warmup requires --benchmark or --flythrough".into());
+    }
+    if args.baseline.is_some() {
+        if args.benchmark.is_none() || !matches!(args.mode, session::Mode::Solo) {
+            return Err("--baseline requires a solo --benchmark run".into());
+        }
+        if args.baseline_revision.is_none() {
+            return Err("--baseline requires --baseline-revision LABEL".into());
+        }
+        if !args.start.is_finite()
+            || args.look.is_some_and(|v| !v.is_finite())
+            || !args.view.is_finite()
+            || !args.time.is_finite()
+            || !args.fog_unit.is_finite()
+            || args
+                .lifepod
+                .is_some_and(|p| p.iter().any(|v| !v.is_finite()))
+        {
+            return Err(
+                "baseline camera, view, time, fog and lifepod values must be finite".into(),
+            );
+        }
+    } else if args.baseline_revision.is_some() {
+        return Err("--baseline-revision requires --baseline".into());
     }
     Ok(args)
 }
@@ -640,6 +720,8 @@ fn start_session(args: &Args, lifepod: bool) -> Result<Started, String> {
         session,
         pod,
         day_seconds: day,
+        build: rules.build,
+        fingerprint: rules.fingerprint,
     })
 }
 
@@ -650,6 +732,8 @@ struct Started {
     pod: Option<([f32; 3], sn_world::Transform)>,
     /// Game seconds per day (`DayNightCycle`, read from the code).
     day_seconds: f32,
+    build: String,
+    fingerprint: u64,
 }
 
 fn main() -> AppExit {
@@ -661,10 +745,22 @@ fn main() -> AppExit {
         }
     };
     let lifepod = !args.debug_colours && !args.no_objects && args.scenes.is_some();
+    let mut baseline = match (&args.baseline, &args.baseline_revision) {
+        (Some(name), Some(revision)) => match baseline::Baseline::create(name, revision) {
+            Ok(b) => Some(b),
+            Err(e) => {
+                eprintln!("error: {e}");
+                return AppExit::error();
+            }
+        },
+        _ => None,
+    };
     let Started {
         session,
         pod,
         day_seconds,
+        build,
+        fingerprint,
     } = match start_session(&args, lifepod) {
         Ok(s) => s,
         Err(message) => {
@@ -699,6 +795,9 @@ fn main() -> AppExit {
         }
     }
     let ranges = lod_ranges(args.view);
+    if let Some(b) = &mut baseline {
+        b.configure(&args, &build, fingerprint, &settings);
+    }
     let (look, blocks, water, sky_data, surface, sky_textures, caustics, stars) =
         if args.debug_colours {
             (None, None, None, None, None, None, None, None)
@@ -762,10 +861,15 @@ fn main() -> AppExit {
         PresentMode::AutoVsync
     };
     let mut app = App::new();
+    let mut resolution =
+        bevy::window::WindowResolution::new(args.resolution[0], args.resolution[1]);
+    if args.resolution_given || baseline.is_some() {
+        resolution = resolution.with_scale_factor_override(1.0);
+    }
     app.add_plugins(DefaultPlugins.set(WindowPlugin {
         primary_window: Some(Window {
             title: "subnautica-rs".into(),
-            resolution: (1600, 900).into(),
+            resolution,
             present_mode,
             ..default()
         }),
@@ -969,16 +1073,26 @@ fn main() -> AppExit {
         }
     }
     if let Some(frames) = args.benchmark {
-        app.insert_resource(Measurement::new(Mode::Benchmark { frames }))
-            .add_systems(Update, measure);
+        app.insert_resource(Measurement::new(
+            Mode::Benchmark { frames },
+            args.warmup
+                .unwrap_or(if baseline.is_some() { 120 } else { 0 }),
+        ))
+        .add_systems(Last, measure);
     } else if let Some(to) = args.flythrough {
         let from = unity_to_bevy(args.start);
-        app.insert_resource(Measurement::new(Mode::Flythrough {
-            from,
-            to: unity_to_bevy(to),
-            speed: args.speed,
-        }))
-        .add_systems(Update, measure);
+        app.insert_resource(Measurement::new(
+            Mode::Flythrough {
+                from,
+                to: unity_to_bevy(to),
+                speed: args.speed,
+            },
+            args.warmup.unwrap_or(0),
+        ))
+        .add_systems(Last, measure);
+    }
+    if let Some(baseline) = baseline {
+        app.insert_resource(baseline);
     }
     app.run()
 }
@@ -1006,6 +1120,43 @@ impl ColorGrading {
 }
 
 const WATER_COLOUR: Color = Color::srgb(0.05, 0.25, 0.35);
+
+#[cfg(test)]
+mod baseline_arg_tests {
+    use super::*;
+
+    fn parse(flags: &str) -> Result<Args, String> {
+        parse_args_from(
+            &flags
+                .split_whitespace()
+                .map(str::to_owned)
+                .collect::<Vec<_>>(),
+        )
+    }
+
+    #[test]
+    fn baseline_requires_solo_benchmark_and_revision() {
+        for flags in [
+            "--baseline test",
+            "--baseline test --benchmark 10",
+            "--baseline-revision test",
+            "--warmup 10",
+            "--baseline test --baseline-revision test --benchmark 10 --host",
+            "--benchmark 10 --flythrough 0 1 2",
+            "--benchmark NaN",
+            "--resolution 0 900",
+            "--baseline ../escape",
+            "--baseline test --baseline-revision test --benchmark 10 --start NaN 0 0",
+        ] {
+            assert!(parse(flags).is_err(), "{flags}");
+        }
+        let args = parse("--baseline shallows-1 --baseline-revision abc-dirty --benchmark 300 --warmup 0 --resolution 1280 720").unwrap();
+        assert_eq!(args.resolution, [1280, 720]);
+        assert_eq!(args.benchmark, Some(300));
+        assert_eq!(args.warmup, Some(0));
+        assert!(parse("").unwrap().baseline.is_none());
+    }
+}
 
 /// The game's vertical field of view in degrees: `MiscSettings.fieldOfView`
 /// from the player's DLL (M7f4f). If it cannot be read, Bevy's default
@@ -1292,6 +1443,7 @@ enum Mode {
 enum Phase {
     /// Waiting for the start area to finish loading.
     Loading,
+    Warming,
     Running,
     /// Flythrough: arrived, waiting for the destination to finish loading.
     Arriving,
@@ -1308,10 +1460,15 @@ struct Measurement {
     max_cached: usize,
     max_memory_gib: f64,
     phase_started: Duration,
+    warmup: baseline::Warmup,
+    loaded_at: Duration,
+    running_at: Duration,
+    start_snapshot: String,
+    unsettled_frames: usize,
 }
 
 impl Measurement {
-    fn new(mode: Mode) -> Self {
+    fn new(mode: Mode, warmup: usize) -> Self {
         Measurement {
             mode,
             phase: Phase::Loading,
@@ -1321,6 +1478,11 @@ impl Measurement {
             max_cached: 0,
             max_memory_gib: 0.0,
             phase_started: Duration::ZERO,
+            warmup: baseline::Warmup::new(warmup),
+            loaded_at: Duration::ZERO,
+            running_at: Duration::ZERO,
+            start_snapshot: String::new(),
+            unsettled_frames: 0,
         }
     }
 }
@@ -1336,14 +1498,18 @@ fn percentiles(values: &[f32]) -> (f32, f32, f32) {
     (mean, p95, *sorted.last().unwrap())
 }
 
+#[allow(clippy::too_many_arguments)] // Bevy system resources and report snapshot
 fn measure(
     mut commands: Commands,
-    time: Res<Time>,
+    time: Res<Time<Real>>,
     diagnostics: Res<DiagnosticsStore>,
     mut streamer: ResMut<TerrainStreamer>,
     objects: Option<Res<ObjectStreamer>>,
     mut m: ResMut<Measurement>,
-    mut camera: Query<&mut Transform, With<Camera3d>>,
+    mut camera: Query<&mut Transform, (With<Camera3d>, Without<objects::GameDirectionalLight>)>,
+    baseline: Option<Res<baseline::Baseline>>,
+    snapshot: baseline::Snapshot,
+    mut exit: MessageWriter<AppExit>,
 ) {
     let Ok(mut camera) = camera.single_mut() else {
         return;
@@ -1382,12 +1548,27 @@ fn measure(
                 }
                 // Only latencies from here on describe streaming while moving.
                 streamer.latencies.clear();
+                m.loaded_at = now;
+                m.phase = if m.warmup.target == 0 {
+                    Phase::Running
+                } else {
+                    Phase::Warming
+                };
+            }
+        }
+        Phase::Warming => {
+            if m.warmup.ready(settled) {
+                info!(
+                    "measure: {} consecutive settled warm-up frames, {:.2} s since first settled",
+                    m.warmup.target,
+                    (now - m.loaded_at).as_secs_f64()
+                );
                 m.phase = Phase::Running;
-                m.phase_started = now;
             }
         }
         Phase::Running => {
             m.frame_ms.push(time.delta_secs() * 1000.0);
+            m.unsettled_frames += usize::from(!settled);
             match m.mode {
                 Mode::Benchmark { frames } => {
                     if m.frame_ms.len() >= frames {
@@ -1426,6 +1607,14 @@ fn measure(
         }
         Phase::Done => return,
     }
+    if m.phase == Phase::Running && m.running_at == Duration::ZERO {
+        m.running_at = now;
+        m.phase_started = now;
+        streamer.latencies.clear();
+        if baseline.is_some() {
+            m.start_snapshot = snapshot.describe(&camera, stats, objects.as_deref());
+        }
+    }
     if m.phase != Phase::Done {
         return;
     }
@@ -1446,6 +1635,12 @@ fn measure(
         m.frame_ms.len(),
         1000.0 / mean.max(0.001),
     );
+    if let Some(summary) = baseline::frame_summary(&m.frame_ms) {
+        info!(
+            "measure: real frame median {:.3} ms, p99 {:.3} ms; {} unsettled measurement frames",
+            summary.median, summary.p99, m.unsettled_frames
+        );
+    }
     let (p, f) = (camera.translation, camera.forward());
     info!(
         "measure: camera (unity) at {:.1} {:.1} {:.1}, looking {:.2} {:.2} {:.2}",
@@ -1479,9 +1674,39 @@ fn measure(
             latency.len(),
         );
     }
-    let name = match m.mode {
-        Mode::Benchmark { .. } => "out/client-benchmark.png",
-        Mode::Flythrough { .. } => "out/client-flythrough.png",
+    let name = if let Some(baseline) = baseline {
+        let report = format!(
+            "loading_seconds_since_app_start={:.6}\nwarmup_seconds={:.6}\n\
+             measurement_seconds={:.6}\nmeasured_frames={}\nunsettled_measurement_frames={}\n\
+             frame_ms_summary={:?}\npeak_process_memory_gib={:.6}\n\
+             --- measurement_start ---\n{}--- measurement_end ---\n{}{}",
+            m.loaded_at.as_secs_f64(),
+            (m.running_at - m.loaded_at).as_secs_f64(),
+            (now - m.running_at).as_secs_f64(),
+            m.frame_ms.len(),
+            m.unsettled_frames,
+            baseline::frame_summary(&m.frame_ms),
+            m.max_memory_gib,
+            m.start_snapshot,
+            snapshot.describe(&camera, stats, objects.as_deref()),
+            baseline::gpu_report(&diagnostics),
+        );
+        if let Err(e) = baseline.save(&m.frame_ms, &report) {
+            error!("baseline: {e}");
+            exit.write(AppExit::error());
+            return;
+        }
+        info!(
+            "baseline: saved report and {} real frame samples to {}",
+            m.frame_ms.len(),
+            baseline.directory.display()
+        );
+        baseline.directory.join("capture.png")
+    } else {
+        PathBuf::from(match m.mode {
+            Mode::Benchmark { .. } => "out/client-benchmark.png",
+            Mode::Flythrough { .. } => "out/client-flythrough.png",
+        })
     };
     if let Err(e) = std::fs::create_dir_all("out") {
         error!("out/: {e}");

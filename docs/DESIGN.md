@@ -9,6 +9,9 @@ joining from the client with remote bodies and cinematics). Next:
 **M10i** (the user's test over the internet). M7f4h moved after M11. Each
 row's own mark says what is done; everything else is a plan, not code.
 
+Visual fidelity backlog and the missing comparison/terrain plans are collected
+in § 4.5 (2026-10-11). Implemented first passes are not claims of a 1:1 match.
+
 ## 1. Goal
 
 A modern, lightweight, open-source Rust engine for **desktop** that:
@@ -1625,6 +1628,281 @@ generic root transform; not applied until a moving object needs it, then
 with creatures); animation events (555; their receivers are game scripts
 and come with the scripts that receive them); legacy `Animation` (UI
 only, with the UI).
+
+### 4.5 Visual fidelity: remaining work and implementation order (written 2026-10-11)
+
+**Scope:** the user asked to record the missing pieces of the visual review.
+This section adds plans, not completed features or new format findings. It
+collects existing gaps without replacing their detailed plans. The order below
+is the proposed order when visual work resumes; § 4.3's gameplay deferral and
+the decision to build M7f4h after M11 remain in effect. On 2026-10-11 the user
+approved starting this visual plan; M8g0a below is the first implementation
+slice, pulled forward from the gameplay deferral. A large refactor or an
+architecture change still needs the user's approval before implementation.
+
+**What already exists:** terrain materials and blending, placed objects, grass
+shading, baked and FFT water waves, sky and stars, caustics, sun shafts, local
+lights, object animation and blend shapes, the player's body and hatch
+cinematics, and remote player bodies. Many are first passes whose original-game
+comparison is still open. Earlier roadmap rows and "as built" notes describe
+their state at the time: stars were added in M8c5; object specular/emission in
+M8c7; animation and blend shapes in M7f4c/d; player eye placement in M9b/c;
+shadow-only rendering in M9g. Do not count those features as wholly missing.
+Their remaining fidelity checks still apply. M8g0a's implementation results are
+recorded below; original-game visual comparisons remain **not tested**.
+
+#### M8g0 — Reproducible visual and performance baselines
+
+Before changing the look, define a comparison case by game build, client
+revision, camera position/direction, resolution/aspect ratio, vertical FOV,
+detail and water quality, post-processing options, world/slot seeds, lifepod
+placement and lighting state, Aurora state, game day/time, and elapsed animation
+and wave time. Record which original-game states can actually be reproduced;
+our seed is not proof that the original game drew the same objects or waves.
+Use existing flags where possible. Any missing capture/time-control tooling
+gets its own small implementation step before relying on it.
+
+Cases: Safe Shallows seabed; glowing coral at night; Kelp Forest; a cave; a
+wreck; a Precursor interior; inside Lifepod 5; open sea above and below the
+surface. Include biome/volume boundaries and shadow edges. Original-game
+reference captures are supplied by the user; the agent's primary checks are
+numbers. Store captures, game-derived geometry and measurement dumps only in
+ignored `out/`, never as repository fixtures. Share findings as prose and
+aggregate counts/errors, not game content.
+
+For each case, log object/material/light counts, selected LODs and skies,
+camera water coefficients, and CPU/GPU timings. Establish tolerances and
+measurement methods before evaluating a change: region colour/luminance,
+depth or silhouette differences where comparable, bounds and positions, and
+event ticks. Separate deterministic errors from random wave/creature variation.
+A screenshot alone cannot prove equal geometry or animation. Keep an explicit
+list of differences and unavailable reference measurements.
+
+Performance: release builds with matching flags, fixed routes/cases, three
+before/after runs, and the same loading/warm-up policy. Record median/tail frame
+times, individual GPU passes, memory and streaming stalls. The target from
+§ 4.1 is 16.7 ms in the dense start area on the dev machine; historical README
+or MODLOG timings are not a fresh baseline or proof that the target is met.
+
+**Done when:**
+
+- Every case has a reproducible configuration and numerical logs, or an
+  explicit "not tested" entry stating the missing reference/tooling.
+- At least one outdoor, one interior and one water-surface case has the user's
+  matched reference and a recorded difference list; missing cases stay open.
+- Three baseline performance runs are recorded with their build/settings.
+- Measurement tolerances are written before judging fixes. M8g0 is not called
+  complete while required cases or reference measurements remain unavailable.
+
+##### M8g0a — Named performance baselines (built 2026-10-11)
+
+Add `--baseline NAME --baseline-revision LABEL` to a solo `--benchmark` run.
+Save `report.txt`, per-frame timings in `frames.csv`, and `capture.png` under
+`out/baselines/run-NAME/`; refuse an existing name rather than overwrite evidence.
+Do not record usernames, network addresses, environment variables or raw
+command lines. Record the explicit revision label, game build/rules fingerprint,
+effective camera/settings/seeds/scene state, physical resolution, loading and
+warm-up policy, scene counts, LOD/sky counts, fog coefficients, clock values,
+frame-time statistics and available GPU diagnostics. GPU diagnostic averages
+must be labelled with their actual scope, not assumed to cover every measured
+frame. Use real elapsed frame time so Bevy's virtual-time clamp cannot hide
+stalls. `--resolution WIDTH HEIGHT` and `--warmup FRAMES` provide fixed settings;
+named baselines default to 120 settled warm-up frames. If streaming becomes
+unsettled during warm-up, restart that warm-up count; during measurement count
+unsettled frames in the report. Existing unnamed benchmark output remains
+available.
+
+This slice records, but does not freeze/reset, animation, waves or foam history.
+It does not complete M8g0's matched visual references. Deterministic visual
+time and original-game reference cases require later slices. Before assessing
+the three repeated runs: camera/settings must match exactly; terrain/object/
+material counts must match after settling, with differences explained rather
+than silently tolerated. Frame times have no equality requirement: report the
+spread and compare against the 16.7 ms target without calling it a regression
+test until there is a before/after implementation pair.
+
+**Done when:** argument/path validation and frame-statistics checks pass;
+`cargo test --workspace`, clippy and fmt pass; three named runs of one fixed
+outdoor case produce separate reports/CSVs/captures with the requested frame
+count and physical size, unchanged camera/settings and checked scene counts;
+loading and warm-up frames are excluded from the samples; existing-name
+rejection preserves the first run. Record results and the remaining reference/
+time-control gaps. Do not claim full M8g0 completion.
+
+Initial outdoor case (configured before the three runs): Unity camera
+`(0, -10, 0)`, look-at `(60, -40, 60)`, vertical FOV 60°, 1600 × 900 physical
+pixels, view 1,200 m, High water, grading off, lifepod seed 1, slot seed 1,
+damaged pod, Aurora held intact, start 9.6 hours with game time scale 0;
+all ordinary object/grass/animation/light passes enabled. Warm up 120 settled
+frames and measure 300. Expected deterministic fields: identical camera,
+settings, terrain/grass counts, loaded object/material counts and light counts;
+zero unsettled measurement frames. Animated bounds/LOD selection and GPU
+times are recorded separately; unexpected changes require explanation.
+Original-game reference for this case: **not tested**. An original save's
+random placements/wave phase are not assumed to match these seeds.
+
+**As built and verified:** `baseline.rs` and the client's existing measurement
+path implement the controls and reports above. The snapshot runs after the
+frame's updates. Five new tests check argument restrictions, output labels,
+consecutive settled warm-up and frame statistics (including a 1,000 ms stall).
+Physical resolution overrides apply only to named baselines or an explicit
+`--resolution`; ordinary play retains its default DPI behaviour. Frame samples
+use unclamped real time for both named and existing measurements. GPU values
+are labelled as recent diagnostic history; live animation/water times and the
+possibility of capture completing after the measured frame are explicit.
+
+Three release runs (`out/baselines/run-m8g0a-shallows-1/` through `-3/`, build
+label `cae48d6-m8g0a`, RTX 3080): each produced a 1600 × 900 PNG and 300 samples
+after 120 warm-up frames, with 0 unsettled measurement frames. Sample sums
+equal the measured real-time interval within 20 µs. All 58 checked static
+configuration/scene fields match across runs and at each run's start/end:
+1,393 shown batches, 7,759,704 terrain triangles, 34,469 grass tufts,
+39,342 cell/batch objects, 1,968 materials, 508 point lights and 51 spots;
+camera, sky, fog and LOD counts agree. The parsed-batch cache is a separate
+memory metric: 1,150 / 1,200 / 1,166 entries. Its worker request order varies
+and the LRU evicts 120 entries at a time; this does not change the shown scene.
+Peak sampled process memory: 1.893 / 1.894 / 1.851 GiB.
+
+Mean frame times: 17.94 / 17.95 / 18.02 ms; medians 17.69 / 17.83 / 17.86 ms;
+p99 20.31 / 19.27 / 20.52 ms. The 16.7 ms target is **not met** in this case.
+These are baselines, not a before/after performance claim. Existing-name
+rejection returns exit 1 with all three original file hashes unchanged.
+An ordinary player run (`--view 400 --kill 3 --shot 10 m8g0a-player-smoke`)
+logged death, respawn, restoration and controls returning, then saved its
+capture. Keyboard play and original-game image comparisons: **not tested**.
+Workspace tests, clippy and fmt are recorded in MODLOG. M8g0a is complete;
+M8g0 remains open for the other cases, original-game references, and controlled
+visual time. Commands to create a new named run are in README.
+
+#### M8h — Sky and lighting on the shared game clock
+
+Make the sun, sky timeline, day-dependent planet/moon state, ambient light,
+stars and day/night material/light strengths follow the session's clock,
+instead of the start-up `--time`. Use the original data and rules; distinguish
+game-time effects from effects whose original rule uses elapsed real time.
+Update dependent fog, water reflections and lighting in a consistent frame
+order. This replaces the unnamed "sky on the clock" gap in M7f4e; it does not
+change the already-fixed Aurora countdown origin (M10g).
+
+**Done when:** synthetic checks cover day wrap and multiple clock times;
+logged sky/light values at fixed times equal the existing evaluation rules;
+host and joiner evaluate the same values at the same session tick; cases at
+day, sunset and night have recorded comparisons; affected GPU/CPU costs are
+logged. Eclipse and ending overrides remain with story presentation below.
+
+#### M4c — Terrain geometry fidelity (new explicit milestone)
+
+M2 proved seam continuity, not equality with the original terrain. Our
+surface-nets faces, normals and skirted batch LODs differ from the original
+Voxeland pipeline; a switch to dual contouring alone would not prove a match.
+First document the original surface construction, interpolation, smoothing,
+normal generation, chunk ownership and cross-LOD boundaries, marking each
+finding *confirmed* with its method or *hypothesis*. Establish a lawful,
+read-only reference measurement method; no game patching or access-control
+circumvention. If reference geometry cannot be measured, record that blocker
+rather than asserting exactness from a recognisable screenshot.
+
+Split implementation into surface positions/topology, normals/material face
+assignment, then LOD transitions, each with its own plan and checklist. Keep
+the existing mesher until evidence justifies replacing it; seek approval for
+a large refactor. M4b owns original clipmap/streaming rules, while M4c owns
+surface fidelity. Coordinate their chunk conventions before implementation.
+M7e3's exact tuft positions follow only after the original face order/positions
+and random/noise rules can be checked. The game's collision simplification
+remains a separate deferred M9a gap; rerun movement regressions if terrain
+changes alter collision meshes.
+
+**Done when:**
+
+- Representative flat, sloped, sharp, cave and boundary cases have numerical
+  surface-position and normal errors against a reference, within tolerances
+  defined in advance; unavailable reference measurements keep the step open.
+- Synthetic topology/seam tests pass; same-LOD and cross-LOD boundaries have
+  no unexplained holes, overlaps or visible skirt substitutions.
+- Material boundaries and grass-support faces are checked separately from
+  lighting; original chunk/face enumeration is documented for M7e3.
+- Mesh cost, triangle counts, streaming latency and memory are logged; affected
+  collision/movement regressions pass. Geometry parity is not inferred from
+  texture decoding or screenshots alone.
+
+#### Remaining gaps and their homes
+
+- **Atmosphere, reflections and water:** M8b/M8c7b own cave/wreck atmosphere
+  shapes, sky selection/anchors, cube reflections and `_UwePowerLoss`; M8f
+  owns spatial water settings for fog, surface lighting and effect fog, plus
+  the water clip map/interior exclusion and shore foam. Split volume selection,
+  blending, GPU sampling and clip-map work into independently checked steps.
+  M8c1/c4 retain reflection/refraction and wave comparisons; SSR follows the
+  original scene/options where enabled, not an unconditional added effect.
+- **Materials and compositing:** M7g5 owns triplanar rocks and world-object SIG;
+  M7g4 owns remaining UBER mesh variants (brine, sand/lava falls and other
+  effects); M7g6 owns the smaller shader families and IonCrystal/Mesmer extras.
+  "M7g open" retains dim cones, dark pillars and the unchecked refraction y
+  sign. Temperature refraction, sonar and PDA composite variants from § 4.2
+  get sub-steps when their gameplay state is available. Finish by counting
+  unsupported variants and explaining/fixing each, not by hiding them.
+- **Post-processing:** M8d1 owns bloom/lens dirt and AO; M8d owns the exact
+  grading curves, remaining enabled effects (SSR, DOF, motion blur, FXAA,
+  dithering), original settings and render-pass order. The current
+  Reinhard/ACES-fitted substitutions are not exact original-game curves.
+- **Streaming, grass and shadows:** M4b owns original clipmap extents, cell
+  activation, material budgets and shadow levels; M7e3 owns exact grass
+  placement and, with M4b, its farther LOD. M8e2 owns verified light falloff;
+  M8e4 owns local shadows and the custom spotlight cookie; M8c6b owns sun
+  bias/filtering, receiving flags, cut-out plant shadows and animated-rig
+  shadow updates as detail changes. Shadow-only drawing already exists;
+  matching its result remains part of the shadow validation.
+- **Animation follow-up:** add sub-steps to M7f4 for animated light/material
+  values, active-state bindings, effect/light attachments to moving nodes,
+  nested rigs and morph/skinning culling bounds. Script-field bindings require
+  the relevant script behaviour, not a blanket attempt to execute game code.
+  Each step logs applied/unsupported bindings and validates animated values,
+  transforms or bounds. Root motion and remaining animation-event receivers
+  belong with the moving objects/scripts that need them; legacy UI animation
+  belongs with M9u. Already-working hatch events are not missing.
+- **Particles and moving scenery:** M7i needs a staged reader/simulation/render
+  plan for particles and `VFXController` before code (fire, smoke, explosion
+  and other emitters). Check counts, lifetimes, bounds and seeded trajectories
+  where applicable. M7f4h remains after M11 for the floating pod, moving
+  colliders/platform and continuously attached modules. Creatures ("After
+  Phase E" item 4) require spawning, motion, animation and co-op ownership;
+  they are currently skipped, including slot creatures. Split by behaviour
+  family rather than treating all creatures as one rendering change.
+- **Player and state-dependent presentation:** M9u owns the original HUD,
+  reticle, inventory/equipment panels, notifications and UI rendering; PDA,
+  tools/IK, intro/damage effects, vehicles and habitats retain their "After
+  Phase E" homes. Story owns Aurora explosion presentation/camera shake,
+  warnings, eclipse/ending sky overrides and other state-driven scenes.
+  Physics/damage and audio stay with their own subsystems. Static-world visual
+  parity does not mean those parts of the full game's picture are complete.
+
+Each existing milestone retains its own "Done when" requirements. The follow-up
+groups above must receive smaller numbered steps and measurable checklists
+before implementation. No untested item becomes complete merely because it
+has been assigned a home.
+
+#### Proposed order for visual work
+
+1. M8g0 baselines, then M8h shared-clock sky/light updates.
+2. M7g5's obvious material failures, then remaining M7g4/M7g6 variants.
+3. Atmosphere/sky selection, spatial water settings, cube reflections and
+   water exclusion, in separate M8b/M8c7b/M8f slices.
+4. M8d1 bloom/lens dirt and AO, then exact grading and the rest of M8d.
+5. M4b streaming and M4c terrain fidelity, then M7e3 grass; M8e2/M8e4/M8c6b
+   light/shadow fidelity once activation and shadow ranges are correct.
+6. Animation follow-ups and M7i particles; creatures with ownership; M7f4h
+   after M11 as already agreed.
+7. Original UI, tools, intro and other state-dependent presentation as their
+   gameplay rules become available.
+8. M8g final calibration over the full case set. Compare at every earlier
+   step too: final calibration is not a reason to defer discovering errors.
+
+For each implementation slice, run appropriate synthetic tests and opt-in
+real-data checks, record exact commands/results in MODLOG, compare the affected
+baseline cases and measure performance. Keep parser/algorithm work headless
+and rendering at the existing engine edge. A 1:1 claim requires every relevant
+difference resolved and every checklist run; neither ported formulas nor
+similar-looking captures alone establish pixel-for-pixel equality.
 
 ### Phase D — Multiplayer
 

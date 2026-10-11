@@ -357,6 +357,13 @@ pub struct LodStats {
     micros: Vec<u128>,
 }
 
+impl LodStats {
+    /// Current selection only, excluding timing samples and interval counters.
+    pub fn snapshot(&self) -> ([usize; 5], usize, usize) {
+        (self.levels, self.culled, self.groups)
+    }
+}
+
 /// What the client's exploder needs from the Aurora scene and the game's
 /// code (M7f4e).
 #[derive(Clone, Copy, Debug)]
@@ -2689,7 +2696,7 @@ struct SceneObjects {
     shown: Option<Vec<Vec<Entity>>>,
 }
 
-#[derive(Default, Clone)]
+#[derive(Default, Clone, Debug)]
 pub struct ObjectStats {
     pub batches: usize,
     pub entities: usize,

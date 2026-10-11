@@ -2,6 +2,92 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-11 — M8g0a: named visual performance baselines
+
+**What:** `sn-client --baseline NAME --baseline-revision LABEL` with a solo
+`--benchmark` saves configuration/scene snapshots, `frames.csv` and a capture
+under ignored `out/baselines/run-NAME/`. Existing names are rejected. Added
+physical `--resolution WIDTH HEIGHT` and consecutive settled `--warmup FRAMES`
+(120 by default for named baselines, 0 for existing measurements). Measurements
+run after frame updates and use `Time<Real>` so virtual-time clamping cannot
+hide stalls. Reports include game build/rules fingerprint, explicit revision
+label, effective world/camera settings, terrain/grass/object/material/light/
+LOD/sky counts, fog coefficients, game/visual/water times, frame statistics,
+sampled memory peak and recent GPU diagnostic averages with their scope.
+The report uses an explicit field list, not raw arguments or environment.
+No new dependency or whitelist change. DESIGN contains the plan/results and
+README the tested command. Five tests cover flags, labels, warm-up and timing
+statistics. Ordinary play keeps its default DPI behaviour.
+
+**Why:** the user approved starting the visual plan. M8g0a makes the existing
+benchmark preserve reproducible configurations and evidence for subsequent
+changes. It records live visual times; freezing/resetting animations, waves
+and foam, other comparison locations and original-game references remain open
+under M8g0. No renderer formula or gameplay rule was changed.
+
+**How verified:**
+- `cargo test --workspace`: 403 passed, 0 failed, 37 opt-in tests ignored.
+- `cargo clippy --workspace --all-targets -- -D warnings` and
+  `cargo fmt --all -- --check`: clean. `cargo build --release -p sn-client` passed.
+- With `SUBNAUTICA_DIR` set, ran this command three times, replacing `N` with
+  1, 2 and 3 (use fresh names to repeat):
+
+  ```powershell
+  .\target\release\sn-client.exe --benchmark 300 --baseline m8g0a-shallows-N --baseline-revision cae48d6-m8g0a --warmup 120 --resolution 1600 900 --start 0 -10 0 --look 60 -40 60 --fov 60 --view 1200 --lifepod-seed 1 --slot-seed 1 --time 9.6 --time-scale 0 --aurora intact --water-quality high --color-grading off --gpu-timings
+  ```
+
+  Exit 0 each, 300 samples after 120 warm-up frames, 0 unsettled measurement
+  frames. PNG headers: 1600 × 900. CSV sample sums match the measured interval
+  within 20 µs. A local numerical comparison (`python out/verify_m8g0a.py`)
+  checks 58 static fields across the three runs and within their start/end
+  snapshots: camera/settings, shown terrain/grass, objects/materials, light
+  counts, LODs, sky and fog all equal. 1,393 terrain batches, 7,759,704 terrain
+  triangles, 34,469 tufts, 39,342 cell/batch objects, 1,968 materials, 508 point
+  lights, 51 spots. Reports and captures stay under `out/`.
+- Means 17.94 / 17.95 / 18.02 ms; medians 17.69 / 17.83 / 17.86 ms; p99
+  20.31 / 19.27 / 20.52 ms; worst 21.22 / 22.51 / 23.56 ms. Peak sampled
+  memory 1.893 / 1.894 / 1.851 GiB. RTX 3080; 16.7 ms target **not met**.
+  This establishes a baseline, not a before/after performance claim.
+- Existing-name check:
+  `.\target\release\sn-client.exe --benchmark 1 --baseline m8g0a-shallows-1 --baseline-revision overwrite-check`
+  returned exit 1 before loading the game; SHA-256 hashes of its report, CSV
+  and PNG were identical before/after.
+- Ordinary player smoke run:
+  `.\target\release\sn-client.exe --view 400 --kill 3 --shot 10 m8g0a-player-smoke`
+  returned exit 0, logged death/respawn/restoration/controls returning, and
+  saved the capture. Keyboard play: **not tested**. The other M8g0 locations,
+  original-game visual match and frozen visual-time capture: **not tested**.
+- **Corrections during verification:** clippy caught a median helper using
+  `is_multiple_of`, newer than the declared Rust 1.85 minimum; replaced with
+  modulo. The first cross-run comparison incorrectly included parsed-batch
+  cache occupancy among static scene fields: it varied 1,150 / 1,200 / 1,166.
+  Reading `BatchCache::insert` confirmed worker-order-dependent LRU eviction
+  of 120 entries at a time. The comparison now checks shown geometry exactly
+  and records cache occupancy as a bounded memory metric (limit 1,200).
+- `git diff --check`; `git status --short`: only our source/docs, no generated
+  data. No commits or pushes.
+
+## 2026-10-11 — Visual fidelity backlog and missing plans (docs only)
+
+**What:** DESIGN § 4.5 adds M8g0 reproducible comparison/performance baselines,
+M8h shared-clock sky and lighting, and M4c terrain geometry fidelity, each with
+a "Done when" checklist. It collects scattered visual gaps under their existing
+milestones, identifies historical descriptions superseded by later features,
+and records the proposed implementation order. The gameplay deferral and
+floating-pod-after-M11 decision remain. No code, dependencies or ignore rules
+changed; README's tested feature claims are unchanged.
+
+**Why:** the user asked to write down the missing parts of the visual review,
+so terrain equality, reproducible comparisons and follow-up work cannot be
+lost among first-pass milestones and historical "as built" notes.
+
+**How verified:** read against DESIGN §§ 4.1–4.4, format notes and the current
+client paths for sky initialization, water settings, grading, shader fallbacks,
+local lights, animation and shadow-only drawing. `git diff --check` and a review
+of the documentation diff passed; `git status --short` lists only DESIGN and
+this MODLOG. Runtime visuals and Rust tests: **not tested** (documentation only).
+No commits or pushes.
+
 ## 2026-10-11 — M9d1: item data, headless
 
 **What:**

@@ -202,6 +202,32 @@ cargo test -p sn-octree -- --ignored        # full-world test (needs SUBNAUTICA_
 `out/`, which is gitignored. They are derived from your game files: don't
 share them.
 
+## Visual performance baselines
+
+For a fixed-camera benchmark with saved settings and numerical scene counts,
+use a new baseline name and an explicit source revision/build label:
+
+```powershell
+# SUBNAUTICA_DIR must point to your install. Choose a new name for each run.
+cargo run --release -p sn-client -- --benchmark 300 --baseline shallows-review-1 --baseline-revision working-tree --warmup 120 --resolution 1600 900 --start 0 -10 0 --look 60 -40 60 --fov 60 --view 1200 --lifepod-seed 1 --slot-seed 1 --time 9.6 --time-scale 0 --aurora intact --water-quality high --color-grading off --gpu-timings
+```
+
+This saves `report.txt`, `frames.csv` and `capture.png` under
+`out/baselines/run-shallows-review-1/`. An existing name is rejected. Replace
+`working-tree` with your revision and change label to identify the build.
+Names/labels accept letters, digits, `-` and `_`. Named baselines require a
+solo benchmark; they default to 120 consecutive settled warm-up frames.
+`--resolution` specifies physical pixels. Frame timings use real, unclamped
+time; the report includes median/p95/p99, scene counts, camera, fog, sky, water
+time and recent GPU diagnostic averages.
+
+Three 300-frame runs at these settings matched the static scene counts and
+1600 × 900 capture size. Median frame times were 17.69–17.86 ms on the RTX 3080
+(above the 16.7 ms target). Animation, waves and foam history remain live:
+`--time-scale 0` freezes the game clock, **not** those effects. These reports
+are performance baselines, not proof of pixel-identical captures or a match
+to the original game. Original-game visual comparison: **not tested**.
+
 ## Play together (experimental)
 
 Each player needs their own installed copy of Subnautica, the same game

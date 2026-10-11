@@ -121,7 +121,7 @@ struct WaterSim {
 
 /// The game's surface clock (`WaterSurface.time`).
 #[derive(Resource, Default)]
-struct SurfaceClock(f64);
+pub(crate) struct SurfaceClock(pub f64);
 
 /// Uniform of the surface; must match `WaterSurface` in
 /// `water_surface.wgsl`.
