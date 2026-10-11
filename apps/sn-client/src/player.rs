@@ -103,8 +103,27 @@ enum FromWorker {
         remove: Vec<u64>,
         load_ms: Vec<f64>,
         batches: usize,
+        /// Which of the added bodies are targets (M9d4).
+        targets: Vec<(u64, sn_assets::TargetBody)>,
+        /// Keys gone since the last message whose bodies were loaded,
+        /// and targets a load left out because their key was gone.
+        keys_removed: usize,
+        gone_skipped: usize,
     },
     Error(String),
+}
+
+/// A server-made object for the collision worker: id, class, point,
+/// rotation (the wire's).
+pub type SpawnedObject = (sn_protocol::ItemId, String, [f32; 3], [i16; 4]);
+
+/// What the main thread tells the collision worker.
+enum ToWorker {
+    Position([f32; 3]),
+    /// Objects no longer in the world (M9d4).
+    Gone(Vec<sn_protocol::EntityKey>),
+    /// All the server-made objects now (M9d4).
+    Objects(Vec<SpawnedObject>),
 }
 
 /// The running player and its world.
@@ -140,9 +159,11 @@ struct HatchPlay {
 
 #[derive(Resource)]
 pub struct PlayerSim {
-    to_worker: Sender<[f32; 3]>,
+    to_worker: Sender<ToWorker>,
     from_worker: Mutex<Receiver<FromWorker>>,
     world: World,
+    /// Bodies that are targets, with what they are (M9d4).
+    targets: std::collections::HashMap<u64, sn_assets::TargetBody>,
     state: Option<State>,
     /// The bodies around the player arrived; the player moves from then.
     ready: bool,
@@ -200,6 +221,8 @@ pub struct Start {
     pub hold_forward: Option<f64>,
     /// `--kill`: the player dies after this much play.
     pub kill: Option<f64>,
+    /// The item rules (M9d4: pickups and outcrops load as targets).
+    pub items: Option<std::sync::Arc<sn_sim::inventory::ItemRules>>,
 }
 
 impl PlayerSim {
@@ -221,6 +244,51 @@ impl PlayerSim {
     pub fn hatch_names(&self, hatch: usize) -> Option<&sn_assets::CinematicNames> {
         let s = self.state.as_ref()?;
         s.pod_anim.as_ref()?.0.names.get(hatch)
+    }
+
+    /// These objects left the world: their bodies go (M9d4).
+    pub fn send_gone(&self, keys: Vec<sn_protocol::EntityKey>) {
+        let _ = self.to_worker.send(ToWorker::Gone(keys));
+    }
+
+    /// The server-made objects now: bodies follow (M9d4).
+    pub fn send_objects(&self, objects: Vec<SpawnedObject>) {
+        let _ = self.to_worker.send(ToWorker::Objects(objects));
+    }
+
+    /// The targets with bodies now, by key (one entry per key), within
+    /// `reach` of the player.
+    pub fn targets_near(&self, reach: f64) -> Vec<sn_assets::TargetBody> {
+        let Some(state) = self.state.as_ref() else {
+            return Vec::new();
+        };
+        let p = state.player.position;
+        let mut seen = std::collections::HashSet::new();
+        let mut out: Vec<(f64, sn_assets::TargetBody)> = self
+            .targets
+            .values()
+            .filter(|t| {
+                let a = t.at.position;
+                let d = V3::new(f64::from(a[0]), f64::from(a[1]), f64::from(a[2])) - p;
+                d.length() <= reach
+            })
+            .filter(|t| seen.insert(t.key.clone()))
+            .map(|t| {
+                let a = t.at.position;
+                let d = V3::new(f64::from(a[0]), f64::from(a[1]), f64::from(a[2])) - p;
+                (d.length(), t.clone())
+            })
+            .collect();
+        out.sort_by(|a, b| a.0.total_cmp(&b.0).then_with(|| a.1.key.cmp(&b.1.key)));
+        out.into_iter().map(|(_, t)| t).collect()
+    }
+
+    /// The player's position and the camera's forward (Unity), if it
+    /// exists.
+    pub fn eye(&self) -> Option<(V3, V3)> {
+        let s = self.state.as_ref()?;
+        let yaw = s.look.rotation_x.to_radians();
+        Some((s.player.position, V3::new(yaw.sin(), 0.0, yaw.cos())))
     }
 
     /// Seconds of play (physics steps run).
@@ -252,6 +320,7 @@ impl PlayerSim {
             to_worker,
             from_worker: Mutex::new(from_worker),
             world: World::new(),
+            targets: std::collections::HashMap::new(),
             state: None,
             ready: false,
             started: Instant::now(),
@@ -280,10 +349,13 @@ impl PlayerSim {
 fn worker(
     game: &GameData,
     start: Start,
-    rx: &Receiver<[f32; 3]>,
+    rx: &Receiver<ToWorker>,
     tx: &Sender<FromWorker>,
 ) -> Result<(), String> {
     let mut loader = CollisionLoader::new(game, start.slot_seed)?;
+    if let Some(items) = &start.items {
+        loader.set_item_rules(items.clone());
+    }
     let data = sn_assets::player_data(loader.assets())?;
     let settings = sn_assets::physics_settings(loader.assets())?;
     let params = sn_assets::player_params(&data, &settings);
@@ -391,22 +463,64 @@ fn worker(
     tx.send(FromWorker::Init(Box::new(init)))
         .map_err(|_| "client gone")?;
     let mut batches = BatchBodies::new();
+    // Keys gone (M9d4): left out of every load, and the new ones' bodies
+    // removed; the server-made objects, when they change.
+    let mut gone: std::collections::HashSet<sn_protocol::EntityKey> =
+        std::collections::HashSet::new();
+    let mut new_gone: Vec<sn_protocol::EntityKey> = Vec::new();
+    let mut objects: Option<Vec<SpawnedObject>> = None;
     loop {
-        let c = batches.update(&mut loader, &rules, pos)?;
-        if !c.add.is_empty() || !c.remove.is_empty() {
+        let mut remove = Vec::new();
+        let mut keys_removed = 0;
+        for key in new_gone.drain(..) {
+            let ids = batches.remove_key(&key);
+            keys_removed += usize::from(!ids.is_empty());
+            remove.extend(ids);
+        }
+        let mut c = batches.update_with(&mut loader, &rules, pos, &|k| gone.contains(k))?;
+        if let Some(list) = objects.take() {
+            let s = batches.sync_spawned(
+                &mut loader,
+                &rules,
+                list.iter().map(|(id, c, p, r)| (*id, c.as_str(), *p, *r)),
+            );
+            c.add.extend(s.add);
+            c.remove.extend(s.remove);
+        }
+        remove.append(&mut c.remove);
+        if !c.add.is_empty() || !remove.is_empty() {
+            let targets = c
+                .add
+                .iter()
+                .filter_map(|(id, _)| batches.target(*id).map(|t| (*id, t.clone())))
+                .collect();
             tx.send(FromWorker::Bodies {
                 add: c.add,
-                remove: c.remove,
+                remove,
                 load_ms: c.load_ms,
                 batches: batches.loaded(),
+                targets,
+                keys_removed,
+                gone_skipped: c.gone,
             })
             .map_err(|_| "client gone")?;
         }
-        // Wait for the next position; keep only the latest.
-        pos = rx.recv().map_err(|_| "client gone")?;
+        // Wait for the next message; keep only the latest position.
+        let mut take = |m: ToWorker| match m {
+            ToWorker::Position(p) => pos = p,
+            ToWorker::Gone(keys) => {
+                for k in keys {
+                    if gone.insert(k.clone()) {
+                        new_gone.push(k);
+                    }
+                }
+            }
+            ToWorker::Objects(list) => objects = Some(list),
+        };
+        take(rx.recv().map_err(|_| "client gone")?);
         loop {
             match rx.try_recv() {
-                Ok(p) => pos = p,
+                Ok(m) => take(m),
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => return Ok(()),
             }
@@ -737,13 +851,26 @@ pub fn update(
                 remove,
                 load_ms,
                 batches,
+                targets,
+                keys_removed,
+                gone_skipped,
             } => {
+                let removed = remove.len();
                 for id in remove {
                     sim.world.remove(id);
+                    sim.targets.remove(&id);
                 }
                 let n = add.len();
                 for (id, b) in add {
                     sim.world.insert(id, b);
+                }
+                let new_targets = targets.len();
+                sim.targets.extend(targets);
+                if keys_removed > 0 || gone_skipped > 0 || (load_ms.is_empty() && n > 0) {
+                    info!(
+                        "player: items: {keys_removed} gone keys' bodies removed, {gone_skipped} gone targets left out of loads; {removed} bodies removed, {n} added ({new_targets} target bodies); {} target bodies around the player",
+                        sim.targets.len()
+                    );
                 }
                 if !load_ms.is_empty() {
                     info!(
@@ -1198,7 +1325,7 @@ pub fn update(
         .is_none_or(|s| (s - p).length() > RESEND_DISTANCE)
     {
         sim.last_sent = Some(p);
-        let _ = sim.to_worker.send(p.to_f32());
+        let _ = sim.to_worker.send(ToWorker::Position(p.to_f32()));
     }
 
     // The body (M9g4): `ArmsController.Update` and

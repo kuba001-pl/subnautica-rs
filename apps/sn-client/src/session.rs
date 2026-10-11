@@ -586,6 +586,28 @@ impl Session {
     pub fn take_events(&mut self) -> Vec<WorldEvent> {
         self.lock().events.drain(..).collect()
     }
+
+    /// The own player's id (once welcomed).
+    pub fn player(&self) -> Option<PlayerId> {
+        self.lock().client.player()
+    }
+
+    /// Runs `f` on the shared items and the number of world events
+    /// applied (`None` until the world state arrived, M9d3).
+    pub fn with_items<R>(&self, f: impl FnOnce(&sn_session::ItemsState, u32) -> R) -> Option<R> {
+        let i = self.lock();
+        if !i.client.loaded() {
+            return None;
+        }
+        let w = i.client.world()?;
+        Some(f(&w.items, w.events))
+    }
+
+    /// Sends an item request (M9d3); its number.
+    pub fn request(&mut self, request: sn_protocol::Request) -> u32 {
+        info!("session: request {request:?}");
+        self.lock().client.request(request)
+    }
 }
 
 impl Drop for Session {

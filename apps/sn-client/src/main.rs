@@ -11,6 +11,7 @@ mod effects;
 mod game_light;
 mod grass_look;
 mod hud;
+mod items;
 mod lifepod_light;
 mod object_look;
 mod objects;
@@ -137,6 +138,10 @@ Usage: sn-client [--game-dir <PATH>] [--start <X> <Y> <Z>] [--look <X> <Y> <Z>]
                  check that the player moves)
   --kill         --kill <SECONDS>: after SECONDS of play the player takes
                  its full health as damage (a debug check of the death)
+  --pick-up      --pick-up <SECONDS>: after SECONDS of play, ask to pick up
+                 the nearest pickups within 3 m (a debug check, M9d4b)
+  --drop         --drop <SECONDS>: after SECONDS of play, ask to drop the
+                 first item held a metre ahead (a debug check, M9d4b)
   --host         --host [PORT]: open this game to other players on UDP PORT
                  (default 27420; experimental, M10h: no encryption, for
                  friends on trust)
@@ -221,6 +226,9 @@ struct Args {
     hold_forward: Option<f32>,
     /// `--kill`: seconds of play before the player dies.
     kill: Option<f32>,
+    /// `--pick-up`, `--drop`: seconds of play (M9d4b).
+    pick_up: Option<f32>,
+    drop: Option<f32>,
     /// `--shot`: seconds of play, then `out/<name>.png`.
     shot: Option<(f32, String)>,
     /// `--lifepod-state`: the pod's `LightingController` state.
@@ -287,6 +295,8 @@ fn parse_args_from(raw: &[String]) -> Result<Args, String> {
         hatch_name: None,
         hold_forward: None,
         kill: None,
+        pick_up: None,
+        drop: None,
         shot: None,
         lifepod_state: sn_sim::lighting::DAMAGED,
         mode: session::Mode::Solo,
@@ -429,6 +439,8 @@ fn parse_args_from(raw: &[String]) -> Result<Args, String> {
                 args.hold_forward = Some(number(it.next(), "--hold-forward")?);
             }
             "--kill" => args.kill = Some(number(it.next(), "--kill")?),
+            "--pick-up" => args.pick_up = Some(number(it.next(), "--pick-up")?),
+            "--drop" => args.drop = Some(number(it.next(), "--drop")?),
             "--host" => {
                 let port = match it.peek().and_then(|v| v.parse::<u16>().ok()) {
                     Some(p) => {
@@ -725,6 +737,7 @@ fn start_session(args: &Args, lifepod: bool) -> Result<Started, String> {
         session,
         pod,
         day_seconds: day,
+        items: rules.items.clone(),
         build: rules.build,
         fingerprint: rules.fingerprint,
     })
@@ -737,6 +750,8 @@ struct Started {
     pod: Option<([f32; 3], sn_world::Transform)>,
     /// Game seconds per day (`DayNightCycle`, read from the code).
     day_seconds: f32,
+    /// The install's item rules (M9d3d).
+    items: std::sync::Arc<sn_sim::inventory::ItemRules>,
     build: String,
     fingerprint: u64,
 }
@@ -764,6 +779,7 @@ fn main() -> AppExit {
         session,
         pod,
         day_seconds,
+        items,
         build,
         fingerprint,
     } = match start_session(&args, lifepod) {
@@ -1006,6 +1022,7 @@ fn main() -> AppExit {
                         head_visible: args.third_person,
                     }),
                     !args.no_animation,
+                    Some(items.clone()),
                 ));
                 app.init_resource::<animation::AnimationStats>()
                     .add_systems(Update, animation::animate.after(objects::stream_objects));
@@ -1054,6 +1071,7 @@ fn main() -> AppExit {
                     hatch_name: args.hatch_name.clone(),
                     hold_forward: args.hold_forward.map(f64::from),
                     kill: args.kill.map(f64::from),
+                    items: Some(items.clone()),
                 };
                 app.insert_resource(player::PlayerSim::start(game, start))
                     .init_resource::<hud::Hud>()
@@ -1076,7 +1094,17 @@ fn main() -> AppExit {
                     )
                     .add_systems(Startup, hud::setup)
                     .add_systems(Update, player::update.before(terrain::stream))
-                    .add_systems(Update, hud::update.after(player::update));
+                    .add_systems(Update, hud::update.after(player::update))
+                    .insert_resource(items::ItemsView::new(
+                        args.pick_up.map(f64::from),
+                        args.drop.map(f64::from),
+                    ))
+                    .add_systems(
+                        Update,
+                        items::sync
+                            .after(player::update)
+                            .before(objects::stream_objects),
+                    );
                 if let Some((seconds, name)) = args.shot.clone() {
                     app.insert_resource(PlayShot {
                         seconds: f64::from(seconds),

@@ -2144,6 +2144,10 @@ fn hand_targets_follow_the_items() {
         .cloned()
         .expect("a pickup the hand can reach from above");
     let class = batches.target(body).unwrap().class.clone();
+    println!(
+        "chosen pickup {key:?} ({class}) at {:?}",
+        batches.target(body).unwrap().at.position
+    );
     // Removed: its bodies go, the cast no longer finds it.
     let before = world_bounds(&world, body).unwrap();
     let removed = batches.remove_key(&key);

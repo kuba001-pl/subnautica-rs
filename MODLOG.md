@@ -2,6 +2,49 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-11 — M9d4b: the drawing follows the items
+
+**What:**
+- `sn-client` `items.rs` (new): `ItemsView` follows the session's shared
+  item state after each world event: gone keys and server-made objects go
+  to the object streamer (drawing) and to the collision worker (bodies).
+  Debug flags `--pick-up <SECONDS>` (the nearest pickups within 3 m, at
+  most 3) and `--drop <SECONDS>` (the first held item, 1 m ahead: our
+  stand-in, the game's drop ray is M9d5).
+- `objects.rs`: each drawn item instance keeps its `EntityKey`;
+  `ObjectStreamer::hide_keys` despawns a gone key's entities and keeps it
+  from loading again; `set_spawned` loads and draws the server's objects
+  once (on the library worker) and removes those that go. `ItemDrawStats`
+  counts it, logged with each change and when a server object is drawn.
+- `player.rs`: the collision worker gets the gone keys and server objects
+  (`BatchBodies::update_with`, `remove_key`, `sync_spawned`) and logs
+  bodies removed and added.
+- `session.rs`: `player`, `with_items`, `request`. `main.rs`: the flags,
+  the install's item rules passed to the session and the streamer.
+- Real-data test `hand_targets_follow_the_items` prints the pickup it
+  chose (used to find the client's start point).
+- No new dependency or file type.
+
+**Why:** M9d4b of the M9d plan.
+
+**Verified:**
+- `cargo test --workspace`: 457 passed, 0 failed, 39 ignored. Clippy with
+  `-D warnings` and fmt pass.
+- `sn-client --start -197.3 -35.2 -10.2 --pick-up 3 --drop 6 --shot 10
+  m9d4b-pick-drop` (`out/m9d/m9d4b_client.log`): 3 pickups requested; after
+  the world events 3 keys hidden with 9 entities, and 3 bodies removed;
+  after the drop 1 server object, 1 body added, then "server-made object 6
+  drawn (3 entities)", `spawned_drawn` 1. Screenshot
+  `out/m9d4b-pick-drop.png`: the dropped item in front of the camera.
+- `sn-server --port 27777` with `sn-inspect coop 127.0.0.1:27777 --count 4
+  --presets lan --seconds 20`: 12 of 12 pairs 100 % exact (18,264 ticks),
+  128 hash checks with 0 differing (`out/m9d/m9d4b_*.log`).
+- **Fix on the way:** the first run's stats were printed right after the
+  drop event, before the prefab had loaded, so they showed 0 drawn. A log
+  line when the object is actually drawn showed it was drawn once.
+- **Not tested:** watching an item vanish in motion; keyboard pick-up (the
+  hand comes in M9d5).
+
 ## 2026-10-11 — M9d4a: hand targets in the collision world
 
 **What:**

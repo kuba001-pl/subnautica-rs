@@ -11,6 +11,11 @@
 //! The cells' spawn slots (`EntitySlotsPlaceholder`) are filled as the game
 //! does when a cell first loads, with our own seeded random numbers
 //! (`sn_world::fill_slots`, M7d); the fillers show at their own cell level.
+//!
+//! Items (M9d4b): with item rules, each pickup and outcrop instance keeps
+//! its `EntityKey`; a gone key's entities are despawned (and never
+//! spawned again), and the objects the server made are drawn at their
+//! point ([`ObjectStreamer::hide_keys`], [`ObjectStreamer::set_spawned`]).
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
@@ -34,6 +39,8 @@ use sn_assets::{
     SHADOWS_OFF, SHADOWS_ON, SHADOWS_ONLY, TerrainTexture, marmo_skies,
 };
 use sn_install::GameData;
+use sn_protocol::EntityKey;
+use sn_sim::inventory::ItemRules;
 use sn_unity::{Catalog, DayNightLight, LightKind, Material, SKIES_AUTO, Shader};
 use sn_world::{BatchCoord, EntityInfo, SLOTS_COMPONENT, Transform as Placement};
 
@@ -596,7 +603,14 @@ enum Update {
     Batch {
         coord: BatchCoord,
         instances: Vec<Instance>,
+        /// The instances that are items: index and key (M9d4b).
+        keys: Vec<(usize, EntityKey)>,
         ms: f32,
+    },
+    /// A server-made object's instance (`None`: no prefab for its class).
+    Spawned {
+        id: u32,
+        instance: Option<Instance>,
     },
     /// A scene's top-level objects; `shows`: for each instance, the
     /// Aurora states it shows in (M7f4e; [`AuroraShow::ALWAYS`] outside
@@ -630,6 +644,8 @@ enum Update {
 /// What the worker knows: the game's assets and everything already sent.
 struct Library {
     assets: GameAssets<'static>,
+    /// Which classes are items (M9d4b).
+    items: Option<Arc<ItemRules>>,
     catalog: Catalog,
     /// ClassId → prefab path (`prefabs.db`).
     class_paths: HashMap<String, String>,
@@ -2297,12 +2313,38 @@ impl Library {
     /// `placeholder` in world space); each filler shows at its own cell
     /// level (`WorldEntityInfo.cellLevel`; batch and global levels at the
     /// farthest).
+    /// Whether objects of this class are items the hand acts on.
+    fn is_item(&self, class: &str) -> bool {
+        self.items.as_ref().is_some_and(|r| {
+            r.outcrops.contains_key(class) || r.pickups.get(class).is_some_and(|p| p.pickupable)
+        })
+    }
+
+    /// A server-made object of `class` at `at` (M9d4b).
+    fn spawned(&mut self, id: u32, class: &str, at: Placement, out: &mut Vec<Update>) {
+        let instance = self
+            .class_paths
+            .get(class)
+            .cloned()
+            .and_then(|path| self.still_prefab_as(&path, true, out))
+            .map(|prefab| Instance {
+                level: 0,
+                prefab,
+                transform: at,
+                from_slot: false,
+                pod_sky: false,
+            });
+        out.push(Update::Spawned { id, instance });
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn fill_slots(
         &mut self,
         id: &str,
         data: &[u8],
         placeholder: &Placement,
         instances: &mut Vec<Instance>,
+        keys: &mut Vec<(usize, EntityKey)>,
         out: &mut Vec<Update>,
     ) {
         let Some(tables) = &self.slots else { return };
@@ -2320,16 +2362,27 @@ impl Library {
             &tables.loot.distribution,
             &tables.infos,
         );
-        let wanted: Vec<(String, Placement, usize)> = spawns
+        let wanted: Vec<(String, Placement, usize, Option<EntityKey>)> = spawns
             .iter()
             .filter_map(|s| {
                 let path = self.class_paths.get(s.class_id)?;
                 let level = usize::try_from(s.info.cell_level).map_or(0, |l| l.min(LEVELS - 1));
-                Some((path.clone(), placeholder.then(&s.transform), level))
+                let key = match (u16::try_from(s.slot), u16::try_from(s.copy)) {
+                    (Ok(slot), Ok(copy)) if self.is_item(s.class_id) => Some(EntityKey::Slot {
+                        placeholder: id.to_owned(),
+                        slot,
+                        copy,
+                    }),
+                    _ => None,
+                };
+                Some((path.clone(), placeholder.then(&s.transform), level, key))
             })
             .collect();
-        for (path, transform, level) in wanted {
+        for (path, transform, level, key) in wanted {
             if let Some(prefab) = self.still_prefab(&path, out) {
+                if let Some(key) = key {
+                    keys.push((instances.len(), key));
+                }
                 instances.push(Instance {
                     level,
                     prefab,
@@ -2344,6 +2397,7 @@ impl Library {
     fn batch(&mut self, game: &GameData, coord: BatchCoord, out: &mut Vec<Update>) {
         let start = Instant::now();
         let mut instances = Vec::new();
+        let mut keys = Vec::new();
         match game.read_batch_cells(coord) {
             Ok(Some(file)) => {
                 for cell in &file.cells {
@@ -2358,6 +2412,7 @@ impl Library {
                                     &c.data,
                                     &transform,
                                     &mut instances,
+                                    &mut keys,
                                     out,
                                 );
                             }
@@ -2368,6 +2423,9 @@ impl Library {
                         let below = saved_below(tree, &children, &object.id);
                         let spawn = !self.placeholders_saved(&path, &below, out);
                         if let Some(prefab) = self.still_prefab_as(&path, spawn, out) {
+                            if self.is_item(&object.class_id) {
+                                keys.push((instances.len(), EntityKey::Placed(object.id.clone())));
+                            }
                             instances.push(Instance {
                                 level: (cell.level as usize).min(LEVELS - 1),
                                 prefab,
@@ -2404,6 +2462,9 @@ impl Library {
                     let below = saved_below(&tree, &children, &object.id);
                     let spawn = !self.placeholders_saved(&path, &below, out);
                     if let Some(prefab) = self.prefab_as(&path, spawn, out) {
+                        if self.is_item(&object.class_id) {
+                            keys.push((instances.len(), EntityKey::Placed(object.id.clone())));
+                        }
                         instances.push(Instance {
                             level: BATCH_OBJECTS,
                             prefab,
@@ -2422,6 +2483,7 @@ impl Library {
         out.push(Update::Batch {
             coord,
             instances,
+            keys,
             ms: start.elapsed().as_secs_f32() * 1000.0,
         });
     }
@@ -2495,6 +2557,9 @@ pub(crate) fn material_desc(
 struct Shared {
     /// Batches to load, most urgent last.
     queue: Mutex<Vec<BatchCoord>>,
+    /// Server-made objects to load (M9d4b): id, class, placement. Under
+    /// the same lock's wake-up as the queue.
+    spawn: Mutex<Vec<(u32, String, Placement)>>,
     wake: Condvar,
     shutdown: AtomicBool,
 }
@@ -2509,6 +2574,7 @@ fn worker(
     scenes: Option<SceneOptions>,
     body: Option<BodyOptions>,
     animate: bool,
+    items: Option<Arc<ItemRules>>,
 ) {
     let start = Instant::now();
     let setup = || -> Result<Library, String> {
@@ -2518,6 +2584,7 @@ fn worker(
         let entity_infos = sn_assets::entity_infos(&assets)?;
         Ok(Library {
             assets,
+            items: items.clone(),
             catalog,
             class_paths,
             prefabs: HashMap::new(),
@@ -2656,8 +2723,13 @@ fn worker(
                 if shared.shutdown.load(Ordering::Relaxed) {
                     return;
                 }
+                let spawns: Vec<(u32, String, Placement)> =
+                    std::mem::take(&mut *shared.spawn.lock().unwrap());
+                if !spawns.is_empty() {
+                    break Err(spawns);
+                }
                 if let Some(c) = queue.pop() {
-                    break c;
+                    break Ok(c);
                 }
                 // Idle: everything asked for is loaded.
                 library.log_unported();
@@ -2665,7 +2737,14 @@ fn worker(
             }
         };
         let mut out = Vec::new();
-        library.batch(game, coord, &mut out);
+        match coord {
+            Ok(coord) => library.batch(game, coord, &mut out),
+            Err(spawns) => {
+                for (id, class, at) in spawns {
+                    library.spawned(id, &class, at, &mut out);
+                }
+            }
+        }
         for update in out {
             if tx.send(update).is_err() {
                 return;
@@ -2679,6 +2758,10 @@ fn worker(
 struct BatchObjects {
     /// `None` until the worker has sent them.
     instances: Option<Vec<Instance>>,
+    /// Instance index → its key, for items (M9d4b).
+    keys: HashMap<usize, EntityKey>,
+    /// Per cell level, the keys of its spawned items.
+    level_keys: [Vec<EntityKey>; SLOTS],
     /// Spawned entities per cell level, `None` when not spawned.
     shown: [Option<Vec<Entity>>; SLOTS],
     /// Whether its entities cast sun shadows (only the nearest level of
@@ -2764,6 +2847,30 @@ pub struct ObjectStreamer {
     warnings: usize,
     /// Worker time per batch (ms).
     pub batch_ms: Vec<f32>,
+    /// Items (M9d4b): keys gone, the spawned entities of each item
+    /// instance, the server-made objects wanted and drawn.
+    gone: HashSet<EntityKey>,
+    keyed: HashMap<EntityKey, Vec<Entity>>,
+    spawned_wanted: HashSet<u32>,
+    spawned: HashMap<u32, Vec<Entity>>,
+    spawned_pending: Vec<(u32, Instance)>,
+    pub item_stats: ItemDrawStats,
+}
+
+/// What the item drawing did (M9d4b), for the logs.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ItemDrawStats {
+    /// Keys whose entities were despawned when they went, and the
+    /// entities.
+    pub keys_hidden: usize,
+    pub entities_hidden: usize,
+    /// Item instances not spawned because their key was gone.
+    pub skipped_gone: usize,
+    /// Server-made objects drawn (each once), their entities, and
+    /// objects removed.
+    pub spawned_drawn: usize,
+    pub spawned_entities: usize,
+    pub spawned_removed: usize,
 }
 
 impl ObjectStreamer {
@@ -2772,7 +2879,9 @@ impl ObjectStreamer {
     /// `placeholders`: spawn what the objects' placeholders hold.
     /// `scenes`: load the scenes the game spawns at start (`None`: none).
     /// `body`: spawn the player's body (M9g4; `None`: none).
-    /// `animate`: run the objects' animators (M7f4c).
+    /// `animate`: run the objects' animators (M7f4c). `items`: the item
+    /// rules (M9d4b; `None`: no instance is an item).
+    #[allow(clippy::too_many_arguments)]
     pub fn start(
         game: GameData,
         lights: bool,
@@ -2781,11 +2890,13 @@ impl ObjectStreamer {
         scenes: Option<SceneOptions>,
         body: Option<BodyOptions>,
         animate: bool,
+        items: Option<Arc<ItemRules>>,
     ) -> ObjectStreamer {
         // The worker's asset index borrows the install for the whole run.
         let game: &'static GameData = Box::leak(Box::new(game));
         let shared = Arc::new(Shared {
             queue: Mutex::new(Vec::new()),
+            spawn: Mutex::new(Vec::new()),
             wake: Condvar::new(),
             shutdown: AtomicBool::new(false),
         });
@@ -2801,6 +2912,7 @@ impl ObjectStreamer {
                 scenes,
                 body,
                 animate,
+                items,
             )
         });
         ObjectStreamer {
@@ -2832,6 +2944,61 @@ impl ObjectStreamer {
             camera_batch: None,
             warnings: 0,
             batch_ms: Vec::new(),
+            gone: HashSet::new(),
+            keyed: HashMap::new(),
+            spawned_wanted: HashSet::new(),
+            spawned: HashMap::new(),
+            spawned_pending: Vec::new(),
+            item_stats: ItemDrawStats::default(),
+        }
+    }
+
+    /// These objects left the world: their entities go now and they are
+    /// not spawned again (M9d4b).
+    pub fn hide_keys(&mut self, commands: &mut Commands, keys: &[EntityKey]) {
+        for key in keys {
+            self.gone.insert(key.clone());
+            if let Some(entities) = self.keyed.remove(key) {
+                self.item_stats.keys_hidden += 1;
+                self.item_stats.entities_hidden += entities.len();
+                for e in entities {
+                    commands.entity(e).despawn();
+                }
+            }
+        }
+    }
+
+    /// The server-made objects now (id, class, placement): new ones are
+    /// loaded and drawn, missing ones despawned (M9d4b).
+    pub fn set_spawned(&mut self, commands: &mut Commands, objects: &[(u32, String, Placement)]) {
+        let now: HashSet<u32> = objects.iter().map(|o| o.0).collect();
+        let gone: Vec<u32> = self
+            .spawned_wanted
+            .iter()
+            .filter(|id| !now.contains(id))
+            .copied()
+            .collect();
+        for id in gone {
+            self.spawned_wanted.remove(&id);
+            self.spawned_pending.retain(|p| p.0 != id);
+            if let Some(entities) = self.spawned.remove(&id) {
+                self.item_stats.spawned_removed += 1;
+                for e in entities {
+                    commands.entity(e).despawn();
+                }
+            }
+        }
+        let mut asked = Vec::new();
+        for (id, class, at) in objects {
+            if self.spawned_wanted.insert(*id) {
+                asked.push((*id, class.clone(), *at));
+            }
+        }
+        if !asked.is_empty() {
+            self.shared.spawn.lock().unwrap().extend(asked);
+            // Wake the worker under the queue's lock (it waits on it).
+            let _queue = self.shared.queue.lock().unwrap();
+            self.shared.wake.notify_all();
         }
     }
 
@@ -3379,11 +3546,18 @@ pub fn stream_objects(
             Update::Batch {
                 coord,
                 instances,
+                keys,
                 ms,
             } => {
                 streamer.batch_ms.push(ms);
                 if let Some(b) = streamer.batches.get_mut(&coord) {
                     b.instances = Some(instances);
+                    b.keys = keys.into_iter().collect();
+                }
+            }
+            Update::Spawned { id, instance } => {
+                if let Some(inst) = instance.filter(|_| streamer.spawned_wanted.contains(&id)) {
+                    streamer.spawned_pending.push((id, inst));
                 }
             }
             Update::Scene {
@@ -3456,6 +3630,9 @@ pub fn stream_objects(
         .collect();
     for coord in gone {
         if let Some(b) = streamer.batches.remove(&coord) {
+            for key in b.level_keys.iter().flatten() {
+                streamer.keyed.remove(key);
+            }
             for entity in b.shown.into_iter().flatten().flatten() {
                 commands.entity(entity).despawn();
             }
@@ -3521,19 +3698,24 @@ pub fn stream_objects(
             };
             match (&b.shown[level], want) {
                 (Some(_), false) => {
+                    for key in std::mem::take(&mut b.level_keys[level]) {
+                        streamer.keyed.remove(&key);
+                    }
                     for entity in b.shown[level].take().into_iter().flatten() {
                         commands.entity(entity).despawn();
                     }
                 }
                 (None, true) if budget > 0 => {
-                    let todo: Vec<Instance> = b
+                    let todo: Vec<(Instance, Option<EntityKey>)> = b
                         .instances
                         .iter()
                         .flatten()
-                        .filter(|i| i.level == level)
-                        .copied()
+                        .enumerate()
+                        .filter(|(_, i)| i.level == level)
+                        .map(|(n, i)| (*i, b.keys.get(&n).cloned()))
                         .collect();
                     let mut entities = Vec::new();
+                    let mut level_keys = Vec::new();
                     let mut spawner = Spawner {
                         commands: &mut commands,
                         materials: &mut materials,
@@ -3541,12 +3723,26 @@ pub fn stream_objects(
                         light: &light,
                         water: water.as_deref(),
                     };
-                    for inst in &todo {
+                    for (inst, key) in &todo {
+                        if key.as_ref().is_some_and(|k| streamer.gone.contains(k)) {
+                            streamer.item_stats.skipped_gone += 1;
+                            continue;
+                        }
+                        let first = entities.len();
                         streamer.spawn_instance(inst, casting, &mut spawner, &mut entities);
+                        if let Some(key) = key {
+                            streamer
+                                .keyed
+                                .entry(key.clone())
+                                .or_default()
+                                .extend_from_slice(&entities[first..]);
+                            level_keys.push(key.clone());
+                        }
                     }
                     budget = budget.saturating_sub(entities.len().max(1));
                     if let Some(b) = streamer.batches.get_mut(&coord) {
                         b.shown[level] = Some(entities);
+                        b.level_keys[level] = level_keys;
                     }
                 }
                 _ => {}
@@ -3585,6 +3781,23 @@ pub fn stream_objects(
             shown.push(vec![root]);
         }
         streamer.scenes[i].shown = Some(shown);
+    }
+
+    // Server-made objects (M9d4b), each once.
+    for (id, inst) in std::mem::take(&mut streamer.spawned_pending) {
+        if !streamer.spawned_wanted.contains(&id) || streamer.spawned.contains_key(&id) {
+            continue;
+        }
+        let mut entities = Vec::new();
+        streamer.spawn_instance(&inst, true, &mut spawner, &mut entities);
+        streamer.item_stats.spawned_drawn += 1;
+        streamer.item_stats.spawned_entities += entities.len();
+        info!(
+            "items: server-made object {id} drawn ({} entities); drawing {:?}",
+            entities.len(),
+            streamer.item_stats
+        );
+        streamer.spawned.insert(id, entities);
     }
 
     // The player's body: spawned once, hidden until `crate::body` places it.
