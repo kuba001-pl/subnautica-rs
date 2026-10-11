@@ -2,6 +2,30 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-11 — Plan: M10, co-op multiplayer (docs only)
+
+**What:** `docs/DESIGN.md` § Phase D "M10 plan": an analysis of
+peer-to-peer (lockstep, rollback, split ownership) against client–server
+for the user, with the recommendation client–server with "host a game"
+inside the client; who decides which state; ticks as the shared time
+base; what a player sends; the crates (`sn-protocol`, `sn-net`, new
+`sn-session`, `sn-server`); steps M10a–M10i, each with its "Done when";
+how sync is proven (rules fingerprint, world-state hash, per-tick error
+against the owner's own log, slot-fill hash, event ticks). Also § 3.2
+(`sn-session`), § 3.3 (transport, replication, MP model), the M10 rows
+in § 4.3 and Phase D, and § 9 decisions 4–8.
+
+**Why:** the user asked for an M10 plan small enough to implement step
+by step, and whether P2P would sync better. The user approved the plan
+with the recommended choices the same day (§ 9, items 4–8 now decided).
+
+**How verified:** docs only, no code. Facts the plan relies on were read
+in the code: the client's physics loop steps `PlayerParams::fixed_dt` in
+`sn-client` `player.rs`, collision loads on a worker thread around the
+local player only, the slot fill draws per slot (`SlotRng::new(seed,
+placeholder_id, slot)`). Not checked yet (marked *hypothesis* in the
+plan): how Nitrox handles movement authority and the shared escape pod.
+
 ## 2026-10-10 — Fix: controls after the bottom hatch, stuck after the top hatch
 
 **What:** two bugs the user found playing M9g5e (not yet committed).

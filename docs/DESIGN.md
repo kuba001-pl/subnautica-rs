@@ -104,6 +104,8 @@ subnautica-rs/
 │  │                          seam stitching, per-LOD simplification
 │  ├─ sn-sim/                 shared gameplay rules: swim movement, inventory, ownership
 │  ├─ sn-protocol/            message types + versioned binary codec, no sockets
+│  ├─ sn-session/             multiplayer logic as state machines: server (join, clock,
+│  │                          event order) and client (clock sync, interpolation)
 │  │  ── layer 3: OS, engine & IO edges ──
 │  ├─ sn-install/             find the install (--game-dir, SUBNAUTICA_DIR, Steam
 │  │                          library scan), check build number, read/mmap files
@@ -136,9 +138,9 @@ and reading files) and `apps/sn-client` (Bevy). M5 added `sn-unity`; M6 added
 | Terrain meshing | **Surface nets first** (simple, robust), **dual contouring** later for sharp features | Get pixels quickly; DC needs Hermite normals we must derive from the SDF | — |
 | LOD | Clipmap rings around the camera; coarse LOD = octree truncated at shallower depth | The octree *is* a free mip chain; mirrors the game's own `clipmaps-*.json` | — |
 | Game data access | `sn-install` reads files; parsers only see bytes | One place for path logic, mmap, and the "install is read-only" rule | — |
-| Networking transport | **UDP** with reliable/unreliable channels (evaluate `renet` vs `quinn` vs own at M10) | Standard for real-time desktop games; no browser constraints | NAT traversal pain → relay/QUIC |
-| Replication | Own small protocol in `sn-protocol`; evaluate `bevy_replicon`/`lightyear` at M10 | Keep the protocol Bevy-free so server and tests stay simple | Own protocol becomes a time sink |
-| MP model | Nitrox-style: server owns persistent world state; each entity has one *simulation owner* (usually the nearest player) who simulates and broadcasts it; interest management by batch/cell | Proven for this exact game; scales to a handful of players | — |
+| Networking transport | **UDP** with reliable/unreliable channels: our own thin layer on `std::net::UdpSocket`, no async runtime (user decision 2026-10-11, § 9; M10 plan) | Standard for real-time desktop games; no browser constraints | NAT traversal pain → relay/QUIC |
+| Replication | Own small protocol in `sn-protocol`, logic in `sn-session`; `bevy_replicon`/`lightyear` not used (they tie replication to Bevy's ECS; M10 plan) | Keep the protocol Bevy-free so server and tests stay simple | Own protocol becomes a time sink |
+| MP model | Client–server, not P2P (analysis in the M10 plan); Nitrox-style: server owns persistent world state; each entity has one *simulation owner* (usually the nearest player) who simulates and broadcasts it; interest management by batch/cell | Proven for this exact game; scales to a handful of players | — |
 | Physics | Defer choice to M9 (`avian` vs `rapier`); terrain colliders from the same meshes | — | — |
 | Licence for our code | Proposed **MIT OR Apache-2.0** (Rust convention) | — | **Needs user decision** |
 
@@ -406,7 +408,7 @@ understand it, then write our own.
 | **M9b** ✅ | **Done 2026-10-10** (MODLOG; facts in `docs/formats/gameplay.md` § Player movement; plan and "as built" below). `sn-inspect walk`: pod → hatch → 10 s swim (71 m) → back in, 0 penetrations, 0 surfaces passed through; speeds 3.5 walking and 7.22 swimming against 3.5 and 7.6 read (7.22 is 7.6 after one step of drag 2.5). Layer 19 hits all layers but 9; every loaded collider is on layer 0 (none dropped yet). 46 pod and module colliders; placeholder spawns 10–216 per run. Colliders are one-sided, as PhysX's (source read; winding measured). The client plays as the player by default. Keyboard and mouse play are not tested by the agent. Plan as written: Player: first-person camera at eye height, swimming, walking with gravity in the lifepod and above water, the lifepod hatch. Speeds from the player's serialized fields (P0). The fly camera stays as `--free-cam`. Collision gaps left by M9a that matter here: (1) read the physics layer collision matrix (`PhysicsManager`) and collide only with the layers the player's capsule hits; (2) colliders of the lifepod's spawned modules (fabricator, radio, …) and of what placeholders spawn (M7h), so walking inside the pod hits them; (3) find out whether the game's terrain and mesh colliders block from one side or both, and match it. | Movement rules unit-tested; speeds logged next to the values read; scripted run lifepod → water → lifepod (positions logged); the layer matrix logged and the colliders kept/dropped by layer counted; lifepod module and placeholder colliders counted in the run; one- vs two-sided recorded in `docs/formats/gameplay.md` with how it was checked. |
 | **M9c** ✅ | **Done 2026-10-10** (MODLOG; facts in `docs/formats/gameplay.md` § Oxygen, health and death and § Mouse look; plan and "as built" below). `sn-sim::vitals` and `look` pass 14 unit tests; `sn-inspect dive` seeds 1–5: oxygen 0 at 42.26 s under water, death 8.02 s later, respawn in the pod 5.02 s, restore 1.02 s, controls 1.02 s; oxygen within one breath of the read rate; refill 0.56–0.74 s from surfacing; 0 penetrations. Look: 0.1125° per mouse count (sensitivity 0.15 from the DLL), pitch ±87° (scene; the code says ±80). The HUD and the look in play are not tested by the agent. Plan as written: Oxygen, health, depth: drain under water, refill at the surface and in the lifepod, suffocation → respawn in the lifepod, with the game's numbers. A minimal HUD of our own (bars and numbers; the game's UI sprites later). Also the mouse look as the game's (`MainCameraControl`: sensitivity, pitch limits, smoothing, read from its serialized fields and settings defaults), replacing our own values from M9b. | Rules unit-tested; a scripted dive logs oxygen over time against the values read; the look's values logged next to the ones read, its limits unit-tested. |
 | **M9g** ✅ (2026-10-10, M9g1–M9g5e; not compared with the game on screen) | **The player's body** (plan written 2026-10-10, below M9c's; split into M9g1–M9g5): the game's player model from the `main` scene with the suit the equipment rule picks, its animator driven by the game's parameter rules (`ArmsController`, `Player`), the view model's turn and bob (`MainCameraControl`), the head drawn only in shadows in first person; then the hatch cinematics and death animation. Pulls forward "After Phase E" item 3 (all but tools/IK). Before M10 so remote players are drawn as bodies. | Each step's own list in the plan. |
-| **M10** | Multiplayer as planned (Phase D): `sn-protocol`, `sn-net`, `sn-server`, handshake with the build check, join, player sync (remote players drawn with M9g's body, animated by the same rules from synced state). From here solo play also runs against an in-process server (§ 3.1, principle 5), so items and crafting below are written server-authoritative once. | M10's own row. |
+| **M10** | Multiplayer as planned (Phase D, "M10 plan", steps M10a–M10i): `sn-protocol`, `sn-net`, `sn-session`, `sn-server`, handshake with the build and rules check, join, player sync (remote players drawn with M9g's body, animated by the values the owner's rules computed). From here solo play also runs against an in-process server (§ 3.1, principle 5), so items and crafting below are written server-authoritative once. | M10's own row. |
 | **M9d** | Pick up and inventory: `Pickupable` objects within reach, outcrops break into their resource (`BreakableResource`), inventory of the game's size, item sizes from TechData; picked objects gone for every player (server state keyed by entity id and slot seed). | Inventory rules unit-tested; a scripted pick-up logs item counts; the object's drawn count −1 on both clients. |
 | **M9e** | Crafting at the lifepod's fabricator: the menu from P1's tree, recipes and times from TechData, starting blueprints from `PDAData`; item names from the language files. | Crafting rules unit-tested on synthetic recipes; one real recipe crafted in a scripted run (counts before/after logged); menu node count equal to P1's. |
 | **M9f** | Save and load (player, inventory, removed objects, crafted items) on the server, in our own format, in the user's save folder (not `out/`, not the game folder). Becomes M11's persistence. | Round-trip unit test; server restart restores the logged state. |
@@ -1460,12 +1462,248 @@ only, with the UI).
 
 | # | Goal | Done when |
 |---|---|---|
-| **M10** | `sn-protocol` + `sn-net` + `sn-server`: handshake (protocol + game build check), join, player transform sync over UDP (position, yaw, pitch, velocity and the body's flags; each client runs M9g's rules for the remote bodies). | Two clients on one machine see each other's animated bodies (M9g; capsules if M9g is not done); packet loss/latency injected in tests. |
+| **M10** | Co-op players (plan below, steps M10a–M10i): `sn-protocol`, `sn-net`, `sn-session`, `sn-server`; client–server with "host a game" in the client; handshake (protocol, game build, rules fingerprint), join, one shared clock and world settings, player state sync per physics tick over UDP (position, velocity, look, flags and the animator values M9g's rules computed on the owner's machine), remote bodies, cinematics and deaths; solo play through an in-process server. | Each step's own list in the plan; in the end two clients on one machine see each other's animated bodies with the logged error targets met under injected loss and latency, and the user plays with a friend over the internet. |
 | **M11** | Nitrox-style entity sync: simulation ownership + handoff, server persistence, pick up / drop an item. Then M7f4h, the floating lifepod, as the first owned rigid body. | Item state survives server restart; ownership handoff covered by headless tests. |
 | **M12** | **Playable multiplayer desktop demo:** two+ players spawn in Safe Shallows, swim the textured, populated seabed, see each other, pick up items, chat. | A friend on another machine joins over the internet using their own install. |
 
 Beyond M12 (unordered): creatures + AI, inventory/crafting, PDA, vehicles,
 habitat building, day/night, save import, audio, mod support, maybe a web port.
+
+#### M10 plan: co-op multiplayer (written 2026-10-11, approved by the user the same day with the recommended choices: § 9, items 4–8)
+
+**Goal of M10:** two to eight friends play in one world, each with their
+own install. M10 is about *players*: joining, seeing each other's bodies
+swim, walk, animate, use the lifepod's hatches and die, under one shared
+clock and one shared world. Items, inventory and saves (M9d–M9f) and
+creatures and other owned bodies (M11) are built on top of it and are not
+part of M10.
+
+##### Peer-to-peer or client–server? (analysis for the user)
+
+**First, what "perfectly synced" can mean.** It is three different
+promises; no architecture can give a fourth ("everyone sees the present
+of everyone"):
+1. **The same rules on every machine.** Every number in our rules comes
+   from the player's own install, so two different game builds would be
+   two different games. Checked once, at join: game build number and a
+   *rules fingerprint* (a hash of every value `sn-sim` reads from the
+   install: player, vitals, look and body parameters, TechData, the
+   cinematic clips, …).
+2. **The same shared state, in the same order.** Who joined, which hatch
+   was used, when the Aurora exploded, later who picked up which item:
+   identical on every machine, applied in the same order, at the same
+   tick. This part has to be *perfect*, and it is only perfect if exactly
+   one machine decides the order.
+3. **The same history of every moving thing.** Player B sees player A at
+   exactly the positions and animations A had, tick by tick, but *later*:
+   one network trip plus a small buffer (typically 50–150 ms). Seeing the
+   present of another machine is physically impossible (the signal needs
+   time to arrive); every architecture, P2P included, shows the past.
+   P2P can only save one hop in some cases (below).
+
+**The options:**
+
+| | **Lockstep P2P** (RTS-style: every peer simulates everything from everyone's inputs) | **Rollback P2P** (GGPO-style: predict, re-simulate on late input) | **P2P with split ownership** (each peer decides for its own things, no server) | **Client–server, one authority + owners** (Nitrox-style; the server can run inside the host's game) |
+|---|---|---|---|---|
+| Shared state (promise 2) | Identical only if every peer's simulation is bit-identical forever | As lockstep, plus visible corrections | **No single order**: two players grabbing the same item at once need an arbiter, which is a server again | **Identical by construction**: one machine orders every event |
+| Needs a bit-identical simulation on every PC | **Yes**, and ours is not: collision is loaded asynchronously on a worker thread around *your* player only; `sin`/`cos`/`acos`/`atan2` (look, slerp, body) are not guaranteed bit-equal across CPUs, OSes and compilers; one difference = a permanent, silent desync | Yes, the same | No | No (only for checks, by hash) |
+| Your own movement | Delayed by the slowest peer's ping (the game feels laggy) | Instant, but remote players jump back on corrections | Instant | **Instant** (your client simulates you, as in single player) |
+| Big open world | Each peer loads and simulates the area around **every** player | The same, re-simulated several ticks per frame | Fine | Fine: each client simulates only what is near it |
+| Joining late | Needs a full state transfer anyway | The same | From whom? | The server sends the state |
+| Saves | Every peer has a copy; which one is right? | The same | The same | One save, on the server (M9f, M11) |
+| Hosting, NAT | Every peer must reach every peer (n·(n−1) links); NAT hole punching needs a rendezvous (STUN/relay) service | The same | The same | One open UDP port on the host; everyone else connects out |
+| AGENTS.md rule 5 ("only through our own self-hosted server") | Needs a rule change, and a third-party rendezvous service would break it | The same | The same | **Fits as written** |
+| Work | Medium, then endless desync hunting | Large | Medium, plus an arbiter | Medium; Nitrox shows the model works for this exact game |
+
+**P2P's one real advantage** is latency between two players who are both
+not the host: in client–server A → host → B is two hops, in P2P A → B is
+one. For co-op without player-versus-player combat this is a few tens of
+milliseconds more delay in *seeing* the other player; it never touches
+your own controls. The host's own player has no network delay at all.
+
+**Recommendation: client–server, with "host a game" in the client.**
+From the players' side this *feels* like P2P: one friend hosts (our
+server runs inside their game, on its own thread), the others join by
+address, and no separate server machine is needed. A dedicated headless
+`sn-server` exists too, for an always-on world. Solo play runs the same
+in-process server without a network (§ 3.1, principle 5), so there is one
+code path to test. It is the only option that gives promise 2 by
+construction, and promise 3 is as good as physics allows.
+
+##### Who decides what
+
+| State | Decided by | Reaches others as | Checked by |
+|---|---|---|---|
+| World settings: slot seed, Lifepod 5's point, the Aurora's explosion draw, the clock's start, the time scale | Server (its flags, its own install) | `Welcome` at join: **values, not seeds**, wherever the result is small (the pod's point is 3 numbers, so no client re-derives it) | — |
+| Big seeded results (the slot fill: thousands of objects) | Each client, from the server's seed (the fill is per slot, `SlotRng(seed, placeholder, slot)`, independent of load order) | The seed in `Welcome` | Each client reports a hash of its fill per loaded batch; the server compares (0 mismatches expected) |
+| Game clock (tick; `DayNightCycle` time) | Server | The tick in every packet; clients sync to it | Clock offset and drift logged per client |
+| Clock-derived events: sky, the Aurora's countdown, explosion and swap, the pod's lighting states | Each client, from the shared clock and the `Welcome` values | — | Every client logs each event's tick; the ticks must be equal |
+| A player's movement, look, body, vitals, cinematics | That player's client (the **owner**) | Player states (unreliable, every tick) and player events (reliable) | The server logs implausible moves (speed above the read maxima); no rejection in M10 |
+| Shared objects (in M10 only the lifepod's hatch animator; later doors, items) | Server orders requests | Reliable world events, tick-stamped | World-state hash |
+| Join, leave, player ids, names | Server | Reliable | — |
+
+**Why the owner decides its own movement:** swimming then feels exactly
+like single player (no input delay, no corrections), and the server needs
+no collision world. Cheating is not a concern among friends on a
+self-hosted server; revisit if anyone wants public servers. (This is also
+how we understand Nitrox does it; *hypothesis*, to be re-checked in its
+source at M10c, architecture only.)
+
+##### The timeline: ticks
+
+- **One tick = one physics step of the game** (`Time.fixedDeltaTime`,
+  0.02 s, read from the install as `PlayerParams::fixed_dt`). The server
+  counts ticks from the world's start; every state and every event
+  carries the tick it happened in. Ticks, not wall-clock times, are the
+  shared time base.
+- **Clock sync:** each client estimates the server's tick from ping/pong
+  pairs (offset and round trip, filtered over the best recent samples).
+  Its physics loop then steps *on the server's tick numbers*. Drift is
+  corrected by slewing the step accumulator by at most 1 %; a jump only
+  when the error is above 0.25 s (logged).
+- **Remote players are drawn at `estimated tick − delay`.** The delay
+  starts at 100 ms (5 ticks) and adapts to the measured jitter. Between
+  two received ticks: interpolation. Missing ticks: cubic interpolation
+  with the received velocities. Past the newest received tick:
+  extrapolation for at most 250 ms, then hold. Every interpolated,
+  extrapolated and held frame is counted.
+- With no packet loss, B's copy of A at tick T is **exactly** A's state
+  at T after quantization. That is a test, not a hope ("How we prove it",
+  below).
+
+##### What a player sends
+
+**A state every tick** (about 50 bytes; the exact layout goes to
+`docs/formats/protocol.md`, our own format): the tick; position
+(3 × `f32`, better than 0.25 mm at 2 km from the origin); velocity
+(3 × `i16`, cm/s); look yaw and pitch (2 × `u16`); the player transform's
+rotation (only while a cinematic or its ease-out turns it; smallest-three
+quaternion); flags (motor, swimming, grounded, walk-grounded, in pod,
+cinematic, controls on, alive); and **the animator values M9g's rules
+computed on the owner's machine** (`move_speed`, `move_speed_x/y/z`,
+`view_pitch`, `view_turn`, `is_underwater`, `on_surface`, `diving`, …;
+floats as `i16`, bools as bits).
+
+Sending the computed animator values, not only the inputs to M9g's rules,
+makes the remote body move with the owner's own values: no second
+evaluation that could differ, and no collision needed around remote
+players for the `diving` ray. One-shot animator triggers (death, …) are
+events.
+
+**Packets:** one every 2 ticks (25 per second) carrying the last 4
+states, so every state travels twice and a single lost packet costs
+nothing. About 3–4 KB/s up per player including UDP/IP headers; with 8
+players about 25 KB/s down per client. Every packet stays under 1,200
+bytes (no IP fragmentation).
+
+**Events, reliable and ordered, each with its tick:** `Joined`, `Ready`
+(the client has loaded and spawned), `Left`; `CinematicStarted {hatch,
+clip, tick}`, `CinematicEnded`; `Died {kind}`, `Respawned`;
+`AnimatorTrigger {id}`; and world events, of which M10 has one: a trigger
+on the lifepod's animator (its hatch doors), applied by every client in
+the server's order at its tick.
+
+**Remote bodies:** M9g's body (the same model, suit and animator) for
+each remote player, posed from the received state and animated by the
+received values; the head is drawn normally (shadows-only is only for
+your own first-person view). A cinematic is played from its start tick
+(the clip is the same on every machine), so the remote body goes through
+the hatch as the owner's did.
+
+**Two players, one hatch:** no lock in M10. Each player's cinematic is
+their own; the pod's door animator gets both triggers in the server's
+order. If the data shows the pod's animator cannot play two at once, a
+lock is added and this plan updated.
+
+**Lifepod 5 is shared:** every player starts and respawns in the one pod
+at the server's point (*hypothesis* that this matches Nitrox; it is the
+only choice the game's single `EscapePod` allows without inventing one).
+
+##### Crates (created in the step that needs them)
+
+- **`sn-protocol`** (layer 2, pure): ids (`PlayerId`, `Tick`), every
+  message, our own small versioned binary codec (varints, quantization),
+  `PROTOCOL_VERSION`. Bytes in, data out; malformed input is an error
+  with its byte offset, never a panic.
+- **`sn-net`** (layer 3): a `Transport` trait with two implementations,
+  UDP (`std::net`) and an in-memory link with seeded impairments (delay,
+  jitter, loss, duplication, reordering) for tests. On top: the
+  connection (handshake, keep-alive, 5 s timeout), sequence numbers and
+  acks, a reliable-ordered channel (events) and a latest-only channel
+  (states), the round-trip estimate, byte and packet counters.
+- **`sn-session`** (layer 2, pure): the multiplayer logic as state
+  machines without sockets, files or threads, so it runs headless, in
+  tests, with dozens of simulated clients:
+  - `server`: join checks, ids, the clock, settings, relaying states,
+    ordering events, the world-state hash, timeouts;
+  - `client`: clock sync, a tick buffer per remote player, interpolation
+    and extrapolation, applying events in order.
+- **`apps/sn-server`**: `sn-session::server` + `sn-net`'s UDP +
+  `sn-install` (reads the host's own install: build number, rules
+  fingerprint, the pod's point from the seed). It never sends game data
+  (rule 5): only ids, numbers, seeds and hashes.
+- **`sn-client`**: embeds `sn-session::server` for solo play and
+  `--host`; `--join ADDRESS` connects to another one.
+- **`sn-inspect coop`**: headless bot clients (the real `sn-sim` player
+  with real collision, scripted like `walk` and `dive`) against a real
+  server. This is the main evidence, since the agent can't see the
+  screen.
+
+**Not used:** `bevy_replicon` and `lightyear` (§ 3.3 said "evaluate at
+M10"): they tie replication to Bevy's ECS, and the server and the tests
+must stay Bevy-free (layering rule). Async runtimes (`tokio`): not needed
+for one UDP socket and up to eight peers; a plain thread does it.
+
+##### Steps
+
+Each step ends with numbers and a MODLOG entry; nothing is committed or
+pushed without the user's OK. Every step can be reverted on its own.
+The decisions it needs are taken (§ 9, 4–8); **stop and ask** if a step's evidence contradicts one.
+
+| Step | Work | Done when |
+|---|---|---|
+| **M10a** | `sn-protocol`: ids, `Tick`, the messages above, our codec, quantization helpers; `docs/formats/protocol.md` (our own format, every field). | Round-trip unit tests of every message; quantization error bounds tested (position ≤ 0.25 mm at 2 km); 1,000,000 seeded random, truncated and bit-flipped inputs decode to `Ok` or `Err`, no panic; the encoded size of a player state logged. |
+| **M10b** | `sn-net`: `Transport`, the in-memory impaired link, the connection layer and both channels; the UDP transport. | Headless tests on the impaired link with the presets **lan** (1 ms), **internet** (40 ± 10 ms, 1 % loss) and **bad** (150 ± 50 ms, 5 % loss, 1 % duplicates, reordering): the reliable channel delivers every message exactly once, in order; the latest-only channel never delivers an older state after a newer one; timeouts fire at 5 s; the round-trip estimate is within 10 % of the configured delay; a UDP test on 127.0.0.1 passes. Counters logged per preset. |
+| **M10c** | `sn-session::server`: `Hello` (protocol version, build number, rules fingerprint, name) → `Welcome` or a readable reject; `Ready`; leave and timeout; the clock; relaying states; ordered events; the world-state hash. First read Nitrox's join and movement flow (architecture only, rule 6) and note here what we take. | Unit tests with simulated clients: a wrong build, protocol or fingerprint is rejected with its reason; 8 clients join, leave, time out and rejoin with consistent ids; every client receives every event in the same order with the same ticks; the hash is equal on all clients over 10,000 ticks with random joins and leaves. |
+| **M10d** | `sn-session::client`: clock sync, tick buffers, interpolation and extrapolation, applying events. | **The sync oracle** (headless, impaired link, scripted trajectories with sharp turns, stops and teleports): on **lan** the drawn state equals the sent state at every tick (bit-exact after quantization); on **internet** ≥ 99.9 % of drawn ticks exact, the max error logged; on **bad** ≥ 99 % exact and max error < 0.5 m. These are targets: if the data says otherwise, we record why and agree new ones with the user. Clock offset error after 10 s logged (target < 1 tick). |
+| **M10e** | `apps/sn-server`: flags (port, seeds, time scale, max players, an optional password typed at start and never stored), reads the host's install, binds UDP; logs joins, leaves, bandwidth per player and time per tick. | Runs headless without a window; rejects a client of another build (a fake `Hello` in a test); 0 panics in a 10-minute run with bots; time per tick logged (target < 1 ms with 8 players). |
+| **M10f** | `sn-inspect coop`: N bot clients (the real player rules and collision; scripted swims and walks from the lifepod, a hatch use, a `--kill`) against `sn-server` over UDP on this machine, impairment presets in between; each bot reports its slot-fill hashes. | For 2 and 4 bots on each preset: every bot's log of every other bot matches that bot's own log (M10d's targets, now with real movement); cinematic, death and respawn ticks equal everywhere; slot-fill and world-state hash mismatches 0; bandwidth per player logged (target < 8 KB/s up). |
+| **M10g** | **Solo through the session.** The client always runs `sn-session::server` in-process (a direct in-memory link, no sockets, no impairment) and takes its clock and world settings from it; the player rules stay where they are. Nothing new on screen. | Regression: the scripted runs (`--use-hatch 3,15,27 --hold-forward 31`, `--kill`) print the same per-step trace as before the change (equal positions at every step); the clock, Aurora and lighting event ticks are equal before and after. |
+| **M10h** | **Play together.** `--host [PORT]` opens the in-process server to the network; `--join ADDRESS[:PORT]`, `--name`. Remote bodies (M9g) posed from the tick buffer and animated by the received values; remote cinematics and deaths; the pod's door animator from world events; players appear only after `Ready` and disappear on leave. `--net-sim lan\|internet\|bad` impairs the client's own link for testing. | Two clients on this machine (`--host`, `--join 127.0.0.1`), both scripted: each logs the other's drawn position every second next to the other's own log (M10d's targets); both log the same tick for each cinematic, death and respawn; screenshots for the user (a bonus). Keyboard play together **not tested by the agent**. |
+| **M10i** | **Over the real internet.** README "Play together": hosting, joining, the UDP port to forward (or a LAN), what is synced and what isn't yet. | The user and a friend on another machine, with their own install, see each other swim and use the hatch (run by the user; their log lines go into the MODLOG). |
+
+##### How we prove it's in sync
+
+1. **Same rules:** join rejects a different build, protocol or rules
+   fingerprint (M10c).
+2. **Same shared state:** a world-state hash on the server and every
+   client every 50 ticks; mismatches counted and logged with their tick
+   (target 0: any mismatch is a bug, not noise).
+3. **Same history:** every bot and client logs each remote player's drawn
+   state next to that player's own log of the same tick; error
+   statistics per impairment preset (M10d, M10f, M10h).
+4. **Same seeded world:** the slot-fill hash per batch, compared by the
+   server.
+5. **Same clock:** every client logs the tick of the Aurora's events and
+   the pod's lighting changes; equal everywhere.
+
+##### Not in M10 (and where it goes)
+
+Items, inventory, crafting, saves (M9d–M9f, written server-first on top
+of M10); creatures, the floating pod, simulation ownership and its
+handoff (M11); chat and a join menu (M12); players colliding with each
+other (the game has one player, so there is no rule to read: § 9);
+voice; encryption (M10 is for friends on trust: no encryption, an
+optional password, not fit for public servers, and the README says so);
+NAT hole punching and relays (they need a third-party rendezvous service,
+rule 5); interest management by batch (M11, when entities make it matter;
+with eight players everything goes to everyone).
+
+**Risks:** the clock slew and the interpolation targets may need tuning
+with real numbers (M10d); the in-process server changes how solo play
+starts (M10g's regression check guards it); remote cinematics rely on
+the clip being the same everywhere, so the clips belong in the rules
+fingerprint.
 
 ## 5. Milestone 1
 
@@ -1554,3 +1792,15 @@ Out of scope for M1: density semantics, meshing, rendering, Bevy.
 1. Licence for our code (proposed: MIT OR Apache-2.0).
 2. Confirm Bevy as the client engine.
 3. Confirm: our own protocol (not Nitrox wire-compatible).
+Decided 2026-10-11 (the user took the M10 plan's recommendations):
+
+4. M10 is client–server with "host a game" in the client, not P2P
+   (analysis in the M10 plan).
+5. M10b transport: our own thin layer on `std::net::UdpSocket`, no
+   `renet`, `quinn` or `tokio` (small needs, two channels, fully testable
+   on the in-memory link, no dependency).
+6. Each player's client decides its own movement; the server only logs
+   implausible moves (revisit for public servers).
+7. Players pass through each other (the game has one player, so there is
+   no rule to read).
+8. Up to 8 players; tests with 2 and 4.
