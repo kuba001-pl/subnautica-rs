@@ -3,33 +3,47 @@
 //! the wreck; `ShipExteriorCullManager` may hide the wreck's exterior while
 //! the camera is in one of the `ShipExteriorCull` volumes. The rules are in
 //! `sn_sim::aurora`; this shows and hides the scene's parts.
+//!
+//! Since M10g the clock is the session's (the server's time since its
+//! tick 0, from the first frame) and the countdown counts from the
+//! world's start, so every player's Aurora goes at the same tick.
 
 use bevy::diagnostic::FrameCount;
 use bevy::prelude::*;
+use sn_protocol::AuroraStart;
 use sn_sim::V3;
 use sn_sim::aurora::{Exploder, ExplosionEvent, ExplosionTimes, cull_check_frame, in_any_volume};
-use sn_world::SlotRng;
 
 use crate::objects::{ExteriorCullVolume, ObjectStreamer};
+use crate::session::Session;
 
-/// Game seconds per clock hour (`DayNightCycle`: 1,200 s per day).
-const SECONDS_PER_HOUR: f64 = 1200.0 / 24.0;
-
-/// `DayNightCycle.timePassed`: game seconds, advanced by the frame time
-/// times `speed` (`dayNightSpeed`; `--time-scale`). The sky does not
-/// follow it yet (it stays at its start time).
+/// `DayNightCycle.timePassed`: game seconds, `start` at the server's tick
+/// 0, advancing `speed` (`dayNightSpeed`; `--time-scale`) times the
+/// server's time. The sky does not follow it yet (it stays at its start
+/// time).
 #[derive(Resource, Debug)]
 pub struct GameClock {
+    pub start: f64,
     pub seconds: f64,
     pub speed: f64,
 }
 
 impl GameClock {
-    /// At `hours` on the first day (a new game: `dateOrigin`, 9:36).
-    pub fn at_hours(hours: f32, speed: f32) -> GameClock {
+    /// The world's settings: `clock_start`, `time_scale`.
+    pub fn new(start: f64, speed: f32) -> GameClock {
         GameClock {
-            seconds: f64::from(hours) * SECONDS_PER_HOUR,
+            start,
+            seconds: start,
             speed: f64::from(speed),
+        }
+    }
+
+    /// The server's time (seconds since its tick 0) at a clock time.
+    pub fn server_seconds(&self, at: f64) -> f64 {
+        if self.speed > 0.0 {
+            (at - self.start) / self.speed
+        } else {
+            f64::INFINITY
         }
     }
 
@@ -39,20 +53,8 @@ impl GameClock {
     }
 }
 
-pub fn tick_clock(time: Res<Time>, mut clock: ResMut<GameClock>) {
-    clock.seconds += time.delta_secs_f64() * clock.speed;
-}
-
-/// How the Aurora starts.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum AuroraStart {
-    /// A new game: the countdown `Random.Range(…)` days after the start
-    /// (our draw from the seed) or after `countdown` seconds.
-    NewGame { seed: u64, countdown: Option<f32> },
-    /// `--aurora intact | exploded`: held in that state, as a save loaded
-    /// before or after the explosion would be (the countdown never comes,
-    /// or came before the start).
-    Held { exploded: bool },
+pub fn tick_clock(session: Res<Session>, mut clock: ResMut<GameClock>) {
+    clock.seconds = clock.start + session.server_seconds() * clock.speed;
 }
 
 #[derive(Resource)]
@@ -83,6 +85,7 @@ impl AuroraState {
 #[allow(clippy::too_many_arguments)]
 pub fn update(
     clock: Res<GameClock>,
+    session: Res<Session>,
     frame: Res<FrameCount>,
     streamer: Res<ObjectStreamer>,
     mut state: ResMut<AuroraState>,
@@ -94,6 +97,9 @@ pub fn update(
         return;
     };
     let now = clock.as_f32();
+    let tick_s = session.tick_seconds();
+    // The server's tick at a clock time (the shared time base).
+    let tick = |at: f32| clock.server_seconds(f64::from(at)) / tick_s;
     let state = &mut *state;
     let exploder = state.exploder.get_or_insert_with(|| {
         let c = data.code;
@@ -106,11 +112,10 @@ pub fn update(
         };
         state.cull_every = data.cull_every;
         let exploder = match state.start {
-            AuroraStart::NewGame { seed, countdown } => {
-                let delay = countdown.unwrap_or_else(|| {
-                    times.delay(SlotRng::new(seed, "CrashedShipExploder", 0).value())
-                });
-                Exploder::new_game(times, delay)
+            // `--aurora-countdown`, or our draw from the lifepod seed
+            // (`sn_assets::aurora_countdown`), after the world's start.
+            AuroraStart::Countdown { seconds } => {
+                Exploder::new_game_at(times, clock.start as f32, seconds)
             }
             AuroraStart::Held { exploded: true } => {
                 Exploder::loaded(times, now, now - times.swap_delay - 1.0)
@@ -129,19 +134,20 @@ pub fn update(
             data.cull_every,
             clock.speed
         );
+        if exploder.initialized() {
+            info!(
+                "aurora: countdown at {:.1} s (in {:.1} s; server tick {:.1}), swap at {:.1} s (server tick {:.1})",
+                exploder.countdown(),
+                exploder.countdown() - now,
+                tick(exploder.countdown()),
+                exploder.swap_time(),
+                tick(exploder.swap_time())
+            );
+        }
         exploder
     });
 
-    let was_initialized = exploder.initialized();
     let event = exploder.update(now);
-    if !was_initialized && exploder.initialized() {
-        info!(
-            "aurora: countdown at {:.1} s (in {:.1} s), swap at {:.1} s",
-            exploder.countdown(),
-            exploder.countdown() - now,
-            exploder.swap_time()
-        );
-    }
     if let Some(event) = event {
         let what = match event {
             ExplosionEvent::Countdown => "countdown starts (its sound and effects: not ported)",
@@ -151,7 +157,10 @@ pub fn update(
             }
             ExplosionEvent::Swap => "models swapped",
         };
-        info!("aurora: {what} at game time {now:.2} s");
+        info!(
+            "aurora: {what} at game time {now:.2} s (server tick {:.1})",
+            tick(now)
+        );
     }
 
     // `ShipExteriorCullManager.Update`.

@@ -85,6 +85,21 @@ impl Exploder {
         }
     }
 
+    /// A new game whose `SetExplodeTime` ran with the clock at `start`:
+    /// the countdown `delay` seconds after it. In multiplayer `start` is
+    /// the world's clock at its tick 0 (`WorldSettings::clock_start`), so
+    /// every player's Aurora explodes at the same tick however long their
+    /// own load took (M10g); [`Exploder::new_game`] counts from the first
+    /// update instead, as one machine's game does.
+    pub fn new_game_at(times: ExplosionTimes, start: f32, delay: f32) -> Exploder {
+        Exploder {
+            warning: start,
+            countdown: start + delay,
+            initialized: true,
+            ..Exploder::new_game(times, delay)
+        }
+    }
+
     /// As after loading a save (`OnProtoDeserialize`, version 2) whose
     /// clock is `now` and countdown `countdown`. Shows the ship as
     /// [`Exploder::is_exploded`] says; the countdown is not drawn again.
@@ -251,6 +266,19 @@ mod tests {
             ]
         );
         assert!(e.is_exploded());
+    }
+
+    #[test]
+    fn a_shared_start_counts_from_the_world_clock_not_the_first_update() {
+        let mut e = Exploder::new_game_at(TIMES, 480.0, 100.0);
+        assert!(e.initialized());
+        assert_eq!(e.countdown(), 580.0);
+        // The first update comes late (a slow load): the countdown stays.
+        assert_eq!(e.update(483.4), None);
+        assert_eq!(e.countdown(), 580.0);
+        assert_eq!(e.update(580.5), Some(ExplosionEvent::Countdown));
+        // Never culls: not deserialised.
+        assert_eq!(e.cull_exterior(true), None);
     }
 
     #[test]

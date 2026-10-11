@@ -6,7 +6,8 @@
 //! A worker thread loads the collision bodies of the batches within the
 //! game's collision range of the player and sends them over; the main
 //! thread keeps the `sn-sim` world, reads input and runs the player at the
-//! game's physics step.
+//! game's physics step: one step per server tick (`crate::session`, M10g;
+//! at most 10 per frame, the rest in the next frames).
 //!
 //! Oxygen, health, suffocation and respawn (`sn_sim::vitals`, M9c) run
 //! with the player at the same step and fill the HUD (`crate::hud`).
@@ -52,12 +53,10 @@ use sn_sim::{Pose, Q, V3};
 
 use crate::body::BodyDrive;
 use crate::hud::Hud;
+use crate::session::Session;
 
 /// The worker gets the player's position again after it moved this far.
 const RESEND_DISTANCE: f64 = 4.0;
-
-/// Physics steps run at most per frame (a long frame drops the rest).
-const MAX_STEPS_PER_FRAME: usize = 10;
 
 /// `--third-person`: the camera this far behind the eye (m), our own.
 const THIRD_PERSON_DISTANCE: f32 = 2.5;
@@ -142,6 +141,7 @@ pub struct PlayerSim {
     /// The bodies around the player arrived; the player moves from then.
     ready: bool,
     started: Instant,
+    /// Time since the last physics step's tick (less than one step).
     accumulator: f64,
     last_sent: Option<V3>,
     /// Physics steps run, for the status log.
@@ -558,6 +558,7 @@ pub fn update(
     motion: Res<AccumulatedMouseMotion>,
     mut windows: Query<(&Window, &mut CursorOptions)>,
     mut sim: ResMut<PlayerSim>,
+    mut session: ResMut<Session>,
     mut camera: Query<&mut Transform, With<Camera3d>>,
 ) {
     let sim = &mut *sim;
@@ -660,9 +661,11 @@ pub fn update(
                 }
                 if !sim.ready {
                     sim.ready = true;
+                    session.ready();
                     info!(
-                        "player: ready {:.1} s after start",
-                        sim.started.elapsed().as_secs_f32()
+                        "player: ready {:.1} s after start (server tick {:.1})",
+                        sim.started.elapsed().as_secs_f32(),
+                        session.server_tick()
                     );
                 }
             }
@@ -910,14 +913,11 @@ pub fn update(
         jump: keys.pressed(KeyCode::Space),
     };
 
-    // Fixed physics steps, once the bodies around the player are in.
+    // Physics steps on the server's ticks, once the bodies around the
+    // player are in.
     if sim.ready {
         let dt = state.params.fixed_dt;
-        sim.accumulator += f64::from(time.delta_secs());
-        let mut steps = 0;
-        while sim.accumulator >= dt && steps < MAX_STEPS_PER_FRAME {
-            sim.accumulator -= dt;
-            steps += 1;
+        for _tick in session.steps() {
             sim.steps += 1;
             // A status line every 10 s of play.
             if sim.steps % ((10.0 / dt) as u64).max(1) == 0 {
@@ -1053,9 +1053,9 @@ pub fn update(
                 );
             }
         }
-        if steps == MAX_STEPS_PER_FRAME {
-            sim.accumulator = 0.0;
-        }
+        // The step for tick T runs once the server's clock reaches T.
+        let since = session.server_tick() - f64::from(session.next_step()) + 1.0;
+        sim.accumulator = since.clamp(0.0, 0.999) * dt;
     }
 
     // Tell the worker where the player is.

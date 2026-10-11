@@ -17,6 +17,10 @@ sn-assets.workspace = true
 sn-install.workspace = true
 sn-mesh.workspace = true
 sn-octree.workspace = true
+# The world's messages and settings (M10g).
+sn-protocol.workspace = true
+# The in-process server and the client's session logic (M10g).
+sn-session.workspace = true
 # The player's rules and collision (M9b).
 sn-sim.workspace = true
 sn-terrain.workspace = true

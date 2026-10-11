@@ -155,7 +155,8 @@ meshes not yet decoded are flat, Safe Shallows triplanar rocks white;
 speeds, the game's own HUD and damage effects; audio,
 multiplayer (so far the headless `sn-server` and bot players, also with
 the player's own rules and collision, over UDP on one machine; the game
-client cannot join yet).
+client runs its own in-process server even in solo play, with the same
+clock and world settings, but cannot host or join yet).
 Linux/macOS: not tested.
 
 ## Try it

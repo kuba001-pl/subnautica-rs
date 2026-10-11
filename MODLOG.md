@@ -2,6 +2,73 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-11 — M10g: solo play through the in-process server
+
+**What:**
+- `sn-client` `session.rs` (new): `sn-session`'s server and client in
+  the client, joined over a direct in-memory link (every message
+  encoded and decoded, as on the network; no sockets, no impairment).
+  The session's time 0 is the first frame. It logs the join, `Ready`,
+  any mismatch, and a status line every 60 s (messages, events, hash
+  reports and checks, clock jumps).
+- `main.rs`: `start_session` reads the rules (`sn_assets::rules`: build,
+  fingerprint, tick, the Aurora's numbers), makes the new world's
+  settings from the flags (Lifepod 5's point from the seed or `--lifepod`,
+  the Aurora from `--aurora` / `--aurora-countdown` / the seed, the slot
+  seed, the clock), joins, and takes them back from the `Welcome`;
+  `lifepod_start` is gone (its work is in there, assets indexed once).
+- `player.rs`: one physics step per server tick (`Client::steps`; at most
+  10 per frame, the rest later instead of dropped); `Ready` goes to the
+  server when the collision around the player is in.
+- `aurora.rs`: the game clock is `clock_start` + the server's time ×
+  `time_scale` (was: the sum of Bevy's frame times, which clamps long
+  frames); the Aurora's countdown counts from the world's start; event
+  lines carry the server tick.
+- `sn-sim` `Exploder::new_game_at` (new) with a unit test.
+- Dependencies: `sn-client` now uses `sn-protocol` (the settings) and
+  `sn-session` (the in-process server and client), both ours.
+
+**Why:** M10g of the M10 plan: from here solo and multiplayer run the
+same code, so M10h only opens the link to the network.
+
+**How verified** (logs in `out/m10g/`):
+- `cargo test --workspace`: 386 passed (1 new). `cargo clippy
+  --workspace --all-targets -- -D warnings`: clean. `cargo fmt --check`:
+  clean.
+- Baseline first, on the unchanged code: `sn-client --hatch-name top
+  --use-hatch 3,15,27 --hold-forward 31 --kill 40 --shot 45 NAME`, run
+  twice. **The two baseline runs were not equal:** the scripts are
+  checked once per frame, so one run placed a scripted moment a step
+  later (85 of 452 trace lines shifted one step, one stationary line
+  differs at a window's edge), and the Aurora's countdown moved with load
+  time (4983.0 s vs 4982.7 s). So "equal positions at every step" could
+  not be the check; compared instead (`out/m10g/cmp.py`):
+  - after the change, two runs: identical line for line (453 trace
+    lines, 15 event lines);
+  - baseline vs after: the 453 traced states equal in sequence (position,
+    velocity, motor, flags, look, input), the 15 event lines (hatch uses,
+    push-outs, death, respawn, with positions) equal, scripted moments
+    within one step of the baseline's (151 lines one step earlier, as
+    between the baseline runs).
+- `--kill 3 --shot 15`, before and after: the 11 player lines equal;
+  `Died` and `MoveToRespawn` at the same places.
+- The Aurora: countdown at 4979.6 s game time (server tick 224,979.2),
+  swap at 5006.6 s (226,329.2), equal in every run after the change
+  (the countdown now counts from the world's start, not from when the
+  ship's scene first updated: 3.4 s earlier than before on this
+  machine, which is the load time). Lighting: the pod's state lines are
+  equal (they follow the player, not the clock).
+- `--benchmark 300` (no player): runs; session start 0.57 s.
+- Session lines: joined as player 0, welcomed with the settings, ready
+  at server tick 183.9 (3.9 s after start).
+- `--shot 70` (75 s): the 60 s status line: tick 3,001, 294 messages to
+  the server and 234 back, 2 world events (joined, ready), 61 world-hash
+  reports, 61 checked, 0 differ, 0 clock jumps; no warnings or errors.
+- **Not tested:** playing with keyboard and mouse after the change.
+
+**Found:** the session's join notices were logged before Bevy's log
+existed and were lost; now logged in the first frame.
+
 ## 2026-10-11 — M10f: bots with the player's rules, over impaired UDP
 
 **What:**

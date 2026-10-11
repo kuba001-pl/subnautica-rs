@@ -4792,6 +4792,8 @@ dependencies = [
  "sn-install",
  "sn-mesh",
  "sn-octree",
+ "sn-protocol",
+ "sn-session",
  "sn-sim",
  "sn-terrain",
  "sn-unity",

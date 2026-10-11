@@ -14,6 +14,7 @@ mod lifepod_light;
 mod object_look;
 mod objects;
 mod player;
+mod session;
 mod sky;
 mod sky_dome;
 mod stars;
@@ -39,6 +40,7 @@ use bevy::render::render_resource::TextureUsages;
 use bevy::render::view::screenshot::{Screenshot, ScreenshotCaptured, save_to_disk};
 use bevy::window::PresentMode;
 use sn_install::GameData;
+use sn_protocol::{AuroraStart, WorldSettings};
 
 use crate::game_light::{GameLightPlugin, LightTextures, PendingLightTextures};
 use crate::object_look::ObjectLookPlugin;
@@ -493,31 +495,83 @@ fn lod_ranges(view: f32) -> LodRanges {
     LodRanges(default.map(|r| r * scale))
 }
 
-/// Lifepod 5's start point (`RandomStart` with our seeded draw, or the
-/// chosen x, z) and where the player starts in it.
-fn lifepod_start(
-    game_dir: Option<PathBuf>,
-    seed: u64,
-    chosen: Option<[f32; 2]>,
-) -> Result<([f32; 3], sn_world::Transform), String> {
-    let game = GameData::locate(game_dir).map_err(|e| e.to_string())?;
+/// The session at start (M10g): the in-process server for a new world as
+/// the flags describe it (Lifepod 5's point from `RandomStart` with our
+/// seeded draw or the chosen x, z; the Aurora; the slot seed; the clock),
+/// joined over the direct link. Returns it with Lifepod 5's point and
+/// the player's place in it, both from the `Welcome`'s settings.
+fn start_session(args: &Args, lifepod: bool) -> Result<Started, String> {
+    let started = std::time::Instant::now();
+    let game = GameData::locate(args.game_dir.clone()).map_err(|e| e.to_string())?;
     let assets = sn_assets::Assets::index(&game)?;
-    let point = match chosen {
-        Some([x, z]) => [x, 0.0, z],
-        None => {
+    let rules = sn_assets::rules(&game, &assets)?;
+    let point = match (lifepod, args.lifepod) {
+        (false, _) => None,
+        (true, Some([x, z])) => Some([x, 0.0, z]),
+        (true, None) => {
             let map = assets.start_map()?;
-            let (p, tries) = map.random_start(seed);
+            let (p, tries) = map.random_start(args.lifepod_seed);
             println!(
-                "lifepod: seed {seed}: start {p:?} after {tries} draws ({:.2} % of the start map valid)",
+                "lifepod: seed {}: start {p:?} after {tries} draws ({:.2} % of the start map valid)",
+                args.lifepod_seed,
                 map.valid_share() * 100.0
             );
-            p
+            Some(p)
         }
     };
-    let mut scene = assets.scene("escapepod")?;
-    scene.spawn_lightmapped_prefab();
-    let spawn = scene.place_escape_pod(&assets, point)?;
-    Ok((point, spawn))
+    let aurora = match (args.aurora_held, args.aurora_countdown) {
+        (Some(exploded), _) => AuroraStart::Held { exploded },
+        (None, Some(seconds)) => AuroraStart::Countdown { seconds },
+        (None, None) => AuroraStart::Countdown {
+            seconds: sn_assets::aurora_countdown(&rules.exploder, args.lifepod_seed),
+        },
+    };
+    let day = rules.exploder.day_seconds;
+    let config = sn_session::ServerConfig {
+        build: rules.build.clone(),
+        fingerprint: rules.fingerprint,
+        password: None,
+        max_players: 1,
+        settings: WorldSettings {
+            slot_seed: args.slot_seed,
+            lifepod: point,
+            aurora,
+            clock_start: f64::from(args.time) * f64::from(day) / 24.0,
+            time_scale: args.time_scale,
+        },
+        tick_us: rules.tick_us,
+        max_speed: rules.max_speed,
+    };
+    let session = session::Session::solo(config, "player")?;
+    let pod = match session.settings().lifepod {
+        Some(point) => {
+            let mut scene = assets.scene("escapepod")?;
+            scene.spawn_lightmapped_prefab();
+            Some((point, scene.place_escape_pod(&assets, point)?))
+        }
+        None => None,
+    };
+    println!(
+        "session: solo on the in-process server (build {:?}, rules {:016x}, tick {} µs) in {:.2} s",
+        rules.build,
+        rules.fingerprint,
+        rules.tick_us,
+        started.elapsed().as_secs_f64()
+    );
+    Ok(Started {
+        session,
+        pod,
+        day_seconds: day,
+    })
+}
+
+/// What [`start_session`] gives.
+struct Started {
+    session: session::Session,
+    /// Lifepod 5's point and the player's spawn in it.
+    pod: Option<([f32; 3], sn_world::Transform)>,
+    /// Game seconds per day (`DayNightCycle`, read from the code).
+    day_seconds: f32,
 }
 
 fn main() -> AppExit {
@@ -528,29 +582,42 @@ fn main() -> AppExit {
             return AppExit::error();
         }
     };
-    if !args.debug_colours
-        && !args.no_objects
-        && let Some(options) = args.scenes.as_mut()
-    {
-        match lifepod_start(args.game_dir.clone(), args.lifepod_seed, args.lifepod) {
-            Ok((point, spawn)) => {
-                options.lifepod = Some(point);
-                options.lifepod_state = args.lifepod_state;
-                if !args.start_given {
-                    args.start = Vec3::from(spawn.position);
-                    if args.look.is_none() {
-                        // Unity's forward is the rotation's +z.
-                        let ahead = spawn
-                            .then(&sn_world::Transform {
-                                position: [0.0, 0.0, 10.0],
-                                ..Default::default()
-                            })
-                            .position;
-                        args.look = Some(Vec3::from(ahead));
-                    }
-                }
+    let lifepod = !args.debug_colours && !args.no_objects && args.scenes.is_some();
+    let Started {
+        session,
+        pod,
+        day_seconds,
+    } = match start_session(&args, lifepod) {
+        Ok(s) => s,
+        Err(message) => {
+            eprintln!("error: session: {message}");
+            return AppExit::error();
+        }
+    };
+    // The world as the server's settings give it (equal to the flags in
+    // solo play).
+    let settings = session.settings();
+    args.slot_seed = settings.slot_seed;
+    args.time = (settings.clock_start * 24.0 / f64::from(day_seconds)) as f32;
+    args.time_scale = settings.time_scale;
+    if lifepod && pod.is_none() {
+        eprintln!("warning: no lifepod");
+    }
+    if let (Some(options), Some((point, spawn))) = (args.scenes.as_mut(), pod) {
+        options.lifepod = Some(point);
+        options.lifepod_state = args.lifepod_state;
+        if !args.start_given {
+            args.start = Vec3::from(spawn.position);
+            if args.look.is_none() {
+                // Unity's forward is the rotation's +z.
+                let ahead = spawn
+                    .then(&sn_world::Transform {
+                        position: [0.0, 0.0, 10.0],
+                        ..Default::default()
+                    })
+                    .position;
+                args.look = Some(Vec3::from(ahead));
             }
-            Err(e) => eprintln!("warning: no lifepod: {e}"),
         }
     }
     let ranges = lod_ranges(args.view);
@@ -661,7 +728,12 @@ fn main() -> AppExit {
         fog_end: args.view,
         free_camera: !play,
     })
-    .insert_resource(aurora::GameClock::at_hours(args.time, args.time_scale))
+    .insert_resource(aurora::GameClock::new(
+        settings.clock_start,
+        settings.time_scale,
+    ))
+    .insert_resource(session)
+    .add_systems(First, session::update)
     .add_systems(Startup, setup)
     .add_systems(Update, aurora::tick_clock)
     .add_systems(
@@ -739,13 +811,6 @@ fn main() -> AppExit {
                         .add_systems(Update, objects::switch_lods.after(objects::stream_objects));
                 }
                 if args.scenes.is_some() {
-                    let start = match args.aurora_held {
-                        Some(exploded) => aurora::AuroraStart::Held { exploded },
-                        None => aurora::AuroraStart::NewGame {
-                            seed: args.lifepod_seed,
-                            countdown: args.aurora_countdown,
-                        },
-                    };
                     // With the fly camera there is no player: in the pod
                     // when starting at its spawn point.
                     let free_cam_in_pod = !play && !args.start_given;
@@ -756,7 +821,7 @@ fn main() -> AppExit {
                                 .after(objects::stream_objects)
                                 .after(player::update),
                         );
-                    app.insert_resource(aurora::AuroraState::new(start))
+                    app.insert_resource(aurora::AuroraState::new(settings.aurora))
                         .add_systems(
                             Update,
                             aurora::update
