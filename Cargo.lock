@@ -4775,6 +4775,7 @@ dependencies = [
  "sn-anim",
  "sn-dotnet",
  "sn-install",
+ "sn-protocol",
  "sn-sim",
  "sn-terrain",
  "sn-unity",
@@ -4810,7 +4811,10 @@ dependencies = [
  "sn-dotnet",
  "sn-install",
  "sn-mesh",
+ "sn-net",
  "sn-octree",
+ "sn-protocol",
+ "sn-session",
  "sn-sim",
  "sn-terrain",
  "sn-unity",
@@ -4845,6 +4849,17 @@ version = "0.0.0"
 [[package]]
 name = "sn-protocol"
 version = "0.0.0"
+
+[[package]]
+name = "sn-server"
+version = "0.0.0"
+dependencies = [
+ "sn-assets",
+ "sn-install",
+ "sn-net",
+ "sn-protocol",
+ "sn-session",
+]
 
 [[package]]
 name = "sn-session"

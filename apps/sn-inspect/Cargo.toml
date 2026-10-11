@@ -15,6 +15,10 @@ sn-world.workspace = true
 sn-assets.workspace = true
 sn-install.workspace = true
 sn-mesh.workspace = true
+# M10e: bot players for sn-server.
+sn-net.workspace = true
+sn-protocol.workspace = true
+sn-session.workspace = true
 sn-terrain.workspace = true
 sn-sim.workspace = true
 sn-unity.workspace = true

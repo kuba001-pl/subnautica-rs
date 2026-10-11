@@ -1852,3 +1852,36 @@ fn lifepod_hatch_cinematic_events() {
         assert!(travel > 0.1, "{}: cin_target did not move", t.name);
     }
 }
+
+/// M10e: the multiplayer rules read twice give the same fingerprint (two
+/// players on the same install must match), the physics step is the
+/// game's 0.02 s, and seed 1's world is the one the server logged.
+#[test]
+#[ignore = "needs SUBNAUTICA_DIR pointing at a Subnautica install"]
+fn multiplayer_rules_are_stable() {
+    let Some(dir) = std::env::var_os("SUBNAUTICA_DIR") else {
+        eprintln!("SUBNAUTICA_DIR not set; skipping");
+        return;
+    };
+    let game = GameData::locate(Some(PathBuf::from(dir))).unwrap();
+    let a = sn_assets::rules(&game, &Assets::index(&game).unwrap()).unwrap();
+    let assets = Assets::index(&game).unwrap();
+    let b = sn_assets::rules(&game, &assets).unwrap();
+    println!(
+        "build {:?}, fingerprint {:016x}, parts {:x?}, tick {} µs, max speed {} m/s",
+        a.build, a.fingerprint, a.parts, a.tick_us, a.max_speed
+    );
+    assert_eq!(a.fingerprint, b.fingerprint);
+    assert_eq!(a.parts, b.parts);
+    assert_eq!(a.build, "10");
+    assert_eq!(a.tick_us, 20_000);
+    let (point, tries) = sn_assets::lifepod_point(&assets, 1).unwrap();
+    println!(
+        "seed 1: lifepod {point:?} after {tries} draws; aurora countdown {} s",
+        sn_assets::aurora_countdown(&a.exploder, 1)
+    );
+    assert_eq!(tries, 72);
+    // Within the game's 2.3–4 days of 1,200 s.
+    let c = sn_assets::aurora_countdown(&a.exploder, 1);
+    assert!((2.3 * 1200.0..=4.0 * 1200.0).contains(&c), "{c}");
+}

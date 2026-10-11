@@ -18,6 +18,7 @@
 
 mod connection;
 mod endpoint;
+mod impaired;
 mod packet;
 pub mod sim;
 mod transport;
@@ -30,5 +31,6 @@ pub use endpoint::{
     CONNECT_RESEND_US, Config, DisconnectReason, Endpoint, EndpointStats, Event, PeerId,
     TIMEOUT_US, random_seed,
 };
+pub use impaired::ImpairedTransport;
 pub use packet::{MAX_MESSAGE, MAX_PACKET};
 pub use transport::{Transport, UdpTransport};

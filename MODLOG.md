@@ -2,6 +2,132 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-11 — M10f: bots with the player's rules, over impaired UDP
+
+**What:**
+- `sn-inspect coop <ADDR> [--count 2,4] [--presets lan,internet,bad]
+  [--seconds S]` (new, `coop.rs`). Each bot's script runs first with the
+  player's own rules and collision (`walk`'s `start`, `leave_pod`,
+  `go_to`, `board`; vitals on; a kill through `Vitals::take_damage`),
+  recording every step: position, velocity, rotation, look, flags,
+  life, and the animator values M9g's rules computed. Events come from
+  the record (hatch start/end, death, respawn, animator triggers). Then
+  the bots join `sn-server` over UDP, each link impaired by the preset,
+  and replay the record in the server's ticks. Every drawn tick is
+  compared with the owner's state; every bot's received player events
+  are compared with what the owner sent (kinds and ticks); slot-fill
+  hashes go to the server.
+- Why record and replay rather than step live: bots do not affect each
+  other (players pass through each other; collision is static), so the
+  record is exactly what the bot would do live; the scripted runner
+  (`walk.rs`) loops internally and would need a rewrite to step from a
+  network loop. The real client (M10h) steps live.
+- `walk.rs`: an optional per-step record (`StepRecord`); `body_run.rs`:
+  the last animator values.
+- `sn_net::ImpairedTransport` (new): a real transport with the presets'
+  delay, jitter, loss and duplication on the wall clock, both ways.
+- `sn_assets::CollisionLoader::slot_fill_hashes` (new): per batch, a hash
+  of what its slots were filled with (`protocol.md` § Slot-fill hash).
+- `sn-session` `Client::slot_fill`, `Client::steps_taken`; the server no
+  longer counts moves while a player is not alive as implausible (the
+  respawn move showed as 2,700 m/s); `sn-server` logs work per pass as
+  median, p99, p99.9, max and passes over 1 ms, and slot-fill checks.
+
+**Why:** M10f of the approved M10 plan.
+
+**How verified** (`out/m10f-server.log`, `out/m10f-coop.log`,
+`out/m10f-coop8.log`; `sn-server --port 27424 --run-for 1500 --report
+30`, then `sn-inspect coop 127.0.0.1:27424 --count 2,4 --presets
+lan,internet,bad --seconds 60` and `--count 8 --presets lan --seconds
+120`):
+- Recording: about 2.3–3.9 s per bot. First exit through the hatch at
+  step 91, its cinematic 330 steps (6.60 s); boarding 110 steps (2.20 s),
+  as M9g5's expected values; kills: died at step 822, respawned at
+  1,072 (5.0 s). In the 8-bot recording bot2 did not board within its
+  time (`boarded: false`) and floated on; noted, not investigated.
+- Drawn ticks exact: lan 6,394/6,394 (2 bots), 38,316/38,316 (4),
+  347,032/347,032 (8); internet 6,381/6,381 (2), 38,272/38,283 = 99.971 %
+  (4), max error 0.058 m; bad 6,350/6,362 = 99.811 % (2), 38,299/38,358
+  = 99.846 % (4), max error 0.237 m. All targets met.
+- Events: in every run each bot's list of each other bot's events
+  equals what that bot sent, ticks included (no "EVENTS DIFFER").
+- Server: world-state hash checks 0 differences in every 30 s window;
+  slot-fill checks 12 / 24 / 56 per join wave, 0 differences; upload
+  8,043–8,295 B/s per bot (target < 10 KB/s).
+- Server work per pass (wall time), 8 players, three 30 s windows:
+  median 31–32 µs, p99 286–307 µs, p99.9 445–471 µs, max 875, 1,116 and
+  810 µs (1 pass over 1 ms of about 59,000). With 2–4 players some
+  windows had stalls up to 25.6 ms (114 passes over 1 ms in one), which
+  do not follow the load. The worst-case target (< 1 ms) is met to
+  p99.9, not strictly; CPU time was not measured (needs OS calls or a
+  dependency: DESIGN § 9, item 9, open).
+- "2 ignored messages" on the bad preset: states (unordered) arrived
+  before a resent `Ready` (reliable) and were dropped, as the server's
+  rule says. Harmless; noted.
+- `cargo test --workspace`: 385 passed (the server's states test now
+  also checks a respawn jump is not counted). `cargo clippy --workspace
+  --all-targets -- -D warnings`: clean.
+- Not tested: live stepping in the client (M10g/h), a real network
+  (M10i).
+
+## 2026-10-11 — M10e: `sn-server`, the headless server
+
+**What:**
+- `sn-assets::host` (new): `build_number`, `rules` (the rules
+  fingerprint: FNV-1a 64 over the player, vitals and look parameters'
+  `Debug` text, the raw `Balance/TechData` bytes and the Aurora's code
+  numbers; plus the tick length and the plausible-speed limit),
+  `lifepod_point`, `aurora_countdown`. Shared so server and client
+  compute the same values. `sn-assets` now depends on `sn-protocol` (for
+  the hash).
+- `apps/sn-server` (new): `Host` (the session server behind an `sn-net`
+  endpoint, any transport; log lines; reports with per-player bandwidth,
+  round trip and counters) and `main.rs` (flags as the client's names
+  and defaults: `--lifepod-seed`, `--slot-seed`, `--time`,
+  `--time-scale`, `--aurora`, `--aurora-countdown`; `--port` default
+  27420, `--bind`, `--max-players`, `--ask-password` read from the
+  console and never stored, `--report`, `--run-for`). Reads only the
+  host's install; sends only ids, numbers, seeds and hashes.
+- `sn-inspect bots <ADDR> [--count N] [--seconds S]` (new): N bot
+  players over UDP on scripted paths (no collision; M10f adds the
+  player's rules), each drawn tick compared with its owner's state.
+- Docs: `protocol.md` § Rules fingerprint; README (try it, layout).
+
+**Why:** M10e of the approved M10 plan.
+
+**How verified:**
+- `sn-server --run-for 25` on the install: ready 0.7 s after start;
+  build "10", fingerprint `d269297a0830e68b` (parts logged), tick 20,000
+  µs, implausible above 100 m/s; seed 1: Lifepod 5 at (−127.73, 0,
+  −49.75) after 72 draws, Aurora countdown 4,499.6 game s; idle loop
+  6 µs of work per pass.
+- `cargo test -p sn-server`: over UDP on 127.0.0.1 a build "9" client
+  gets `Reject(Build "10")` and the server logs "rejected …: … same game
+  build"; a build "10" client is welcomed as player 0; 200 junk datagrams
+  counted as bad, nothing breaks.
+- `SUBNAUTICA_DIR=… cargo test -p sn-assets --test real_data
+  multiplayer -- --ignored`: the fingerprint and parts are equal over
+  two reads, equal to the release server's, tick 20,000, seed 1 → 72
+  draws, countdown within 2.3–4 days.
+- 10 minutes, `sn-server --run-for 630 --report 60` and `sn-inspect
+  bots 127.0.0.1:27422 --count 8 --seconds 600` on this machine
+  (`out/m10e-server.log`, `out/m10e-bots.log`): 0 panics, problems
+  none; 1,679,888 ticks drawn over 56 pairs, all exact, max error 0 m;
+  0 hash mismatches in 4,700+ checks; 84,000 states relayed a minute
+  (8 × 25 × 7 × 60); up 8,156–8,162 B/s per bot, down about 47 KB/s;
+  round trip 1.6–2.7 ms.
+- Server work per loop pass (wall time around `Host::step`): mean 37–54
+  µs per minute; worst pass per minute 1.0, 1.2, 1.8, 0.6, 1.1, 3.0,
+  0.9, 1.2, 1.4 ms, and 6.0 ms in the first minute while `cargo test`
+  compiled. **The < 1 ms target holds for the mean, not for the worst
+  case.** Suspected cause: OS scheduling (wall time, the 8 bots on the
+  same machine); not proven. M10f is to measure the server's CPU time.
+- The scripted paths' 30 m jump shows in the server's log as an
+  implausible move (1,505 m/s), as it should (not flagged cinematic).
+- `cargo test --workspace`: 385 passed. `cargo clippy --workspace
+  --all-targets -- -D warnings`: clean.
+- Not tested: the game client joining (M10g/h), another machine (M10i).
+
 ## 2026-10-11 — M10d: the client's half, and the sync oracle
 
 **What:** `sn-session::client::Client` (pure, on the caller's clock):

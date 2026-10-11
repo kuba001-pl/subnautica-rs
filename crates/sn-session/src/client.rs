@@ -260,6 +260,22 @@ impl Client {
         next..end
     }
 
+    /// The next own physics step [`Client::steps`] will give (0 before
+    /// the first).
+    pub fn steps_taken(&self) -> u32 {
+        self.next_step.unwrap_or(0)
+    }
+
+    /// The hash of a terrain batch's spawn-slot fill, for the server to
+    /// compare with other players' (`sn_assets::CollisionLoader::
+    /// slot_fill_hashes`).
+    pub fn slot_fill(&mut self, batch: [i32; 3], hash: u64) {
+        self.outgoing.push((
+            Channel::Reliable,
+            ClientMessage::SlotFillHash { batch, hash },
+        ));
+    }
+
     /// Loaded and placed: others may see this player now.
     pub fn ready(&mut self) {
         if self.player.is_some() && !self.ready_sent {

@@ -153,9 +153,9 @@ meshes not yet decoded are flat, Safe Shallows triplanar rocks white;
 `docs/formats/materials.md`), creatures (including the
 ~100,000 the spawn slots would add); the intro cinematic, tools, the PDA and IK, tanks and fins changing
 speeds, the game's own HUD and damage effects; audio,
-multiplayer (so far its message format, transport, server and client
-logic, `sn-protocol`, `sn-net` and `sn-session`, tested headless on a
-simulated network and on 127.0.0.1; no app uses them yet).
+multiplayer (so far the headless `sn-server` and bot players, also with
+the player's own rules and collision, over UDP on one machine; the game
+client cannot join yet).
 Linux/macOS: not tested.
 
 ## Try it
@@ -183,6 +183,12 @@ cargo run -p sn-client                      # fly around, starting in the lifepo
 cargo run -p sn-client -- --view 2000       # see further
 cargo run -p sn-client -- --flythrough 1700 -80 0   # automated test flight to the crater edge
 
+# Multiplayer (experimental, M10e): a headless server and bot players;
+# the client cannot join yet (M10h).
+cargo run --release -p sn-server -- --port 27420             # listens on UDP 27420
+cargo run --release -p sn-inspect -- bots 127.0.0.1:27420 --count 8 --seconds 60
+cargo run --release -p sn-inspect -- coop 127.0.0.1:27420   # bots with the player's rules, lan/internet/bad
+
 cargo test --workspace                      # tests that don't need the game
 cargo test -p sn-octree -- --ignored        # full-world test (needs SUBNAUTICA_DIR)
 ```
@@ -207,6 +213,7 @@ share them.
 | `crates/sn-session` | Multiplayer logic without sockets: the server (join, clock, event order, checks), the client (clock sync, drawing other players) and the shared world state |
 | `apps/sn-inspect` | Command-line inspector and validator |
 | `apps/sn-client` | The desktop client (Bevy) |
+| `apps/sn-server` | Headless multiplayer server (experimental): reads the host's install, listens on UDP |
 | `docs/` | Design, roadmap, file format notes |
 
 ### Client controls

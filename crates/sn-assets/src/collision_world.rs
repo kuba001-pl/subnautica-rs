@@ -85,6 +85,9 @@ pub struct CollisionLoader<'a> {
     placeholder_ids: HashMap<String, Vec<String>>,
     meshes: ColliderMeshes,
     stats: LoaderStats,
+    /// Per batch, a hash of what its spawn slots were filled with (M10f:
+    /// multiplayer clients report it, the server compares).
+    slot_fills: std::collections::BTreeMap<BatchCoord, u64>,
 }
 
 /// A saved tree's objects by parent id.
@@ -144,6 +147,7 @@ impl<'a> CollisionLoader<'a> {
             placeholder_ids: HashMap::new(),
             meshes: ColliderMeshes::new(),
             stats: LoaderStats::default(),
+            slot_fills: std::collections::BTreeMap::new(),
         })
     }
 
@@ -153,6 +157,13 @@ impl<'a> CollisionLoader<'a> {
 
     pub fn index(&self) -> &WorldIndex {
         &self.index
+    }
+
+    /// Per loaded batch: FNV-1a 64 over each slot spawn's object id, class
+    /// id and world transform (position, rotation, scale as `f32` bits),
+    /// in load order (`docs/formats/protocol.md` § Slot-fill hash).
+    pub fn slot_fill_hashes(&self) -> &std::collections::BTreeMap<BatchCoord, u64> {
+        &self.slot_fills
     }
 
     pub fn stats(&self) -> &LoaderStats {
@@ -375,6 +386,7 @@ impl<'a> CollisionLoader<'a> {
     pub fn objects(&mut self, c: BatchCoord) -> Result<Vec<PlacedCollider>> {
         let start = Instant::now();
         let mut out = Vec::new();
+        let mut fill = sn_protocol::Fnv64::new();
         if let Some(file) = self.game.read_batch_cells(c).map_err(|e| e.to_string())? {
             for cell in &file.cells {
                 let Some(tree) = &cell.objects else { continue };
@@ -396,6 +408,13 @@ impl<'a> CollisionLoader<'a> {
                             &tables.loot.distribution,
                             &self.infos,
                         );
+                        for s in &spawns {
+                            let at = transform.then(&s.transform);
+                            fill.str(&object.id).str(s.class_id);
+                            for v in at.position.iter().chain(&at.rotation).chain(&at.scale) {
+                                fill.f32(*v);
+                            }
+                        }
                         let wanted: Vec<(String, Transform)> = spawns
                             .iter()
                             .filter_map(|s| {
@@ -419,6 +438,7 @@ impl<'a> CollisionLoader<'a> {
                 }
             }
         }
+        self.slot_fills.insert(c, fill.finish());
         if let Some(mut tree) = self.game.read_batch_objects(c).map_err(|e| e.to_string())? {
             // Roots sit at the batch's corner (docs/formats/entities.md).
             let corner: Vec<f32> = [c.x, c.y, c.z]

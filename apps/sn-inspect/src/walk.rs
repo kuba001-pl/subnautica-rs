@@ -69,6 +69,28 @@ pub(crate) struct Run<'a, 'g> {
     look: Look,
     /// Each hatch cinematic that ended, for the report.
     pub(crate) hatch_uses: Vec<HatchDone>,
+    /// M10f: every step's state, if recording (the bots replay it).
+    pub(crate) record: Option<Vec<StepRecord>>,
+}
+
+/// The player after one step, as a multiplayer bot sends it (M10f).
+#[derive(Clone, Debug)]
+pub(crate) struct StepRecord {
+    pub(crate) position: V3,
+    pub(crate) velocity: V3,
+    pub(crate) rotation: sn_sim::Q,
+    pub(crate) look: Look,
+    pub(crate) walking: bool,
+    pub(crate) swimming: bool,
+    pub(crate) grounded: bool,
+    pub(crate) walk_grounded: bool,
+    pub(crate) in_pod: bool,
+    pub(crate) cinematic: bool,
+    /// The hatch trigger whose cinematic plays.
+    pub(crate) hatch: Option<usize>,
+    pub(crate) life: Option<sn_sim::vitals::Life>,
+    pub(crate) controls: bool,
+    pub(crate) values: Vec<(&'static str, sn_sim::body::AnimValue)>,
 }
 
 /// A hatch cinematic playing.
@@ -150,6 +172,39 @@ impl Run<'_, '_> {
     }
 
     pub(crate) fn step(&mut self, input: &Input) -> Result<()> {
+        self.step_unrecorded(input)?;
+        if self.record.is_some() {
+            let p = &self.player;
+            let life = self.vitals.as_ref().map(|(_, v)| v.life);
+            let controls = !p.cinematic
+                && self
+                    .vitals
+                    .as_ref()
+                    .is_none_or(|(_, v)| v.controls_enabled());
+            let r = StepRecord {
+                position: p.position,
+                velocity: p.velocity,
+                rotation: p.rotation,
+                look: self.look,
+                walking: p.motor == Motor::Walk,
+                swimming: p.swimming,
+                grounded: p.grounded,
+                walk_grounded: p.walk_grounded,
+                in_pod: p.in_pod,
+                cinematic: p.cinematic,
+                hatch: self.hatch.as_ref().map(|h| h.run.trigger),
+                life,
+                controls,
+                values: self.body.last_values.clone(),
+            };
+            if let Some(rec) = self.record.as_mut() {
+                rec.push(r);
+            }
+        }
+        Ok(())
+    }
+
+    fn step_unrecorded(&mut self, input: &Input) -> Result<()> {
         if self.steps % 25 == 0 {
             self.s.stream(self.player.position)?;
         }
@@ -624,6 +679,7 @@ pub(crate) fn start<'a, 'g>(s: &'a mut Streamed<'g>, seed: u64) -> Result<Run<'a
         hatch: None,
         look: Look::default(),
         hatch_uses: Vec::new(),
+        record: None,
     };
     for i in 0..r.pod.triggers.len() {
         if r.pod.triggers[i].active {

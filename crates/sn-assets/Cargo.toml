@@ -12,6 +12,8 @@ publish.workspace = true
 sn-anim.workspace = true
 sn-dotnet.workspace = true
 sn-install.workspace = true
+# M10e: the rules fingerprint uses the protocol's hash.
+sn-protocol.workspace = true
 sn-sim.workspace = true
 sn-terrain.workspace = true
 sn-unity.workspace = true

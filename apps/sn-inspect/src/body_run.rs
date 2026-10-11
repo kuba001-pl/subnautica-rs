@@ -45,6 +45,9 @@ pub(crate) struct BodyRun {
     /// `Player.camAnchor` and the death camera's bone (M9g5d).
     cam_anchor: PosedNode,
     head_camera: PosedNode,
+    /// The values the rules gave the animator in the last step (M10f:
+    /// the bots send them).
+    pub(crate) last_values: Vec<(&'static str, AnimValue)>,
 }
 
 impl BodyRun {
@@ -95,6 +98,7 @@ impl BodyRun {
             unknown: BTreeSet::new(),
             cam_anchor,
             head_camera,
+            last_values: Vec::new(),
         })
     }
 
@@ -178,6 +182,7 @@ impl BodyRun {
         self.body
             .fixed_step(frame.time, frame.underwater, frame.grounded, cinematic);
         let values = self.body.update(&self.params, frame, obstacle);
+        self.last_values.clone_from(&values);
         for (name, v) in values {
             let id = name_hash(name);
             let known = match v {

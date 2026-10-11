@@ -354,6 +354,16 @@ fn states_go_from_ready_players_to_the_others_and_into_welcomes() {
     w.send(a, &ClientMessage::States(vec![state(w.tick(), 1.1)]));
     assert_eq!(w.server.stats().implausible_moves, 1);
     assert_eq!(w.clients[&b].states[&pa].len(), 3);
+    // A respawn's jump (not alive on either side) is the game's own move.
+    w.advance(TICK_US);
+    let mut dead = state(w.tick(), 1.1);
+    dead.life = Life::Respawning;
+    w.send(a, &ClientMessage::States(vec![dead]));
+    w.advance(TICK_US);
+    let mut back = state(w.tick(), 500.0);
+    back.life = Life::Respawning;
+    w.send(a, &ClientMessage::States(vec![back]));
+    assert_eq!(w.server.stats().implausible_moves, 1);
     // A late joiner gets the newest state in its Welcome.
     let c = w.connect();
     w.server.received(c, &hello("c").encode(), w.now);

@@ -502,7 +502,13 @@ impl Server {
                     .sum::<f64>()
                     .sqrt();
                 let speed = d / (f64::from(s.tick.0 - p.tick.0) * tick_s);
-                if speed > self.config.max_speed && !s.cinematic && !p.cinematic {
+                // Cinematics and the death-to-respawn move teleport the
+                // player on purpose (M10f: respawns showed as 2,700 m/s).
+                let moved_by_the_game = s.cinematic
+                    || p.cinematic
+                    || s.life != sn_protocol::Life::Alive
+                    || p.life != sn_protocol::Life::Alive;
+                if speed > self.config.max_speed && !moved_by_the_game {
                     self.stats.implausible_moves += 1;
                     self.notices.push(Notice::Implausible { player, speed });
                 }

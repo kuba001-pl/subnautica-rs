@@ -185,6 +185,44 @@ message + 28 B of IPv4/UDP headers = 5,400 B/s up per player. M10d sends
 oracle, 7,969–8,144 B/s up per player including `sn-net`'s headers,
 acks, pings and IPv4/UDP headers. M10f's target is < 10 KB/s.
 
+## Rules fingerprint
+
+`Hello.fingerprint` (M10e; `sn_assets::rules`, the same code in the
+server and the client): FNV-1a 64 over, in order, each part's name
+(length-prefixed) and its own FNV-1a 64 hash:
+
+| Part | What is hashed |
+|---|---|
+| `player` | the `Debug` text of `sn_sim::player::PlayerParams` from the install (speeds, sizes, the walking motor, ocean level, the physics step) |
+| `vitals` | the `Debug` text of `sn_sim::vitals::VitalsParams` |
+| `look` | the `Debug` text of `sn_sim::look::LookParams` |
+| `techdata` | the raw bytes of the `Balance/TechData` text asset |
+| `exploder` | the `Debug` text of `sn_assets::ExploderCode` (the Aurora's numbers from the code) |
+
+Rust prints floats exactly and the same on every platform, and these
+structs hold no hash maps, so the text is canonical. The server logs every
+part's hash, so a mismatch can be traced to its part. Build 10 on the dev
+machine: `d269297a0830e68b` (*confirmed* stable across two reads and
+between a debug and a release build, M10e). Not in it yet: the cinematic
+clips (M10h plays them on remote bodies) and the body's animator rules
+(remote bodies use the owner's values, so they cannot desync).
+
+The tick length is `round(fixedDeltaTime × 10⁶)` µs (20,000 on build 10),
+and the speed above which a move is implausible (server) or a teleport
+(client) is twice the fastest of the swimming, vertical, walking and
+falling speeds (100 m/s on build 10).
+
+## Slot-fill hash
+
+`SlotFillHash { batch, hash }` (M10f; `sn_assets::CollisionLoader::
+slot_fill_hashes`): per terrain batch a client loaded, FNV-1a 64 over each
+spawn the batch's slots were filled with, in load order: the slot
+object's id (length-prefixed), the spawned class id (length-prefixed),
+and the spawn's world transform: position, rotation and scale as `f32`
+bits. The server keeps the first report per batch and counts any later
+one that differs. Clients fill slots from the server's slot seed on their
+own, so this is the check that they filled them alike.
+
 ## World state
 
 What every machine must hold identically (`crates/sn-session`,

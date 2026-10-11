@@ -5,8 +5,10 @@ mod anim;
 mod aurora;
 mod biomes;
 mod body_run;
+mod bots;
 mod code;
 mod collision;
+mod coop;
 mod density;
 mod dive;
 mod entities;
@@ -160,6 +162,19 @@ Commands:
                          equipment rule, drawn renderers and their shaders,
                          the head, the camera's nodes, ArmsController, the
                          animator's parameters by who sets them
+  bots <ADDR:PORT> [--count <N>] [--seconds <S>]
+                         M10e: N bot players (default 8) against a running
+                         sn-server for S seconds (default 60): joins with
+                         this install's build and rules, scripted paths,
+                         every drawn tick compared with its owner's state
+  coop <ADDR:PORT> [--count <N,...>] [--presets <P,...>] [--seconds <S>]
+                         M10f: bots with the player's own rules and
+                         collision (recorded first, then replayed) against
+                         a running sn-server, each bot's link impaired by
+                         the presets (default lan,internet,bad) for each
+                         count (default 2,4); every drawn tick and every
+                         event compared with its owner's; --seed N must be
+                         the server's --lifepod-seed (default 1)
   orient <X> <Y> <Z>     Score candidate child/octree orders using a batch and
                          its +X/+Y/+Z neighbours (default batch: 12 18 12)
 ";
@@ -201,6 +216,48 @@ fn run(mut args: Vec<String>) -> Result<ExitCode> {
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     match args.as_slice() {
         ["index"] => game::print_index(&game),
+        ["coop", server, options @ ..] => {
+            let (mut counts, mut presets, mut seconds) = (
+                vec![2usize, 4],
+                vec!["lan".to_string(), "internet".into(), "bad".into()],
+                60.0f64,
+            );
+            for pair in options.chunks(2) {
+                let [flag, value] = pair else {
+                    return Err(format!("coop: {} needs a value", pair[0]));
+                };
+                match *flag {
+                    "--count" => {
+                        counts = value
+                            .split(',')
+                            .map(|v| v.parse().map_err(|_| "--count takes numbers"))
+                            .collect::<std::result::Result<_, _>>()?
+                    }
+                    "--presets" => presets = value.split(',').map(str::to_string).collect(),
+                    "--seconds" => {
+                        seconds = value.parse().map_err(|_| "--seconds needs a number")?
+                    }
+                    _ => return Err(format!("unknown coop option {flag}")),
+                }
+            }
+            coop::run(&game, server, &counts, &presets, seconds, seed)
+        }
+        ["bots", server, options @ ..] => {
+            let (mut count, mut seconds) = (8usize, 60.0f64);
+            for pair in options.chunks(2) {
+                let [flag, value] = pair else {
+                    return Err(format!("bots: {} needs a value", pair[0]));
+                };
+                match *flag {
+                    "--count" => count = value.parse().map_err(|_| "--count needs a number")?,
+                    "--seconds" => {
+                        seconds = value.parse().map_err(|_| "--seconds needs a number")?
+                    }
+                    _ => return Err(format!("unknown bots option {flag}")),
+                }
+            }
+            bots::run(&game, server, count, seconds).map(|()| ExitCode::SUCCESS)
+        }
         ["octree", "--all"] => octree::all(&game),
         ["octree", x, y, z] => octree::one(&game, parse_coord(x, y, z)?),
         ["density", x, y, z] => density::run(&game, parse_coord(x, y, z)?),

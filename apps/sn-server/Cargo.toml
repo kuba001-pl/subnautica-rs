@@ -1,0 +1,19 @@
+[package]
+name = "sn-server"
+description = "Headless dedicated multiplayer server; reads the host's own install"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+# Rules fingerprint, build number, lifepod point, Aurora draw.
+sn-assets.workspace = true
+sn-install.workspace = true
+sn-net.workspace = true
+sn-protocol.workspace = true
+sn-session.workspace = true
+
+[lints]
+workspace = true
