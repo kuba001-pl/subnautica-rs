@@ -268,15 +268,20 @@ impl GameData {
 
     /// `SNUnmanagedData/prefabs.db`: ClassId → prefab path.
     pub fn read_prefab_database(&self) -> Result<HashMap<String, String>> {
+        Ok(self.read_prefab_database_ordered()?.into_iter().collect())
+    }
+
+    /// `prefabs.db`'s entries in file order (the order the game's
+    /// `PrefabDatabase` walks them: `CraftData`'s tech type → prefab map
+    /// keeps the last).
+    pub fn read_prefab_database_ordered(&self) -> Result<Vec<(String, String)>> {
         let path = self
             .build_dir
             .parent()
             .unwrap_or(&self.build_dir)
             .join("prefabs.db");
         let bytes = std::fs::read(&path).map_err(|e| io_error(&path, e))?;
-        let entries =
-            parse_prefab_database(&bytes).map_err(|e| Error(format!("{}: {e}", path.display())))?;
-        Ok(entries.into_iter().collect())
+        parse_prefab_database(&bytes).map_err(|e| Error(format!("{}: {e}", path.display())))
     }
 
     /// Batches with a file in `dir` named by `parse`, sorted, plus the names

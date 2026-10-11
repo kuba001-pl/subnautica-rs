@@ -1978,3 +1978,83 @@ fn item_data() {
         assert!(english.contains_key(key), "{key}");
     }
 }
+
+/// M9d3d: the item rules from the install. Counts as M9d1 found them;
+/// every outcrop resource and every supply is a pickup the rules know;
+/// two reads give equal rules. Prints the time a read takes.
+#[test]
+#[ignore = "needs SUBNAUTICA_DIR pointing at a Subnautica install"]
+fn item_rules_from_install() {
+    let Some(dir) = std::env::var_os("SUBNAUTICA_DIR") else {
+        eprintln!("SUBNAUTICA_DIR not set; skipping");
+        return;
+    };
+    let game = GameData::locate(Some(PathBuf::from(dir))).unwrap();
+    let assets = Assets::index(&game).unwrap();
+    let dll = sn_assets::read_assembly(&game).unwrap();
+    let start = std::time::Instant::now();
+    let (rules, report) = sn_assets::item_rules(&game, &assets, &dll).unwrap();
+    let took = start.elapsed().as_secs_f64();
+    let techs: std::collections::BTreeSet<i32> = rules
+        .pickups
+        .values()
+        .map(|p| p.tech)
+        .filter(|&t| t != 0)
+        .collect();
+    let outcrop_paths: std::collections::BTreeSet<(i32, usize, String)> = rules
+        .outcrops
+        .values()
+        .map(|o| (o.hits_to_break, o.list.len(), o.default_class.clone()))
+        .collect();
+    println!(
+        "item rules in {took:.1} s: {report:?}; pickup classes {}, tech types {}; outcrop classes {} ({} distinct); sizes {}, equipment types {}; slots {}, player's {:?}; grid {:?}; analysis {}; default tech {}; locker {:?}; supplies {:?}; luck {}; tech → prefab {}",
+        rules.pickups.len(),
+        techs.len(),
+        rules.outcrops.len(),
+        outcrop_paths.len(),
+        rules.techs.sizes.len(),
+        rules.techs.equipment.len(),
+        rules.slots.slots.len(),
+        rules.player_slots,
+        rules.inventory_size,
+        rules.analysis.len(),
+        rules.default_tech.len(),
+        rules.locker_size,
+        rules.supplies,
+        rules.luck.len(),
+        rules.tech_class.len()
+    );
+    assert_eq!(rules.inventory_size, (6, 8));
+    assert_eq!(rules.slots.slots.len(), 38);
+    assert_eq!(rules.player_slots.len(), 7);
+    assert_eq!(rules.analysis.len(), 126);
+    assert_eq!(rules.locker_size, (4, 8));
+    assert_eq!(rules.supplies.len(), 6);
+    assert_eq!(rules.luck.len(), 8);
+    assert_eq!(outcrop_paths.len(), 4);
+    assert!(techs.len() >= 101, "{}", techs.len());
+    // Every outcrop resource and every supply is a pickup of the listed
+    // tech type.
+    for o in rules.outcrops.values() {
+        for d in &o.list {
+            assert_eq!(rules.pickups[&d.class].tech, d.tech, "{}", d.class);
+        }
+        assert!(rules.pickups.contains_key(&o.default_class));
+    }
+    for t in &rules.supplies {
+        let class = &rules.tech_class[t];
+        assert_eq!(rules.pickups[class].tech, *t);
+    }
+    // The supplies fit the locker, as in a new game.
+    let mut locker = sn_sim::inventory::Container::new(4, 8);
+    let items: Vec<_> = rules
+        .supplies
+        .iter()
+        .enumerate()
+        .map(|(i, &t)| sn_sim::inventory::Item::new(i as u64, t))
+        .collect();
+    assert!(sn_sim::inventory::spawn_supplies(&mut locker, &rules.techs, items).is_empty());
+    // Stable across reads.
+    let (again, _) = sn_assets::item_rules(&game, &assets, &dll).unwrap();
+    assert_eq!(again, rules);
+}

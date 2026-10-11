@@ -308,12 +308,15 @@ server and the client): FNV-1a 64 over, in order, each part's name
 | `look` | the `Debug` text of `sn_sim::look::LookParams` |
 | `techdata` | the raw bytes of the `Balance/TechData` text asset |
 | `exploder` | the `Debug` text of `sn_assets::ExploderCode` (the Aurora's numbers from the code) |
+| `items` | the `Debug` text of `sn_sim::inventory::ItemRules` (`sn_assets::item_rules`, M9d3d; it holds only ordered maps) |
 
 Rust prints floats exactly and the same on every platform, and these
 structs hold no hash maps, so the text is canonical. The server logs every
 part's hash, so a mismatch can be traced to its part. Build 10 on the dev
 machine: `d269297a0830e68b` (*confirmed* stable across two reads and
-between a debug and a release build, M10e). Not in it yet: the cinematic
+between a debug and a release build, M10e); with the `items` part
+(protocol 4, M9d3d): `7543ed71b32141be`, items part `99a71da693537910`
+(the item rules *confirmed* equal across two reads). Not in it yet: the cinematic
 clips (M10h plays them on remote bodies) and the body's animator rules
 (remote bodies use the owner's values, so they cannot desync).
 

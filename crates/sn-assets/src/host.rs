@@ -5,6 +5,7 @@
 //! the client both call these, so they compute the same numbers.
 
 use std::path::Path;
+use std::sync::Arc;
 
 use sn_install::GameData;
 use sn_protocol::Fnv64;
@@ -38,15 +39,18 @@ pub struct Rules {
     pub max_speed: f64,
     pub exploder: ExploderCode,
     pub player: sn_sim::player::PlayerParams,
+    /// The item rules (M9d3d), shared by the server and the client.
+    pub items: Arc<sn_sim::inventory::ItemRules>,
 }
 
 /// Reads the rules (a few seconds: the main scene and the code assembly).
 ///
 /// The parts: the player's movement numbers (they hold the physics step,
 /// which must be equal for shared ticks), oxygen and health, the look,
-/// the raw `Balance/TechData` text (recipes, for crafting later) and the
+/// the raw `Balance/TechData` text (recipes, for crafting later), the
 /// Aurora's explosion numbers (every client times it from the shared
-/// clock). Each is hashed through its `Debug` text (Rust prints floats
+/// clock), and the item rules (every machine replays item events with
+/// them; M9d3d). Each is hashed through its `Debug` text (Rust prints floats
 /// exactly and the same everywhere; these structs hold no hash maps) or
 /// its bytes. Not in it yet: the cinematic clips (when M10h plays them on
 /// remote bodies); the body's animator rules (remote bodies use the
@@ -62,6 +66,7 @@ pub fn rules(game: &GameData, assets: &Assets) -> Result<Rules> {
     let look = crate::look_params(&data, &code);
     let exploder = crate::exploder_code(&code_bytes)?;
     let tech_data = crate::resource_bytes(assets, "balance/techdata")?;
+    let (items, _) = crate::item_rules(game, assets, &code_bytes)?;
     let text = |s: String| Fnv64::new().str(&s).finish();
     let parts = vec![
         ("player", text(format!("{player:?}"))),
@@ -69,6 +74,7 @@ pub fn rules(game: &GameData, assets: &Assets) -> Result<Rules> {
         ("look", text(format!("{look:?}"))),
         ("techdata", Fnv64::new().bytes(&tech_data).finish()),
         ("exploder", text(format!("{exploder:?}"))),
+        ("items", text(format!("{items:?}"))),
     ];
     let mut h = Fnv64::new();
     for (name, part) in &parts {
@@ -95,6 +101,7 @@ pub fn rules(game: &GameData, assets: &Assets) -> Result<Rules> {
         max_speed,
         exploder,
         player,
+        items: Arc::new(items),
     })
 }
 

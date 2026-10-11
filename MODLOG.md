@@ -2,6 +2,47 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-11 — M9d3d: item rules from the install
+
+**What:**
+- `sn_assets::item_rules(game, assets, dll)` builds `ItemRules` from
+  M9d1's readers: pickups and outcrops by class id, outcrop resources
+  resolved to class ids, TechData's sizes and equipment types with the
+  code's defaults, slot table and player slots, the grid, analysis and
+  default tech, the luck, the locker and supplies, and the game's tech
+  type → prefab map (last wins over `prefabs.db` in order).
+- `sn_install::read_prefab_database_ordered`, because the map depends on
+  file order.
+- `ItemRules`, `PickupInfo`, `OutcropInfo` and `OutcropDrop` moved to
+  `sn-sim::inventory` (pure data), so `sn-assets` builds them without
+  depending on the session; `sn-session::items` re-exports them.
+  `OutcropInfo` gained `vertical_offset`.
+- `Rules.items` and an `items` fingerprint part. The server, the client,
+  the bots and `coop` use the real rules. `coop`/`bots` accept the new
+  `Loaded` notice.
+- No new dependency or file type.
+
+**Why:** M9d3d of the plan.
+
+**Verified:**
+- `cargo test --workspace`: 456 passed, 0 failed, 38 ignored. Clippy with
+  `-D warnings` and fmt pass.
+- `SUBNAUTICA_DIR=… cargo test --release --workspace -- --ignored`: 38
+  passed, 0 failed, including the new `item_rules_from_install` (counts in
+  DESIGN's M9d3d row; two reads equal).
+- `sn-server` with `sn-inspect coop 127.0.0.1:27777 --count 4 --presets
+  lan,bad --seconds 20`: both ok. lan was 18,264 of 18,264 ticks exact;
+  bad was 99.844 % exact, max 0.027 m. The server made 361 hash checks
+  with 0 differing. Logs are in `out/m9d/m9d3d_*.log`.
+
+**Dead ends and fixes:**
+1. The first `item_rules` took 9.8 s cold and 4.7 s warm (3.6 s of it
+   reading 1,543 prefabs, 0.9 s scanning the batches). Reading both in
+   parallel threads (`std::thread::scope`, no dependency) brought it to
+   2.1 s warm. The bundle cache's lock limits the prefab part (1.6 s).
+2. The first coop run reported "problems": the tool listed the new
+   `Loaded` notice as unexpected. The sessions themselves were all exact.
+
 ## 2026-10-11 — M9d3b + M9d3c: items as shared state, server and client
 
 **What:**

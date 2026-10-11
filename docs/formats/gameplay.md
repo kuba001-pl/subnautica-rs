@@ -819,6 +819,20 @@ Readers (M9d1): `sn-unity::items` (layouts), `sn-assets::items`
 - **Confirmed (real data):** `PDAData.analysisTech` has 126 entries (86
   unlocks); 19 of them are for a pick-up tech type, so picking those up
   unlocks blueprints.
+- **Confirmed (code):** the prefab spawned for a tech type
+  (`CraftData.GetPrefabForTechTypeAsync`, the lifepod's supplies) is
+  `techMapping[tech]`. `PreparePrefabIDCache` builds it by walking
+  `PrefabDatabase.prefabFiles` (`prefabs.db`, file order) and giving each
+  class id the tech type of its file name (`EntTechData`). A tech type
+  named by several prefabs keeps the **last** one.
+- **Confirmed (real data, M9d3d):** `sn_assets::item_rules` over the 1,543
+  candidate prefabs (placed or in the loot table; 0 unreadable). It also
+  reads 2 more, named only by the supplies: 158 pickupable class ids of 102
+  tech types (M9d1's 101, plus one only the supplies name). 4 outcrop
+  classes; 124 TechData entries with a size, 124 with an equipment type;
+  the tech type → prefab map has 515 entries. Every outcrop resource and
+  every supply is a pickup of its listed tech type, and the 6 supplies fit
+  the 4 × 8 locker.
 
 ## Fabricator menus: `CraftTree` (code only)
 

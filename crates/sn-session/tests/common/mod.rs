@@ -59,6 +59,7 @@ pub fn rules() -> Arc<ItemRules> {
         "lime".into(),
         OutcropInfo {
             hits_to_break: 3,
+            vertical_offset: 0.2,
             num_chances: 1,
             list: vec![
                 OutcropDrop {

@@ -16,6 +16,7 @@ mod collision;
 mod collision_world;
 mod gameplay;
 mod host;
+mod item_rules;
 mod items;
 mod lifepod_light;
 mod marmo;
@@ -53,6 +54,7 @@ pub use gameplay::{
     physics_settings, player_data, tech_data,
 };
 pub use host::{Rules, aurora_countdown, build_number, lifepod_point, rules};
+pub use item_rules::{ItemRulesReport, item_rules};
 pub use items::{
     ItemCode, ItemPrefab, PlayerItems, TechLookup, TechSource, addressable_prefab, item_code,
     item_prefab, language, parse_language, player_items,

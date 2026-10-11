@@ -17,64 +17,10 @@ use sn_protocol::{
     quant,
 };
 use sn_sim::inventory::{
-    self as inv, AnalysisEntry, Container, ContainerParts, DropPlace, FairRandomizer, Inventory,
-    Item, KnownTech, Outcrop, PlayerEntropy, Resource, SlotTable, TechType, Techs,
+    self as inv, Container, ContainerParts, DropPlace, FairRandomizer, Inventory, Item, KnownTech,
+    Outcrop, PlayerEntropy, Resource, TechType,
 };
-
-/// What the rules need to know of a pickupable prefab.
-#[derive(Clone, Debug, PartialEq)]
-pub struct PickupInfo {
-    /// By the game's rule (`CraftData.GetTechType`).
-    pub tech: TechType,
-    /// `Pickupable.isPickupable`.
-    pub pickupable: bool,
-    pub destroy_on_death: bool,
-    /// Has an `Eatable`.
-    pub eatable: bool,
-}
-
-/// One entry of an outcrop's `prefabList`.
-#[derive(Clone, Debug, PartialEq)]
-pub struct OutcropDrop {
-    pub tech: TechType,
-    pub chance: f32,
-    pub class: String,
-}
-
-/// An outcrop prefab's `BreakableResource`.
-#[derive(Clone, Debug, PartialEq)]
-pub struct OutcropInfo {
-    pub hits_to_break: i32,
-    pub num_chances: i32,
-    pub list: Vec<OutcropDrop>,
-    pub default_class: String,
-}
-
-/// The item rules read from the install (M9d3d builds them; tests make
-/// their own). Two machines with the same rules fingerprint hold the
-/// same.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct ItemRules {
-    pub techs: Techs,
-    pub slots: SlotTable,
-    /// `Inventory.UnlockDefaultEquipmentSlots`.
-    pub player_slots: Vec<String>,
-    /// `Inventory.Awake`'s grid.
-    pub inventory_size: (i32, i32),
-    pub analysis: Vec<AnalysisEntry>,
-    /// `PDAData.defaultTech`.
-    pub default_tech: Vec<TechType>,
-    /// By prefab class id.
-    pub pickups: BTreeMap<String, PickupInfo>,
-    pub outcrops: BTreeMap<String, OutcropInfo>,
-    pub locker_size: (i32, i32),
-    /// `LootSpawner.escapePodTechTypes`.
-    pub supplies: Vec<TechType>,
-    /// `PlayerEntropy.randomizers` at the start.
-    pub luck: Vec<(TechType, f32)>,
-    /// The prefab the server spawns for a tech type (the supplies).
-    pub tech_class: BTreeMap<TechType, String>,
-}
+pub use sn_sim::inventory::{ItemRules, OutcropDrop, OutcropInfo, PickupInfo};
 
 /// An object the server made, in the world.
 #[derive(Clone, Debug, PartialEq)]
@@ -915,6 +861,7 @@ fn read_container(r: &mut Reader) -> sn_protocol::Result<Container> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sn_sim::inventory::SlotTable;
 
     fn hash(s: &ItemsState) -> u64 {
         let mut h = Fnv64::new();

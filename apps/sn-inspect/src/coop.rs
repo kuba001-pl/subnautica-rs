@@ -248,7 +248,7 @@ fn replay(
                         password: None,
                         tick_us: rules.tick_us,
                         max_speed: rules.max_speed,
-                        rules: Default::default(),
+                        rules: rules.items.clone(),
                     },
                     now(),
                 ),
@@ -308,6 +308,8 @@ fn replay(
                             ));
                         }
                     }
+                    // The world state after `Welcome` (protocol 4).
+                    ClientNotice::Loaded { .. } => {}
                     other => problems.push(format!("{}: {other:?}", b.name)),
                 }
             }

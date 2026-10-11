@@ -116,7 +116,7 @@ pub fn run(game: &GameData, server: &str, count: usize, seconds: f64) -> crate::
                     password: None,
                     tick_us: rules.tick_us,
                     max_speed: rules.max_speed,
-                    rules: Default::default(),
+                    rules: rules.items.clone(),
                 },
                 now(),
             );
@@ -155,6 +155,8 @@ pub fn run(game: &GameData, server: &str, count: usize, seconds: f64) -> crate::
             for n in b.client.take_notices() {
                 match n {
                     ClientNotice::Welcomed { .. } => {}
+                    // The world state after `Welcome` (protocol 4).
+                    ClientNotice::Loaded { .. } => {}
                     other => problems.push(format!("{other:?}")),
                 }
             }

@@ -23,6 +23,7 @@ mod equipment;
 mod known;
 mod luck;
 mod moves;
+mod rules;
 
 pub use container::{Container, ContainerParts, GroupParts, MAX_SIDE, Placed};
 pub use drop::{DropPlace, can_drop_here, drop_ray, find_drop_position};
@@ -33,6 +34,7 @@ pub use moves::{
     GRAB_TIME, Inventory, PickedInto, Store, Target, add_or_swap, grab_active, lose_items, pickup,
     spawn_supplies,
 };
+pub use rules::{ItemRules, OutcropDrop, OutcropInfo, PickupInfo};
 
 use std::collections::BTreeMap;
 
