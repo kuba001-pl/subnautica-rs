@@ -79,6 +79,16 @@ pub enum PlayerEventKind {
     AnimatorTrigger {
         trigger: u8,
     },
+    /// The hatch cinematic's `interpolateAnimParam` bool (`prepare_…`) on
+    /// the pod's animator, at the owner's step (protocol 3, M10h3).
+    CinematicPrepare {
+        on: bool,
+    },
+    /// The hatch cinematic's `animParam` on the pod's animator and the
+    /// player's `playerViewAnimationName` bool (protocol 3, M10h3).
+    CinematicPlay {
+        on: bool,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -807,6 +817,14 @@ fn write_player_event(w: &mut Writer, e: &PlayerEventKind) {
             w.u8(4);
             w.u8(*trigger);
         }
+        PlayerEventKind::CinematicPrepare { on } => {
+            w.u8(5);
+            w.bool(*on);
+        }
+        PlayerEventKind::CinematicPlay { on } => {
+            w.u8(6);
+            w.bool(*on);
+        }
     }
 }
 
@@ -837,6 +855,12 @@ fn read_player_event(r: &mut Reader) -> Result<PlayerEventKind> {
             }
             PlayerEventKind::AnimatorTrigger { trigger }
         }
+        5 => PlayerEventKind::CinematicPrepare {
+            on: r.bool("cinematic prepare")?,
+        },
+        6 => PlayerEventKind::CinematicPlay {
+            on: r.bool("cinematic play")?,
+        },
         k => return Err(r.error(at, format!("unknown player event kind {k}"))),
     })
 }

@@ -2,6 +2,147 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-11 — M10h3: other players' hatch cinematics and the pod's doors
+
+**What:**
+- `sn-protocol` 3: player events `CinematicPrepare { on }` (5) and
+  `CinematicPlay { on }` (6); round-trip test list extended; the world
+  state passes them through. `docs/formats/protocol.md`.
+- `player.rs`: the cinematic's `Prepare` / `Play` signals are sent at
+  their step, after `HatchUsed` and before `CinematicEnded` (receivers
+  then always know the hatch). The pod (colliders, hatch triggers,
+  cinematics) loads whenever the world has one; `Start::in_pod` says
+  whether the player starts in it (`--start`: outside, pod still there).
+  `PlayerSim::hatch_names`.
+- `remote.rs`: each remote player's open hatch from the due events;
+  signals go to the drawn pod's animators (`BodyDrive::pod_values`) and
+  the remote body's animator (the player's bool). Runs before
+  `body::drive`.
+- No new dependency.
+
+**Why:** M10h3 of the M10 plan.
+
+**How verified** (`out/m10h/f-*.log`):
+- `cargo test --workspace`: 386 passed; clippy and fmt clean.
+- Host floating outside (`--start -127.5 0.3 -57 --look-down -25`),
+  joiner `--use-hatch 3 --hold-forward 14 --kill 25`, both `--log-ticks
+  1`: the host saw the joiner's 10 events with the owner's ticks (hatch,
+  prepare on, play on, prepare off, play off twice: the first-use clip's
+  two end events, cinematic end, death, trigger, respawn) and applied the
+  5 signals ("hatch 6 play true at tick 676", …); drawn ticks 2,002/2,003
+  and 2,117/2,117 exact.
+- Same clock (promise 5): host and joiner both put the Aurora's
+  countdown at server tick 224,979.2 and the swap at 226,329.2.
+- Solo: the M10g hatch run's trace equal to M10g's (453/453, 15 events).
+- README: "Play together" (hosting, joining, the UDP port to forward,
+  what is synced and what isn't, trust, what was tested): M10i's text,
+  written ahead of the user's test.
+- **Not tested:** two players using one hatch at once (the own simulated
+  pod animator does not get the others' signals); the climb by eye (the
+  screenshot at 17 s came before the joiner's hatch use).
+
+**Found:** the first run had the host started outside the pod, so it had
+no pod cinematics and dropped the signals ("no known hatch"); hence
+loading the pod whenever the world has one.
+
+## 2026-10-11 — M10h2: other players' bodies
+
+**What:**
+- `sn-client` `remote.rs` (new): for each other player in the world
+  (joined and `Ready`), the player's own body prefab; its rig base at
+  the drawn sample (the state's rotation in a cinematic, `camRoot`'s
+  height: minus the skin and the `verticalOffset` bob, turned by the
+  look's yaw: as `Body::view_model`); its animator gets the state's
+  floats and bools and the owner's animator triggers (world events);
+  the head (the one shadows-only part) is drawn; hidden while there is
+  no sample; removed on leave. A status line every 10 s.
+- `objects.rs`: `RemoteBodyRig`, `want_remote_body` /
+  `remove_remote_body` / `remote_body_ids`; the spawn reuses the own
+  body's prefab and `spawn_instance`.
+- `session.rs`: `remotes()` says who is ready; `due` keeps the frame's
+  world events. `player.rs`: `pose_to_bevy` public, `body_params()`.
+- No new dependency.
+
+**Why:** M10h2 of the M10 plan.
+
+**How verified:**
+- `cargo test --workspace`: 386 passed; clippy and fmt clean.
+- Host and joiner on this machine (`out/m10h/b-*.log`): each spawned
+  the other's body at the join; 1 shadows-only part (the head) drawn;
+  placed vs drawn rig base 0.000000 m over 566–940 checks per 10 s;
+  the host removed the joiner's body when it left.
+- Screenshot (`out/m10h2-join-view.png`; joiner `--start -127.5 0.3 -57
+  --look-down -25`, host `--use-hatch 3`): the host's body stands on the
+  pod's roof after the hatch exit, head drawn, facing +x as its look.
+- **Not tested:** the swim and walk animations in motion by eye; more
+  than two players.
+
+**Found:** the host logged a removed body as placed again in the same
+frame (the despawn lands at the frame's end); removed bodies are now
+skipped. `--look` does not turn the player (only the free camera); the
+screenshot used a start south of the pod instead.
+
+## 2026-10-11 — M10h1: the link (`--host`, `--join`), states and events
+
+**What:**
+- `sn-client` `session.rs`: the session's server, client and UDP socket
+  run on a network thread (every 1 ms) under a mutex; the main thread
+  takes steps, pushes states and events, samples remote players. Modes:
+  solo (as M10g), `--host [PORT]` (the in-process server also on UDP;
+  the local client is a direct link), `--join ADDRESS[:PORT]` (waits up
+  to 10 s for the `Welcome` and the first clock sample before loading:
+  the host's settings decide the world; a reject prints its reason).
+  `--name` (default: USERNAME/USER), `--net-sim lan|internet|bad` (the
+  client's own link, through `sn_net::ImpairedTransport`), `--log-ticks
+  N` (testing). Logs: own state every N ticks, each remote player's
+  drawn state at the same ticks, own events, world events when the drawn
+  tick reaches them; a status line every 60 s (messages, delay, hash
+  checks, steps skipped, peers' bytes and round trip).
+- `player.rs`: after every step the own state (as `sn-inspect coop`'s
+  bots: position, velocity, look, rotation in a cinematic, flags, life,
+  the body's last animator values) and the events (hatch used, cinematic
+  ended, died, respawned; animator triggers at the next step's tick).
+- `sn-session` `Client::steps`: more than 25 steps due → all but the
+  newest 10 skipped and counted (`ClientStats::steps_skipped`); unit
+  test extended. `docs/formats/protocol.md` § Client rules.
+- Dependency: `sn-client` uses `sn-net` (UDP for host and join; ours).
+
+**Why:** M10h1 of the M10 plan (the sub-steps written into DESIGN first).
+
+**How verified** (logs in `out/m10h/`, compared by `out/m10h/cmp.py`):
+- `cargo test --workspace`: 386 passed; clippy and fmt clean.
+- Two clients on this machine: `sn-client --view 400 --log-ticks 1
+  --host 27431 --name host --use-hatch 3 --hold-forward 12 --kill 30
+  --shot 60 …`, then 8 s later `--join 127.0.0.1:27431 [--net-sim P]
+  --name joiner --use-hatch 4 --hold-forward 14 --kill 25 --shot 50 …`.
+  Each drawn tick of the other compared with the other's own log:
+  - no impairment: 2,504/2,504 and 2,616/2,616 exact;
+  - `internet` on the joiner: 2,502/2,503 and 2,622/2,622 (max error
+    0.07 m);
+  - `bad`: 2,498/2,503 (99.8 %, max 0.35 m) and 2,611/2,611;
+  - every miss is among the joiner's last ticks (3,034 and 3,064–3,068;
+    its last own tick 3,034 and 3,068): it quit before those states were
+    sent, and the host extrapolated.
+  - Events: the host saw the joiner's 5 (hatch, cinematic end, death,
+    trigger, respawn) and the joiner the host's 4 after its join, kinds
+    and ticks equal; the host's first hatch use came before the join, in
+    the `Welcome`.
+  - Host: 115–116 world-state hash checks per minute, 0 differ; 0 own
+    steps skipped; delay 3.2 ticks (none), 13.3 (bad). Under `bad` the
+    server ignored 2 states that overtook `Ready` (unordered vs reliable
+    channel; harmless, noted).
+- Solo after the change: the M10g hatch run's trace is identical to
+  M10g's (453/453 states, same ticks, 15 events).
+- **Not tested:** two machines; keyboard play together; a password (not
+  offered by the client yet).
+
+**Dead end / found:** the first two-client run (full view distance) had
+both clients at 2–4 fps once both were loaded; with at most 10 steps per
+frame the host's physics fell up to 15.7 s behind the clock, so the
+joiner drew it "held" at 32 of 48 logged ticks and the delay grew to its
+50-tick cap. Hence the backlog skip, and `--view 400` for two clients on
+one GPU.
+
 ## 2026-10-11 — M10g: solo play through the in-process server
 
 **What:**

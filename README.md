@@ -155,8 +155,11 @@ meshes not yet decoded are flat, Safe Shallows triplanar rocks white;
 speeds, the game's own HUD and damage effects; audio,
 multiplayer (so far the headless `sn-server` and bot players, also with
 the player's own rules and collision, over UDP on one machine; the game
-client runs its own in-process server even in solo play, with the same
-clock and world settings, but cannot host or join yet).
+client runs its own in-process server even in solo play, and can host
+(`--host`) or join (`--join`) a game: other players' bodies, animations,
+hatch cinematics, deaths and respawns are synced; tested with two
+clients on one machine, not yet over the internet; no encryption, for
+friends on trust).
 Linux/macOS: not tested.
 
 ## Try it
@@ -184,9 +187,10 @@ cargo run -p sn-client                      # fly around, starting in the lifepo
 cargo run -p sn-client -- --view 2000       # see further
 cargo run -p sn-client -- --flythrough 1700 -80 0   # automated test flight to the crater edge
 
-# Multiplayer (experimental, M10e): a headless server and bot players;
-# the client cannot join yet (M10h).
-cargo run --release -p sn-server -- --port 27420             # listens on UDP 27420
+# Multiplayer (experimental, M10): play together, see "Play together" below.
+cargo run --release -p sn-client -- --host                   # host on UDP 27420
+cargo run --release -p sn-client -- --join 192.168.1.20 --name Ann   # join it
+cargo run --release -p sn-server -- --port 27420             # or a headless server
 cargo run --release -p sn-inspect -- bots 127.0.0.1:27420 --count 8 --seconds 60
 cargo run --release -p sn-inspect -- coop 127.0.0.1:27420   # bots with the player's rules, lan/internet/bad
 
@@ -197,6 +201,30 @@ cargo test -p sn-octree -- --ignored        # full-world test (needs SUBNAUTICA_
 `sn-inspect` only reads the game folder; it never writes to it. Exports go to
 `out/`, which is gitignored. They are derived from your game files: don't
 share them.
+
+## Play together (experimental)
+
+Each player needs their own installed copy of Subnautica, the same game
+build, and this project built from the same version (the join is refused
+otherwise, with the reason). Nothing from the game is sent over the
+network: only positions, animation values, events and checks.
+
+- **Host:** `sn-client --host` (or `--host PORT`; default UDP 27420).
+  The host's flags decide the world (`--lifepod-seed`, `--slot-seed`,
+  `--time`, `--aurora…`). A headless `sn-server` works too.
+- **Join:** `sn-client --join ADDRESS[:PORT] --name NAME`. The host's
+  world replaces your world flags.
+- **Over the internet:** the host forwards UDP port 27420 on their
+  router to their PC (or both are on one LAN or a VPN). There is no
+  relay or NAT punching: it would need a third-party service.
+- **Synced:** each player's position, look, swimming and walking
+  animations, the lifepod hatch cinematics (doors and climbing: logged, not yet checked by eye), deaths
+  and respawns, the game clock and the Aurora. **Not yet:** items,
+  inventory, crafting, saves, creatures, chat, players colliding.
+- **Trust:** no encryption and no password in the client yet: for
+  friends, not public servers.
+- **Tested:** two clients on one machine (also with simulated latency
+  and loss). **Not tested:** two machines over the internet.
 
 ## Layout
 

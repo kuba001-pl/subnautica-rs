@@ -49,6 +49,13 @@ const EXTRAPOLATE_US: f64 = 250_000.0;
 /// two, the sync oracle missed 0.1 % of ticks at 1 % loss: M10d).
 const SEND_EVERY: u32 = 2;
 const STATES_PER_MESSAGE: usize = 6;
+/// Own physics steps per [`Client::steps`] call at most.
+const MAX_STEPS: u32 = 10;
+/// Own steps due beyond this many are skipped, so a slow machine stays on
+/// the shared clock (its states have a gap) instead of falling ever
+/// further behind (M10h: two clients on one machine fell to 3 fps and
+/// 15 s behind).
+const MAX_BACKLOG: u32 = 25;
 /// World-state hash report every this many ticks.
 const HASH_EVERY: u32 = 50;
 /// States kept per remote player behind the drawn tick.
@@ -120,6 +127,8 @@ pub struct ClientStats {
     pub events: u64,
     pub hash_reports: u64,
     pub clock_jumps: u64,
+    /// Own physics steps skipped by [`Client::steps`] (too far behind).
+    pub steps_skipped: u64,
 }
 
 #[derive(Default)]
@@ -243,19 +252,25 @@ impl Client {
     }
 
     /// The own player's physics steps due by `now_us`, numbered in the
-    /// server's ticks: consecutive, never repeated, at most 10 per call
-    /// (after a clock jump forward the rest come in later calls; after
-    /// one backward, none until the clock catches up).
+    /// server's ticks: increasing, never repeated, at most 10 per call
+    /// (the rest come in later calls; after a jump backward, none until
+    /// the clock catches up). More than 25 due at once (half a second
+    /// behind): all but the last 10 are skipped and counted.
     pub fn steps(&mut self, now_us: u64) -> std::ops::Range<u32> {
         let Some(t) = self.server_tick(now_us) else {
             return 0..0;
         };
         let due = t.floor().max(0.0) as u32;
-        let next = *self.next_step.get_or_insert(due);
+        let mut next = *self.next_step.get_or_insert(due);
         if due < next {
             return next..next;
         }
-        let end = (due + 1).min(next + 10);
+        if due + 1 - next > MAX_BACKLOG {
+            let from = due + 1 - MAX_STEPS;
+            self.stats.steps_skipped += u64::from(from - next);
+            next = from;
+        }
+        let end = (due + 1).min(next + MAX_STEPS);
         self.next_step = Some(end);
         next..end
     }
@@ -739,6 +754,12 @@ mod tests {
         assert_eq!(c.steps(10_000_000), 550..551);
         assert_eq!(c.steps(10_050_000), 551..553);
         assert_eq!(c.steps(10_050_000), 553..553);
+        // 15 behind: 10 now, 5 next.
+        assert_eq!(c.steps(10_350_000), 553..563);
+        assert_eq!(c.steps(10_350_000), 563..568);
+        // 2 s behind: the last 10, the rest skipped.
+        assert_eq!(c.steps(12_350_000), 658..668);
+        assert_eq!(c.stats().steps_skipped, 90);
     }
 
     #[test]

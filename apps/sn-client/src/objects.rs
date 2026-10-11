@@ -416,6 +416,11 @@ pub struct ShadowsOnly;
 #[derive(Component)]
 pub struct PlayerBodyRig;
 
+/// The base of another player's body rig (M10h2), by player id:
+/// `crate::remote` moves it and sets its animator's parameters.
+#[derive(Component)]
+pub struct RemoteBodyRig(pub u16);
+
 /// The player's body (M9g4): the `Player` hierarchy of the main scene.
 #[derive(Clone, Copy)]
 pub struct BodyOptions {
@@ -2738,6 +2743,10 @@ pub struct ObjectStreamer {
     scenes: Vec<SceneObjects>,
     /// The player's body (M9g4).
     body: Option<BodyObjects>,
+    /// Other players' bodies to spawn (M10h2), by player id.
+    remote_wanted: Vec<u16>,
+    /// Other players' bodies spawned: the id and the instance's entities.
+    remote_bodies: Vec<(u16, Vec<Entity>)>,
     /// What was last put in the worker's queue.
     requested: Vec<BatchCoord>,
     defaults: Option<Defaults>,
@@ -2808,6 +2817,8 @@ impl ObjectStreamer {
             batches: HashMap::new(),
             scenes: Vec::new(),
             body: None,
+            remote_wanted: Vec::new(),
+            remote_bodies: Vec::new(),
             requested: Vec::new(),
             defaults: None,
             lights,
@@ -3623,6 +3634,62 @@ pub fn stream_objects(
             prefab,
             spawned: true,
         });
+    }
+
+    // Other players' bodies (M10h2): the same prefab, hidden until
+    // `crate::remote` places them.
+    if let Some(prefab) = streamer.body.filter(|b| b.spawned).map(|b| b.prefab) {
+        let rigs = streamer.prefab_rigs.get(&prefab).map_or(0, |r| r.len());
+        for id in std::mem::take(&mut streamer.remote_wanted) {
+            let inst = Instance {
+                level: 0,
+                prefab,
+                transform: Placement::default(),
+                from_slot: false,
+                pod_sky: false,
+            };
+            let mut entities = Vec::new();
+            streamer.spawn_instance(&inst, true, &mut spawner, &mut entities);
+            for &base in entities.iter().take(rigs) {
+                spawner
+                    .commands
+                    .entity(base)
+                    .insert((RemoteBodyRig(id), Visibility::Hidden));
+            }
+            info!(
+                "objects: player {id}'s body spawned ({} entities, {rigs} rigs)",
+                entities.len()
+            );
+            streamer.remote_bodies.push((id, entities));
+        }
+    }
+}
+
+impl ObjectStreamer {
+    /// Spawns another player's body (the player's own prefab) in the next
+    /// update; nothing if it is there or asked for already.
+    pub fn want_remote_body(&mut self, id: u16) {
+        if !self.remote_wanted.contains(&id) && !self.remote_bodies.iter().any(|b| b.0 == id) {
+            self.remote_wanted.push(id);
+        }
+    }
+
+    /// Forgets another player's body; returns its entities to despawn.
+    pub fn remove_remote_body(&mut self, id: u16) -> Vec<Entity> {
+        self.remote_wanted.retain(|&w| w != id);
+        match self.remote_bodies.iter().position(|b| b.0 == id) {
+            Some(i) => self.remote_bodies.swap_remove(i).1,
+            None => Vec::new(),
+        }
+    }
+
+    /// The ids of the other players' bodies spawned or asked for.
+    pub fn remote_body_ids(&self) -> Vec<u16> {
+        self.remote_bodies
+            .iter()
+            .map(|b| b.0)
+            .chain(self.remote_wanted.iter().copied())
+            .collect()
     }
 }
 

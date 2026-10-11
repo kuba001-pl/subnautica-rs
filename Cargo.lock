@@ -4791,6 +4791,7 @@ dependencies = [
  "sn-assets",
  "sn-install",
  "sn-mesh",
+ "sn-net",
  "sn-octree",
  "sn-protocol",
  "sn-session",

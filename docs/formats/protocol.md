@@ -10,7 +10,7 @@ Messages carry ids, numbers, seeds and hashes only. They never carry game
 data (AGENTS.md rule 5): every player reads the world from their own
 install.
 
-Protocol version: **2** (`PROTOCOL_VERSION`). Any change to an encoding or
+Protocol version: **3** (`PROTOCOL_VERSION`; 3 added the cinematic signal events, M10h3). Any change to an encoding or
 to a table below raises it. History: 1 (M10a); 2 (M10c): `WorldHash`
 carries the number of world events applied instead of a tick.
 
@@ -98,7 +98,12 @@ point, Unity world metres); `aurora: u8`, then 0 `Countdown { seconds: f32 }`
 lifepod's hatch trigger), 1 `CinematicEnded`, 2 `Died { cause: u8 }`
 (0 normal, 1 fire, 2 explosion), 3 `Respawned`,
 4 `AnimatorTrigger { trigger: u8 }` (an index into the trigger table
-below; out of range is an error).
+below; out of range is an error), 5 `CinematicPrepare { on: bool }`,
+6 `CinematicPlay { on: bool }` (protocol 3: the hatch cinematic's
+signals at the owner's step: `prepare` is the pod animator's
+`interpolateAnimParam`, `play` its `animParam` and the player's
+`playerViewAnimationName`; the hatch is the one of the player's open
+`HatchUsed`).
 
 ## State lists
 
@@ -238,7 +243,8 @@ name, ready, and the hatch cinematic it is in (hatch, start tick). Events
 change it so: `PlayerJoined` adds a player (not ready, no cinematic),
 `PlayerReady` sets ready, `PlayerLeft` removes, `HatchUsed` sets the
 cinematic (the event's tick is the start), `CinematicEnded` clears it;
-`Died`, `Respawned`, `AnimatorTrigger` only pass through (life is in each
+`Died`, `Respawned`, `AnimatorTrigger`, `CinematicPrepare`,
+`CinematicPlay` only pass through (life is in each
 player state).
 
 **Hash** (FNV-1a 64, numbers as `u64` LE unless said): slot seed (`1, seed`
@@ -291,7 +297,12 @@ compares.
   ever adds delay). The applied offset moves towards the estimate by at
   most 1 % of the time passed, or jumps if more than 250 ms off.
 - **Own steps:** `steps(now)` gives the physics steps due, numbered in
-  the server's ticks: consecutive, never repeated, at most 10 per call.
+  the server's ticks: increasing, never repeated, at most 10 per call.
+  More than 25 due at once (half a second behind, a slow machine): all
+  but the newest 10 are skipped and counted (`steps_skipped`), so the
+  owner's states stay on the shared clock with a gap rather than
+  arriving ever later (M10h1: two clients on one machine at 3 fps fell
+  15 s behind, and every other player then drew them "held").
 - **Own states:** after each step `push_state`; every second step sends
   the newest 6 (unordered channel), once `Ready` is sent.
 - **Drawing others:** the drawn tick is the server's tick minus a delay.

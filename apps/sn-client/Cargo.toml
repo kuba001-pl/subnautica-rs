@@ -16,6 +16,8 @@ bevy = { version = "0.19.1", features = ["free_camera"] }
 sn-assets.workspace = true
 sn-install.workspace = true
 sn-mesh.workspace = true
+# UDP for --host and --join (M10h).
+sn-net.workspace = true
 sn-octree.workspace = true
 # The world's messages and settings (M10g).
 sn-protocol.workspace = true

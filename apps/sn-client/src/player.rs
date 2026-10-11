@@ -43,11 +43,14 @@ use sn_assets::{
     PosedNode, SCENE_BODY,
 };
 use sn_install::GameData;
+use sn_protocol::{AnimState, DeathCause, Life, PlayerEventKind, PlayerState, Tick, anim, quant};
 use sn_sim::body::{AnimValue, Body as PlayerBody, BodyFrame, BodyParams};
 use sn_sim::cinematic::{CinematicFrame, HatchRun, Signal, apply, ease_tilt};
 use sn_sim::collide::{Body, MOVE, World};
 use sn_sim::look::{Look, LookParams};
-use sn_sim::player::{Event, HatchTrigger, Hatches, Input, Player, PlayerParams, hand_target};
+use sn_sim::player::{
+    Event, HatchTrigger, Hatches, Input, Motor, Player, PlayerParams, hand_target,
+};
 use sn_sim::vitals::{Situation, Vitals, VitalsEvent, VitalsParams, depth_of};
 use sn_sim::{Pose, Q, V3};
 
@@ -122,6 +125,9 @@ struct State {
     pod_anim: Option<(PodCinematics, Animator)>,
     /// The hatch cinematic playing.
     hatch: Option<HatchPlay>,
+    /// The cinematic's signals since the last step, for the other players
+    /// (M10h3).
+    signals_out: Vec<PlayerEventKind>,
 }
 
 /// A hatch cinematic playing.
@@ -164,6 +170,12 @@ pub struct PlayerSim {
     auto_strafe_until: f64,
     /// Play time of the last death-camera log line.
     death_logged: Option<f64>,
+    /// The body's last animator values (sent with each state, M10h).
+    anim_values: Vec<(&'static str, AnimValue)>,
+    /// At the last step: the hatch whose cinematic played, and the life
+    /// (their changes are the player's events).
+    last_hatch: Option<usize>,
+    last_life: Life,
 }
 
 /// Lifepod 5 where the player starts (the client's own start choice).
@@ -171,6 +183,9 @@ pub struct Start {
     /// The pod's point (`None`: no lifepod; the player starts at
     /// `position`, swimming or walking by the water level).
     pub lifepod: Option<[f32; 3]>,
+    /// The player starts in the lifepod (else at `position`, with the pod
+    /// still there: its hatches and cinematics, e.g. for other players').
+    pub in_pod: bool,
     pub position: [f32; 3],
     pub slot_seed: Option<u64>,
     /// `--third-person`.
@@ -192,6 +207,20 @@ impl PlayerSim {
     /// player exists).
     pub fn in_pod(&self) -> Option<bool> {
         self.state.as_ref().map(|s| s.player.in_pod)
+    }
+
+    /// The body's numbers (`None` until the player exists, or no body).
+    pub fn body_params(&self) -> Option<BodyParams> {
+        self.state
+            .as_ref()
+            .and_then(|s| s.body.as_ref().map(|b| b.0))
+    }
+
+    /// A hatch trigger's cinematic animator names (`None`: no pod
+    /// cinematics, or no such trigger).
+    pub fn hatch_names(&self, hatch: usize) -> Option<&sn_assets::CinematicNames> {
+        let s = self.state.as_ref()?;
+        s.pod_anim.as_ref()?.0.names.get(hatch)
     }
 
     /// Seconds of play (physics steps run).
@@ -241,6 +270,9 @@ impl PlayerSim {
             auto_moved: (V3::ZERO, 0.0),
             auto_strafe_until: 0.0,
             death_logged: None,
+            anim_values: Vec::new(),
+            last_hatch: None,
+            last_life: Life::Alive,
         }
     }
 }
@@ -304,13 +336,21 @@ fn worker(
                     .collect(),
                 first_use: pod.first_use.clone(),
             };
+            let (spawn, spawn_yaw) = if start.in_pod {
+                (
+                    pod.spawn.position,
+                    f64::from(forward[0]).atan2(f64::from(forward[2])),
+                )
+            } else {
+                (start.position, 0.0)
+            };
             Init {
                 params: params.clone(),
                 vitals: vitals.clone(),
                 look,
-                spawn: V3::from_f32(pod.spawn.position),
-                spawn_yaw: f64::from(forward[0]).atan2(f64::from(forward[2])),
-                in_pod: true,
+                spawn: V3::from_f32(spawn),
+                spawn_yaw,
+                in_pod: start.in_pod,
                 pod: Some(V3::from_f32(point)),
                 pod_bodies: pod.bodies,
                 triggers: pod
@@ -374,6 +414,50 @@ fn worker(
     }
 }
 
+/// The own player as the protocol's state at `tick` (as `sn-inspect
+/// coop`'s bots send it).
+fn own_state(state: &State, tick: u32, values: &[(&'static str, AnimValue)]) -> PlayerState {
+    let p = &state.player;
+    let mut anim_state = AnimState::default();
+    for &(name, v) in values {
+        match v {
+            AnimValue::Float(x) => {
+                anim_state.set_float(name, x);
+            }
+            AnimValue::Bool(b) => {
+                anim_state.set_bool(name, b);
+            }
+            AnimValue::Trigger => {}
+        }
+    }
+    let q = p.rotation;
+    let identity = (q.w.abs() - 1.0).abs() < 1e-9;
+    let life = match state.vitals.life {
+        sn_sim::vitals::Life::Alive => Life::Alive,
+        sn_sim::vitals::Life::Dead { .. } => Life::Dead,
+        sn_sim::vitals::Life::Respawning { .. } => Life::Respawning,
+        sn_sim::vitals::Life::Restored { .. } => Life::Restored,
+    };
+    PlayerState {
+        tick: Tick(tick),
+        position: [p.position.x, p.position.y, p.position.z].map(quant::position),
+        velocity: [p.velocity.x, p.velocity.y, p.velocity.z].map(quant::velocity),
+        yaw: quant::turn(state.look.rotation_x),
+        pitch: quant::fixed(state.look.rotation_y, quant::PITCH_SCALE),
+        rotation: (!identity)
+            .then(|| [q.x, q.y, q.z, q.w].map(|c| quant::fixed(c, quant::QUATERNION_SCALE))),
+        walking: p.motor == Motor::Walk,
+        swimming: p.swimming,
+        grounded: p.grounded,
+        walk_grounded: p.walk_grounded,
+        in_pod: p.in_pod,
+        cinematic: p.cinematic,
+        controls: state.vitals.controls_enabled() && !p.cinematic,
+        life,
+        anim: anim_state,
+    }
+}
+
 fn unity_to_bevy(p: V3) -> Vec3 {
     Vec3::new(p.x as f32, p.y as f32, -p.z as f32)
 }
@@ -386,7 +470,7 @@ fn underwater(params: &PlayerParams, p: &Player) -> bool {
 
 /// A Unity placement as Bevy's: z mirrored (the x and y of the rotation
 /// change sign).
-fn pose_to_bevy(p: &Pose) -> Transform {
+pub fn pose_to_bevy(p: &Pose) -> Transform {
     let q = p.rotation;
     Transform {
         translation: unity_to_bevy(p.position),
@@ -437,6 +521,15 @@ fn signals(state: &mut State, world: &mut World, drive: &mut BodyDrive, i: usize
         let Some(names) = pc.names.get(i).cloned() else {
             return;
         };
+        match *s {
+            Signal::Prepare(on) => state
+                .signals_out
+                .push(PlayerEventKind::CinematicPrepare { on }),
+            Signal::Play(on) => state
+                .signals_out
+                .push(PlayerEventKind::CinematicPlay { on }),
+            _ => {}
+        }
         match *s {
             Signal::Prepare(on) => {
                 if let Some(p) = names.prepare {
@@ -636,6 +729,7 @@ pub fn update(
                         (c, animator)
                     }),
                     hatch: None,
+                    signals_out: Vec::new(),
                 });
             }
             FromWorker::Bodies {
@@ -917,7 +1011,7 @@ pub fn update(
     // player are in.
     if sim.ready {
         let dt = state.params.fixed_dt;
-        for _tick in session.steps() {
+        for tick in session.steps() {
             sim.steps += 1;
             // A status line every 10 s of play.
             if sim.steps % ((10.0 / dt) as u64).max(1) == 0 {
@@ -1052,6 +1146,45 @@ pub fn update(
                     p.height
                 );
             }
+            // The state and events of this tick for the other players.
+            let st = own_state(state, tick, &sim.anim_values);
+            let hatch = state.hatch.as_ref().map(|h| h.run.trigger);
+            // The hatch, its signals, its end: in this order, so the others
+            // know the hatch of every signal.
+            if let (None, Some(h)) = (sim.last_hatch, hatch) {
+                session.event(tick, PlayerEventKind::HatchUsed { hatch: h as u16 });
+            }
+            for kind in std::mem::take(&mut state.signals_out) {
+                session.event(tick, kind);
+            }
+            if let (Some(_), None) = (sim.last_hatch, hatch) {
+                session.event(tick, PlayerEventKind::CinematicEnded);
+            }
+            match (sim.last_life, st.life) {
+                (Life::Alive | Life::Restored, Life::Dead) => session.event(
+                    tick,
+                    PlayerEventKind::Died {
+                        cause: DeathCause::Normal,
+                    },
+                ),
+                (Life::Dead, Life::Respawning) => session.event(tick, PlayerEventKind::Respawned),
+                _ => {}
+            }
+            (sim.last_hatch, sim.last_life) = (hatch, st.life);
+            if tick % session.log_every == 0 {
+                info!(
+                    "session: own tick {tick}: at ({:?}, {:?}, {:?}), look ({:.2}, {:.2}), life {:?}, cinematic {}, {:?}",
+                    st.position[0],
+                    st.position[1],
+                    st.position[2],
+                    quant::turn_back(st.yaw),
+                    quant::fixed_back(st.pitch, quant::PITCH_SCALE),
+                    st.life,
+                    st.cinematic,
+                    st.anim.bools
+                );
+            }
+            session.push_state(st);
         }
         // The step for tick T runs once the server's clock reaches T.
         let since = session.server_tick() - f64::from(session.next_step()) + 1.0;
@@ -1103,6 +1236,17 @@ pub fn update(
                 }
                 a.update(frame.dt as f32);
             }
+            // Triggers are events (at the next step's tick); the other
+            // values go with every state.
+            let next = session.next_step();
+            for &(name, v) in &values {
+                if v == AnimValue::Trigger
+                    && let Some(trigger) = anim::trigger_index(name)
+                {
+                    session.event(next, PlayerEventKind::AnimatorTrigger { trigger });
+                }
+            }
+            sim.anim_values.clone_from(&values);
             drive.values = values;
             drive.rules_micros = started.elapsed().as_secs_f32() * 1e6;
             Some((*params, body.pose))

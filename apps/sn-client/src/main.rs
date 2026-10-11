@@ -14,6 +14,7 @@ mod lifepod_light;
 mod object_look;
 mod objects;
 mod player;
+mod remote;
 mod session;
 mod sky;
 mod sky_dome;
@@ -127,6 +128,18 @@ Usage: sn-client [--game-dir <PATH>] [--start <X> <Y> <Z>] [--look <X> <Y> <Z>]
                  check that the player moves)
   --kill         --kill <SECONDS>: after SECONDS of play the player takes
                  its full health as damage (a debug check of the death)
+  --host         --host [PORT]: open this game to other players on UDP PORT
+                 (default 27420; experimental, M10h: no encryption, for
+                 friends on trust)
+  --join         --join <ADDRESS[:PORT]>: join the game hosted there (its
+                 world settings replace the flags'; the same game build
+                 and rules are needed)
+  --name         --name <NAME>: the name other players see (default: the
+                 USERNAME or USER variable, else player)
+  --net-sim      lan | internet | bad: delay, jitter and loss on this
+                 client's own link (testing)
+  --log-ticks    --log-ticks <N>: log the own state and each other
+                 player's drawn state every N ticks (default 50; testing)
   --flythrough   once loaded, fly in a straight line to X Y Z (Unity world
                  coordinates) at --speed (default 40 m/s) without vsync, then
                  log frame times, memory and streaming latency, save
@@ -197,6 +210,14 @@ struct Args {
     shot: Option<(f32, String)>,
     /// `--lifepod-state`: the pod's `LightingController` state.
     lifepod_state: usize,
+    /// Solo, `--host` or `--join`.
+    mode: session::Mode,
+    /// `--name`.
+    name: String,
+    /// `--net-sim`.
+    net_sim: Option<sn_net::sim::Impairment>,
+    /// `--log-ticks`.
+    log_ticks: u32,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -243,15 +264,23 @@ fn parse_args() -> Result<Args, String> {
         kill: None,
         shot: None,
         lifepod_state: sn_sim::lighting::DAMAGED,
+        mode: session::Mode::Solo,
+        name: std::env::var("USERNAME")
+            .or_else(|_| std::env::var("USER"))
+            .unwrap_or_else(|_| "player".into()),
+        net_sim: None,
+        log_ticks: 50,
     };
     let raw: Vec<String> = std::env::args().skip(1).collect();
-    let mut it = raw.iter();
+    let mut it = raw.iter().peekable();
     let number = |s: Option<&String>, what: &str| -> Result<f32, String> {
         s.ok_or(format!("{what} needs a value"))?
             .parse()
             .map_err(|_| format!("{what} needs a number"))
     };
-    let vec3 = |it: &mut std::slice::Iter<String>, what: &str| -> Result<Vec3, String> {
+    let vec3 = |it: &mut std::iter::Peekable<std::slice::Iter<String>>,
+                what: &str|
+     -> Result<Vec3, String> {
         Ok(Vec3::new(
             number(it.next(), what)?,
             number(it.next(), what)?,
@@ -345,6 +374,44 @@ fn parse_args() -> Result<Args, String> {
                 args.hold_forward = Some(number(it.next(), "--hold-forward")?);
             }
             "--kill" => args.kill = Some(number(it.next(), "--kill")?),
+            "--host" => {
+                let port = match it.peek().and_then(|v| v.parse::<u16>().ok()) {
+                    Some(p) => {
+                        it.next();
+                        p
+                    }
+                    None => DEFAULT_PORT,
+                };
+                args.mode = session::Mode::Host { port };
+            }
+            "--join" => {
+                let a = it.next().ok_or("--join takes ADDRESS[:PORT]")?;
+                let with_port = if a.contains(':') {
+                    a.clone()
+                } else {
+                    format!("{a}:{DEFAULT_PORT}")
+                };
+                let addr = std::net::ToSocketAddrs::to_socket_addrs(&with_port)
+                    .map_err(|e| format!("--join {a}: {e}"))?
+                    .find(|a| a.is_ipv4())
+                    .ok_or(format!("--join {a}: no IPv4 address"))?;
+                args.mode = session::Mode::Join { addr };
+            }
+            "--name" => args.name = it.next().ok_or("--name takes a name")?.clone(),
+            "--log-ticks" => {
+                args.log_ticks = it
+                    .next()
+                    .and_then(|v| v.parse().ok())
+                    .filter(|&n| n > 0)
+                    .ok_or("--log-ticks takes a whole number above 0")?;
+            }
+            "--net-sim" => {
+                let p = it.next().ok_or("--net-sim takes lan, internet or bad")?;
+                args.net_sim = Some(
+                    sn_net::sim::Impairment::preset(p)
+                        .ok_or("--net-sim takes lan, internet or bad")?,
+                );
+            }
             "--shot" => {
                 let seconds = number(it.next(), "--shot")?;
                 let name = it.next().ok_or("--shot takes <SECONDS> <NAME>")?;
@@ -495,17 +562,22 @@ fn lod_ranges(view: f32) -> LodRanges {
     LodRanges(default.map(|r| r * scale))
 }
 
-/// The session at start (M10g): the in-process server for a new world as
-/// the flags describe it (Lifepod 5's point from `RandomStart` with our
-/// seeded draw or the chosen x, z; the Aurora; the slot seed; the clock),
-/// joined over the direct link. Returns it with Lifepod 5's point and
-/// the player's place in it, both from the `Welcome`'s settings.
+/// The UDP port of `--host` and `--join` without one (`sn-server`'s too).
+const DEFAULT_PORT: u16 = 27420;
+
+/// The session at start (M10g, M10h): solo or `--host`, the in-process
+/// server for a new world as the flags describe it (Lifepod 5's point from
+/// `RandomStart` with our seeded draw or the chosen x, z; the Aurora; the
+/// slot seed; the clock), joined over the direct link; `--join`, the
+/// host's. Returns it with Lifepod 5's point and the player's place in
+/// it, both from the `Welcome`'s settings.
 fn start_session(args: &Args, lifepod: bool) -> Result<Started, String> {
     let started = std::time::Instant::now();
     let game = GameData::locate(args.game_dir.clone()).map_err(|e| e.to_string())?;
     let assets = sn_assets::Assets::index(&game)?;
     let rules = sn_assets::rules(&game, &assets)?;
-    let point = match (lifepod, args.lifepod) {
+    let joining = matches!(args.mode, session::Mode::Join { .. });
+    let point = match (lifepod && !joining, args.lifepod) {
         (false, _) => None,
         (true, Some([x, z])) => Some([x, 0.0, z]),
         (true, None) => {
@@ -531,7 +603,10 @@ fn start_session(args: &Args, lifepod: bool) -> Result<Started, String> {
         build: rules.build.clone(),
         fingerprint: rules.fingerprint,
         password: None,
-        max_players: 1,
+        max_players: match args.mode {
+            session::Mode::Solo => 1,
+            _ => sn_protocol::MAX_PLAYERS,
+        },
         settings: WorldSettings {
             slot_seed: args.slot_seed,
             lifepod: point,
@@ -542,7 +617,8 @@ fn start_session(args: &Args, lifepod: bool) -> Result<Started, String> {
         tick_us: rules.tick_us,
         max_speed: rules.max_speed,
     };
-    let session = session::Session::solo(config, "player")?;
+    let mut session = session::Session::start(config, &args.mode, &args.name, args.net_sim)?;
+    session.log_every = args.log_ticks;
     let pod = match session.settings().lifepod {
         Some(point) => {
             let mut scene = assets.scene("escapepod")?;
@@ -552,7 +628,9 @@ fn start_session(args: &Args, lifepod: bool) -> Result<Started, String> {
         None => None,
     };
     println!(
-        "session: solo on the in-process server (build {:?}, rules {:016x}, tick {} µs) in {:.2} s",
+        "session: {:?} as {:?} (build {:?}, rules {:016x}, tick {} µs) in {:.2} s",
+        args.mode,
+        args.name,
         rules.build,
         rules.fingerprint,
         rules.tick_us,
@@ -734,6 +812,7 @@ fn main() -> AppExit {
     ))
     .insert_resource(session)
     .add_systems(First, session::update)
+    .add_systems(Update, session::log_remotes.after(player::update))
     .add_systems(Startup, setup)
     .add_systems(Update, aurora::tick_clock)
     .add_systems(
@@ -837,15 +916,12 @@ fn main() -> AppExit {
         }
     }
     if play {
-        let lifepod = args
-            .scenes
-            .as_ref()
-            .and_then(|o| o.lifepod)
-            .filter(|_| !args.start_given);
+        let lifepod = args.scenes.as_ref().and_then(|o| o.lifepod);
         match GameData::locate(args.game_dir.clone()) {
             Ok(game) => {
                 let start = player::Start {
                     lifepod,
+                    in_pod: !args.start_given,
                     position: args.start.to_array(),
                     slot_seed: args.slot_seed,
                     third_person: args.third_person,
@@ -864,6 +940,15 @@ fn main() -> AppExit {
                             .after(player::update)
                             .after(objects::stream_objects)
                             .before(animation::animate),
+                    )
+                    .add_systems(
+                        Update,
+                        remote::update
+                            .after(session::log_remotes)
+                            .before(body::drive)
+                            .after(objects::stream_objects)
+                            .before(animation::animate)
+                            .run_if(resource_exists::<ObjectStreamer>),
                     )
                     .add_systems(Startup, hud::setup)
                     .add_systems(Update, player::update.before(terrain::stream))

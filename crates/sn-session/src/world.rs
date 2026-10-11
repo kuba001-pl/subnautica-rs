@@ -141,7 +141,9 @@ impl WorldState {
                     // more of them (life is in each state).
                     PlayerEventKind::Died { .. }
                     | PlayerEventKind::Respawned
-                    | PlayerEventKind::AnimatorTrigger { .. } => {}
+                    | PlayerEventKind::AnimatorTrigger { .. }
+                    | PlayerEventKind::CinematicPrepare { .. }
+                    | PlayerEventKind::CinematicPlay { .. } => {}
                 }
             }
         }

@@ -93,6 +93,10 @@ fn player_events() -> Vec<PlayerEventKind> {
     for t in 0..TRIGGERS.len() {
         v.push(PlayerEventKind::AnimatorTrigger { trigger: t as u8 });
     }
+    for on in [false, true] {
+        v.push(PlayerEventKind::CinematicPrepare { on });
+        v.push(PlayerEventKind::CinematicPlay { on });
+    }
     v
 }
 
