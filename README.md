@@ -153,7 +153,9 @@ meshes not yet decoded are flat, Safe Shallows triplanar rocks white;
 `docs/formats/materials.md`), creatures (including the
 ~100,000 the spawn slots would add); the intro cinematic, tools, the PDA and IK, tanks and fins changing
 speeds, the game's own HUD and damage effects; audio,
-multiplayer.
+multiplayer (so far its message format, transport, server and client
+logic, `sn-protocol`, `sn-net` and `sn-session`, tested headless on a
+simulated network and on 127.0.0.1; no app uses them yet).
 Linux/macOS: not tested.
 
 ## Try it
@@ -200,6 +202,9 @@ share them.
 | `crates/sn-unity` | Unity containers: UnityFS bundles, serialized files (pure) |
 | `crates/sn-assets` | Finds Unity objects across bundles; terrain materials |
 | `crates/sn-install` | Finds the game folder and reads its files (read-only) |
+| `crates/sn-protocol` | Multiplayer messages and their binary codec (pure, no dependencies) |
+| `crates/sn-net` | Multiplayer transport over UDP: connections, reliable and latest-only channels; a simulated network for tests |
+| `crates/sn-session` | Multiplayer logic without sockets: the server (join, clock, event order, checks), the client (clock sync, drawing other players) and the shared world state |
 | `apps/sn-inspect` | Command-line inspector and validator |
 | `apps/sn-client` | The desktop client (Bevy) |
 | `docs/` | Design, roadmap, file format notes |

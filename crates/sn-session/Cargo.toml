@@ -1,0 +1,15 @@
+[package]
+name = "sn-session"
+description = "Multiplayer logic as state machines: the server (join, clock, event order, checks) and later the client; no sockets"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+# The messages the session reads and writes.
+sn-protocol.workspace = true
+
+[lints]
+workspace = true

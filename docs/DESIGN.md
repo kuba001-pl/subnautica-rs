@@ -1,8 +1,9 @@
 # subnautica-rs — Design
 
-Status (2026-10-10): **Phases A–B done up to M7f4g**, Phase C as first
+Status (2026-10-11): **Phases A–B done up to M7f4g**, Phase C as first
 passes (§ 4), **Phase E up to M9c and M9g** (the player's body and the
-hatch cinematics; § 4.3). Next: **M10**. M7f4h moved after M11. Each
+hatch cinematics; § 4.3), **M10a–M10d** (the multiplayer messages,
+transport, server and client logic). Next: **M10e**. M7f4h moved after M11. Each
 row's own mark says what is done; everything else is a plan, not code.
 
 ## 1. Goal
@@ -1545,9 +1546,10 @@ construction, and promise 3 is as good as physics allows.
 **Why the owner decides its own movement:** swimming then feels exactly
 like single player (no input delay, no corrections), and the server needs
 no collision world. Cheating is not a concern among friends on a
-self-hosted server; revisit if anyone wants public servers. (This is also
-how we understand Nitrox does it; *hypothesis*, to be re-checked in its
-source at M10c, architecture only.)
+self-hosted server; revisit if anyone wants public servers. (Nitrox does
+the same: *confirmed* M10c, read in its source: its server's
+`PlayerMovementProcessor` stores the position the client sent and relays
+it to the others without a check.)
 
 ##### The timeline: ticks
 
@@ -1573,8 +1575,8 @@ source at M10c, architecture only.)
 
 ##### What a player sends
 
-**A state every tick** (about 50 bytes; the exact layout goes to
-`docs/formats/protocol.md`, our own format): the tick; position
+**A state every tick** (46 bytes, measured in M10a; the exact layout is
+in `docs/formats/protocol.md`, our own format): the tick; position
 (3 × `f32`, better than 0.25 mm at 2 km from the origin); velocity
 (3 × `i16`, cm/s); look yaw and pitch (2 × `u16`); the player transform's
 rotation (only while a cinematic or its ease-out turns it; smallest-three
@@ -1590,10 +1592,14 @@ evaluation that could differ, and no collision needed around remote
 players for the `diving` ray. One-shot animator triggers (death, …) are
 events.
 
-**Packets:** one every 2 ticks (25 per second) carrying the last 4
-states, so every state travels twice and a single lost packet costs
-nothing. About 3–4 KB/s up per player including UDP/IP headers; with 8
-players about 25 KB/s down per client. Every packet stays under 1,200
+**Packets:** one every 2 ticks (25 per second) carrying the last 6
+states, so every state travels three times (changed in M10d from 4
+states and two copies: with two, the sync oracle missed 0.1 % of ticks at
+1 % loss), on an **unordered** channel (also M10d: states carry their
+ticks, so a message overtaken by a newer one still has ticks to give; on
+the latest-only channel the "bad" preset lost 10 % of ticks that way).
+Measured upload about 8.0–8.1 KB/s per player including UDP/IP headers,
+pings and acks (M10d); with 8 players about 57 KB/s down per client. Every packet stays under 1,200
 bytes (no IP fragmentation).
 
 **Events, reliable and ordered, each with its tick:** `Joined`, `Ready`
@@ -1616,8 +1622,9 @@ order. If the data shows the pod's animator cannot play two at once, a
 lock is added and this plan updated.
 
 **Lifepod 5 is shared:** every player starts and respawns in the one pod
-at the server's point (*hypothesis* that this matches Nitrox; it is the
-only choice the game's single `EscapePod` allows without inventing one).
+at the server's point (as Nitrox: *confirmed* M10c, its `EscapePodManager`
+puts up to 50 players in one pod and makes a new one only when it is
+full).
 
 ##### Crates (created in the step that needs them)
 
@@ -1629,8 +1636,9 @@ only choice the game's single `EscapePod` allows without inventing one).
   UDP (`std::net`) and an in-memory link with seeded impairments (delay,
   jitter, loss, duplication, reordering) for tests. On top: the
   connection (handshake, keep-alive, 5 s timeout), sequence numbers and
-  acks, a reliable-ordered channel (events) and a latest-only channel
-  (states), the round-trip estimate, byte and packet counters.
+  acks, a reliable-ordered channel (events), a latest-only channel
+  (pings) and an unordered one (states; added in M10d), the round-trip
+  estimate, byte and packet counters.
 - **`sn-session`** (layer 2, pure): the multiplayer logic as state
   machines without sockets, files or threads, so it runs headless, in
   tests, with dozens of simulated clients:
@@ -1662,12 +1670,12 @@ The decisions it needs are taken (§ 9, 4–8); **stop and ask** if a step's evi
 
 | Step | Work | Done when |
 |---|---|---|
-| **M10a** | `sn-protocol`: ids, `Tick`, the messages above, our codec, quantization helpers; `docs/formats/protocol.md` (our own format, every field). | Round-trip unit tests of every message; quantization error bounds tested (position ≤ 0.25 mm at 2 km); 1,000,000 seeded random, truncated and bit-flipped inputs decode to `Ok` or `Err`, no panic; the encoded size of a player state logged. |
-| **M10b** | `sn-net`: `Transport`, the in-memory impaired link, the connection layer and both channels; the UDP transport. | Headless tests on the impaired link with the presets **lan** (1 ms), **internet** (40 ± 10 ms, 1 % loss) and **bad** (150 ± 50 ms, 5 % loss, 1 % duplicates, reordering): the reliable channel delivers every message exactly once, in order; the latest-only channel never delivers an older state after a newer one; timeouts fire at 5 s; the round-trip estimate is within 10 % of the configured delay; a UDP test on 127.0.0.1 passes. Counters logged per preset. |
-| **M10c** | `sn-session::server`: `Hello` (protocol version, build number, rules fingerprint, name) → `Welcome` or a readable reject; `Ready`; leave and timeout; the clock; relaying states; ordered events; the world-state hash. First read Nitrox's join and movement flow (architecture only, rule 6) and note here what we take. | Unit tests with simulated clients: a wrong build, protocol or fingerprint is rejected with its reason; 8 clients join, leave, time out and rejoin with consistent ids; every client receives every event in the same order with the same ticks; the hash is equal on all clients over 10,000 ticks with random joins and leaves. |
-| **M10d** | `sn-session::client`: clock sync, tick buffers, interpolation and extrapolation, applying events. | **The sync oracle** (headless, impaired link, scripted trajectories with sharp turns, stops and teleports): on **lan** the drawn state equals the sent state at every tick (bit-exact after quantization); on **internet** ≥ 99.9 % of drawn ticks exact, the max error logged; on **bad** ≥ 99 % exact and max error < 0.5 m. These are targets: if the data says otherwise, we record why and agree new ones with the user. Clock offset error after 10 s logged (target < 1 tick). |
+| **M10a** ✅ | **Done 2026-10-11** (MODLOG; format in `docs/formats/protocol.md`): 15 tests; a state is 46 B (54 B with a rotation), 4 states 188 B, the largest `Welcome` 862 B; 1,000,000 bad inputs, 0 panics, and every one that decodes re-encodes to the same bytes; position error ≤ 2⁻¹³ m below 4,096 m. Also in the crate: the animator tables (a value's index is its wire slot) and FNV-1a 64 for the hashes. Plan as written: `sn-protocol`: ids, `Tick`, the messages above, our codec, quantization helpers; `docs/formats/protocol.md` (our own format, every field). | Round-trip unit tests of every message; quantization error bounds tested (position ≤ 0.25 mm at 2 km); 1,000,000 seeded random, truncated and bit-flipped inputs decode to `Ok` or `Err`, no panic; the encoded size of a player state logged. |
+| **M10b** ✅ | **Done 2026-10-11** (MODLOG; packets in `docs/formats/protocol.md` § Packets): 19 tests. On every preset every reliable message arrived exactly once in order and no latest-only message went back; round trip within 10 % (lan 0 %, internet −1.8 / −3.1 %, bad −3.2 … +5.9 % over 4 seeds); a cut link times out 5.000–5.001 s after the last packet; UDP on 127.0.0.1: 500 messages in 8 ms, 0 resent. Added on the way: at most 32 packets with reliable frames in flight (the ack window), which took resends without loss from 80 to 0 (lan) and 275 to 0 (UDP). Plan as written: `sn-net`: `Transport`, the in-memory impaired link, the connection layer and both channels; the UDP transport. | Headless tests on the impaired link with the presets **lan** (1 ms), **internet** (40 ± 10 ms, 1 % loss) and **bad** (150 ± 50 ms, 5 % loss, 1 % duplicates, reordering): the reliable channel delivers every message exactly once, in order; the latest-only channel never delivers an older state after a newer one; timeouts fire at 5 s; the round-trip estimate is within 10 % of the configured delay; a UDP test on 127.0.0.1 passes. Counters logged per preset. |
+| **M10c** ✅ | **Done 2026-10-11** (MODLOG; the world state and its hash in `docs/formats/protocol.md` § World state): 10 tests. Every reject reason with its message; 8 join with ids 0–7, the 9th refused; a goodbye, a timeout, a rejoin by name gets its old id; 10,000 ticks of random play (70 joins, 65 leaves, up to 8 at once, 734 events): every client's log equals the server's from its join on, its hash equal to the server's at every tick (65,525 comparisons), 560 hash reports, 0 mismatches; a server that skips one client once is caught. Protocol 2: `WorldHash` names an event count. **From Nitrox** (read, not copied): movement is the client's and relayed unchecked, players share one pod (both plan hypotheses confirmed); its join is a reservation (name, password, capacity, each with a reason) then a queue that syncs one joiner at a time and tells the others only when the joiner is done. We keep the reasons and "others see you after Ready"; we need no queue, because our `Welcome` is the state after event N and every later event follows in order; a name keeps its id, as Nitrox keeps players by name. Plan as written: `sn-session::server`: `Hello` (protocol version, build number, rules fingerprint, name) → `Welcome` or a readable reject; `Ready`; leave and timeout; the clock; relaying states; ordered events; the world-state hash. First read Nitrox's join and movement flow (architecture only, rule 6) and note here what we take. | Unit tests with simulated clients: a wrong build, protocol or fingerprint is rejected with its reason; 8 clients join, leave, time out and rejoin with consistent ids; every client receives every event in the same order with the same ticks; the hash is equal on all clients over 10,000 ticks with random joins and leaves. |
+| **M10d** ✅ | **Done 2026-10-11** (MODLOG; client rules in `docs/formats/protocol.md` § Client rules): 7 tests (4 client, 3 oracle). Sync oracle, two clients and a server over the simulated network, 70 s each, both directions: **lan** 100 % of drawn ticks exact (3,498 of 3,498), error 0; **internet** 99.914 % exact (3 of 3,479 drawn before they arrived, at start-up and in a loss burst), max error 0.0000 m; **bad** (3 seeds) 99.68–99.91 % exact, max error 0.0000 m (the misses fell on straight segments). Clock error after 10 s: 0 µs (lan), ≤ 0.5 ms (internet), ≤ 10.5 ms (bad), all under a tick; world hashes 0 mismatches. Changed on the way, with the numbers in the MODLOG: states on a new unordered `sn-net` channel; 6 states per message; per-tick lateness for the delay (10 s window, cap 50 ticks, 1 s warm-up). Plan as written: `sn-session::client`: clock sync, tick buffers, interpolation and extrapolation, applying events. | **The sync oracle** (headless, impaired link, scripted trajectories with sharp turns, stops and teleports): on **lan** the drawn state equals the sent state at every tick (bit-exact after quantization); on **internet** ≥ 99.9 % of drawn ticks exact, the max error logged; on **bad** ≥ 99 % exact and max error < 0.5 m. These are targets: if the data says otherwise, we record why and agree new ones with the user. Clock offset error after 10 s logged (target < 1 tick). |
 | **M10e** | `apps/sn-server`: flags (port, seeds, time scale, max players, an optional password typed at start and never stored), reads the host's install, binds UDP; logs joins, leaves, bandwidth per player and time per tick. | Runs headless without a window; rejects a client of another build (a fake `Hello` in a test); 0 panics in a 10-minute run with bots; time per tick logged (target < 1 ms with 8 players). |
-| **M10f** | `sn-inspect coop`: N bot clients (the real player rules and collision; scripted swims and walks from the lifepod, a hatch use, a `--kill`) against `sn-server` over UDP on this machine, impairment presets in between; each bot reports its slot-fill hashes. | For 2 and 4 bots on each preset: every bot's log of every other bot matches that bot's own log (M10d's targets, now with real movement); cinematic, death and respawn ticks equal everywhere; slot-fill and world-state hash mismatches 0; bandwidth per player logged (target < 8 KB/s up). |
+| **M10f** | `sn-inspect coop`: N bot clients (the real player rules and collision; scripted swims and walks from the lifepod, a hatch use, a `--kill`) against `sn-server` over UDP on this machine, impairment presets in between; each bot reports its slot-fill hashes. | For 2 and 4 bots on each preset: every bot's log of every other bot matches that bot's own log (M10d's targets, now with real movement); cinematic, death and respawn ticks equal everywhere; slot-fill and world-state hash mismatches 0; bandwidth per player logged (target < 10 KB/s up; it was 8 KB/s, but M10d measured 8.0–8.1 KB/s with the redundancy sync needs). |
 | **M10g** | **Solo through the session.** The client always runs `sn-session::server` in-process (a direct in-memory link, no sockets, no impairment) and takes its clock and world settings from it; the player rules stay where they are. Nothing new on screen. | Regression: the scripted runs (`--use-hatch 3,15,27 --hold-forward 31`, `--kill`) print the same per-step trace as before the change (equal positions at every step); the clock, Aurora and lighting event ticks are equal before and after. |
 | **M10h** | **Play together.** `--host [PORT]` opens the in-process server to the network; `--join ADDRESS[:PORT]`, `--name`. Remote bodies (M9g) posed from the tick buffer and animated by the received values; remote cinematics and deaths; the pod's door animator from world events; players appear only after `Ready` and disappear on leave. `--net-sim lan\|internet\|bad` impairs the client's own link for testing. | Two clients on this machine (`--host`, `--join 127.0.0.1`), both scripted: each logs the other's drawn position every second next to the other's own log (M10d's targets); both log the same tick for each cinematic, death and respawn; screenshots for the user (a bonus). Keyboard play together **not tested by the agent**. |
 | **M10i** | **Over the real internet.** README "Play together": hosting, joining, the UDP port to forward (or a LAN), what is synced and what isn't yet. | The user and a friend on another machine, with their own install, see each other swim and use the hatch (run by the user; their log lines go into the MODLOG). |
@@ -1676,9 +1684,12 @@ The decisions it needs are taken (§ 9, 4–8); **stop and ask** if a step's evi
 
 1. **Same rules:** join rejects a different build, protocol or rules
    fingerprint (M10c).
-2. **Same shared state:** a world-state hash on the server and every
-   client every 50 ticks; mismatches counted and logged with their tick
-   (target 0: any mismatch is a bug, not noise).
+2. **Same shared state:** clients report their world-state hash every
+   50 ticks, named by the number of world events applied (the state is a
+   function of the ordered log, so a count names it exactly; a tick would
+   not, since player events carry their owner's tick: changed in M10c);
+   the server compares with its own after that many events; mismatches
+   counted and logged (target 0: any mismatch is a bug, not noise).
 3. **Same history:** every bot and client logs each remote player's drawn
    state next to that player's own log of the same tick; error
    statistics per impairment preset (M10d, M10f, M10h).

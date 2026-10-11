@@ -2,6 +2,235 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-11 — M10d: the client's half, and the sync oracle
+
+**What:** `sn-session::client::Client` (pure, on the caller's clock):
+`Hello` on creation, `Welcome` → world state, `Ready` once; clock sync
+(pings 50 ms ×20 then 250 ms; the shortest round trip of the last 10 s
+gives the offset; slewed ≤ 1 %, jump above 250 ms); `steps(now)` gives
+the own physics steps in the server's ticks; own states sent every 2
+ticks; a tick buffer per remote player with `sample(player, tick)`:
+exact, linear between consecutive ticks, Hermite across gaps, a held
+earlier state across a teleport, 250 ms of extrapolation then hold;
+events applied on arrival and released in order at the drawn tick;
+`WorldHash` every 50 ticks. `sn-net` gains a third channel,
+**unordered** (frame kind 3). The sync oracle
+(`crates/sn-net/tests/sync_oracle.rs`): a server and two clients over
+the simulated network, scripted paths with sharp turns, stops, a dive, a
+zigzag and a 30 m teleport every 12 s; every whole tick a client draws
+is compared with the other client's own record of that tick.
+`docs/formats/protocol.md` § Client rules; channel table and bandwidth
+updated.
+
+**Why:** M10d of the approved M10 plan.
+
+**Dead ends and changes on the way (each run's numbers, both directions):**
+1. As planned (states on the latest-only channel, 4 states per message,
+   delay from each message's newest tick, 2 s window, cap 25 ticks): lan
+   100 %; internet 99.885 / 99.943 %; bad 86.4 / 86.1 % exact. On bad
+   about 10 % of ticks never arrived: the latest-only channel drops a
+   message overtaken by a newer one, and with ±50 ms jitter on two legs
+   that is common, yet the older message still carried ticks nobody else
+   had.
+2. States on a new unordered channel (both ways), delay from each newly
+   arrived tick's lateness: bad 96.4 / 95.7 %; the rest mostly
+   "drawn before it arrived".
+3. Window 10 s and cap 50 ticks: no change (96.5 / 95.8 %), so neither
+   was the limit.
+4. A 1 s warm-up in which the delay takes the measured value at once
+   (it started at 5 ticks and may only grow 10 % per unit of time; bad
+   needs about 22): bad 99.04 / 98.84 %, internet 99.885 % in both
+   directions. Printing the misses showed two at start-up and two loss
+   bursts: with each tick in two messages, losing both happens about
+   0.1 % of the time at 1 % loss per leg, right on the 99.9 % line.
+5. 6 states per message (each tick in three): all targets met (below).
+   Cost: upload 8.0–8.1 KB/s instead of about 5.4 (M10f's target raised
+   from 8 to 10 KB/s with this reason).
+
+**How verified:**
+- `cargo test -p sn-net --test sync_oracle -- --nocapture
+  --test-threads=1`: 3 passed. 70 s per run; ticks drawn about 3,430–3,500
+  per direction:
+  - lan: 3,498 / 3,498 exact both ways, error 0, clock error 0 µs, delay
+    2.1 ticks;
+  - internet: 99.914 % both ways (3 drawn before arrival each), max
+    error 0.0000 m, clock error after 10 s −464 / −164 µs, delay 8.5–8.7
+    ticks;
+  - bad, seeds 3, 4, 5: 99.913 / 99.796, 99.854 / 99.883, 99.680 /
+    99.912 % exact, max error 0.0000 m (misses on straight segments,
+    where bridging and extrapolation are exact), clock error after 10 s
+    within ±10.5 ms and at most 16 ms afterwards (under a tick), delay
+    20.7–25.5 ticks;
+  - world hash: 139–140 checks per run, 0 mismatches; 6 hatch events per
+    direction released 0.3–13 ticks after their tick (late ones:
+    reliable resends on bad);
+  - upload 7,969–8,144 B/s per client.
+- The oracle failed at each stage above before the fix that passed it
+  (its own negative control).
+- `cargo test -p sn-session`: 4 new client unit tests (clock sample
+  choice and slew, the sample kinds, events held in order, own states
+  every second step).
+- `sn-net` scenarios also check the unordered channel: nothing
+  duplicated or invented, all 1,500 arrive on lan, 95 % on bad (5 %
+  loss).
+- `cargo test --workspace`: 383 passed. `cargo clippy --workspace
+  --all-targets -- -D warnings`: clean.
+- Not tested: real movement and collision (M10f), a real network
+  (M10i), more than two clients (M10f: 4).
+
+## 2026-10-11 — M10c: `sn-session`, the server's logic
+
+**What:** new crate `crates/sn-session` (layer 2, pure; depends on
+`sn-protocol`): `WorldState` (the shared state: settings, event count,
+players with name, ready and cinematic; built from `Welcome` and the
+ordered world events; FNV-1a hash) and `Server`, a state machine fed
+connections, bytes and times, returning send/close actions and notices:
+join checks with reasons, ids kept per name, `Welcome` then
+`PlayerJoined`, `Ready`, states relayed per player on the latest channel
+(dropped before Ready or > 5 s ahead; implausible speeds logged, not
+refused), player events turned into world events in one order, leave on
+`Bye`/close/timeout, `Hello` timeout 5 s, rejected connections closed
+after 1 s, `Pong` with tick and fraction, `WorldHash` and `SlotFillHash`
+checks. Protocol 2: `WorldHash { events, hash }` instead of a tick (the
+state is a function of the event log; a player event carries its
+owner's tick, so "the state at tick T" is not well defined).
+`docs/formats/protocol.md` § World state and § Server rules.
+
+**Nitrox, read (architecture only, rule 6; nothing copied):**
+`PlayerMovementProcessor` (server) stores the client's position and
+relays it unchecked; `PlayerMovementBroadcaster`/`LocalPlayer` send it
+every frame. `EscapePodManager`: up to 50 players per pod, a new pod only
+when full. Join: `MultiplayerSessionReservationRequest` → reservation
+(rejected with flags: name taken, full, password, bad name, banned) →
+`PlayerJoiningMultiplayerSession` → `JoiningManager` queue syncs one
+joiner at a time and broadcasts the join when the joiner reports done.
+Taken: both plan hypotheses confirmed (DESIGN updated), readable reasons,
+others see a player after it is ready, identity by name. Not taken: the
+one-at-a-time queue (our `Welcome` is the state after event N and later
+events follow in order).
+
+**Why:** M10c of the approved M10 plan.
+
+**How verified:**
+- `cargo test -p sn-session -- --nocapture`: 10 passed (3 world, 7
+  server), messages through the codec both ways as on the wire. Rejects
+  printed with their messages for protocol, build, fingerprint, password,
+  full; names "", " Ryley", "ryley" (taken), "a\tb" refused; closed after
+  the 1 s linger, not before. 8 joins get ids 0–7, the 9th is refused
+  full; a goodbye and a timeout give `Left`/`TimedOut`; the timed-out
+  name rejoins as id 5, a new name gets 8; a silent connection is closed
+  at 5 s. States: none before Ready, not echoed, > 5 s ahead dropped, a
+  50 m/s step counted implausible, the newest in a late `Welcome`. Pong
+  at 3.25 ticks: tick 3, fraction 16,384.
+- 10,000 random ticks: 70 joins, 28 rejects, 65 leaves, up to 8 players,
+  734 events; every client's log equals the server's from its join on;
+  every present client's hash equals the server's at every tick (65,525
+  comparisons); 560 hash reports checked, 0 mismatches; a wrong report
+  is counted.
+- The random run fails when the server skips one client for some events
+  (mutated, then restored).
+- `cargo test --workspace`: 376 passed. `cargo clippy --workspace
+  --all-targets -- -D warnings`: clean.
+- Not tested: a server behind a real transport (M10e), clients that
+  drive their own clocks and buffers (M10d).
+
+## 2026-10-11 — M10b: `sn-net`, the multiplayer transport
+
+**What:** new crate `crates/sn-net` (layer 3, no dependencies): our own
+thin layer on UDP (§ 9, decision 5). `Endpoint` (one socket, many peers:
+handshake with a random connection id, 5 s timeout, refusal when full,
+goodbye, a restarted client replacing its old connection) with two
+channels per peer: reliable-ordered and latest-only per key. Acks of the
+newest packet + 32 before it with the ack's delay, RFC 6298 round-trip
+estimate, resend timeout with backoff, keep-alive every 250 ms, acks
+within 10 ms. `Transport` with `UdpTransport` (non-blocking `std::net`;
+ignores Windows' `ConnectionReset` after an ICMP unreachable) and
+`sim::SimNetwork` (in memory, simulated time, seeded latency, jitter,
+loss, duplication; the presets lan / internet / bad). Everything runs on
+the caller's clock in microseconds. Packet format in
+`docs/formats/protocol.md` § Packets.
+
+**Why:** M10b of the approved M10 plan.
+
+**Dead ends and fixes on the way:**
+- The UDP test first resent 275 of 500 messages with no loss: a burst of
+  ~70 packets, but an ack covers only the newest 33, so the older ones
+  could never be acknowledged. Now at most 32 packets with reliable
+  frames are in flight: UDP resends 0, lan 0 (was 80), internet 25 (was
+  89, the preset loses 1 %).
+- The garbage test hung: its noise socket never read its inbox, and the
+  harness kept stepping to that socket's (past) arrival time. The
+  simulator's `next_arrival` now only reports arrivals after the current
+  time.
+- An ack window shift by more than 63 would have overflowed (debug
+  panic) on a sequence jump; guarded before the first run.
+
+**How verified:**
+- `cargo test -p sn-net -- --nocapture --test-threads=1`: 19 passed (10
+  unit, 9 scenarios). Each preset ran 60 s of traffic (about 20 reliable
+  messages a second each way, a burst of 300 at 10 s, two latest keys
+  every 40 ms) and 10 s to settle: every reliable message arrived exactly
+  once in order (checked by number and content), no latest message went
+  back. Round trip against the configured one: lan 2.00/2.00 ms; internet
+  78.6 and 77.5 / 80 ms; bad 290.4–317.6 / 300 ms over 4 seeds (all
+  within the plan's 10 %). Full counters per preset in
+  `docs/formats/protocol.md` § Packets.
+- Cut link (100 % loss after 5 s): both ends time out 5.000050 s and
+  5.000329 s after their last packet. Connecting to nobody: timed out at
+  exactly 5 s after 50 requests. Full server: the second client refused;
+  a restart reported as `Replaced`, a goodbye as `Closed`.
+- 400,000 random datagrams (half starting like ours) at both ends of a
+  live connection: 199,991 bad and 9 stray at the client, 199,991 bad at
+  the server, 0 panics, the connection unaffected. Packet decoder:
+  300,000 random/truncated/flipped inputs, 0 panics.
+- UDP on 127.0.0.1: 500 reliable messages in 8 ms, 0 resent, round trip
+  1.65 ms, latest messages delivered in order.
+- The scenarios fail when the latest channel accepts an older packet
+  (mutated, then restored).
+- `cargo test --workspace`: 366 passed. `cargo clippy --workspace
+  --all-targets -- -D warnings`: clean.
+- Not tested: a real network between two machines (M10i); NAT; rates far
+  above the plan's (no congestion control beyond the 32-packet cap).
+
+## 2026-10-11 — M10a: `sn-protocol`, the multiplayer messages
+
+**What:** new crate `crates/sn-protocol` (layer 2, pure, no
+dependencies): `Tick`, `PlayerId`, `PROTOCOL_VERSION` 1; client messages
+(`Hello`, `Ready`, `Ping`, `States`, `Event`, `SlotFillHash`, `WorldHash`,
+`Bye`) and server messages (`Reject`, `Welcome`, `Pong`, `States`, world
+`Event`); a strict, canonical codec (minimal varints, bools 0/1, finite
+floats, length limits, no trailing bytes; errors carry byte offsets);
+quantization helpers (`quant`); the animator tables (`anim`: 7 floats,
+19 bools, 3 triggers, the names `sn_sim::body` sets; a value's index is
+its wire slot); FNV-1a 64 (`Fnv64`) for the fingerprint and hashes.
+`docs/formats/protocol.md` describes every field. `Hello`'s first three
+bytes and `Reject { Protocol }` are fixed forever so any version can
+answer any other. `MAX_PLAYERS` is 8 (§ 9, decision 8). No dependency
+added.
+
+**Why:** M10a of the approved M10 plan.
+
+**How verified:**
+- `cargo test -p sn-protocol -- --nocapture`: 15 passed. Printed: one
+  state 46 B (54 B with a rotation), 4 states 188 B, 8 states 356 B, the
+  largest `Welcome` (8 players, longest names, every option) 862 B, all
+  under 1,200 B; player upload at 25 packets/s × 4 states: 5,400 B/s
+  with IPv4/UDP headers (the plan's 3–4 KB/s forgot that each state
+  goes twice; DESIGN corrected). Robustness: 333,334 random, 333,333
+  truncated, 333,333 bit-flipped inputs, 0 panics; the 71,216 (as
+  client) and 70,073 (as server) that still decoded all re-encoded to
+  the same bytes.
+- Position quantization over 200,000 seeded values within ±4,096 m:
+  error ≤ 2⁻¹³ m (0.12 mm), below the plan's 0.25 mm; ≤ 2⁻¹⁴ m at 2 km.
+- The robustness test fails when the decoder accepts non-minimal varints
+  (checked by mutating it, then restored).
+- `cargo test --workspace`: 347 passed (332 + 15). `cargo clippy
+  --workspace --all-targets -- -D warnings`: clean.
+- Not tested: nothing sends or receives these messages yet (M10b on).
+  Whether every animator name `sn_sim::body` produces is in the tables is
+  checked by hand here (the 7 floats, 19 bools and `player_death` in
+  `Body::update`); M10h logs any name `AnimState::set_*` refuses.
+
 ## 2026-10-11 — Plan: M10, co-op multiplayer (docs only)
 
 **What:** `docs/DESIGN.md` § Phase D "M10 plan": an analysis of

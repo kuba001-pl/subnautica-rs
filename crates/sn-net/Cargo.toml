@@ -1,0 +1,17 @@
+[package]
+name = "sn-net"
+description = "UDP transport for multiplayer: connections, a reliable-ordered and a latest-only channel; plus an impaired in-memory network for tests"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+# The sync oracle (tests/sync_oracle.rs) runs the session logic over the
+# simulated network; layer 3 testing downward.
+[dev-dependencies]
+sn-protocol.workspace = true
+sn-session.workspace = true

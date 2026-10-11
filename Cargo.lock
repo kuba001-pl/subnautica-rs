@@ -4831,8 +4831,27 @@ name = "sn-mesh"
 version = "0.0.0"
 
 [[package]]
+name = "sn-net"
+version = "0.0.0"
+dependencies = [
+ "sn-protocol",
+ "sn-session",
+]
+
+[[package]]
 name = "sn-octree"
 version = "0.0.0"
+
+[[package]]
+name = "sn-protocol"
+version = "0.0.0"
+
+[[package]]
+name = "sn-session"
+version = "0.0.0"
+dependencies = [
+ "sn-protocol",
+]
 
 [[package]]
 name = "sn-sim"
