@@ -2,6 +2,25 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-12 — M9u plan: the game's UI
+
+**What/why:** M9d is done, so M9u's plan is written before any code
+(`docs/DESIGN.md` "M9u plan", steps M9u0–M9u9; the M9u row points to
+it). Docs only. Approved by the user the same day.
+
+**Found while planning (read only, names and counts):** the HUD is
+`uGUI.prefab` (13 canvases, 12 of them in world space, 504 behaviours);
+the PDA's screens are in `main.unity`'s `sharedAssets`; 8 sprite atlases
+(`Items` packs 470 sprites and its page is in another bundle); 9 fonts,
+only `Aller_Rg`'s TMP atlas is stored and the rest are filled while the
+game runs; `uGUI_CanvasScaler` places canvases at the UI camera +
+forward × `distance`. Tools: `sn-inspect unity --types`, `code --il`, `code --enum`, and
+a throwaway probe in `out/probe` (gitignored). Proposed dependency for
+M9u3: `ttf-parser` (TrueType/CFF outlines, pure Rust); not added yet.
+
+**Verified:** `git status --short` lists only `docs/DESIGN.md` and
+`MODLOG.md`. No code changed, nothing built or tested.
+
 ## 2026-10-12 — M7v1 crash correction: retain CPU meshes for late reflections
 
 **What/why:** the user reported a panic after about 73 s from Tree Cove:

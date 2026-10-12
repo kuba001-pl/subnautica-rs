@@ -417,7 +417,7 @@ understand it, then write our own.
 | **M9g** ✅ (2026-10-10, M9g1–M9g5e; not compared with the game on screen) | **The player's body** (plan written 2026-10-10, below M9c's; split into M9g1–M9g5): the game's player model from the `main` scene with the suit the equipment rule picks, its animator driven by the game's parameter rules (`ArmsController`, `Player`), the view model's turn and bob (`MainCameraControl`), the head drawn only in shadows in first person; then the hatch cinematics and death animation. Pulls forward "After Phase E" item 3 (all but tools/IK). Before M10 so remote players are drawn as bodies. | Each step's own list in the plan. |
 | **M10** | Multiplayer as planned (Phase D, "M10 plan", steps M10a–M10i): `sn-protocol`, `sn-net`, `sn-session`, `sn-server`, handshake with the build and rules check, join, player sync (remote players drawn with M9g's body, animated by the values the owner's rules computed). From here solo play also runs against an in-process server (§ 3.1, principle 5), so items and crafting below are written server-authoritative once. | M10's own row. |
 | **M9d** ✅ | **Done 2026-10-12** (steps M9d1–M9d6 below, each in MODLOG; what is not 1:1 yet is listed under "Not 1:1 after M9d"). Pick up and inventory (plan below, steps M9d1–M9d6): `Pickupable` objects within reach, outcrops break into their resource (`BreakableResource`), inventory of the game's size, item sizes from TechData, equipment slots, blueprints unlocked by picking up, dropping, the lifepod's locker with its starting supplies, the `grab` animation; picked objects gone for every player (server state keyed by entity id and slot seed). What stays not 1:1 is listed in the plan with where each item goes. | Inventory rules unit-tested; a scripted pick-up logs item counts; the object's drawn count −1 on both clients. |
-| **M9u** | The game's UI (uGUI, sprites, TextMesh Pro): the HUD, hand reticle, PDA inventory tab and equipment screen, notifications; replaces our own panels. Proposed with M9d (below its plan); its own plan before it starts. | In its plan. |
+| **M9u** | The game's UI (uGUI, sprites, TextMesh Pro): the HUD, hand reticle, messages, the PDA with its inventory tab and equipment; replaces our own HUD and panel. Plan written 2026-10-12 ("M9u plan", below M9d's; steps M9u0–M9u9), approved by the user 2026-10-12. | Each step's own list in the plan. |
 | **M9e** | Crafting at the lifepod's fabricator: the menu from P1's tree, recipes and times from TechData, starting blueprints from `PDAData`; item names from the language files. | Crafting rules unit-tested on synthetic recipes; one real recipe crafted in a scripted run (counts before/after logged); menu node count equal to P1's. |
 | **M9f** | Save and load (player, inventory, removed objects, crafted items) on the server, in our own format, in the user's save folder (not `out/`, not the game folder). Becomes M11's persistence. | Round-trip unit test; server restart restores the logged state. |
 
@@ -954,20 +954,166 @@ is built; none is dropped):
 - **Look** (item 9): `SkyEnvironmentChanged` on items moved between
   inside and outside lighting.
 
-#### M9u: the game's UI (proposed 2026-10-11 with M9d, agreed with it; plan to be written before it starts)
+#### M9u plan: the game's UI (written 2026-10-12, after M9d; approved by the user the same day)
 
 The game's screens are uGUI (146 `uGUI_*` classes): canvases of
-`RectTransform`s, `Image`s with sliced sprites from `SpriteAtlas`es,
-TextMesh Pro text with SDF fonts, masks and animated panels. Reading and
-drawing that is a milestone of its own (about the size of M9g); the agent
-checks it by numbers (layout rectangles against the read values) and
-screenshots for the user. It comes after M9d (whose rules, sync and proof
-do not need it) and before M9e (the fabricator menu is UI, and building
-it on our own panels would draw it twice). It replaces M9c's HUD and
-M9d's panels with the game's: the HUD bars, the hand reticle, the PDA's
-inventory tab and equipment screen, the notifications. Its first slice,
-`SpriteAtlas` and `Sprite` reading for the item icons, is the smallest
-useful piece.
+`RectTransform`s, `Image`s with sprites from `SpriteAtlas`es,
+TextMesh Pro text with SDF fonts, masks and animated panels. M9u reads
+them from the install and draws them as the game does, so the HUD, the
+hand reticle, the messages and the PDA's inventory tab look and behave
+like the game's. It replaces M9c's HUD (`hud.rs`) and M9d5b's panel
+(`inventory.rs`). It comes before M9e: the fabricator menu
+(`uGUI_CraftingMenu`) is built on M9u's pieces. The agent checks it by
+numbers (rectangles, vertex counts, timings against values read). The
+screenshots are for the user.
+
+**Found while writing this plan** (2026-10-12, `sn-inspect unity
+--types`, a throwaway probe in `out/probe` that reads only names and
+counts, `sn-inspect code --il`). These are *confirmed* by those reads
+unless marked otherwise:
+- **Where it is.** Three Addressables bundles and two scene files:
+  - `allprefabs_asset_ugui.prefab_…` (`Assets/uGUI/uGUI.prefab`):
+    13 `Canvas`, 385 `RectTransform`, 292 `CanvasRenderer`, 29
+    `CanvasGroup`, 98 `Sprite`, 75 `Texture2D`, 12 materials, 7
+    shaders, 6 clips with 5 legacy `Animation`s, and 504
+    MonoBehaviours. Those include 148 `Image`, 110 `TextMeshProUGUI`,
+    15 + 9 horizontal and vertical layout groups, 19
+    `ContentSizeFitter`s, `HandReticle` with 10 `uGUI_HandReticleIcon`,
+    the four bars (`uGUI_OxygenBar`, `HealthBar`, `FoodBar`,
+    `WaterBar`, 5 `uGUI_CircularBar`), `uGUI_DepthCompass`,
+    `ErrorMessage`, `uGUI_IconNotifier`, `uGUI_PopupNotification`,
+    `uGUI_QuickSlots`, `uGUI_PlayerDeath`, `uGUI_SceneRespawning`,
+    `uGUI_Tooltip` and 4 `uGUI_CanvasScaler`.
+  - `main.unity`'s `sharedAssets` file holds the PDA: `uGUI_PDA`, its
+    tabs (`uGUI_InventoryTab`, `LogTab`, `EncyclopediaTab`, `PingTab`,
+    `GalleryTab`, `TimeCapsuleTab`), `uGUI_ItemsContainer` and
+    `uGUI_Equipment`. Its prefab is referenced from the scene's `PDA`
+    script (*hypothesis*: through `PDA`'s screen prefab field).
+  - `essentials.unity`'s and `xmenu.unity`'s files hold the options
+    and the main menu (out of scope).
+  - `atlases_…`: 8 `SpriteAtlas` (class 687078895). `Items` packs 470
+    sprites, `Categories` 29, `Tabs` 12, `Pings` 9, `Log` 7,
+    `Backgrounds` 4, `Default` and `ItemActions` 2 each. Seven of the
+    atlas textures are uncompressed RGBA32 pages in this bundle. The
+    `Items` atlas's page and its sprites are in another bundle (the
+    atlas file's one external, `CAB-ef9560b0…`). `SpriteManager.Group`'s
+    values (None, Item, Background, Category, Log, Tab, Pings,
+    ItemActions) match the atlases' names.
+  - `fonts_assets_all_…`: 9 `Font`s with their TrueType/OpenType bytes
+    (Aller_Rg, Aller_W_Bd, PTSans, PTSans-Bold, OpenSans, Noto Sans
+    CJK SC and Thai, and a debug font), 8 `TMP_FontAsset`s, 1
+    `TMP_SpriteAsset` (`InputSymbols`, a 1024×512 page). Shaders:
+    `TextMeshPro/Distance Field` and `…/Mobile/Distance Field`.
+- **Text atlases are mostly built while the game runs.** Only
+  `Aller_Rg Atlas` is stored (1024×1024, Alpha8). The other font
+  atlases are 0×0 in the file, so TMP fills them from the font's
+  TrueType bytes when the game runs.
+- **Canvases are in world space.** 12 of the 13 canvases have render
+  mode 2 (world space), one has 0 (screen-space overlay).
+  `uGUI_CanvasScaler.UpdateTransform` places a canvas at the UI camera's
+  position + forward × `distance`, with the camera's rotation, or at an
+  `_anchor`'s pose. The UI camera is the main scene's `MainCamera (UI)`
+  (field of view 60, near 0.03, mask `0x20` = layer 5 UI).
+- **UI shaders and materials:** `UI/Simple` (`HUDBackground`,
+  `OxygenBarPulse`, keyword `ALPHA_PREMULTIPLY`), `UI/Bar`
+  (`_FILL_HORIZONTAL`, `SHEAR`), `uGUI/WorldCursor`, `uGUI/Compass`,
+  `UI/ResourcesBlip`, `uGUI/IntroLogo`, `uGUI/DepthClear`; plus Unity's
+  built-in `UI/Default` (external `unity default resources`). The fonts
+  have Outline and Shadow material presets (`UNDERLAY_ON`).
+- **Text** comes from the language files we already read (M9d1,
+  `items.rs`). Static labels are translated by `TranslateOnStart` /
+  `TranslationLiveUpdate`.
+
+**Design.**
+- **Layers.** `sn-dotnet` gives script field layouts. `sn-unity` reads
+  the objects. A new crate `sn-ui` (layer 2, pure: no Bevy or files)
+  does layout, mesh building, text, hit testing and the UI's rules.
+  It outputs draw lists (vertices, a material, a clip rectangle, a
+  sort key) that can be checked headlessly. The client draws those
+  lists and sends it the input. The same split as `sn-sim` / the client.
+- **Script fields from the DLLs, not by hand.** The UI needs dozens of
+  MonoBehaviour layouts (Image, TMP's 80-odd fields, Selectable's colour
+  blocks, layout groups, every `uGUI_*`). We would write those by hand
+  the way `gameplay.rs` does. Instead, M9u reads the layout from the field metadata of
+  `Assembly-CSharp`, `UnityEngine.UI.dll` and `Unity.TextMeshPro.dll`,
+  using Unity's serialization rules. Those rules: public or
+  `[SerializeField]`; not static, const, readonly or `[NonSerialized]`;
+  `[Serializable]` classes and structs inline; `UnityEngine.Object`
+  references as PPtrs; arrays and `List<T>`; base classes first; and the
+  built-in structs (Vector2/3/4, Color, Color32, Rect, Quaternion,
+  Matrix4x4, AnimationCurve, Gradient, LayerMask, RectOffset) from a
+  table. Every object read must end at its last byte (`at_end`, as
+  now). That check proves the layout object by object. The hand-written
+  readers stay, and they must agree with the generic reader on the same
+  objects.
+- **Behaviour is ported, not run.** Each `uGUI_*` rule that M9u needs
+  (bar smoothing and pulse, reticle states, message timings, PDA
+  open/close, the items container) is read with `sn-inspect code --il`
+  and written in `sn-ui` with the numbers from its fields, as M9c and
+  M9d5b did. Its facts go in a new `docs/formats/ui.md`, each marked
+  *confirmed* or *hypothesis*.
+- **Drawing.** uGUI draws in hierarchy order: depth first, with nested
+  canvases and their sorting orders, `CanvasGroup` alpha and
+  `RectMask2D` clip rectangles. Our draw list keeps that order. The
+  client draws each canvas as a world-space quad mesh, through our own
+  UI camera with the game's numbers, after the 3D scene and its effects.
+  Bevy's UI is not used for the game's screens. It stays only for
+  debug text.
+- **Fonts.** The stored `Aller_Rg` atlas is used as it is. Glyphs for
+  the other atlases are made on demand, as TMP does: the glyph outline
+  from the font bytes, rasterized at the asset's sampling size, then a
+  distance field with its padding. **New dependency: `ttf-parser`.**
+  It is pure Rust with no dependencies and parses TrueType and CFF
+  outlines (Noto CJK is `.otf`/CFF). Writing a CFF reader ourselves
+  isn't worth it. The rasterizer and the distance field are our own
+  code. Check: we regenerate `Aller_Rg`'s glyphs our way and compare
+  them with the shipped atlas.
+- **Input.** A `GraphicRaycaster` equivalent: hits in reverse draw order
+  on `raycastTarget` graphics, blocked by `CanvasGroup.blocksRaycasts`.
+  Hover, click and drag go to the ported handlers. Keyboard and mouse
+  only. Gamepad navigation (`uGUI_NavigableControlGrid`) is listed as
+  not 1:1.
+- **No network change.** The UI is local. The client's requests are the
+  same M9d messages, so the protocol, server and rules fingerprint stay
+  as they are.
+
+**Steps.** Each one is one change, revertable alone, and has its own
+MODLOG entry.
+
+| Step | Work | Done when |
+|---|---|---|
+| **M9u0** | **Census, headless.** `sn-inspect ui`: the files above, each canvas (render mode, sorting, scaler mode and `distance`), and the script hosts for the in-scope screens. Also who spawns `uGUI.prefab` and the PDA screen, and how (from the IL). `docs/formats/ui.md` started. | Counts equal the ones above (13 canvases, 385 rect transforms, 504 behaviours, 8 atlases, 470 item sprites, 9 fonts); every in-scope `uGUI_*` named with its object path; spawn path written as *confirmed* or *hypothesis*. |
+| **M9u1** | **Script layouts from the DLLs** (`sn-dotnet`: field signatures, `CustomAttribute`, type refs across the four assemblies; `sn-unity`: a generic field reader giving a value tree). | Synthetic tests (our own encoded assemblies and objects); real data: every MonoBehaviour in the uGUI prefab, the main scene's PDA, the fonts bundle and the main scene ends exactly at its last byte, N/N logged with each miss named; the generic reader equals the hand-written readers (`Player`, `PDAData`, `BreakableResource`, …) on every object they read. **Stop and ask** if more than 2% miss after two attempts. |
+| **M9u2** | **Built-in UI classes and sprites** (`sn-unity`): `RectTransform`, `Canvas`, `CanvasGroup`, `CanvasRenderer`, `Sprite` (rect, border, pivot, its render data), `SpriteAtlas` (render data map); `SpriteManager`'s lookup rule by group and name from the IL; tech type → icon. | Every one of the game's 1,190 sprites and 8 atlases parses; every item tech type in `ItemRules` gets an icon or the game's fallback, counts logged; 20 sprites' rects and borders equal UnityPy's (dev-time oracle, not a dependency); `sn-inspect ui --icons` writes the item icons to `out/ui/` for the user. |
+| **M9u3** | **TMP fonts** (`sn-unity` + `sn-ui`): `TMP_FontAsset` (face info, glyph and character tables, kerning pairs, creation settings) through M9u1; `Font` bytes; the stored atlas; glyphs on demand. | Every font asset parses; for each `Aller_Rg` glyph in the stored atlas, our generated glyph's metrics equal the table's and the distance texels' mean error is logged per glyph and in total (target written before the run: mean ≤ 3/255, worst glyph reported); English strings used by the in-scope screens have 0 missing glyphs. |
+| **M9u4** | **Layout and meshes** (`sn-ui`, pure): RectTransform (anchors, pivot, size), layout groups, `FlexibleGridLayout`, `ContentSizeFitter`, `LayoutElement`, `AspectRatioFitter`; Image meshes (simple, sliced, tiled, filled with all fill methods); `RawImage`; TMP layout (size, alignment, wrap, overflow, line and character spacing, kerning, the rich-text tags the screens use, auto-size); draw order, `RectMask2D`, `CanvasGroup` alpha. | Unit tests on synthetic trees. Real data, *hypothesis to check first*: rects driven by layout groups and fitters are saved with their last editor values, so we can use them as an oracle; ours equal them within 0.01 px for N/N (each miss named), and text-fitted sizes equal within 0.5 px. Vertex counts per graphic logged. The draw-list hash is the same across two runs. |
+| **M9u5** | **Drawing in the client**: the UI camera; world-space canvases placed by the `uGUI_CanvasScaler` rule; the UI shaders ported to WGSL (`UI/Default`, `UI/Simple`, `UI/Bar`, `TextMeshPro/Distance Field` with outline and underlay, `uGUI/WorldCursor`, `uGUI/Compass`) from their compiled passes, as in M7g; colour space as the game's. The HUD drawn static (its stored state). | Draw calls, vertices and textures per canvas logged; CPU cost per frame logged (target < 0.5 ms for the HUD); screenshots at 1920×1080 and 2560×1440 for the user; 0 GPU validation errors. |
+| **M9u6** | **The HUD's rules**: the four bars (`uGUI_CircularBar` and each bar's smoothing, pulse and warning), the depth, the compass while one is equipped, the hand reticle (icon per hand state, text and subscript, progress), the death and respawn screens and the fader. `hud.rs` removed. | `--dive` and `pickup`-style scripted runs in the client log each bar's shown value against the rule's each second, the reticle's icon per target kind and the fade timings against the values read; our HUD's code gone. |
+| **M9u7** | **Messages**: `ErrorMessage` (inventory full, can't drop here), `uGUI_IconNotifier` (picked-up icons), `uGUI_PopupNotification` (blueprint unlocked), the inventory tab's notification count; text from the language file. | A scripted pick-up run logs each message's language key, its show and hide times against the IL's numbers, and the queue length at its limit. |
+| **M9u8a** | **The PDA itself**: the PDA model in the hand, `ArmsController.SetUsingPda` (the arms' animation), `PDA.Open`'s sequence and close distance, the screen canvas on the PDA's anchor, the tab bar (the other tabs drawn but not opened: logged). Replaces M9d5b's stand-ins. | Open and close times equal the values read; the screen canvas's pose relative to the camera logged at rest; the arms' animator reaches the PDA states (names written before the run). |
+| **M9u8b** | **The inventory tab**: `uGUI_ItemsContainer` (cells, icons by size, the locker's container beside), `uGUI_Equipment` (slot backgrounds and icons), the tooltip (name and description), hover, click by M9d5b's `item_action`, drag and drop (`uGUI_ItemsContainer` / `uGUI_Equipment` rules), the cursor. `inventory.rs`'s panel removed; `--panel` clicks at icon centres from the layout. | `--panel` gives the same item results as M9d5b's run; every drawn cell's rect equals the container's rule; a drag between grid, slots and locker sends the same `Move` as a click. |
+| **M9u9** | **Close-out**: two clients (host and join) each with the UI; `README.md`, `docs/formats/ui.md` and the "Not 1:1 after M9u" list below updated. | Two-player run: each client's messages and inventory views match its own state; `cargo test --workspace` passes without the game; `git status --short` shows only our code and docs. |
+
+**Out of scope (each kept in its own milestone):** the fabricator menu
+(M9e, built on M9u4–M9u5); the main menu and in-game menu with options
+(`xmenu`, `essentials`; a later step of its own); the other PDA tabs'
+content (Log, Encyclopedia, Pings, Gallery, Time Capsule: PDA and goals,
+"After Phase E" item 2); quick slots and held tools (item 1; the
+bar is drawn as the game draws it with nothing bound, *hypothesis* to
+check in M9u6); vehicle and Cyclops HUDs, the builder menu (items 5 and
+6); pings and signals; subtitles and voice (audio, item 8); gamepad
+navigation; the food and water drain (the bars show the starting values
+until eating lands with item 1, because a drain without food would starve the
+player); languages other than English (the code path is the same; not
+tested).
+
+**Risks.** TMP's layout has many options. M9u4 ports only what the
+in-scope screens set, and logs any option it meets but does not port.
+Our distance field will not match FreeType bit for bit. M9u3 measures
+the gap against the shipped atlas instead of assuming it is small. The
+step-M9u4 oracle (saved driven rects) is a hypothesis. If it does not
+hold, layout is checked against hand-computed cases and the
+screenshots only, and the plan says so. Size: about M9g's, ten steps.
 
 #### M9g plan: the player's body (written 2026-10-10)
 
