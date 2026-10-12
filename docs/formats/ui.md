@@ -106,18 +106,79 @@ the PDA screen follows `PDA.screenAnchor`. Not read yet (M9u5, M9u8a).
 
 ## Sprite atlases — confirmed
 
-**`SpriteAtlas` (class 687078895), first fields:** `string` name,
-PPtr[] packed sprites, string[] packed sprite names (the same count).
-The render data map that follows is not read yet (M9u2).
+**Layouts** (field order from UnityPy's type-tree database for
+2019.4.36f1, `out/m9u/oracle/typetree.py`; every object of these classes
+in the game parsed to its last byte, `sn-inspect ui --sprites`: 1,190
+`Sprite`, 8 `SpriteAtlas`, 2,835 `RectTransform`, 138 `Canvas`, 97
+`CanvasGroup`, 2,306 `CanvasRenderer`):
+
+- **`SpriteAtlas` (class 687078895):** `string` name; PPtr[] packed
+  sprites; string[] packed sprite names (the same count); the render data
+  map: `i32` count, then per entry the key {16-byte GUID, `i64`} and
+  `SpriteAtlasData` (80 bytes: PPtr texture, PPtr alpha texture, rect
+  `textureRect`, vec2 `textureRectOffset`, vec2 `atlasRectOffset`, vec4
+  `uvTransform`, `f32` downscale multiplier, `u32` `settingsRaw`; no
+  secondary textures in 2019.4); `string` tag; `bool` is-variant
+  (padded).
+- **`Sprite` (213):** `string` name; rect `m_Rect`; vec2 offset; vec4
+  border (left, bottom, right, top); `f32` pixels per unit; vec2 pivot;
+  `u32` extrude; `bool` is-polygon (padded); the render data key {GUID,
+  `i64`}; string[] atlas tags; PPtr atlas; `m_RD` (PPtr texture, PPtr
+  alpha texture, secondary textures {PPtr, string}[], submeshes (48 bytes
+  each), the index buffer `byte[]`, vertex data {`u32` count, channels
+  {stream, offset, format, dimension}[], `byte[]` data}, bind poses
+  (matrices), rect `textureRect`, vec2 `textureRectOffset`, vec2
+  `atlasRectOffset`, `u32` `settingsRaw`, vec4 `uvTransform`, `f32`
+  downscale multiplier); the physics shape (vec2[][]); bones (none in
+  this game).
+- **`RectTransform` (224):** the Transform's fields, then vec2 anchor
+  min, anchor max, anchored position, size delta, pivot.
+- **`CanvasGroup` (225):** PPtr game object, `u8` enabled (padded), `f32`
+  alpha, `bool` interactable, `bool` blocks raycasts, `bool` ignore
+  parent groups (padded): 24 bytes.
+- **`CanvasRenderer` (222):** PPtr game object, `bool` cull transparent
+  mesh.
+
+**Lookup** (`SpriteManager`, confirmed from its IL; `crates/sn-assets/src/sprites.rs`):
+`.cctor` loads every atlas with the Addressables label `SpriteAtlases`
+and maps `SpriteManager.Group` to atlas names (None `Default`, Item
+`Items`, Background `Backgrounds`, Category `Categories`, Log `Log`, Tab
+`Tabs`, Pings `Pings`, ItemActions `ItemActions`).
+`OnLoadedSpriteAtlases` keys each atlas's sprites by name (the clone's
+name without `(Clone)`), ignoring case. `Get(group, name, fallback)`
+looks up the group's atlas and otherwise gives the fallback.
+`Get(TechType)` is `Get(Item, techType.AsString(false), defaultSprite)`,
+and `defaultSprite` is `Default`'s `Unknown`. The stored names are often
+lower case (`titanium` for `Titanium`), so the case rule matters. Of 793
+`TechType` names, 450 have their own icon and 343 get `Unknown`. Of the
+515 tech types in `ItemRules`, the 103 without an icon are almost all
+things that are never in an inventory (creatures, plants, fragments,
+drillables, base machines).
+
+**Packing** (`settingsRaw`: bit 0 packed, bit 1 mode 0 tight / 1
+rectangle, bits 2–5 rotation, bit 6 mesh type): every atlas sprite is
+packed, none rotated. `Items`, `Categories`, `Tabs`, `Pings` and
+`ItemActions` are tight-packed; `Default`, `Backgrounds` and `Log`
+rectangle-packed. Tight packing **trims transparent margins**: a 128×128
+sprite (`m_Rect`) is e.g. 90.9×106.9 in the atlas (`textureRect`, with
+fractional bounds). So drawing an icon in its rect needs the padding
+between the two, as uGUI's `Image` applies it (M9u4). Only `Default`
+has a sprite with nine-slice borders.
+
+**Oracle (UnityPy 1.25.4, `out/m9u/oracle/sprites.py`):** the first 20
+`Items` sprites by name are equal as `f32` (name, rect, border, pivot,
+pixels per unit, packed rect, settings). Both `Items` pages' decoded RGBA
+(2048×2048 and 1024×2048, RGBA32) have the same CRC-32 as UnityPy's
+(`b4bde8b7`, `d521bff4`).
 
 `atlases_….bundle`: 8 atlases. `Items` packs 470 sprites, `Categories`
 29, `Tabs` 12, `Pings` 9, `Log` 7, `Backgrounds` 4, `Default` 2 and
 `ItemActions` 2. Every packed sprite resolves to a `Sprite`. The
 `Items` sprites are all in the bundle's one external file
 (`CAB-ef9560b0…`), the others in the atlas file itself. The 7 pages in
-the bundle are RGBA32 (`sactx-<w>x<h>-Uncompressed-<Atlas>-…`); the
-`Items` page is not among them. *Hypothesis*: it is in the same
-external file as its sprites. Checked in M9u2.
+the bundle are RGBA32 (`sactx-<w>x<h>-Uncompressed-<Atlas>-…`). The
+`Items` atlas's two pages are in the same external file as its sprites,
+in `duplicateassetssorted_assets_bundle93_….bundle` (confirmed M9u2).
 
 ## Fonts — confirmed
 

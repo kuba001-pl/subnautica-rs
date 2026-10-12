@@ -106,8 +106,9 @@ pub use shader::{
 pub use sky::{Gradient, SkyDome, SkyLight, SkyManager};
 pub use texture::{StreamingInfo, Texture2D, TextureFormat};
 pub use ui::{
-    Canvas, CanvasScaler, RENDER_MODE_SCREEN_SPACE_CAMERA, RENDER_MODE_SCREEN_SPACE_OVERLAY,
-    RENDER_MODE_WORLD_SPACE, SpriteAtlasHead, object_name,
+    Canvas, CanvasGroup, CanvasRenderer, CanvasScaler, RENDER_MODE_SCREEN_SPACE_CAMERA,
+    RENDER_MODE_SCREEN_SPACE_OVERLAY, RENDER_MODE_WORLD_SPACE, RectTransform, RenderDataKey,
+    Sprite, SpriteAtlas, SpriteMesh, SpriteRenderData, object_name,
 };
 pub use voxeland::{GrassSettings, Voxeland, VoxelandBlockType, VoxelandBlockTypePrefab};
 pub use water::{BiomeWater, WaterBiomeManager, WaterSettings, WaterscapeVolume};

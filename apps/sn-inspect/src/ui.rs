@@ -12,7 +12,7 @@ use sn_assets::{Assets, FileRef, ObjectRef, UiTree};
 use sn_install::GameData;
 use sn_unity::{
     Canvas, CanvasScaler, GameObject, MonoBehaviourHeader, RENDER_MODE_SCREEN_SPACE_CAMERA,
-    RENDER_MODE_SCREEN_SPACE_OVERLAY, RENDER_MODE_WORLD_SPACE, SpriteAtlasHead, Texture2D,
+    RENDER_MODE_SCREEN_SPACE_OVERLAY, RENDER_MODE_WORLD_SPACE, SpriteAtlas, Texture2D,
     TransformNode, class_name, object_name,
 };
 
@@ -24,6 +24,8 @@ const FONT: i32 = 128;
 const SPRITE: i32 = 213;
 const CANVAS: i32 = 223;
 const RECT_TRANSFORM: i32 = 224;
+const CANVAS_GROUP: i32 = 225;
+const CANVAS_RENDERER: i32 = 222;
 const SPRITE_ATLAS: i32 = 687_078_895;
 
 /// The scripts M9u ports (the plan's in-scope screens), listed with the
@@ -232,8 +234,7 @@ fn atlases(assets: &Assets) -> Result<(usize, usize, usize)> {
             let be = file.file().big_endian;
             match info.class_id {
                 SPRITE_ATLAS => {
-                    let a =
-                        SpriteAtlasHead::parse(d, be).map_err(|e| format!("SpriteAtlas: {e}"))?;
+                    let a = SpriteAtlas::parse(d, be).map_err(|e| format!("SpriteAtlas: {e}"))?;
                     let (resolved, by_file) = resolve_sprites(assets, &file, &a)?;
                     count += 1;
                     if a.name == "Items" {
@@ -266,7 +267,7 @@ fn atlases(assets: &Assets) -> Result<(usize, usize, usize)> {
 fn resolve_sprites(
     assets: &Assets,
     file: &FileRef,
-    atlas: &SpriteAtlasHead,
+    atlas: &SpriteAtlas,
 ) -> Result<(usize, BTreeMap<String, usize>)> {
     let mut resolved = 0;
     let mut by_file = BTreeMap::new();
@@ -761,4 +762,264 @@ fn kind_name(k: &sn_unity::Kind) -> String {
         sn_unity::Kind::Struct(s) => s.type_name.clone(),
         other => format!("{other:?}"),
     }
+}
+
+/// `ui --sprites [--icons]` (M9u2): every `Sprite` and `SpriteAtlas` of
+/// the game parsed to its last byte; the atlases `SpriteManager` loads and
+/// how their sprites are packed; every tech type's icon by the game's
+/// rule; 20 `Items` sprites printed for the UnityPy oracle; with
+/// `--icons`, the items' icons as PNGs in `out/ui/icons/`.
+pub fn sprites(game: &GameData, write_icons: bool) -> Result<ExitCode> {
+    let start = Instant::now();
+    let assets = Assets::index(game)?;
+    let catalog = assets.catalog()?;
+    let mut checks = Checks { failed: 0 };
+
+    // Every object of the UI's built-in classes in the game.
+    const CLASSES: [(i32, &str); 6] = [
+        (SPRITE, "Sprite"),
+        (SPRITE_ATLAS, "SpriteAtlas"),
+        (RECT_TRANSFORM, "RectTransform"),
+        (CANVAS, "Canvas"),
+        (CANVAS_GROUP, "CanvasGroup"),
+        (CANVAS_RENDERER, "CanvasRenderer"),
+    ];
+    let mut parsed = [0usize; CLASSES.len()];
+    let mut failed = [0usize; CLASSES.len()];
+    let mut first_errors: Vec<String> = Vec::new();
+    let mut files: Vec<FileRef> = Vec::new();
+    for name in STANDALONE {
+        if game.data_dir.join(name).is_file() {
+            files.push(assets.standalone(name)?);
+        }
+    }
+    let mut tally = |file: &FileRef| {
+        let be = file.file().big_endian;
+        for info in file.objects() {
+            let Some(k) = CLASSES.iter().position(|c| c.0 == info.class_id) else {
+                continue;
+            };
+            let Some(d) = file.file().object_data(file.bytes(), info) else {
+                continue;
+            };
+            let ok = match info.class_id {
+                SPRITE => sn_unity::Sprite::parse(d, be).map(|_| ()),
+                SPRITE_ATLAS => sn_unity::SpriteAtlas::parse(d, be).map(|_| ()),
+                RECT_TRANSFORM => sn_unity::RectTransform::parse(d, be).map(|_| ()),
+                CANVAS => Canvas::parse(d, be).map(|_| ()),
+                CANVAS_GROUP => sn_unity::CanvasGroup::parse(d, be).map(|_| ()),
+                _ => sn_unity::CanvasRenderer::parse(d, be).map(|_| ()),
+            };
+            match ok {
+                Ok(()) => parsed[k] += 1,
+                Err(e) => {
+                    failed[k] += 1;
+                    if first_errors.len() < 10 {
+                        first_errors.push(format!(
+                            "{} {} {}: {e}",
+                            CLASSES[k].1, file.name, info.path_id
+                        ));
+                    }
+                }
+            }
+        }
+    };
+    for f in &files {
+        tally(f);
+    }
+    for (i, bundle) in assets.bundle_paths().to_vec().iter().enumerate() {
+        if i % 256 == 255 {
+            assets.trim_cache(0);
+        }
+        let loaded = assets.bundle(bundle)?;
+        let names: Vec<String> = loaded
+            .file_names()
+            .filter(|n| !n.ends_with(".resS") && !n.ends_with(".resource"))
+            .map(String::from)
+            .collect();
+        for name in names {
+            tally(&assets.file(bundle, &name)?);
+        }
+    }
+    for e in &first_errors {
+        println!("  error: {e}");
+    }
+    for (k, (_, name)) in CLASSES.iter().enumerate() {
+        println!(
+            "{name}: {} parsed to their last byte, {} not",
+            parsed[k], failed[k]
+        );
+    }
+    checks.eq("sprites parsed", parsed[0], 1190);
+    checks.eq("atlases parsed", parsed[1], 8);
+    checks.eq("UI objects not parsed", failed.iter().sum(), 0);
+
+    // The atlases SpriteManager loads.
+    let sprites = assets.sprites(&catalog)?;
+    let mut names: Vec<&String> = sprites.atlases.keys().collect();
+    names.sort();
+    for name in names {
+        let a = &sprites.atlases[name];
+        let mut settings: BTreeMap<String, usize> = BTreeMap::new();
+        let mut pages: BTreeMap<i64, usize> = BTreeMap::new();
+        let mut sliced = 0;
+        for s in a.sprites.values() {
+            let p = &s.packed;
+            *settings
+                .entry(format!(
+                    "packed {} mode {} rotation {} mesh {}",
+                    u8::from(p.packed()),
+                    if p.packing_mode() == 0 {
+                        "tight"
+                    } else {
+                        "rect"
+                    },
+                    p.packing_rotation(),
+                    (p.settings_raw >> 6) & 1
+                ))
+                .or_default() += 1;
+            *pages.entry(s.page.path_id).or_default() += 1;
+            if s.sprite.border.iter().any(|&b| b > 0.0) {
+                sliced += 1;
+            }
+        }
+        let mut page_files: Vec<String> = a
+            .sprites
+            .values()
+            .map(|s| {
+                s.page
+                    .file
+                    .bundle
+                    .path
+                    .file_name()
+                    .map_or_else(String::new, |n| n.to_string_lossy().into_owned())
+            })
+            .collect();
+        page_files.sort();
+        page_files.dedup();
+        println!("  atlas {name:?}: pages in {page_files:?}");
+        println!(
+            "  atlas {name:?} (label {}): {} sprites, {} pages, {sliced} with borders (nine-slice); {settings:?}",
+            sn_assets::SPRITE_ATLASES_LABEL,
+            a.sprites.len(),
+            pages.len()
+        );
+    }
+    for (name, why) in &sprites.misses {
+        println!("  miss {name}: {why}");
+    }
+    checks.eq("atlases loaded by the label", sprites.atlases.len(), 8);
+    checks.eq(
+        "Items sprites resolved",
+        sprites.atlases.get("Items").map_or(0, |a| a.sprites.len()),
+        470,
+    );
+    checks.eq("sprites that did not resolve", sprites.misses.len(), 0);
+    let fallback = sprites.default_sprite();
+    println!(
+        "  defaultSprite (Default/Unknown): {}",
+        fallback.map_or("MISSING".to_string(), |s| format!(
+            "{:?} {:?}",
+            s.sprite.name, s.packed.texture_rect
+        ))
+    );
+    checks.eq("defaultSprite found", usize::from(fallback.is_some()), 1);
+
+    // Every tech type's icon by the game's rule.
+    let dll = sn_assets::read_assembly(game)?;
+    let code = sn_assets::game_code(&dll)?;
+    let own = code
+        .tech_types
+        .iter()
+        .filter(|(_, n)| sprites.get_no_default(sn_assets::GROUP_ITEM, n).is_some())
+        .count();
+    println!(
+        "  tech types: {} names, {own} with their own icon, {} get defaultSprite",
+        code.tech_types.len(),
+        code.tech_types.len() - own
+    );
+    let (rules, _) = sn_assets::item_rules(game, &assets, &dll)?;
+    let items: Vec<(i32, String)> = rules
+        .tech_class
+        .keys()
+        .map(|&t| (t, code.tech_name(t).unwrap_or("?").to_string()))
+        .collect();
+    let missing: Vec<&str> = items
+        .iter()
+        .filter(|(_, n)| sprites.get_no_default(sn_assets::GROUP_ITEM, n).is_none())
+        .map(|(_, n)| n.as_str())
+        .collect();
+    println!(
+        "  item tech types (ItemRules): {}, {} without their own icon {missing:?}",
+        items.len(),
+        missing.len()
+    );
+
+    // For the oracle (out/m9u/oracle/sprites.py prints the same).
+    let mut oracle: Vec<&sn_assets::AtlasSprite> = sprites
+        .atlases
+        .get("Items")
+        .map(|a| a.sprites.values().collect())
+        .unwrap_or_default();
+    oracle.sort_by(|a, b| a.sprite.name.cmp(&b.sprite.name));
+    println!("  oracle sample (Items, first 20 by name):");
+    for s in oracle.iter().take(20) {
+        let sp = &s.sprite;
+        println!(
+            "    {} rect {:?} border {:?} pivot {:?} ppu {} packed {:?} settings {}",
+            sp.name,
+            sp.rect,
+            sp.border,
+            sp.pivot,
+            sp.pixels_to_units,
+            s.packed.texture_rect,
+            s.packed.settings_raw
+        );
+    }
+
+    // The Items pages' decoded pixels, for the oracle's CRCs.
+    if let Some(a) = sprites.atlases.get("Items") {
+        let mut pages: Vec<&ObjectRef> = a.sprites.values().map(|s| &s.page).collect();
+        pages.sort_by_key(|p| p.path_id);
+        pages.dedup_by_key(|p| p.path_id);
+        for p in pages {
+            let t = assets.texture(p)?;
+            let rgba = t.texture.decode_rgba(&t.data).map_err(|e| e.to_string())?;
+            println!(
+                "  page {} {} {}x{} format {} rgba crc {:08x}",
+                p.path_id,
+                t.texture.name,
+                t.texture.width,
+                t.texture.height,
+                t.texture.format,
+                crate::texture::crc32(&rgba)
+            );
+        }
+    }
+    if write_icons {
+        let dir = std::path::Path::new("out/ui/icons");
+        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        let mut written = 0;
+        for (_, name) in &items {
+            let Some(s) = sprites.item_icon(name) else {
+                continue;
+            };
+            let (w, h, px) = assets.sprite_pixels(s)?;
+            let path = dir.join(format!("{name}.png"));
+            std::fs::write(&path, crate::png::encode_rgba(w, h, &px))
+                .map_err(|e| format!("{}: {e}", path.display()))?;
+            written += 1;
+        }
+        println!("  wrote {written} icons to {}", dir.display());
+    }
+    println!(
+        "{} checks differ ({:.1} s)",
+        checks.failed,
+        start.elapsed().as_secs_f64()
+    );
+    Ok(if checks.failed == 0 {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    })
 }

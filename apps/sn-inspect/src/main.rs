@@ -22,6 +22,7 @@ mod octree;
 mod orient;
 mod pickup;
 mod pickups;
+mod png;
 mod prefab;
 mod scene;
 mod skinned;
@@ -171,7 +172,7 @@ Commands:
                          and their methods
   code --fields <TYPE>   A type's fields in declaration order: declared
                          type, public/static/readonly/const/[NonSerialized],
-                         and the type it extends
+                         the type it extends and its methods
   techdata               Recipes and item data (Balance/TechData) and the
                          prefab → tech type map (EntTechData), with checks
   player                 The player's numbers from the main scene (oxygen,
@@ -208,6 +209,11 @@ Commands:
                          the startup scenes (--all: of every bundle)
                          read by the layout built from the game's
                          assemblies; misses by script, skipped fields
+  ui --sprites [--icons] M9u2: every Sprite and SpriteAtlas of the game
+                         parsed; the atlases SpriteManager loads, how
+                         their sprites are packed; every tech type's
+                         icon by the game's rule (--icons: the items'
+                         icons as PNGs in out/ui/icons/)
   ui --layout <CLASS> [<NAME>]
                          M9u1: a script's layout and, for its first object
                          (named NAME), where each field starts and its value
@@ -415,6 +421,8 @@ fn run(mut args: Vec<String>) -> Result<ExitCode> {
         ["ui"] => ui::run(&game),
         ["ui", "--scripts"] => ui::scripts(&game, false),
         ["ui", "--scripts", "--all"] => ui::scripts(&game, true),
+        ["ui", "--sprites"] => ui::sprites(&game, false),
+        ["ui", "--sprites", "--icons"] => ui::sprites(&game, true),
         ["ui", "--layout", class] => ui::layout(&game, class, None),
         ["ui", "--layout", class, name] => ui::layout(&game, class, Some(name)),
         ["player", "--body"] => gameplay::player_body(&game),

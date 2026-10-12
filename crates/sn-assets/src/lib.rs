@@ -27,6 +27,7 @@ mod scene;
 mod script_layout;
 mod skin;
 mod slots;
+mod sprites;
 mod terrain;
 mod ui;
 mod water;
@@ -80,6 +81,9 @@ pub use scene::{
 pub use script_layout::{Layouts, ScriptAssemblies};
 pub use skin::{Mat4, skin};
 pub use slots::{LootTable, entity_infos, loot_table, parse_loot_table};
+pub use sprites::{
+    AtlasSprite, GROUP_ATLASES, GROUP_ITEM, LoadedAtlas, SPRITE_ATLASES_LABEL, Sprites, cut,
+};
 pub use terrain::{
     BlendSettings, BlockSource, GrassLook, GrassShader, SurfaceLayer, TerrainGrass,
     TerrainMaterial, TerrainMaterials, TerrainTexture, terrain_materials,

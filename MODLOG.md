@@ -2,6 +2,40 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-12 — M9u2: UI built-in classes, sprites and item icons
+
+**What/why:** the M9u plan's third step. The HUD, the PDA and the
+fabricator draw sprites from the game's atlases. Item icons are looked
+up by `SpriteManager`'s rule, which this step ports. New:
+`sn-unity::ui` readers (`RectTransform`, `CanvasGroup`,
+`CanvasRenderer`, `Sprite`, full `SpriteAtlas`); `sn-assets::sprites`
+(`Sprites`, `sprite_pixels`, `cut`); `sn-inspect ui --sprites
+[--icons]`, `apps/sn-inspect/src/png.rs` (our own minimal PNG writer),
+`code --fields` listing methods; `docs/formats/ui.md` § Sprite atlases.
+No new dependencies; `.gitignore` unchanged (icons go to `out/ui/`).
+
+**Dead ends / corrections:** a first oracle script searched every
+bundle for the external file and did not find it (the names are lower
+case, and the search was slow). It now takes the bundle our tool names
+(`duplicateassetssorted_assets_bundle93_…`). My real-data test assumed
+the sprite was named `Titanium`; the game stores `titanium`. That is why
+the game's lookup ignores case.
+
+**Verified:**
+- `sn-inspect ui --sprites --icons`: `0 checks differ`. Sprite 1,190,
+  SpriteAtlas 8, RectTransform 2,835, Canvas 138, CanvasGroup 97,
+  CanvasRenderer 2,306 parsed to their last byte, 0 not. 8 atlases by
+  the label, 470 of 470 `Items` sprites resolved, 0 misses,
+  `defaultSprite` found. 515 icons written to `out/ui/icons/` (not
+  committed).
+- Oracle: 20 of 20 `Items` sprites equal UnityPy's as `f32`; both
+  `Items` pages' RGBA CRC-32 equal UnityPy's (`b4bde8b7`, `d521bff4`).
+- `SUBNAUTICA_DIR=… cargo test --release -p sn-assets --test real_data
+  -- --ignored sprites_by ui_trees script_layouts`: 3 passed.
+- `cargo test --workspace`: 501 passed, 0 failed, 42 ignored. Clippy and
+  fmt: pass.
+- Not compared with the game on screen. Committed with the user's OK.
+
 ## 2026-10-12 — Fix: crash after picking up an item (M9d4b bug)
 
 **What/why:** the user's game crashed with Bevy's "Entity despawned …

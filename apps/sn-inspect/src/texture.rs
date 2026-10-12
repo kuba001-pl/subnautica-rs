@@ -68,7 +68,7 @@ fn pixel_data(game: &GameData, bundle: Option<&Bundle>, t: &Texture2D) -> Result
 }
 
 /// CRC-32 (IEEE), to compare decoded pixels with the oracle's `zlib.crc32`.
-fn crc32(data: &[u8]) -> u32 {
+pub(crate) fn crc32(data: &[u8]) -> u32 {
     let mut table = [0u32; 256];
     for (i, entry) in table.iter_mut().enumerate() {
         let mut c = i as u32;

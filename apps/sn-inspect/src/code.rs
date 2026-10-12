@@ -226,7 +226,8 @@ fn resolve_type(asm: &Assembly, type_name: &str) -> Result<u32> {
 }
 
 /// `code --fields <TYPE>`: a type's fields in declaration order with
-/// their flags and declared types, and the type it extends (M9u0).
+/// their flags and declared types, the type it extends (M9u0), and its
+/// methods' names.
 pub fn fields(game: &GameData, type_name: &str) -> Result<ExitCode> {
     let bytes = sn_assets::read_assembly(game)?;
     let asm = Assembly::parse(&bytes).map_err(|e| e.to_string())?;
@@ -263,6 +264,13 @@ pub fn fields(game: &GameData, type_name: &str) -> Result<ExitCode> {
             marks.join(" ")
         );
     }
+    let methods: Vec<&str> = asm
+        .methods(ty)
+        .map_err(e)?
+        .map(|m| asm.method_name(m))
+        .collect::<std::result::Result<_, _>>()
+        .map_err(e)?;
+    println!("methods: {}", methods.join(", "));
     Ok(ExitCode::SUCCESS)
 }
 

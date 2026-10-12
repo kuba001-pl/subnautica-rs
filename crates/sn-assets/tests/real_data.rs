@@ -2427,3 +2427,32 @@ fn script_layouts_agree_with_hand_written_readers() {
     eprintln!("{compared} objects compared");
     assert!(compared >= 9, "{compared}");
 }
+
+/// M9u2: the sprite atlases `SpriteManager` loads and its lookup rule.
+#[test]
+#[ignore = "needs SUBNAUTICA_DIR pointing at a Subnautica install"]
+fn sprites_by_the_games_rule() {
+    let Some(dir) = std::env::var_os("SUBNAUTICA_DIR") else {
+        eprintln!("SUBNAUTICA_DIR not set; skipping");
+        return;
+    };
+    let game = GameData::locate(Some(PathBuf::from(dir))).unwrap();
+    let assets = Assets::index(&game).unwrap();
+    let catalog = assets.catalog().unwrap();
+    let sprites = assets.sprites(&catalog).unwrap();
+    assert_eq!(sprites.atlases.len(), 8);
+    assert!(sprites.misses.is_empty(), "{:?}", sprites.misses);
+    assert_eq!(sprites.atlases["Items"].sprites.len(), 470);
+    let unknown = sprites.default_sprite().unwrap();
+    assert_eq!(unknown.sprite.name, "unknown");
+    // Its own icon (the lookup ignores case), and a fallback.
+    let titanium = sprites.item_icon("Titanium").unwrap();
+    assert_eq!(titanium.sprite.name, "titanium"); // the tech type is `Titanium`
+    assert_eq!(titanium.sprite.rect, [0.0, 0.0, 128.0, 128.0]);
+    let drillable = sprites.item_icon("DrillableTitanium").unwrap();
+    assert_eq!(drillable.sprite.name, "unknown");
+    let (w, h, px) = assets.sprite_pixels(titanium).unwrap();
+    assert!(w > 0 && w <= 128 && h > 0 && h <= 128, "{w}×{h}");
+    assert_eq!(px.len(), w * h * 4);
+    assert!(px.chunks_exact(4).any(|p| p[3] > 0));
+}
