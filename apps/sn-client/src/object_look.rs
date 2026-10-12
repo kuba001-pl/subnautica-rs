@@ -98,5 +98,11 @@ impl Plugin for ObjectLookPlugin {
     fn build(&self, app: &mut App) {
         bevy::asset::embedded_asset!(app, "object.wgsl");
         app.add_plugins(MaterialPlugin::<ObjectMaterial>::default());
+        app.init_resource::<crate::sidedness::ReflectedMeshes>()
+            .add_systems(
+                PostUpdate,
+                crate::sidedness::repair_winding
+                    .after(bevy::transform::TransformSystems::Propagate),
+            );
     }
 }

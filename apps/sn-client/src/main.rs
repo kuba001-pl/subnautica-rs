@@ -19,6 +19,7 @@ mod objects;
 mod player;
 mod remote;
 mod session;
+mod sidedness;
 mod sig;
 mod sky;
 mod sky_dome;

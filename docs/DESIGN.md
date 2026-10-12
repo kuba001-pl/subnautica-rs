@@ -2166,6 +2166,56 @@ Commands and limitations are in MODLOG. The column's back-culled inner layer,
 elevator, tech cones and other M7g4 sets remain open; terminal scripted colour
 activation and original-game imagery are **not tested**.
 
+#### M7v1 alien surface visibility investigation (2026-10-12)
+
+User reports walls visible from only one side across large alien structures;
+this is visual disappearance, not blocked movement. Inspect effective shader
+culling state (fixed or material property/default), mirrored transforms and
+camera-layer filtering. Preserve the game's intended sidedness; do not
+globally make every surface double-sided or alter collision.
+The installed-data audit found reflected Precursor wall transforms. Reuse
+cached mesh variants with triangle order reversed for negative world
+determinants, after transform propagation, retaining attributes and restoring
+the original when the sign changes. The custom brine pass compensates its
+front-facing test separately. Keep the existing mesh/material pipelines.
+
+**Done when:**
+- [x] Record confirmed cause(s) and remaining hypotheses in format docs.
+- [x] Preserve Off/Front/Back culling and shader defaults, with synthetic tests.
+- [x] Audit negative-scale placement/rig handling; fix only confirmed mismatches.
+- [x] Workspace tests, fmt, clippy and release build pass.
+- [x] GPU runs in multiple alien structures compile the affected paths;
+  log counts, effective culling and exact reproduction commands.
+- [ ] User visual check of the reported walls: **not tested** until confirmed.
+
+**Implemented and numerically checked:** 477 workspace tests pass, 39 ignored.
+Gun and prison aquarium GPU runs compensate 4,387 and 1,518 reflected
+object mesh instances with zero unsupported meshes. Scene/terrain/material/
+texture counts match before/after; Tree Cove brine regression passes. Shader
+Off/Front/Back selection and restored original mesh handles have synthetic
+coverage. Single paired mean frame times: Gun 18.975 → 18.203 ms, aquarium
+14.390 → 12.967 ms, Cove 8.603 → 8.858 ms; no speedup claim. Mesh variants
+cost memory (Gun peak sampled process memory 1.854 → 2.001 GiB). Exact
+commands and limits are in MODLOG. User confirmation that these fixes cover
+all reported disappearing surfaces remains open.
+
+**Crash follow-up (2026-10-12):** the user hit `ExtractedToRenderWorld`
+after about 73 s while streaming from Tree Cove. The short settled GPU
+runs above missed this delayed lifetime case. Keep original object mesh
+CPU data in `MAIN_WORLD` for later reflected instances, use fallible index
+access for unavailable data, and cover GPU extraction before a delayed
+reflection in a synthetic test. Verify with workspace checks and a long
+Tree Cove flythrough that loads additional batches. Record the CPU-memory
+cost and exact results in MODLOG before claiming the crash fixed.
+
+**Crash correction verified:** 479 workspace tests pass, 39 ignored; fmt,
+clippy and release build pass. A Tree Cove flythrough streamed for 167 s
+(170 s session), 15,051 measured frames, settled at its destination and
+exited 0, with no panic/GPU errors and zero unsupported meshes throughout.
+The variant cache grew from the initial area's 244 to 251. Peak sampled
+process memory was 1.73 GiB along this route; no isolated memory delta
+is established. User interactive replay and visual acceptance remain open.
+
 #### M7g5 implementation plan (2026-10-11)
 
 1. Decode the installed `UWE/SIG` and `UWE/SIG Triplanar with Capping`

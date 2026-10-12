@@ -145,7 +145,11 @@ fn fragment(in: VertexOutput, @builtin(front_facing) front: bool) -> Targets {
     let cutoff = inst.params.z;
     let flags = u32(inst.params.w);
     let brine = (flags & 32u) != 0u;
-    if brine && !front {
+    // The custom effect buffer keeps its original indices. A reflection
+    // reverses raster facing, so apply back culling in model-space facing.
+    let reflected = determinant(mat3x3<f32>(inst.world_from_local[0].xyz,
+        inst.world_from_local[1].xyz, inst.world_from_local[2].xyz)) < 0.0;
+    if brine && front == reflected {
         discard;
     }
 

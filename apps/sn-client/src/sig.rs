@@ -121,6 +121,7 @@ mod tests {
     fn shader(name: &str) -> ShaderInfo {
         ShaderInfo {
             name: name.into(),
+            cull: None,
             defaults: [
                 ("_Gloss".into(), [0.37, 0.0, 0.0, 0.0]),
                 ("_EmissionScale".into(), [1.7, 0.0, 0.0, 0.0]),

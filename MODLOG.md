@@ -2,6 +2,149 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-12 — M7v1 crash correction: retain CPU meshes for late reflections
+
+**What/why:** the user reported a panic after about 73 s from Tree Cove:
+`ExtractedToRenderWorld` at Bevy's `Mesh::indices_mut`. This was introduced
+by my uncommitted winding fix. Non-skinned object meshes used `RENDER_WORLD`
+only, so a first reflected placement appearing after GPU extraction cloned
+a mesh whose indices were already gone. The initial short, settled GPU
+runs and synthetic meshes using default CPU retention missed this ordering.
+
+The production object mesh builder now retains `MAIN_WORLD | RENDER_WORLD`
+for original meshes, allowing later lazy variants. Skinned meshes already
+retained CPU data for their bounds. The reflection helper uses fallible
+index access and returns unsupported for unavailable data instead of
+panicking. Added a regression using the actual builder and the GPU
+extraction lifetime decision before a delayed reflected instance, plus
+an already-extracted-data rejection test. No dependencies, whitelist,
+collision, architecture or game-install changes. Work remains uncommitted.
+
+**Verified:**
+- `cargo test -p sn-client sidedness`: 5 passed. The new delayed test
+  checks that the variant reverses indices and the original stays intact
+  after extraction and 32 updates before the reflected instance appears.
+  The unavailable-data test calls `Mesh::take_gpu_data` and verifies
+  rejection without a panic.
+- `cargo test --workspace`: 479 passed, 39 ignored, 0 failed.
+  `cargo clippy --workspace --all-targets -- -D warnings`,
+  `cargo fmt --all -- --check`, `cargo build --release -p sn-client`,
+  `git diff --check`: pass. Default release executable updated.
+- Long real-data flythrough from the user's Tree Cove start, 960×540,
+  view 400 m, speed 5 m/s, 120 warm-up frames: 167.0 s traversal,
+  170 s session, 15,051 measured frames; destination settled 0.02 s after
+  arrival, clean exit 0. No panic, `ExtractedToRenderWorld`, GPU validation
+  error or unsupported mesh in the log. Initial area's cache 244 variants
+  grows to 251; final 408 reflected instances, 0 unsupported. 336 terrain
+  batches streamed during travel across all LODs (8/34/73/221).
+- Mean frame time 11.09 ms, p95 17.51 ms, worst 145.17 ms; peak sampled
+  process memory 1.73 GiB, peak 761 terrain batches cached. CPU retention
+  costs memory by design; this route is not an isolated memory comparison
+  and no speedup is claimed. Session 170 hash checks, 0 differences.
+  Logs, test outputs and ignored capture: `out/m7v1-crash/`;
+  numerical assertions in `verification.log`.
+
+**Reproduce:** set `SUBNAUTICA_DIR` to the player's install, build release:
+
+```powershell
+target/release/sn-client.exe --flythrough -450 -250 300 --speed 5 --view 400 --resolution 960 540 --warmup 120 --start -931.2 -931.6 326.6 --look -931.2 -941.6 346.6 --slot-seed 1 --lifepod-seed 1 --time 9.6 --time-scale 0 --gpu-timings
+```
+
+Expect arrival after about 167 s, `settled: true`, `0 unsupported` in
+every face-orientation audit, no panic and exit 0. The user's original
+interactive command can also be retried with the rebuilt executable:
+`target/release/sn-client.exe --game-dir <INSTALL> --free-cam --start -931.2 -931.6 326.6 --look -931.2 -941.6 346.6 --view 400`.
+
+**Corrections/limits:** initial compilation of the new regression needed
+a mutable binding for Bevy's mesh asset guard; corrected, then all checks
+rerun and passed. The earlier M7v1 short GPU runs did not establish long
+streaming stability; this reported failure and its correction supersede
+that assumption. User interactive replay, visual wall acceptance, isolated
+memory overhead and Linux/macOS are **not tested**. No commits or pushes.
+
+## 2026-10-12 — M7v1: reflected alien walls and complete face-cull states
+
+**What/why:** user approved M7g4c: committed/pushed `ec5d16d`, remote
+hash verified. Then the user reported walls visible only from one side
+throughout large alien structures, clarified as visual disappearance.
+This new M7v1 work is uncommitted. Collision is not changed.
+
+Confirmed two renderer gaps: material culling lost Front and shader
+fixed/default states; negative world determinants reversed face winding
+without compensation. Installed-data audit finds mirrored Precursor wall
+pieces, notably the prison aquarium. The object loader now keeps Off/Front/
+Back from the shader pass and its property/default. New `sidedness.rs`
+caches reversed-index mesh variants for reflected object instances after
+transform propagation; positive transforms restore the original handle.
+All mesh attributes remain intact. The custom brine buffer corrects its
+facing test separately. No blanket two-sided override, architecture change,
+dependencies or whitelist changes. Game install read-only; probes/captures/
+third-party reference source remain in ignored `out/m7v1/`.
+
+**Verified:**
+- `cargo test --workspace`: 477 passed, 39 ignored, 0 failed. New tests:
+  shader fixed/property/default Cull precedence and all three modes;
+  triangle/normal agreement for all eight scale-sign combinations;
+  U16/U32 reversible winding and preserved original geometry; a headless
+  ECS sign-change sequence restores the original handle and reuses one
+  cached variant without mutating the original.
+- `cargo clippy --workspace --all-targets -- -D warnings`,
+  `cargo fmt --all -- --check`, `cargo build --release -p sn-client`,
+  `git diff --check`: pass. Default release executable updated successfully.
+- Read-only UnityPy census: 1,770 reflected local transform records,
+  1,636 with Precursor-named ancestry (records across bundles, not distinct
+  placed objects). Name/shader-ID material census: Off 302, Front 4,
+  Back 2,855, missing saved property 351. Precursor-named subset: Off 34,
+  Back 648, missing 3. Marmoset default Cull 2. Thus Front loss is a real
+  general bug, while reflected transforms are the main supported hypothesis
+  for the user's alien-wall symptom. Bevy 0.19.1 source inspected from its
+  official crate archive as reference; no code copied.
+- Six sequential 1600×900 GPU runs, view 400 m, 120 settled warm-up and
+  300 measured frames each. Reports/CSV/captures:
+  `out/baselines/run-m7v1-{gun,aquarium,cove}-{before,after}/`.
+  No GPU validation errors, loader warnings or unsettled frames. Geometry,
+  loaded object/material/texture counts, terrain, sky and light counts equal
+  in each pair. Shader state diagnostics (object mesh instances, including
+  loaded hidden parts): Gun 1,160 Off / 0 Front / 19,566 Back, 4,387
+  reflected instances, 1,551 cached variants; aquarium 482/0/6,971,
+  1,518 reflected, 715 variants; Cove 202/0/5,436, 390 reflected,
+  244 variants. Unsupported meshes 0 in all three. Cove exercises brine.
+- Mean before → after: Gun 18.975 → 18.203 ms (p99 33.544 → 30.716),
+  aquarium 14.390 → 12.967 ms (p99 28.630 → 22.743), Cove
+  8.603 → 8.858 ms (p99 13.780 → 11.930). Single pairs do not establish
+  a speedup or meeting the 16.7 ms target. Cached mesh copies cost memory:
+  peak sampled process GiB Gun 1.854 → 2.001, aquarium 1.366 → 1.389,
+  Cove 1.213 → 1.202 (process measurements include unrelated loading costs).
+- Control binary matches the previous M7g4c final executable, source
+  baseline `ec5d16d`; both binary hashes and report checks are in
+  `out/m7v1/verification.log`. User's previously running client was already
+  closed before building and benchmarking; no user process was stopped.
+
+**Reproduce:** set `SUBNAUTICA_DIR` to the player's install, build release,
+then use a fresh baseline name:
+
+```powershell
+target/release/sn-client.exe --benchmark 300 --baseline m7v1-check --baseline-revision local-M7v1 --warmup 120 --resolution 1600 900 --start 356 -68 1075 --look 360 -71 1083 --fov 60 --view 400 --lifepod-seed 1 --slot-seed 1 --time 9.6 --time-scale 0 --aurora intact --water-quality high --color-grading off --gpu-timings
+```
+
+Expect `objects: face orientation` with reflected instances/reversed mesh
+variants and `0 unsupported`, zero loader warnings, 300 samples/report/
+capture and clean exit. With fresh names, repeat for the aquarium at
+`--start 325 -1600 -455 --look 345 -1600 -455`, or Cove at
+`--start -931.2 -931.6 326.6 --look -931.2 -941.6 346.6`.
+Human check: replace benchmark flags with `--free-cam` and inspect both
+sides of the reported walls. Shader-requested one-sided surfaces remain
+one-sided; this does not invent missing exterior geometry.
+
+**Dead ends/limits:** initial suspicion included invisible collision blockers;
+user clarified rendering only. Cull state loss alone did not explain the
+broad Precursor symptom (no Front in the Precursor-named material subset),
+so the transform audit identified the reflected walls. No random shader
+variants tried. **Not tested:** user visual acceptance, matched original-game
+images, keyboard movement/collision regression, Linux/macOS. Additional
+missing exterior geometry, material variants or activation rules remain
+hypotheses for any walls still missing after this fix.
+
 ## 2026-10-12 — M7g4c: control-room UV deformation and rigid effect ownership
 
 **What/why:** user approved committing/pushing M7g4b; commit `92bf67f`

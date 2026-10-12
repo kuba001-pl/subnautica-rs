@@ -146,7 +146,7 @@ pub(crate) struct MaterialDesc {
     spec_st: [f32; 4],
     illum_st: [f32; 4],
     alpha: Alpha,
-    double_sided: bool,
+    cull_mode: Option<Face>,
     /// MarmosetUBER's values; `None` for materials of other shaders.
     pub(crate) uber: Option<UberValues>,
     sig: Option<crate::sig::SigLook>,
@@ -730,6 +730,29 @@ pub(crate) struct ShaderInfo {
     /// Property name → its declared default (colours and vectors as is,
     /// floats in `x`).
     pub defaults: HashMap<String, [f32; 4]>,
+    pub cull: Option<sn_unity::ShaderValue>,
+}
+
+fn cull_mode(value: f32) -> Option<Face> {
+    match value {
+        0.0 => None,
+        1.0 => Some(Face::Front),
+        _ => Some(Face::Back),
+    }
+}
+
+/// A fixed pass state wins over obsolete saved properties; a property
+/// state takes its material override, then the shader's declared default.
+fn shader_cull(material: &Material, shader: &ShaderInfo) -> Option<Face> {
+    let value = match &shader.cull {
+        Some(state) if state.property.is_empty() => state.value,
+        Some(state) => material
+            .float(&state.property)
+            .or_else(|| shader.defaults.get(&state.property).map(|v| v[0]))
+            .unwrap_or(state.value),
+        None => material.float("_MyCullVariable").unwrap_or(2.0),
+    };
+    cull_mode(value)
 }
 
 /// An effect material's values: the material's own, else the shader's
@@ -1007,11 +1030,12 @@ impl Library {
             Some((self.texture(&target, srgb, out)?, st))
         };
         let mut desc = material_desc(&material, &mut texture);
+        desc.cull_mode = shader_cull(&material, &shader);
         desc.sig = crate::sig::read(&material, &shader, &mut texture);
         if let Some(sig) = &desc.sig {
             desc.color = sig.color;
             desc.alpha = Alpha::Opaque;
-            desc.double_sided = false;
+            desc.cull_mode = Some(Face::Back);
             desc.uber = None;
         }
         if shader_port(&shader.name) == ShaderPort::Effect {
@@ -1075,6 +1099,7 @@ impl Library {
             Arc::new(ShaderInfo {
                 name: name.into(),
                 defaults: HashMap::new(),
+                cull: None,
             })
         };
         let shader = match self.assets.resolve(&material_object.file, material.shader) {
@@ -1093,6 +1118,7 @@ impl Library {
         });
         let info = match parsed {
             Ok(s) => Arc::new(ShaderInfo {
+                cull: s.passes().first().map(|p| p.state.cull.clone()),
                 defaults: s
                     .properties
                     .iter()
@@ -2610,8 +2636,7 @@ pub(crate) fn material_desc(
         sig: None,
         effect: None,
         alpha,
-        // `_MyCullVariable`: 0 = two-sided, 2 = back faces culled.
-        double_sided: material.float("_MyCullVariable") == Some(0.0),
+        cull_mode: cull_mode(material.float("_MyCullVariable").unwrap_or(2.0)),
     }
 }
 
@@ -3318,17 +3343,13 @@ fn split_geometry(
     meshes
 }
 
-fn build_mesh(data: MeshData) -> Mesh {
+pub(crate) fn build_mesh(data: MeshData) -> Mesh {
     let n = data.positions.len();
     let skinned = data.joints.len() == n && data.weights.len() == n && n > 0;
-    // Skinned meshes stay in the main world too: their bounds follow the
-    // bones each frame (`DynamicSkinnedMeshBounds`).
-    let usage = if skinned {
-        RenderAssetUsages::all()
-    } else {
-        RenderAssetUsages::RENDER_WORLD
-    };
-    let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, usage);
+    // A later streamed placement can need this mesh with reversed winding,
+    // long after its first GPU upload. Keep the original's CPU data available
+    // for that lazy variant (also required by dynamic skinned bounds).
+    let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::all());
     mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, data.positions);
     let has_normals = data.normals.len() == n;
     if has_normals {
@@ -3425,12 +3446,8 @@ pub(crate) fn object_material(
             Alpha::Mask(cutoff) => AlphaMode::Mask(cutoff),
             Alpha::Blend => AlphaMode::Blend,
         },
-        double_sided: desc.double_sided,
-        cull_mode: if desc.double_sided {
-            None
-        } else {
-            Some(Face::Back)
-        },
+        double_sided: desc.cull_mode.is_none(),
+        cull_mode: desc.cull_mode,
         ..default()
     };
     let mut params = ObjectParams {
@@ -4580,7 +4597,45 @@ mod tests {
         ShaderInfo {
             name: PARTICLES_UBER.into(),
             defaults: [("_ColorStrengthAtNight".to_string(), [2.0, 2.0, 2.0, 1.0])].into(),
+            cull: None,
         }
+    }
+
+    #[test]
+    fn shader_culling_keeps_front_back_off_and_property_defaults() {
+        let mut material = particles_material("", &[]);
+        let mut shader = uber_shader();
+        shader.cull = Some(sn_unity::ShaderValue {
+            value: 2.0,
+            property: "_FaceMode".into(),
+        });
+        shader.defaults.insert("_FaceMode".into(), [0.0; 4]);
+        assert_eq!(shader_cull(&material, &shader), None);
+        for (value, face) in [
+            (0.0, None),
+            (1.0, Some(Face::Front)),
+            (2.0, Some(Face::Back)),
+        ] {
+            material.floats.retain(|(name, _)| name != "_FaceMode");
+            material.floats.push(("_FaceMode".into(), value));
+            assert_eq!(shader_cull(&material, &shader), face);
+        }
+        // A fixed pass must ignore a conflicting saved material setting.
+        shader.cull = Some(sn_unity::ShaderValue {
+            value: 0.0,
+            property: String::new(),
+        });
+        assert_eq!(shader_cull(&material, &shader), None);
+        shader.cull = Some(sn_unity::ShaderValue {
+            value: 1.0,
+            property: String::new(),
+        });
+        assert_eq!(shader_cull(&material, &shader), Some(Face::Front));
+        shader.cull = None;
+        material
+            .floats
+            .retain(|(name, _)| name != "_MyCullVariable");
+        assert_eq!(shader_cull(&material, &shader), Some(Face::Back));
     }
 
     #[test]

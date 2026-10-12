@@ -136,7 +136,11 @@ holograms and the cache doors' force fields with the game's decoded effect
 shader (scrolling textures, soft edges, deformation, refraction); the Gun
 control-room force field and terminal material variants with UV deformation
 and optional refraction, without soft fading (M7g4c; scripted activation
-not tested); rigid effect meshes retain their animated-node attachment; Tree Cove's
+not tested); rigid effect meshes retain their animated-node attachment;
+object face culling follows shader Off/Front/Back state and reflected
+placements retain their intended winding (M7v1; GPU/numerical checks passed,
+CPU mesh data retained for delayed reflected placements, 167-second streaming
+regression passed; user visual confirmation pending); Tree Cove's
 brine and the Ghost Tree/Bones Field lakes with world-space scrolling,
 deformation, near fading and weighted transparency (M7g4a/b; GPU validated,
 saved lake lighting keywords are inactive in the installed shader;

@@ -22,6 +22,63 @@ test and cull are identical to UnityPy's.
 
 ## Census of drawn materials — confirmed from the data
 
+### Surface sidedness and reflected placements (M7v1, 2026-10-12)
+
+**Confirmed from our loader:** object materials previously stored only a
+two-sided boolean from a saved `_MyCullVariable == 0`. Front culling became
+back culling; fixed shader states and declared defaults were ignored. The
+loader now resolves the first pass's Cull state: a fixed value wins, or its
+named material property overrides the declared shader default. Values 0/1/2
+retain Off/Front/Back. SIG's confirmed fixed back culling stays unchanged.
+Marmoset's declared default is 2, confirmed with installed shader metadata.
+
+**Confirmed from an installed-data audit:** 1,770 local transform records
+have negative determinant; 1,636 have a Precursor-named ancestor, including
+prison aquarium wall and wall-pattern pieces. These are serialized records
+across bundles, not a count of unique placed world objects. Material-name/
+shader-ID census: 302 saved Off, 4 Front, 2,855 Back, 351 missing the named
+property; Precursor-named subset: 34 Off, 648 Back, 3 missing. Dumps and
+the read-only UnityPy research scripts stay in ignored `out/m7v1/`.
+
+**Confirmed renderer mismatch:** Z reflection is already compensated when
+mesh bytes are converted, but an additional negative placement/parent scale
+reverses triangle order again. The ordinary object path did not compensate
+for it. Bevy 0.19.1's mesh/material source was checked from its official
+crate archive ([official package](https://crates.io/crates/bevy_pbr/0.19.1),
+reference only, ignored under `out/`): the determinant flag
+does not switch the standard material's raster culling state. A synthetic
+triangle test verifies that all eight scale-sign combinations keep triangle
+winding aligned with transformed normals after correction.
+
+M7v1 caches a reversed-index mesh variant per original object mesh, choosing
+it from the global determinant after transform propagation. This covers
+nested parents and changing animated scale signs; original attributes,
+normals, UVs, skinning and morph data are retained by cloning the mesh and
+changing only indices. Returning to positive determinant restores the
+original handle. The custom brine buffer retains its indices and compensates
+its front-facing test instead. Materials that request two sides still draw
+two sides; collision and camera layer masks are unchanged.
+
+**Hypothesis pending user visual confirmation:** these reflected wall pieces
+explain the reported inside/outside reversal across large alien structures.
+This does not establish that every missing surface has this cause. Any
+remaining missing exterior geometry, unsupported material/state or activation
+rule needs a specific wall/location. Original-game matched images are
+**not tested**.
+
+**Confirmed lifetime correction (2026-10-12):** the user's 73-second
+streaming run exposed `ExtractedToRenderWorld` during lazy index reversal.
+Ordinary object meshes were created with `RENDER_WORLD` only, so their CPU
+vertex/index data was gone when a later reflected placement first needed
+a variant. Short settled camera checks did not exercise that ordering.
+Original object meshes now retain `MAIN_WORLD | RENDER_WORLD`; skinned
+meshes already did so for their bounds. Index reversal uses fallible access
+and rejects unavailable data without a panic. A synthetic regression uses
+the production mesh builder, applies the GPU extraction lifetime decision,
+then spawns a reflected instance later and verifies reversed indices and
+the intact original. This retains more CPU mesh memory; long streaming
+results and memory measurements are recorded in MODLOG.
+
 1,975 materials on drawn nodes, told apart by name **and** shader (names
 repeat across bundles, e.g. `submarine_engine_01_01` is MarmosetUBER in
 some prefabs and `Standard` in one wreck). By shader (drawn nodes,
