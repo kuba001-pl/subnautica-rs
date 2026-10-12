@@ -765,13 +765,14 @@ struct ParticlesVariant {
     soft_edges: bool,
     deform: bool,
     refract: bool,
+    brine: bool,
 }
 
 /// The `UWE/Particles/UBER` keyword sets our effect pass draws, decoded
 /// from the game's compiled programs (`docs/formats/materials.md`
 /// § `UWE/Particles/UBER` meshes): the consoles' holograms and the doors'
-/// force fields.
-const PARTICLES_VARIANTS: [(&str, ParticlesVariant); 5] = {
+/// force fields, plus unlit Tree Cove brine.
+const PARTICLES_VARIANTS: [(&str, ParticlesVariant); 6] = {
     const fn v(fresnel_clip: bool, mul_map: bool, rest: bool, refract: bool) -> ParticlesVariant {
         ParticlesVariant {
             fresnel_clip,
@@ -779,6 +780,7 @@ const PARTICLES_VARIANTS: [(&str, ParticlesVariant); 5] = {
             soft_edges: rest,
             deform: rest,
             refract,
+            brine: false,
         }
     }
     [
@@ -799,6 +801,13 @@ const PARTICLES_VARIANTS: [(&str, ParticlesVariant); 5] = {
             "FX_ADDFOG FX_DEFORM FX_MULMAP FX_SCROLL FX_SOFTEDGES WBOIT",
             v(false, true, true, false),
         ),
+        (
+            "FX_DEFORM FX_MULMAP FX_NEARCLIP FX_SCROLL FX_SOFTEDGES FX_TRIPLANAR WBOIT",
+            ParticlesVariant {
+                brine: true,
+                ..v(false, true, true, false)
+            },
+        ),
     ]
 };
 
@@ -808,7 +817,8 @@ const PARTICLES_UBER: &str = "UWE/Particles/UBER";
 /// A `UWE/Particles/UBER` material's values if our effect pass draws it as
 /// the game does: one of the decoded keyword sets, and the render state the
 /// pass implements (blend `_SrcBlend` 1 `_DstBlend` 1 `_SrcBlend2` 0
-/// `_DstBlend2` 10, `_Ztest` 2 = Less, `_MyCullVariable` 0 = both sides).
+/// `_DstBlend2` 10, `_Ztest` 2 = Less, `_MyCullVariable` 0 = both sides
+/// for holograms/doors or 2 = back culling for brine).
 /// Else why not. `textures`: the ids of `_MainTex`, `_MainTex2`,
 /// `_DeformMap`, `_RefractMap` with their scale/offset.
 fn particles_values(
@@ -834,7 +844,7 @@ fn particles_values(
         ("_SrcBlend2", 0.0),
         ("_DstBlend2", 10.0),
         ("_Ztest", 2.0),
-        ("_MyCullVariable", 0.0),
+        ("_MyCullVariable", if variant.brine { 2.0 } else { 0.0 }),
     ];
     for (name, wanted) in state {
         let v = float(name);
@@ -858,8 +868,16 @@ fn particles_values(
         color: vector("_Color", [1.0; 4]),
         strength: vector("_ColorStrength", [1.0; 4]),
         strength_night: vector("_ColorStrengthAtNight", [1.0; 4]),
-        main_st: st(main),
-        main2_st: st(main2),
+        main_st: if variant.brine {
+            vector("_MainTex_TriplanarUV", [1.0; 4])
+        } else {
+            st(main)
+        },
+        main2_st: if variant.brine {
+            vector("_MainTex2_TriplanarUV", [1.0; 4])
+        } else {
+            st(main2)
+        },
         speed: [speed[0], speed[1], speed2[0], speed2[1]],
         fresnel_fade: float("_FresnelFade"),
         fresnel_pow: float("_FresnelPow"),
@@ -869,10 +887,22 @@ fn particles_values(
         soft_edges: variant.soft_edges,
         deform: variant.deform,
         refract: variant.refract,
+        brine: variant.brine,
+        clip: [
+            float("_ClipOffset"),
+            float("_ClipFade"),
+            speed[2],
+            speed2[2],
+        ],
+        deform_speed_z: deform_speed[2],
         inv_fade: float("_InvFade"),
         deform_strength: float("_DeformStrength"),
         refract_strength: float("_RefractStrength"),
-        deform_st: st(deform),
+        deform_st: if variant.brine {
+            vector("_DeformMap_TriplanarUV", [1.0; 4])
+        } else {
+            st(deform)
+        },
         refract_st: st(refract),
         speed2: [
             deform_speed[0],
@@ -4576,6 +4606,51 @@ mod tests {
         );
         let v = particles_values(&m, &uber_shader(), [None; 4]).unwrap();
         assert!(v.soft_edges && v.deform && !v.refract);
+    }
+
+    #[test]
+    fn brine_preserves_projection_vectors_and_requires_its_decoded_state() {
+        let keywords = "FX_DEFORM FX_MULMAP FX_NEARCLIP FX_SCROLL FX_SOFTEDGES FX_TRIPLANAR WBOIT";
+        let mut m = particles_material(keywords, &[("_MyCullVariable", 2.0), ("_ClipFade", 3.0)]);
+        m.colors
+            .push(("_MainTex_TriplanarUV".into(), [0.2, 0.3, 0.4, 7.0]));
+        m.colors
+            .push(("_DeformMap_Speed".into(), [-0.2, 0.1, 0.6, 0.0]));
+        for (name, vector) in &mut m.colors {
+            if name == "_MainTex_Speed" {
+                vector[2] = -0.7;
+            } else if name == "_MainTex2_Speed" {
+                vector[2] = 0.8;
+            }
+        }
+        let mut shader = uber_shader();
+        shader
+            .defaults
+            .insert("_MainTex2_TriplanarUV".into(), [0.5, 0.6, 0.7, 1.0]);
+        let v = particles_values(&m, &shader, [None; 4]).unwrap();
+        assert!(v.brine && v.deform && v.soft_edges && v.mul_map);
+        assert!(!v.refract && !v.fresnel_clip);
+        assert_eq!(v.main_st, [0.2, 0.3, 0.4, 7.0]);
+        assert_eq!(v.main2_st, [0.5, 0.6, 0.7, 1.0]);
+        assert_eq!(
+            (v.speed2[0], v.speed2[1], v.deform_speed_z),
+            (-0.2, 0.1, 0.6)
+        );
+        assert_eq!(v.clip, [0.0, 3.0, -0.7, 0.8]);
+        for cull in [0.0, 1.0] {
+            let wrong = particles_material(keywords, &[("_MyCullVariable", cull)]);
+            assert!(
+                particles_values(&wrong, &shader, [None; 4])
+                    .unwrap_err()
+                    .starts_with("_MyCullVariable")
+            );
+        }
+        m.keywords.push_str(" FX_LIGHT_2SIDED FX_LIGHT_NORMALMAP");
+        assert!(
+            particles_values(&m, &shader, [None; 4])
+                .unwrap_err()
+                .contains("not decoded")
+        );
     }
 
     #[test]

@@ -2,6 +2,65 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-12 — M7g4a: unlit Tree Cove brine
+
+**What/why:** the exact Tree Cove UBER variant now uses the effect pass,
+with world-space triplanar scrolling/deformation, vertex near fade, back-face
+rejection, ordinary alpha and saturated colour before WBOIT. The shader still
+applies fog without `FX_ADDFOG`, as confirmed from its compiled program.
+The five previous variants keep their existing behaviour/state checks.
+Lit brine and other keyword combinations remain explicit fallbacks.
+Inventory/death-drop work at `95c1883` is preserved. No dependencies or
+whitelist changes; no game data added to source/docs.
+
+**Verified:**
+- `cargo test --workspace`: 471 passed, 39 ignored, zero failures. The new
+  synthetic material test covers projection defaults/overrides, all three
+  scroll components, clip parameters, culling and rejection of lit variants.
+  After strengthening the Z-scroll assertions, rerun with
+  `cargo test -p sn-client brine_preserves_projection_vectors_and_requires_its_decoded_state`
+  (expect one pass). `cargo fmt --all -- --check`,
+  `cargo clippy --workspace --all-targets -- -D warnings` and
+  `cargo build --release -p sn-client` pass.
+- Fresh release control built from `95c1883`; before/after executables and
+  logs are ignored under `out/m7g4-brine/`. At Tree Cove, 6,335 entities,
+  150 object batches, 1,301 meshes, 266 materials and 548 textures remain
+  equal; zero loader warnings and unsettled measurement frames. The brine
+  material changes from the logged fallback to `brine: true`; lit lake and
+  lava variants remain rejected. One fewer global fallback material instance
+  is expected. Both final GPU paths compile without validation errors.
+- Final sequential Tree Cove pair (`run-m7g4a-cove-{before,after}-2`):
+  mean 5.281 → 6.503 ms; p99 6.091 → 10.854 ms. New effects GPU pass
+  0.057 ms. This pair is slower overall; it does **not** establish a speedup
+  or isolate the CPU cost. Initial Cove control overlapped compilation and
+  was unsuitable for timing comparison, so it was repeated without builds.
+- Precursor pair (`run-m7g4a-precursor-{before,after}`): 8 UBER effect
+  materials selected, identical 8,202 entities/140 batches/645 textures,
+  zero warnings or unsettled frames. Mean 5.950 → 6.192 ms; recent effects
+  GPU 0.084 → 0.085 ms. Captures are 1600×900. Animation remains live;
+  these are runtime regressions, not pixel-exact reference comparisons.
+
+**Reproduce:** set `SUBNAUTICA_DIR` to the player's install, build release,
+then use a fresh baseline name:
+
+```powershell
+target/release/sn-client.exe --benchmark 300 --baseline m7g4a-check --baseline-revision local-M7g4a --warmup 120 --resolution 1600 900 --start -931.2 -931.6 326.6 --look -931.2 -941.6 346.6 --fov 60 --view 400 --lifepod-seed 1 --slot-seed 1 --time 9.6 --time-scale 0 --aurora intact --water-quality high --color-grading off --gpu-timings
+```
+
+Expect `x_LostRiver_TreeCoveLakes` logged as an effect material, `brine: true`,
+a report/capture in `out/baselines/run-m7g4a-check`, and clean exit. Repeat
+with another fresh name and `--start -622 -558 1482 --look -608 -561 1483`
+for the Precursor regression.
+
+**Corrections/limits:** initial extra projection vectors made `EffectLook`
+trigger clippy's large-enum warning. Reused mutually exclusive ST/projection
+slots and packed Z speeds instead; clippy passes without a lint suppression
+or per-instance heap allocation. An exploratory far-west lake camera also
+ran; the documented acceptance camera uses a central Tree Cove placement.
+Original-game visual parity, interactive inventory play and Linux/macOS:
+**not tested**. Camera-based fog-volume selection remains a known limitation.
+Next: lit Lost River brine's normal maps and two-sided lighting.
+
 ## 2026-10-12 — M9d6c: two players, and the M9d6 summary
 
 **What:**

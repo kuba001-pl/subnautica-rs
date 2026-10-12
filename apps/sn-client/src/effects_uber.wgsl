@@ -18,7 +18,8 @@ struct Instance {
     // _ColorStrength, _ColorStrengthAtNight: Vector properties, as stored
     strength: vec4<f32>,
     strength_night: vec4<f32>,
-    // _MainTex_ST, _MainTex2_ST, _DeformMap_ST, _RefractMap_ST
+    // _MainTex_ST, _MainTex2_ST, _DeformMap_ST, _RefractMap_ST;
+    // brine uses the first three slots for _TriplanarUV xyz scales.
     main_st: vec4<f32>,
     main2_st: vec4<f32>,
     deform_st: vec4<f32>,
@@ -30,8 +31,10 @@ struct Instance {
     // _FresnelFade, _FresnelPow, _Cutoff, flags (1 FX_FRESNELCLIP,
     // 2 FX_MULMAP, 4 FX_SOFTEDGES, 8 FX_DEFORM, 16 FX_REFRACTMAP)
     params: vec4<f32>,
-    // _InvFade, _DeformStrength, _RefractStrength, unused
+    // _InvFade, _DeformStrength, _RefractStrength, deform Z speed
     strengths: vec4<f32>,
+    // Bit 32 in params.w selects the exact unlit Tree Cove variant.
+    clip: vec4<f32>,
 }
 
 struct Instances {
@@ -84,6 +87,7 @@ struct VertexOutput {
     // Object space, towards the camera, normalised per vertex.
     @location(5) to_camera: vec3<f32>,
     @location(6) @interpolate(flat) instance: u32,
+    @location(7) world_normal: vec3<f32>,
 }
 
 @vertex
@@ -96,10 +100,16 @@ fn vertex(in: VertexInput) -> VertexOutput {
     out.world = world.xyz;
     out.eye = -(view.view_from_world * world).z;
     out.color = in.color;
+    if (u32(inst.params.w) & 32u) != 0u {
+        // The compiled brine vertex program fades alpha before interpolation.
+        let near = view.clip_from_view[3][2];
+        out.color.a *= saturate((out.eye - inst.clip.x - near) / (inst.clip.x + inst.clip.y));
+    }
     out.uv = in.uv;
     out.normal = in.normal;
     out.to_camera = normalize(camera - in.position);
     out.instance = in.instance;
+    out.world_normal = normalize((transpose(inst.local_from_world) * vec4<f32>(in.normal, 0.0)).xyz);
     return out;
 }
 
@@ -118,13 +128,26 @@ fn scene_eye_depth(pixel: vec2<i32>) -> f32 {
     return view.clip_from_view[3][2] / d;
 }
 
+// Particle projection differs from SIG: yz, xz, yx, with fourth-power
+// normal weights. Explicit gradients allow sampling only the selected path.
+fn projected(tex: texture_2d<f32>, smp: sampler, p: vec3<f32>,
+             dx: vec3<f32>, dy: vec3<f32>, weights: vec3<f32>) -> vec4<f32> {
+    return weights.x * textureSampleGrad(tex, smp, p.yz, dx.yz, dy.yz)
+         + weights.y * textureSampleGrad(tex, smp, p.xz, dx.xz, dy.xz)
+         + weights.z * textureSampleGrad(tex, smp, p.yx, dx.yx, dy.yx);
+}
+
 @fragment
-fn fragment(in: VertexOutput) -> Targets {
+fn fragment(in: VertexOutput, @builtin(front_facing) front: bool) -> Targets {
     let inst = instances.items[in.instance];
     let fresnel_fade = inst.params.x;
     let fresnel_pow = inst.params.y;
     let cutoff = inst.params.z;
     let flags = u32(inst.params.w);
+    let brine = (flags & 32u) != 0u;
+    if brine && !front {
+        discard;
+    }
 
     // The game's depth test (ZTest Less, no ZWrite) against the scene.
     let scene = scene_eye_depth(vec2<i32>(in.position.xy));
@@ -163,9 +186,33 @@ fn fragment(in: VertexOutput) -> Targets {
     let refract = textureSample(refract_map, refract_sampler, refract_uv);
     let tex = textureSample(main_tex, main_sampler, uv);
     let tex2 = textureSample(main_tex2, main_sampler2, uv2);
-    c *= tex;
-    if (flags & 2u) != 0u {
-        c *= tex2;
+    // Restore Unity world coordinates after the mesh/placement Z reflection.
+    let world = in.world * vec3<f32>(1.0, 1.0, -1.0);
+    let n2 = in.world_normal * in.world_normal;
+    let n4 = n2 * n2;
+    let weights = n4 / max(dot(n4, vec3<f32>(1.0)), 1e-20);
+    let deform_p = world * inst.deform_st.xyz + fract(t * vec3<f32>(inst.speed2.xy, inst.strengths.w));
+    let deform_dx = dpdx(deform_p);
+    let deform_dy = dpdy(deform_p);
+    var displaced = world;
+    if brine {
+        let d = projected(deform_map, deform_sampler, deform_p, deform_dx, deform_dy, weights);
+        displaced += (d.xyz - 1.0) * inst.strengths.y;
+    }
+    let main_p = displaced * inst.main_st.xyz + fract(t * vec3<f32>(inst.speed.xy, inst.clip.z));
+    let main2_p = displaced * inst.main2_st.xyz + fract(t * vec3<f32>(inst.speed.zw, inst.clip.w));
+    let main_dx = dpdx(main_p);
+    let main_dy = dpdy(main_p);
+    let main2_dx = dpdx(main2_p);
+    let main2_dy = dpdy(main2_p);
+    if brine {
+        c *= projected(main_tex, main_sampler, main_p, main_dx, main_dy, weights);
+        c *= projected(main_tex2, main_sampler2, main2_p, main2_dx, main2_dy, weights);
+    } else {
+        c *= tex;
+        if (flags & 2u) != 0u {
+            c *= tex2;
+        }
     }
     // Day and night strengths by the local light.
     let strength = mix(inst.strength, inst.strength_night, 1.0 - globals.misc.y);
@@ -175,6 +222,9 @@ fn fragment(in: VertexOutput) -> Targets {
     }
     // Opacity follows brightness: dark texels are transparent.
     var alpha = saturate((c.r + c.g + c.b) / 3.0) * c.a;
+    if brine {
+        alpha = c.a;
+    }
     // FX_REFRACTMAP: a screen offset for the composite (B.yz), unpacked like
     // a normal map, × _RefractStrength × the unclamped alpha above.
     var offset = vec2<f32>(0.0);
@@ -185,8 +235,7 @@ fn fragment(in: VertexOutput) -> Targets {
     // `_Color` and the textures are in game light units.
     var colour = c.rgb * globals.wboit.z;
 
-    // FX_ADDFOG: fog at its own distance, faded out over its path through
-    // fogged water, as the glows.
+    // Both decoded families receive fog, including brine without FX_ADDFOG.
     if fog.misc.z != 0.0 {
         let camera = view.world_position;
         let towards = in.world - camera;
@@ -199,6 +248,10 @@ fn fragment(in: VertexOutput) -> Targets {
         offset *= exp(-fog.extinction.b * water);
     }
     alpha = saturate(alpha);
+    if brine {
+        // The ordinary-colour variant saturates in game light units after fog.
+        colour = clamp(colour, vec3<f32>(0.0), vec3<f32>(globals.wboit.z));
+    }
 
     // The WBOIT weight: nearer meshes count more.
     let depth_weight = clamp(exp(-in.eye * globals.wboit.y), 0.01, 1.0);

@@ -133,7 +133,9 @@ shadows; the fake light glows on ion crystal pedestals and under Precursor
 lights with the game's decoded shader and its transparency compositing,
 coloured by their lights as the game's script does; the Precursor consoles'
 holograms and the cache doors' force fields with the game's decoded effect
-shader (scrolling textures, soft edges, deformation, refraction); the
+shader (scrolling textures, soft edges, deformation, refraction); Tree Cove's
+unlit brine with world-space scrolling, deformation, near fading and weighted
+transparency (M7g4a; GPU validated, original-game visual parity not tested); the
 objects the game spawns from prefabs' placeholders, e.g. the cache doors,
 key terminals and pedestal crystals; none of these compared with the game
 on screen yet); the game's animators on objects (M7f4: its own
@@ -166,7 +168,7 @@ beyond ~100 m, and grass tufts in the game's exact spots (the amount and
 spread follow its rules; our own random numbers); for world objects: reflections of the biome
 sky's cube map, cave/interior skies chosen by atmosphere volumes,
 animated lights, materials and script values, remaining unsupported object
-shaders (Lost River brine, sand and lava falls and other effect
+shaders (lit Lost River brine outside Tree Cove, sand and lava falls and other effect
 meshes not yet decoded are flat; matched original-game SIG rock/coral comparisons are not tested;
 `docs/formats/materials.md`), creatures (including the
 ~100,000 the spawn slots would add); the intro cinematic, tools, the PDA and IK, tanks and fins changing

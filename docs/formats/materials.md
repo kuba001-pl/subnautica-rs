@@ -253,15 +253,54 @@ come out flat `_Color`, which is white for all of the ones above.
   client logs every other `UWE/Particles/UBER` material with the reason
   (keywords not decoded, or a blend/depth/cull value the pass does not
   draw) and keeps it on the old look: alpha-blended `_MainTex` × `_Color`,
-  with no scrolling, second texture, deformation or refraction. Not
-  decoded yet: `FX_NEARCLIP`, `FX_TRIPLANAR`, the lighting modes,
-  `FX_LIGHT_NORMALMAP`, and every other combination (the Lost River lakes,
+  with no scrolling, second texture, deformation or refraction. M7g4a also supports the unlit Tree Cove brine described below. Not
+  decoded yet: the lighting modes, `FX_LIGHT_NORMALMAP`, and the other
+  combinations (the lit Lost River lakes,
   sand and lava falls, the Gun's elevator and deactivation column, the
   water force field, the tech light cones). Differences: the fog uses the
   camera's water settings, not the fog volume at the mesh (as for the
   glows); the refraction offset's sign in y is **not checked** (Unity's
   render-texture uv may run the other way; the force fields' maps are
   noise, so it does not show).
+
+### Tree Cove unlit brine (M7g4a) — confirmed from compiled programs
+
+The exact keyword set `FX_DEFORM FX_MULMAP FX_NEARCLIP FX_SCROLL
+FX_SOFTEDGES FX_TRIPLANAR WBOIT` uses a different colour/opacity path from
+the additive holograms. Confirmed by the installed shader's first D3D11
+vertex/fragment pair for this set and `sn-inspect prefab ... --props` on
+the Tree Cove water prefab; research outputs remain ignored under `out/`.
+
+- Projection uses Unity world position, with yz, xz and **yx** texture
+  coordinates. Weights are proportional to the fourth power of the world
+  normal components. The inverse-transpose normal is normalized per vertex;
+  interpolation is not normalized again before weighting. Constant factors
+  cancel when the three weights are normalized.
+- Each map has an independent `_TriplanarUV.xyz` scale and `_Speed.xyz`
+  scroll, with the fractional time-times-speed added after scaling. Texture
+  ST offsets do not participate. The blended deformation map's RGB minus
+  one, times `_DeformStrength`, displaces world position before both main
+  maps are projected. This is not SIG's projection formula.
+- Vertex alpha is multiplied by the saturated ratio of eye depth minus
+  `_ClipOffset` minus camera near distance to `_ClipFade + _ClipOffset`.
+  Soft scene intersections still use `_InvFade`. Colour and alpha multiply
+  both main maps, vertex colour, twice the material colour, and the local
+  day/night strength. Alpha cutoff precedes fog.
+- Water fog is still evaluated although `FX_ADDFOG` is absent. Opacity is
+  ordinary alpha, without the hologram brightness multiplier. Colour and
+  alpha are saturated after fog, before weighted transparency accumulation.
+  Colour saturation is in the game's light units.
+- This material requests back culling (`_MyCullVariable = 2`); the two
+  prefab surfaces supply their own orientations. Blend/depth settings match
+  the earlier five variants. Our pass rejects back-facing fragments for this
+  exact variant and continues rejecting unsupported render states.
+
+Our implementation reuses the existing mapping slots for triplanar scales,
+retains all three scroll components, and restores Unity's world Z coordinate
+before projection. Explicit texture gradients permit conditional triplanar
+sampling. The lit Bones Field/Ghost Tree combinations remain unsupported.
+Fog-volume selection still uses camera settings; original-game visual parity
+is **not tested**.
 
 ### Triplanar rocks (`UWE/SIG Triplanar with Capping`) — confirmed
 

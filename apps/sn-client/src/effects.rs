@@ -98,7 +98,8 @@ pub(crate) struct ParticlesValues {
     /// stored (no colour conversion).
     pub strength: [f32; 4],
     pub strength_night: [f32; 4],
-    /// `_MainTex_ST`, `_MainTex2_ST` (scale x, y, offset x, y).
+    /// `_MainTex_ST`, `_MainTex2_ST` (scale x, y, offset x, y), or
+    /// their `_TriplanarUV` xyz scales for brine.
     pub main_st: [f32; 4],
     pub main2_st: [f32; 4],
     /// `_MainTex_Speed.xy`, `_MainTex2_Speed.xy`.
@@ -113,13 +114,19 @@ pub(crate) struct ParticlesValues {
     pub soft_edges: bool,
     pub deform: bool,
     pub refract: bool,
+    /// Exact unlit Tree Cove variant (projection, near fade, back culling,
+    /// ordinary opacity and clamped colour); not a generic lighting mode.
+    pub brine: bool,
+    /// Clip offset/fade, main/main2 Z scroll speeds; brine only.
+    pub clip: [f32; 4],
+    pub deform_speed_z: f32,
     /// `_InvFade`, `_DeformStrength`, `_RefractStrength` (the float; the
     /// materials also hold a vector of that name, which the programs don't
     /// read).
     pub inv_fade: f32,
     pub deform_strength: f32,
     pub refract_strength: f32,
-    /// `_DeformMap_ST`, `_RefractMap_ST`.
+    /// `_DeformMap_ST` (brine: `_DeformMap_TriplanarUV`), `_RefractMap_ST`.
     pub deform_st: [f32; 4],
     pub refract_st: [f32; 4],
     /// `_DeformMap_Speed.xy`, `_RefractMap_Speed.xy`.
@@ -199,8 +206,9 @@ struct ParticlesInstance {
     /// `_FresnelFade`, `_FresnelPow`, `_Cutoff`, flags (1 `FX_FRESNELCLIP`,
     /// 2 `FX_MULMAP`, 4 `FX_SOFTEDGES`, 8 `FX_DEFORM`, 16 `FX_REFRACTMAP`).
     params: Vec4,
-    /// `_InvFade`, `_DeformStrength`, `_RefractStrength`, unused.
+    /// `_InvFade`, `_DeformStrength`, `_RefractStrength`, deform Z speed.
     strengths: Vec4,
+    clip: Vec4,
 }
 
 #[derive(Clone, Default, ShaderType)]
@@ -321,7 +329,8 @@ fn extract_effects(
                     | (u32::from(v.mul_map) << 1)
                     | (u32::from(v.soft_edges) << 2)
                     | (u32::from(v.deform) << 3)
-                    | (u32::from(v.refract) << 4);
+                    | (u32::from(v.refract) << 4)
+                    | (u32::from(v.brine) << 5);
                 extracted.particles.push(ParticlesInstance {
                     world_from_local,
                     local_from_world,
@@ -335,7 +344,13 @@ fn extract_effects(
                     speed: Vec4::from(v.speed),
                     speed2: Vec4::from(v.speed2),
                     params: Vec4::new(v.fresnel_fade, v.fresnel_pow, v.cutoff, flags as f32),
-                    strengths: Vec4::new(v.inv_fade, v.deform_strength, v.refract_strength, 0.0),
+                    strengths: Vec4::new(
+                        v.inv_fade,
+                        v.deform_strength,
+                        v.refract_strength,
+                        v.deform_speed_z,
+                    ),
+                    clip: Vec4::from(v.clip),
                 });
                 let ids = part.textures.each_ref().map(Handle::id);
                 extracted.particle_draws.push((part.mesh, ids));
@@ -1139,6 +1154,9 @@ mod tests {
         soft_edges: false,
         deform: false,
         refract: false,
+        brine: false,
+        clip: [0.0; 4],
+        deform_speed_z: 0.0,
         inv_fade: 0.0,
         deform_strength: 0.0,
         refract_strength: 0.0,
@@ -1165,6 +1183,9 @@ mod tests {
         soft_edges: true,
         deform: true,
         refract: true,
+        brine: false,
+        clip: [0.0; 4],
+        deform_speed_z: 0.0,
         inv_fade: 1.6,
         deform_strength: 0.005,
         refract_strength: 0.02,
