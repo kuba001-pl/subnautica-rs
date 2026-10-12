@@ -7,7 +7,7 @@ use std::fmt;
 
 use crate::assembly::Assembly;
 use crate::reader::Reader;
-use crate::tables::Table;
+use crate::tables::{Table, TableId};
 use crate::{Error, Result};
 
 /// Signatures nest (arrays of generic instances of …); deeper than this
@@ -38,17 +38,43 @@ const ELEMENT_CMOD_REQD: u8 = 0x1F;
 const ELEMENT_CMOD_OPT: u8 = 0x20;
 const FIELD_SIG: u8 = 0x06;
 
+/// A TypeDef, TypeRef or TypeSpec row of an assembly.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct TypeToken {
+    pub table: TableId,
+    pub row: u32,
+}
+
+/// A type named in a signature: where it is defined or referenced, and
+/// its names.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NamedType {
+    pub token: TypeToken,
+    pub namespace: String,
+    pub name: String,
+}
+
+impl fmt::Display for NamedType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.namespace.is_empty() {
+            f.write_str(&self.name)
+        } else {
+            write!(f, "{}.{}", self.namespace, self.name)
+        }
+    }
+}
+
 /// A type as a signature names it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SigType {
     /// An element type without operands: `bool` (0x02) … `string`
     /// (0x0E), `IntPtr` (0x18), `UIntPtr` (0x19), `object` (0x1C).
     Primitive(u8),
-    /// A reference type: namespace and name (nested types by their own
-    /// name).
-    Class(String, String),
-    /// A value type (struct or enum): namespace and name.
-    ValueType(String, String),
+    /// A reference type (nested types are named by their own name; the
+    /// token tells them apart).
+    Class(NamedType),
+    /// A value type (struct or enum).
+    ValueType(NamedType),
     /// `T[]`.
     SzArray(Box<SigType>),
     /// `T[,]…` with its rank.
@@ -67,8 +93,7 @@ impl fmt::Display for SigType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             SigType::Primitive(e) => f.write_str(primitive_name(*e)),
-            SigType::Class(ns, n) | SigType::ValueType(ns, n) if ns.is_empty() => f.write_str(n),
-            SigType::Class(ns, n) | SigType::ValueType(ns, n) => write!(f, "{ns}.{n}"),
+            SigType::Class(t) | SigType::ValueType(t) => write!(f, "{t}"),
             SigType::SzArray(t) => write!(f, "{t}[]"),
             SigType::Array(t, rank) => {
                 write!(f, "{t}[{}]", ",".repeat(rank.saturating_sub(1) as usize))
@@ -137,11 +162,11 @@ impl<'a> Assembly<'a> {
                 return self.sig_type(r, depth + 1);
             }
             ELEMENT_CLASS | ELEMENT_VALUETYPE => {
-                let (ns, n) = self.type_def_or_ref_coded(r)?;
+                let t = self.type_def_or_ref_coded(r)?;
                 if e == ELEMENT_CLASS {
-                    SigType::Class(ns, n)
+                    SigType::Class(t)
                 } else {
-                    SigType::ValueType(ns, n)
+                    SigType::ValueType(t)
                 }
             }
             ELEMENT_SZARRAY => SigType::SzArray(Box::new(self.sig_type(r, depth + 1)?)),
@@ -181,8 +206,19 @@ impl<'a> Assembly<'a> {
         })
     }
 
-    /// The type a TypeDef extends (namespace, name); `None` for none
-    /// (interfaces, `System.Object`).
+    /// The type a TypeDef extends: a class (TypeDef or TypeRef) or a
+    /// generic instance (TypeSpec); `None` for none (interfaces,
+    /// `System.Object`).
+    pub fn extends(&self, type_row: u32) -> Result<Option<SigType>> {
+        let (table, row) = self.tables().coded(Table::TYPE_DEF, type_row, 3)?;
+        if row == 0 {
+            return Ok(None);
+        }
+        self.type_of_token(TypeToken { table, row }).map(Some)
+    }
+
+    /// The type a TypeDef extends, by name (`extends`, generic instances
+    /// named by their generic type).
     pub fn base_type(&self, type_row: u32) -> Result<Option<(String, String)>> {
         let (table, row) = self.tables().coded(Table::TYPE_DEF, type_row, 3)?;
         if row == 0 {
@@ -191,8 +227,29 @@ impl<'a> Assembly<'a> {
         self.type_def_or_ref_name(table, row).map(Some)
     }
 
-    /// A `TypeDefOrRefOrSpecEncoded` token (§ II.23.2.8) → names.
-    fn type_def_or_ref_coded(&self, r: &mut Reader) -> Result<(String, String)> {
+    /// A type token as a signature type: TypeDef and TypeRef rows as
+    /// classes (whether one is a value type depends on what it extends),
+    /// TypeSpec rows decoded.
+    pub fn type_of_token(&self, token: TypeToken) -> Result<SigType> {
+        match token.table {
+            Table::TYPE_SPEC => {
+                let sig = self.blob(self.tables().cell(Table::TYPE_SPEC, token.row, 0)?)?;
+                self.sig_type(&mut Reader::new(sig), 0)
+            }
+            Table::TYPE_DEF | Table::TYPE_REF => {
+                let (namespace, name) = self.type_def_or_ref_name(token.table, token.row)?;
+                Ok(SigType::Class(NamedType {
+                    token,
+                    namespace,
+                    name,
+                }))
+            }
+            other => Err(Error::new(0, format!("type token in table {other:#x}"))),
+        }
+    }
+
+    /// A `TypeDefOrRefOrSpecEncoded` token (§ II.23.2.8).
+    fn type_def_or_ref_coded(&self, r: &mut Reader) -> Result<NamedType> {
         let coded = r.compressed()?;
         let table = match coded & 0x3 {
             0 => Table::TYPE_DEF,
@@ -200,7 +257,13 @@ impl<'a> Assembly<'a> {
             2 => Table::TYPE_SPEC,
             _ => return Err(Error::new(r.pos(), "bad TypeDefOrRef tag")),
         };
-        self.type_def_or_ref_name(table, coded >> 2)
+        let row = coded >> 2;
+        let (namespace, name) = self.type_def_or_ref_name(table, row)?;
+        Ok(NamedType {
+            token: TypeToken { table, row },
+            namespace,
+            name,
+        })
     }
 }
 

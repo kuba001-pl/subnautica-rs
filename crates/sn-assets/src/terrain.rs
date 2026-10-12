@@ -293,13 +293,16 @@ pub(crate) fn behaviours<'f>(
 /// The script class name of a MonoBehaviour object (`None` if it isn't one
 /// or its script can't be resolved).
 pub(crate) fn script_class(assets: &Assets, behaviour: &ObjectRef) -> Option<String> {
+    mono_script(assets, behaviour).map(|s| s.class_name)
+}
+
+/// The MonoScript of a MonoBehaviour object (class, namespace, assembly).
+pub(crate) fn mono_script(assets: &Assets, behaviour: &ObjectRef) -> Option<MonoScript> {
     let data = expect_class(behaviour, MONO_BEHAVIOUR).ok()?;
     let header = MonoBehaviourHeader::parse(data, behaviour.file.file().big_endian).ok()?;
     let script = assets.resolve(&behaviour.file, header.script).ok()??;
     let data = expect_class(&script, MONO_SCRIPT).ok()?;
-    MonoScript::parse(data, script.file.file().big_endian)
-        .ok()
-        .map(|s| s.class_name)
+    MonoScript::parse(data, script.file.file().big_endian).ok()
 }
 
 pub(crate) fn load_texture(assets: &Assets, object: &ObjectRef) -> Result<TerrainTexture> {

@@ -2283,3 +2283,147 @@ fn ui_trees_from_the_install() {
     assert_eq!(pda.scripts("uGUI_ItemsContainer").count(), 6);
     assert_eq!(pda.scripts("uGUI_Equipment").count(), 1);
 }
+
+/// M9u1: the layouts built from the game's assemblies read the same
+/// values as the hand-written readers, on the objects those read.
+#[test]
+#[ignore = "needs SUBNAUTICA_DIR pointing at a Subnautica install"]
+fn script_layouts_agree_with_hand_written_readers() {
+    use sn_assets::{ObjectRef, ScriptAssemblies};
+    use sn_unity::{
+        CanvasScaler, Fields, LiveMixin, LiveMixinData, MainCameraControl, Oxygen, PdaData, Value,
+    };
+
+    let Some(dir) = std::env::var_os("SUBNAUTICA_DIR") else {
+        eprintln!("SUBNAUTICA_DIR not set; skipping");
+        return;
+    };
+    let game = GameData::locate(Some(PathBuf::from(dir))).unwrap();
+    let assets = Assets::index(&game).unwrap();
+    let assemblies = ScriptAssemblies::load(&game).unwrap();
+    let layouts = assemblies.layouts().unwrap();
+    let generic = |o: &ObjectRef| -> Fields {
+        let s = assets.mono_script(o).unwrap();
+        let l = layouts
+            .script(&s.assembly, &s.namespace, &s.class_name)
+            .unwrap();
+        let (_, d) = o.data().unwrap();
+        sn_unity::read_script(d, false, &l).unwrap().1
+    };
+    let f32_of = |f: &Fields, n: &str| f.path(n).and_then(Value::as_f64).unwrap() as f32;
+    let bool_of = |f: &Fields, n: &str| f.path(n).and_then(Value::as_bool).unwrap();
+    let pptr_of = |f: &Fields, n: &str| f.path(n).and_then(Value::as_pptr).unwrap();
+
+    let main = assets.scene("main").unwrap();
+    let mut compared = 0;
+    for o in main.behaviours(&assets, "Oxygen") {
+        let hand = Oxygen::parse(o.data().unwrap().1, false).unwrap();
+        let g = generic(&o);
+        assert_eq!(f32_of(&g, "oxygenCapacity"), hand.oxygen_capacity);
+        assert_eq!(bool_of(&g, "isPlayer"), hand.is_player);
+        compared += 1;
+    }
+    for o in main.behaviours(&assets, "MainCameraControl") {
+        let h = MainCameraControl::parse(o.data().unwrap().1, false).unwrap();
+        let g = generic(&o);
+        for (name, value) in [
+            ("camPDAZOffset", h.cam_pda_z_offset),
+            ("stepAmount", h.step_amount),
+            ("minimumX", h.minimum_x),
+            ("maximumX", h.maximum_x),
+            ("minimumY", h.minimum_y),
+            ("maximumY", h.maximum_y),
+            ("skin", h.skin),
+            ("maxViewModelRotation", h.max_view_model_rotation),
+            ("maxViewModelMovement", h.max_view_model_movement),
+            ("cameraTiltMod", h.camera_tilt_mod),
+        ] {
+            assert_eq!(f32_of(&g, name), value, "MainCameraControl.{name}");
+        }
+        assert_eq!(bool_of(&g, "mouseLookEnabled"), h.mouse_look_enabled);
+        assert_eq!(pptr_of(&g, "viewModel"), h.view_model);
+        assert_eq!(
+            pptr_of(&g, "cameraOffsetTransform"),
+            h.camera_offset_transform
+        );
+        assert_eq!(pptr_of(&g, "cameraUPTransform"), h.camera_up_transform);
+        compared += 1;
+    }
+    for o in main.behaviours(&assets, "LiveMixin") {
+        let h = LiveMixin::parse(o.data().unwrap().1, false).unwrap();
+        let g = generic(&o);
+        assert_eq!(pptr_of(&g, "data"), h.data);
+        assert_eq!(f32_of(&g, "health"), h.health);
+        compared += 1;
+        let Some(data) = assets.resolve(&o.file, h.data).unwrap() else {
+            continue;
+        };
+        let hd = LiveMixinData::parse(data.data().unwrap().1, false).unwrap();
+        let gd = generic(&data);
+        assert_eq!(f32_of(&gd, "maxHealth"), hd.max_health);
+        assert_eq!(f32_of(&gd, "minDamageForSound"), hd.min_damage_for_sound);
+        assert_eq!(
+            f32_of(&gd, "loopEffectBelowPercent"),
+            hd.loop_effect_below_percent
+        );
+        assert_eq!(bool_of(&gd, "destroyOnDeath"), hd.destroy_on_death);
+        assert_eq!(bool_of(&gd, "weldable"), hd.weldable);
+        assert_eq!(bool_of(&gd, "knifeable"), hd.knifeable);
+        assert_eq!(bool_of(&gd, "canResurrect"), hd.can_resurrect);
+        assert_eq!(
+            bool_of(&gd, "invincibleInCreative"),
+            hd.invincible_in_creative
+        );
+        compared += 1;
+    }
+    // PDAData, through the player's field.
+    let player = &main.behaviours(&assets, "Player")[0];
+    let pda_ref = pptr_of(&generic(player), "pdaData");
+    let pda = assets.resolve(&player.file, pda_ref).unwrap().unwrap();
+    let h = PdaData::parse(pda.data().unwrap().1, false).unwrap();
+    let g = generic(&pda);
+    let list = |n: &str| g.get(n).and_then(Value::as_array).unwrap();
+    let default_tech: Vec<i32> = list("defaultTech")
+        .iter()
+        .map(|v| v.as_i64().unwrap() as i32)
+        .collect();
+    assert_eq!(default_tech, h.default_tech);
+    assert_eq!(list("log").len(), h.log.len());
+    assert_eq!(list("encyclopedia").len(), h.encyclopedia.len());
+    assert_eq!(list("scanner").len(), h.scanner.len());
+    assert_eq!(list("analysisTech").len(), h.analysis_tech.len());
+    assert_eq!(list("compoundTech").len(), h.compound_tech.len());
+    compared += 1;
+    // The canvas scalers of the UI.
+    let catalog = assets.catalog().unwrap();
+    let ugui = assets
+        .ui_tree("uGUI.prefab", &assets.ugui_root(&catalog).unwrap())
+        .unwrap();
+    for (_, c) in ugui.scripts("uGUI_CanvasScaler") {
+        let h = CanvasScaler::parse(c.object.data().unwrap().1, false).unwrap();
+        let g = generic(&c.object);
+        assert_eq!(f32_of(&g, "distance"), h.distance);
+        assert_eq!(
+            f32_of(&g, "referenceResolution.x"),
+            h.reference_resolution[0]
+        );
+        assert_eq!(
+            f32_of(&g, "referenceResolution.y"),
+            h.reference_resolution[1]
+        );
+        for (name, v) in [
+            ("mode", h.mode),
+            ("vrMode", h.vr_mode),
+            ("scaleMode", h.scale_mode),
+        ] {
+            assert_eq!(
+                g.get(name).and_then(Value::as_i64),
+                Some(i64::from(v)),
+                "{name}"
+            );
+        }
+        compared += 1;
+    }
+    eprintln!("{compared} objects compared");
+    assert!(compared >= 9, "{compared}");
+}

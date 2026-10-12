@@ -1,11 +1,13 @@
-//! Test-only writer of small .NET assemblies: a PE file with one section
+//! Writer of small .NET assemblies, for tests only (this crate's, and
+//! other crates' through the `encode` feature): a PE file with one section
 //! holding the CLI header, method bodies and compressed metadata (`#~`,
 //! `#Strings`, `#US`, `#Blob`). Lets the readers be tested on synthetic
 //! bytes we encode ourselves, never on files from the game.
 
 use crate::tables::{
-    Coded, HAS_CONSTANT, HEAP_BLOB_WIDE, HEAP_GUID_WIDE, HEAP_STRINGS_WIDE, MEMBER_REF_PARENT,
-    SCHEMA, TYPE_DEF_OR_REF, Table, TableId, col_width,
+    CUSTOM_ATTRIBUTE_TYPE, Coded, HAS_CONSTANT, HAS_CUSTOM_ATTRIBUTE, HEAP_BLOB_WIDE,
+    HEAP_GUID_WIDE, HEAP_STRINGS_WIDE, MEMBER_REF_PARENT, RESOLUTION_SCOPE, SCHEMA,
+    TYPE_DEF_OR_REF, Table, TableId, col_width,
 };
 
 const SECTION_RVA: u32 = 0x2000;
@@ -38,12 +40,18 @@ fn pad4(v: &mut Vec<u8>) {
     }
 }
 
-pub(crate) struct Builder {
+pub struct Builder {
     strings: Vec<u8>,
     user_strings: Vec<u8>,
     blobs: Vec<u8>,
     rows: Vec<Vec<Vec<u32>>>,
     il: Vec<u8>,
+}
+
+impl Default for Builder {
+    fn default() -> Builder {
+        Builder::new()
+    }
 }
 
 impl Builder {
@@ -101,6 +109,63 @@ impl Builder {
             self.rows(Table::METHOD_DEF) + 1,
         );
         self.row(Table::TYPE_DEF, vec![0, n, ns, 0, fields, methods])
+    }
+
+    /// A TypeDef with flags and the type it extends; returns its row.
+    pub fn type_def_with(
+        &mut self,
+        flags: u32,
+        namespace: &str,
+        name: &str,
+        extends: Option<(TableId, u32)>,
+    ) -> u32 {
+        let (n, ns) = (self.string(name), self.string(namespace));
+        let (fields, methods) = (
+            self.rows(Table::FIELD) + 1,
+            self.rows(Table::METHOD_DEF) + 1,
+        );
+        let ext = extends.map_or(0, |(t, r)| coded(TYPE_DEF_OR_REF, t, r));
+        self.row(Table::TYPE_DEF, vec![flags, n, ns, ext, fields, methods])
+    }
+
+    /// The Assembly row (its name).
+    pub fn assembly(&mut self, name: &str) {
+        let n = self.string(name);
+        self.row(Table::ASSEMBLY, vec![0, 0, 0, 0, 0, 0, 0, n, 0]);
+    }
+
+    /// An AssemblyRef; returns its row.
+    pub fn assembly_ref(&mut self, name: &str) -> u32 {
+        let n = self.string(name);
+        self.row(Table::ASSEMBLY_REF, vec![0, 0, 0, 0, 0, 0, n, 0, 0])
+    }
+
+    /// A TypeRef with its resolution scope (an AssemblyRef or an outer
+    /// TypeRef); returns its row.
+    pub fn type_ref_in(&mut self, scope: (TableId, u32), namespace: &str, name: &str) -> u32 {
+        let (n, ns) = (self.string(name), self.string(namespace));
+        let s = coded(RESOLUTION_SCOPE, scope.0, scope.1);
+        self.row(Table::TYPE_REF, vec![s, n, ns])
+    }
+
+    /// A TypeSpec with its signature blob; returns its row.
+    pub fn type_spec(&mut self, sig: &[u8]) -> u32 {
+        let b = self.blob(sig);
+        self.row(Table::TYPE_SPEC, vec![b])
+    }
+
+    /// TypeDef `inner` is nested in `outer` (rows).
+    pub fn nested(&mut self, inner: u32, outer: u32) {
+        self.row(Table::NESTED_CLASS, vec![inner, outer]);
+    }
+
+    /// A custom attribute on `parent`, made by constructor `ctor` (a
+    /// MethodDef or MemberRef row).
+    pub fn attribute(&mut self, parent: (TableId, u32), ctor: (TableId, u32)) {
+        let p = coded(HAS_CUSTOM_ATTRIBUTE, parent.0, parent.1);
+        let c = coded(CUSTOM_ATTRIBUTE_TYPE, ctor.0, ctor.1);
+        let blob = self.blob(&[1, 0, 0, 0]);
+        self.row(Table::CUSTOM_ATTRIBUTE, vec![p, c, blob]);
     }
 
     pub fn type_ref(&mut self, namespace: &str, name: &str) -> u32 {
@@ -298,7 +363,7 @@ impl Builder {
 
 /// A small IL assembler for the instructions the readers accept.
 #[derive(Default)]
-pub(crate) struct Il(pub Vec<u8>);
+pub struct Il(pub Vec<u8>);
 
 impl Il {
     fn op_token(mut self, op: u8, token: u32) -> Il {

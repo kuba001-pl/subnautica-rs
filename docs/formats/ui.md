@@ -127,9 +127,61 @@ holds the font file, 30 KB–16 MB), 8 `TMP_FontAsset`s, 1
 font atlases, only `Aller_Rg Atlas` has pixels (1024×1024 Alpha8). The
 others are 0×0 in the file.
 
-**The font assets are small** (784–1,024 bytes each, `Aller_Rg SDF`
-1,024). *Hypothesis*: their glyph and character tables are empty in the
-build, and TMP fills every atlas while the game runs, so `Aller_Rg`'s
-stored pixels have no glyph rectangles to go with them. This affects
-M9u3's planned check against the stored atlas. The layout is read in
-M9u1, which settles it.
+**Every font asset is dynamic** (confirmed in M9u1, read with the
+layout from `Unity.TextMeshPro.dll`, `sn-inspect ui --layout
+TMPro.TMP_FontAsset [<NAME>]`). `m_AtlasPopulationMode` is 1 (dynamic),
+`m_AtlasRenderMode` 4165 (SDFAA), `m_AtlasPadding` 9, and the atlas is
+1024×1024. The glyph and character tables are empty except in `Aller_Rg
+SDF`, which holds 2 glyphs (one is U+2026, "…") and their used
+rectangles. TMP makes every other glyph while the game runs, from the
+font file (`m_SourceFontFile`, the `Font` object) at the asset's
+creation settings. Each asset stores its `m_FaceInfo` (family and style
+names, point size, scale, line height, ascent, descent, …): the M9u3
+check for our own face metrics.
+
+## Script fields (M9u1) — confirmed
+
+A MonoBehaviour's fields follow its header (game object, enabled,
+script, name). Without type trees, their layout comes from the script's
+class in the game's assemblies, by Unity 2019.4's rules
+(`crates/sn-assets/src/script_layout.rs`). Confirmed by reading
+**every MonoBehaviour of the game, 45,137 objects of 1,205 script
+classes**, each ending at its last byte (`sn-inspect ui --scripts
+--all`). Nine objects also agree, field by field, with our hand-written
+readers (`Oxygen`, `MainCameraControl`, `LiveMixin` and its
+`LiveMixinData`, `PDAData`, 4 `uGUI_CanvasScaler`s; real-data test
+`script_layouts_agree_with_hand_written_readers`).
+
+- **Which fields:** declared order, base classes first, up to (not
+  including) `MonoBehaviour` / `ScriptableObject`. Not static, const,
+  readonly or `[NonSerialized]`. Public, or with
+  `UnityEngine.SerializeField`. No game field uses `[SerializeReference]`
+  (it would be an error).
+- **Which types:** `bool`, the integer types, `char` (2 bytes), `float`,
+  `double`, `string`; enums as their underlying type (a `byte` enum is
+  1 byte, then padding); references to `UnityEngine.Object` subclasses
+  as PPtrs (12 bytes); `T[]` and `List<T>` as `i32` count + elements
+  (not arrays of arrays); `[Serializable]` classes and structs inline,
+  if not abstract, an interface, generic or a delegate. Fields of other
+  types are not stored. Seen in the game: delegates, `UWE.Event<T>`,
+  `MonitoredValue<T>`, `HashSet`, `Dictionary`, `Nullable`, interfaces,
+  and classes without `[Serializable]`.
+- **Built-in structs** are stored by Unity's own layout, from a table:
+  `Vector2/3/4`, `Quaternion`, `Color` (floats), `Color32` (4 bytes),
+  `Rect`, `Matrix4x4`, `Bounds`, the `…Int` vectors and rects,
+  `LayerMask`, `RectOffset`, `AnimationCurve`, `Gradient`, and
+  `GUIStyle`: name, 8 states {PPtr background, colour text} (no scaled
+  backgrounds in this build), border, margin, padding and overflow
+  offsets, PPtr font, font size, style and alignment, word wrap and
+  rich text (2 bytes, then padding), clipping, image position, content
+  offset, fixed width and height, stretch width and height (2 bytes,
+  then padding).
+- **Padding:** a field smaller than 4 bytes (bool, byte, short, char,
+  small enums), a string, or an array is followed by padding to the
+  next multiple of 4 *in the object*. A string pads also as an array's
+  element (`Story.CompoundGoal.preconditions`). Elements of other arrays
+  do not pad one by one. Inside the built-in structs, the small fields
+  are packed as listed.
+- **Depth limit:** nested custom classes stop at depth 7
+  (*hypothesis*: no object in the game is that deep, so it is not
+  tested).

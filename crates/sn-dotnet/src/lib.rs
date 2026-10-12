@@ -8,11 +8,13 @@
 //! Nothing read here is stored in the repository.
 
 mod assembly;
-#[cfg(test)]
-mod encode;
+#[cfg(any(test, feature = "encode"))]
+#[doc(hidden)]
+pub mod encode;
 mod game;
 mod il;
 mod items;
+mod meta;
 mod reader;
 mod sig;
 mod tables;
@@ -27,9 +29,10 @@ pub use game::{
 };
 pub use il::{Instr, Operand, decode, opcode_name};
 pub use items::{Arg, constructor_args, static_string_int_dictionary, string_array};
+pub use meta::{Attribute, RefScope, TYPE_ABSTRACT, TYPE_INTERFACE, TYPE_SERIALIZABLE};
 pub use sig::{
     FIELD_ACCESS_MASK, FIELD_INIT_ONLY, FIELD_LITERAL, FIELD_NOT_SERIALIZED, FIELD_PUBLIC,
-    FIELD_STATIC, SigType,
+    FIELD_STATIC, NamedType, SigType, TypeToken,
 };
 pub use tables::{Table, TableId};
 

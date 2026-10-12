@@ -36,6 +36,10 @@ impl Reader<'_> {
     pub(crate) fn f32(&mut self) -> Result<f32> {
         Ok(f32::from_bits(self.u32()?))
     }
+
+    pub(crate) fn f64(&mut self) -> Result<f64> {
+        Ok(f64::from_bits(self.u64()?))
+    }
 }
 
 /// A texture slot of a material.

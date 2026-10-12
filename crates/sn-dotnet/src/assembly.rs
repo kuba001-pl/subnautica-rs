@@ -431,11 +431,8 @@ impl<'a> Assembly<'a> {
 
     // --- Tokens --------------------------------------------------------
 
-    pub(crate) fn type_def_or_ref_name(
-        &self,
-        table: TableId,
-        row: u32,
-    ) -> Result<(String, String)> {
+    /// A TypeDef's, TypeRef's or TypeSpec's (namespace, name).
+    pub fn type_def_or_ref_name(&self, table: TableId, row: u32) -> Result<(String, String)> {
         match table {
             Table::TYPE_DEF => {
                 let (ns, n) = self.type_name(row)?;

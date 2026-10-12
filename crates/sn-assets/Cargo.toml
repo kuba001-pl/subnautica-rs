@@ -20,6 +20,8 @@ sn-unity.workspace = true
 sn-world.workspace = true
 
 [dev-dependencies]
+# M9u1: the test assembly writer, for the layout builder's synthetic tests.
+sn-dotnet = { workspace = true, features = ["encode"] }
 
 [lints]
 workspace = true

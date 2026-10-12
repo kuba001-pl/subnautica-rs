@@ -25,6 +25,7 @@ mod prefab;
 mod quality;
 mod reader;
 mod scene_scripts;
+mod script;
 mod serialized;
 mod shader;
 mod sky;
@@ -92,6 +93,9 @@ pub use scene_scripts::{
     SPAWN_ON_AWAKE, SPAWN_ON_NEW_BORN, SPAWN_ON_START, ShipExteriorCullManager, SpawnPrefab,
     parse_additional_scenes, parse_autoload_scenes, parse_marmo_lifepod_sky, parse_random_start,
     parse_ship_exterior_cull,
+};
+pub use script::{
+    Field, Fields, Kind, ScriptLayout, StructLayout, Trace, Value, read_script, trace_script,
 };
 pub use serialized::{
     External, ObjectInfo, SUPPORTED_VERSIONS, SerializedFile, SerializedType, TypeTreeNode,

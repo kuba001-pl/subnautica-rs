@@ -92,7 +92,7 @@ pub(crate) const HAS_CONSTANT: Coded = Coded {
     bits: 2,
     tables: &[Table::FIELD, Table::PARAM, Table::PROPERTY],
 };
-const HAS_CUSTOM_ATTRIBUTE: Coded = Coded {
+pub(crate) const HAS_CUSTOM_ATTRIBUTE: Coded = Coded {
     bits: 5,
     tables: &[
         Table::METHOD_DEF,
@@ -153,11 +153,11 @@ const IMPLEMENTATION: Coded = Coded {
     bits: 2,
     tables: &[Table::FILE, Table::ASSEMBLY_REF, Table::EXPORTED_TYPE],
 };
-const CUSTOM_ATTRIBUTE_TYPE: Coded = Coded {
+pub(crate) const CUSTOM_ATTRIBUTE_TYPE: Coded = Coded {
     bits: 3,
     tables: &[NONE, NONE, Table::METHOD_DEF, Table::MEMBER_REF, NONE],
 };
-const RESOLUTION_SCOPE: Coded = Coded {
+pub(crate) const RESOLUTION_SCOPE: Coded = Coded {
     bits: 2,
     tables: &[
         Table::MODULE,

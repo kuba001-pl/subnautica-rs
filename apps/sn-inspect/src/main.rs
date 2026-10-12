@@ -204,6 +204,13 @@ Commands:
                          hosts of the scripts M9u ports, the sprite
                          atlases and the fonts; counts checked against
                          the plan's
+  ui --scripts [--all]   M9u1: every MonoBehaviour of the UI's files and
+                         the startup scenes (--all: of every bundle)
+                         read by the layout built from the game's
+                         assemblies; misses by script, skipped fields
+  ui --layout <CLASS> [<NAME>]
+                         M9u1: a script's layout and, for its first object
+                         (named NAME), where each field starts and its value
   orient <X> <Y> <Z>     Score candidate child/octree orders using a batch and
                          its +X/+Y/+Z neighbours (default batch: 12 18 12)
 ";
@@ -406,6 +413,10 @@ fn run(mut args: Vec<String>) -> Result<ExitCode> {
         ["player"] => gameplay::player(&game),
         ["pickups"] => pickups::run(&game),
         ["ui"] => ui::run(&game),
+        ["ui", "--scripts"] => ui::scripts(&game, false),
+        ["ui", "--scripts", "--all"] => ui::scripts(&game, true),
+        ["ui", "--layout", class] => ui::layout(&game, class, None),
+        ["ui", "--layout", class, name] => ui::layout(&game, class, Some(name)),
         ["player", "--body"] => gameplay::player_body(&game),
         ["orient"] => orient::run(&game, BatchCoord::new(12, 18, 12)),
         ["orient", x, y, z] => orient::run(&game, parse_coord(x, y, z)?),

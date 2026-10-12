@@ -522,3 +522,243 @@ pub fn run(game: &GameData) -> Result<ExitCode> {
         ExitCode::FAILURE
     })
 }
+
+/// The serialized files beside the bundles, by name.
+const STANDALONE: &[&str] = &[
+    "globalgamemanagers",
+    "globalgamemanagers.assets",
+    "resources.assets",
+    "sharedassets0.assets",
+    "level0",
+];
+
+/// Per script class: objects read to their last byte, objects that were
+/// not, and the first error.
+#[derive(Default)]
+struct ScriptTally {
+    ok: usize,
+    failed: usize,
+    first_error: Option<String>,
+}
+
+/// `ui --scripts [--all]` (M9u1): every MonoBehaviour of the UI's files
+/// and the startup scenes (`--all`: of every bundle) read with the
+/// layout built from the game's assemblies; each must end with its last
+/// field.
+pub fn scripts(game: &GameData, all: bool) -> Result<ExitCode> {
+    let start = Instant::now();
+    let assets = Assets::index(game)?;
+    let assemblies = sn_assets::ScriptAssemblies::load(game)?;
+    println!(
+        "assemblies loaded: {} ({})",
+        assemblies.files.len(),
+        assemblies
+            .files
+            .iter()
+            .map(|(n, _)| n.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    let layouts = assemblies.layouts()?;
+    let bundles: Vec<std::path::PathBuf> = if all {
+        assets.bundle_paths().to_vec()
+    } else {
+        [
+            "allprefabs_asset_ugui.prefab",
+            "main.unity_",
+            "essentials.unity_",
+            "fonts_assets_all",
+            "atlases_",
+        ]
+        .iter()
+        .filter_map(|p| assets.bundle_named(p).map(|b| b.to_path_buf()))
+        .collect()
+    };
+    let mut tally: BTreeMap<String, ScriptTally> = BTreeMap::new();
+    let mut no_script = 0;
+    let mut check = |file: &FileRef| {
+        let be = file.file().big_endian;
+        for info in file
+            .objects()
+            .iter()
+            .filter(|o| o.class_id == MONO_BEHAVIOUR)
+        {
+            let object = ObjectRef {
+                file: file.clone(),
+                path_id: info.path_id,
+            };
+            let Some(script) = assets.mono_script(&object) else {
+                no_script += 1;
+                continue;
+            };
+            let class = if script.namespace.is_empty() {
+                script.class_name.clone()
+            } else {
+                format!("{}.{}", script.namespace, script.class_name)
+            };
+            let t = tally.entry(class).or_default();
+            let result = layouts
+                .script(&script.assembly, &script.namespace, &script.class_name)
+                .and_then(|layout| {
+                    let (_, d) = object.data()?;
+                    sn_unity::read_script(d, be, &layout).map_err(|e| e.to_string())
+                });
+            match result {
+                Ok(_) => t.ok += 1,
+                Err(e) => {
+                    t.failed += 1;
+                    t.first_error.get_or_insert(e);
+                }
+            }
+        }
+    };
+    // The player's own files (`Subnautica_Data/*.assets`, `level0`, …).
+    let mut standalone_files = 0;
+    if all {
+        for name in STANDALONE {
+            if game.data_dir.join(name).is_file() {
+                check(&assets.standalone(name)?);
+                standalone_files += 1;
+            }
+        }
+    }
+    for (i, bundle) in bundles.iter().enumerate() {
+        if i % 256 == 255 {
+            assets.trim_cache(0);
+        }
+        let loaded = assets.bundle(bundle)?;
+        let names: Vec<String> = loaded
+            .file_names()
+            .filter(|n| !n.ends_with(".resS") && !n.ends_with(".resource"))
+            .map(String::from)
+            .collect();
+        for name in names {
+            check(&assets.file(bundle, &name)?);
+        }
+    }
+    let ok: usize = tally.values().map(|t| t.ok).sum();
+    let failed: usize = tally.values().map(|t| t.failed).sum();
+    let failed_classes = tally.values().filter(|t| t.failed > 0).count();
+    println!("scripts that do not read to their last byte:");
+    for (class, t) in tally.iter().filter(|(_, t)| t.failed > 0) {
+        println!(
+            "  {class}: {} of {} — {}",
+            t.failed,
+            t.ok + t.failed,
+            t.first_error.as_deref().unwrap_or("")
+        );
+    }
+    println!("fields not stored, by reason (top 25):");
+    let skipped = layouts.skipped.borrow();
+    let mut reasons: Vec<(&String, &usize)> = skipped.iter().collect();
+    reasons.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+    for (why, n) in reasons.iter().take(25) {
+        println!("  {n:6} {why}");
+    }
+    println!(
+        "{standalone_files} standalone files, {} bundles; MonoBehaviours read to their last byte: {ok} of {} ({:.2}%), {failed} not, in {failed_classes} of {} script classes; {no_script} without a script ({:.1} s)",
+        bundles.len(),
+        ok + failed,
+        100.0 * ok as f64 / (ok + failed).max(1) as f64,
+        tally.len(),
+        start.elapsed().as_secs_f64()
+    );
+    Ok(if failed == 0 {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    })
+}
+
+/// `ui --layout <CLASS> [<NAME>]` (M9u1): the layout of script `CLASS`
+/// (as `Namespace.Name`) and, for its first object in the UI's files and
+/// the startup scenes (named `NAME` if given), where each field starts
+/// and its value.
+pub fn layout(game: &GameData, class: &str, object_name: Option<&str>) -> Result<ExitCode> {
+    let assets = Assets::index(game)?;
+    let assemblies = sn_assets::ScriptAssemblies::load(game)?;
+    let layouts = assemblies.layouts()?;
+    for prefix in [
+        "allprefabs_asset_ugui.prefab",
+        "main.unity_",
+        "essentials.unity_",
+        "fonts_assets_all",
+    ] {
+        let Some(bundle) = assets.bundle_named(prefix).map(|b| b.to_path_buf()) else {
+            continue;
+        };
+        let loaded = assets.bundle(&bundle)?;
+        let names: Vec<String> = loaded
+            .file_names()
+            .filter(|n| !n.ends_with(".resS"))
+            .map(String::from)
+            .collect();
+        for name in names {
+            let file = assets.file(&bundle, &name)?;
+            for info in file
+                .objects()
+                .iter()
+                .filter(|o| o.class_id == MONO_BEHAVIOUR)
+            {
+                let object = ObjectRef {
+                    file: file.clone(),
+                    path_id: info.path_id,
+                };
+                let Some(script) = assets.mono_script(&object) else {
+                    continue;
+                };
+                let full = if script.namespace.is_empty() {
+                    script.class_name.clone()
+                } else {
+                    format!("{}.{}", script.namespace, script.class_name)
+                };
+                if full != class {
+                    continue;
+                }
+                if let Some(want) = object_name {
+                    let (_, d) = object.data()?;
+                    let h = MonoBehaviourHeader::parse(d, file.file().big_endian)
+                        .map_err(|e| e.to_string())?;
+                    if h.name != want {
+                        continue;
+                    }
+                }
+                let l = layouts.script(&script.assembly, &script.namespace, &script.class_name)?;
+                let (_, d) = object.data()?;
+                println!(
+                    "{class} in {name}, object {} ({} bytes):",
+                    info.path_id,
+                    d.len()
+                );
+                let trace = sn_unity::trace_script(d, file.file().big_endian, &l)
+                    .map_err(|e| e.to_string())?;
+                for ((field, at, value), f) in trace.iter().zip(&l.fields) {
+                    let shown = match value {
+                        Ok(v) => {
+                            let s = format!("{v:?}");
+                            match s.char_indices().nth(100) {
+                                Some((i, _)) => format!("{}…", &s[..i]),
+                                None => s,
+                            }
+                        }
+                        Err(e) => format!("ERROR {e}"),
+                    };
+                    println!("  @{at:<6} {field:<32} {:<12} {shown}", kind_name(&f.kind));
+                }
+                for f in l.fields.iter().skip(trace.len()) {
+                    println!("  (not read) {} {}", f.name, kind_name(&f.kind));
+                }
+                return Ok(ExitCode::SUCCESS);
+            }
+        }
+    }
+    Err(format!("no object of script {class}"))
+}
+
+fn kind_name(k: &sn_unity::Kind) -> String {
+    match k {
+        sn_unity::Kind::Array(e) => format!("[{}]", kind_name(e)),
+        sn_unity::Kind::Struct(s) => s.type_name.clone(),
+        other => format!("{other:?}"),
+    }
+}

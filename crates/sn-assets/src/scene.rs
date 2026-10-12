@@ -871,6 +871,12 @@ impl Assets<'_> {
         crate::terrain::script_class(self, behaviour)
     }
 
+    /// The MonoScript of a MonoBehaviour (its class, namespace and
+    /// assembly).
+    pub fn mono_script(&self, behaviour: &ObjectRef) -> Option<sn_unity::MonoScript> {
+        crate::terrain::mono_script(self, behaviour)
+    }
+
     /// Loads the scene in the bundle whose name starts with `name.unity_`
     /// (lower case, e.g. `aurora`, `escapepod`).
     pub fn scene(&self, name: &str) -> Result<Scene> {

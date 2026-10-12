@@ -24,6 +24,7 @@ mod marmo;
 mod player_body;
 mod prefab;
 mod scene;
+mod script_layout;
 mod skin;
 mod slots;
 mod terrain;
@@ -76,6 +77,7 @@ pub use scene::{
     AuroraGroup, AuroraShow, CinematicForward, CinematicTrigger, DiveHatch, LIGHTMAPPED_PREFAB,
     ObjectKey, Scene, SceneSpawn,
 };
+pub use script_layout::{Layouts, ScriptAssemblies};
 pub use skin::{Mat4, skin};
 pub use slots::{LootTable, entity_infos, loot_table, parse_loot_table};
 pub use terrain::{

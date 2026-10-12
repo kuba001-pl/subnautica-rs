@@ -2,6 +2,58 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-12 — M9u1: script layouts from the game's assemblies
+
+**What/why:** M9u needs dozens of MonoBehaviour layouts (Image, TMP,
+layout groups, every `uGUI_*`). We read them from the field metadata of
+the game's own DLLs, by Unity's serialization rules, rather than
+writing each by hand (`docs/DESIGN.md` "M9u plan" and "M9u as built",
+`docs/formats/ui.md` § Script fields). New:
+- `sn-dotnet::meta` (type flags, `extends` with generic bases, nested
+  types, TypeRef scopes, assembly names and refs, custom attributes).
+  `SigType` now carries tokens (`NamedType`, `TypeToken`).
+- `sn-dotnet`'s test encoder behind an `encode` feature. No new
+  external dependency: `sn-assets` uses it as a dev-dependency feature
+  for its synthetic tests.
+- `sn-unity::script` (`Kind`, `StructLayout`, `read_script`,
+  `trace_script`).
+- `sn-assets::script_layout` (`ScriptAssemblies`, `Layouts`).
+- `sn-inspect ui --scripts [--all]` and `ui --layout <CLASS> [<NAME>]`.
+- `.gitignore` unchanged.
+
+**Dead ends / corrections on the way (each found by an object not
+ending at its last byte):** `GUIStyle` was skipped as a non-serializable
+class. It is stored natively, so it was added to the built-in table and
+checked on `UWE.LargeWorldStreamerGUI` (348 bytes) and `Player` (1,204
+bytes, 41 fields). Strings in arrays were not padded
+(`Story.CompoundGoalData`, error at byte 1,835); they now pad to the
+object's 4-byte boundary. After those two fixes, nothing was left to
+fix. My first synthetic test for padded strings in arrays assumed the
+padding is relative to the string. It is absolute; the test was fixed.
+
+**Found:** every TMP font asset is dynamic (SDFAA, padding 9). Only
+`Aller_Rg SDF` stores glyphs, and just 2. M9u3's check is revised in
+its row (face metrics against each asset's stored `m_FaceInfo`, and the
+2 stored glyphs).
+
+**Verified:**
+- `sn-inspect ui --scripts`: 2,197 of 2,197 (the UI and startup files,
+  410 classes). `ui --scripts --all`: 5 standalone files and 5,467
+  bundles, **45,137 of 45,137 MonoBehaviours, 1,205 script classes, 0
+  misses** (7.8 s warm; 91.5 s cold). Output in
+  `out/m9u/scripts-all.txt` (gitignored).
+- `SUBNAUTICA_DIR=… cargo test --release -p sn-assets --test real_data
+  script_layouts -- --ignored`: 1 passed, 9 objects compared.
+- Unit tests: `sn-dotnet` meta 1, `sn-unity` script 2 (every kind,
+  string arrays, truncated, too long, huge counts), `sn-assets`
+  script_layout 4 (Unity's rules, skipped types, depth limit, generic
+  bases, missing types, reading by a built layout).
+- `cargo test --workspace`: 495 passed, 0 failed, 41 ignored. `cargo
+  clippy --workspace --all-targets -- -D warnings`, `cargo clippy -p
+  sn-dotnet --features encode -- -D warnings`, `cargo fmt --all --
+  --check`: pass.
+- Committed locally with the user's OK; not pushed.
+
 ## 2026-10-12 — M9u0: the game's UI, census
 
 **What/why:** the first step of the M9u plan. We need to know where the

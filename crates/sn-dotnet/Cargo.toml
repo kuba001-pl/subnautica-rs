@@ -7,5 +7,9 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[features]
+# The test assembly writer (`encode`), for other crates' tests.
+encode = []
+
 [lints]
 workspace = true

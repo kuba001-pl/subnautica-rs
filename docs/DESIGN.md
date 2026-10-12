@@ -1083,9 +1083,9 @@ MODLOG entry.
 | Step | Work | Done when |
 |---|---|---|
 | **M9u0** ✅ | **Done 2026-10-12** (MODLOG; facts in `docs/formats/ui.md`; see "M9u as built"). `sn-inspect ui`: 0 of 23 checks differ in 0.73 s. Plan as written: **Census, headless.** `sn-inspect ui`: the files above, each canvas (render mode, sorting, scaler mode and `distance`), and the script hosts for the in-scope screens. Also who spawns `uGUI.prefab` and the PDA screen, and how (from the IL). `docs/formats/ui.md` started. | Counts equal the ones above (13 canvases, 385 rect transforms, 504 behaviours, 8 atlases, 470 item sprites, 9 fonts); every in-scope `uGUI_*` named with its object path; spawn path written as *confirmed* or *hypothesis*. |
-| **M9u1** | **Script layouts from the DLLs** (`sn-dotnet`: field signatures, `CustomAttribute`, type refs across the four assemblies; `sn-unity`: a generic field reader giving a value tree). | Synthetic tests (our own encoded assemblies and objects); real data: every MonoBehaviour in the uGUI prefab, the main scene's PDA, the fonts bundle and the main scene ends exactly at its last byte, N/N logged with each miss named; the generic reader equals the hand-written readers (`Player`, `PDAData`, `BreakableResource`, …) on every object they read. **Stop and ask** if more than 2% miss after two attempts. |
+| **M9u1** ✅ | **Done 2026-10-12** (MODLOG; facts in `docs/formats/ui.md` § Script fields; see "M9u as built"). `sn-inspect ui --scripts --all`: **45,137 of 45,137** MonoBehaviours of the whole game (1,205 script classes) end at their last byte; 9 objects agree with the hand-written readers. Plan as written: **Script layouts from the DLLs** (`sn-dotnet`: field signatures, `CustomAttribute`, type refs across the four assemblies; `sn-unity`: a generic field reader giving a value tree). | Synthetic tests (our own encoded assemblies and objects); real data: every MonoBehaviour in the uGUI prefab, the main scene's PDA, the fonts bundle and the main scene ends exactly at its last byte, N/N logged with each miss named; the generic reader equals the hand-written readers (`Player`, `PDAData`, `BreakableResource`, …) on every object they read. **Stop and ask** if more than 2% miss after two attempts. |
 | **M9u2** | **Built-in UI classes and sprites** (`sn-unity`): `RectTransform`, `Canvas`, `CanvasGroup`, `CanvasRenderer`, `Sprite` (rect, border, pivot, its render data), `SpriteAtlas` (render data map); `SpriteManager`'s lookup rule by group and name from the IL; tech type → icon. | Every one of the game's 1,190 sprites and 8 atlases parses; every item tech type in `ItemRules` gets an icon or the game's fallback, counts logged; 20 sprites' rects and borders equal UnityPy's (dev-time oracle, not a dependency); `sn-inspect ui --icons` writes the item icons to `out/ui/` for the user. |
-| **M9u3** | **TMP fonts** (`sn-unity` + `sn-ui`): `TMP_FontAsset` (face info, glyph and character tables, kerning pairs, creation settings) through M9u1; `Font` bytes; the stored atlas; glyphs on demand. | Every font asset parses; for each `Aller_Rg` glyph in the stored atlas, our generated glyph's metrics equal the table's and the distance texels' mean error is logged per glyph and in total (target written before the run: mean ≤ 3/255, worst glyph reported); English strings used by the in-scope screens have 0 missing glyphs. |
+| **M9u3** | **TMP fonts** (`sn-unity` + `sn-ui`; revised after M9u1, see "M9u as built"): `TMP_FontAsset` through M9u1 (face info, creation settings: point size, padding 9, render mode SDFAA); `Font` bytes; every glyph made on demand, as the game does (every asset is in dynamic mode). | Every font asset parses; our face metrics from each font file, at the asset's point size, equal its stored `m_FaceInfo` (8 assets, within 0.01); `Aller_Rg`'s 2 stored glyphs: our metrics equal theirs and our distance texels' mean error is logged (target written before the run: mean ≤ 3/255); English strings used by the in-scope screens have 0 missing glyphs; glyph cost logged. |
 | **M9u4** | **Layout and meshes** (`sn-ui`, pure): RectTransform (anchors, pivot, size), layout groups, `FlexibleGridLayout`, `ContentSizeFitter`, `LayoutElement`, `AspectRatioFitter`; Image meshes (simple, sliced, tiled, filled with all fill methods); `RawImage`; TMP layout (size, alignment, wrap, overflow, line and character spacing, kerning, the rich-text tags the screens use, auto-size); draw order, `RectMask2D`, `CanvasGroup` alpha. | Unit tests on synthetic trees. Real data, *hypothesis to check first*: rects driven by layout groups and fitters are saved with their last editor values, so we can use them as an oracle; ours equal them within 0.01 px for N/N (each miss named), and text-fitted sizes equal within 0.5 px. Vertex counts per graphic logged. The draw-list hash is the same across two runs. |
 | **M9u5** | **Drawing in the client**: the UI camera; world-space canvases placed by the `uGUI_CanvasScaler` rule; the UI shaders ported to WGSL (`UI/Default`, `UI/Simple`, `UI/Bar`, `TextMeshPro/Distance Field` with outline and underlay, `uGUI/WorldCursor`, `uGUI/Compass`) from their compiled passes, as in M7g; colour space as the game's. The HUD drawn static (its stored state). | Draw calls, vertices and textures per canvas logged; CPU cost per frame logged (target < 0.5 ms for the HUD); screenshots at 1920×1080 and 2560×1440 for the user; 0 GPU validation errors. |
 | **M9u6** | **The HUD's rules**: the four bars (`uGUI_CircularBar` and each bar's smoothing, pulse and warning), the depth, the compass while one is equipped, the hand reticle (icon per hand state, text and subscript, progress), the death and respawn screens and the fader. `hud.rs` removed. | `--dive` and `pickup`-style scripted runs in the client log each bar's shown value against the rule's each second, the reticle's icon per target kind and the fade timings against the values read; our HUD's code gone. |
@@ -1125,6 +1125,32 @@ tested).
   `Aller_Rg` atlas has no glyph rectangles, and M9u3's check against it
   must first find each glyph in the atlas or use another oracle. M9u3
   stops and asks if neither works.
+- **M9u1.** Built as planned. `sn-dotnet::meta` adds type flags,
+  `extends` (with generic bases), nested types, TypeRef scopes,
+  assembly names and refs, and custom attributes. The test encoder
+  `sn-dotnet::encode` is opt-in through the `encode` feature, for other
+  crates' tests (only `sn-assets`'s dev-dependency turns it on).
+  `sn-unity::script` adds `Kind` / `StructLayout`, `read_script` (a
+  value tree; the data must end at the last field) and `trace_script`.
+  `sn-assets::script_layout` adds `ScriptAssemblies::load` (the four
+  roots and what they reference: 51 assemblies, the .NET libraries
+  left out) and `Layouts` (Unity's rules, built-in structs, depth limit
+  7, a cache by type and depth). Tools: `sn-inspect ui --scripts
+  [--all]`, `ui --layout <CLASS> [<NAME>]`. Found on data, in three
+  runs: (1) `GUIStyle` is stored natively; it was added to the
+  built-in table with its 2019.4 layout (states without scaled
+  backgrounds); `UWE.LargeWorldStreamerGUI` and `Player` hold one and
+  end exactly after it. (2) A string is padded to 4 bytes also as an
+  array's element (`Story.CompoundGoal.preconditions`); the padding is
+  to the object's absolute 4-byte boundary. (3) Nothing else: the UI
+  and startup files 2,197 of 2,197, the whole game 45,137 of 45,137.
+  The depth limit 7 is not tested by any object: no game object has a
+  chain that deep. **M9u3 settled:** every font asset is in dynamic
+  mode (`m_AtlasPopulationMode` 1, render mode 4165 = SDFAA, padding
+  9). Only `Aller_Rg SDF` stores glyphs, and just 2 (one of them
+  U+2026). So the stored atlas is no oracle for most glyphs, and M9u3's
+  check is revised (its row): face metrics against every asset's
+  stored `m_FaceInfo`, and the 2 stored glyphs.
 
 **Risks.** TMP's layout has many options. M9u4 ports only what the
 in-scope screens set, and logs any option it meets but does not port.
