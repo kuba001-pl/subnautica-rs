@@ -2,6 +2,37 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-12 — Fix: crash after picking up an item (M9d4b bug)
+
+**What/why:** the user's game crashed with Bevy's "Entity despawned …
+If you were attempting to apply a command to this entity" panic,
+seconds after picking things up and swimming on. Cause: `hide_keys`
+(M9d4b) despawned a picked-up item's entities, but left them in their
+batch's `shown` lists. When the batch later left LOD 0, the shadow
+switch inserted `NotShadowCaster` on them; when the batch unloaded, it
+despawned them again. A command on a despawned entity panics. Fix:
+`hide_keys` takes the despawned entities out of every batch's `shown`
+lists (`forget_despawned`). Not from M9u: M9u0/M9u1 do not touch the
+client.
+
+**Verified:**
+- Reproduced on the old code (the fix stashed), release client:
+  `sn-client --start -116.24 -8.89 -50.65 --resolution 960 540
+  --pick-up 20 --hold-forward 22 --shot 110 m9u-crash-before` picked up
+  an acid mushroom at 20 s, then panicked about 28 s later with the
+  user's error (`Entity despawned: The entity with ID 18829v0 is
+  invalid`), exit 101.
+- The same command with the fix (`m9u-crash-after`): ran the full 110
+  s, swam about 350 m past the item's batch, screenshot saved, exit 0,
+  no panic or `Entity despawned` in the log.
+- New unit tests: `picked_up_entities_leave_their_batch` (the pick-up,
+  then the shadow switch and the unload on a real Bevy `World`) and
+  `a_command_on_a_despawned_entity_panics` (should_panic: the failure
+  the fix removes).
+- `cargo test --workspace`: 497 passed, 0 failed, 41 ignored. Clippy
+  and fmt: pass. Debug and release clients rebuilt.
+- Committed with the user's OK.
+
 ## 2026-10-12 — M9u1: script layouts from the game's assemblies
 
 **What/why:** M9u needs dozens of MonoBehaviour layouts (Image, TMP,
@@ -52,7 +83,7 @@ its row (face metrics against each asset's stored `m_FaceInfo`, and the
   clippy --workspace --all-targets -- -D warnings`, `cargo clippy -p
   sn-dotnet --features encode -- -D warnings`, `cargo fmt --all --
   --check`: pass.
-- Committed locally with the user's OK; not pushed.
+- Committed with the user's OK (pushed together with the crash fix).
 
 ## 2026-10-12 — M9u0: the game's UI, census
 

@@ -2855,6 +2855,24 @@ struct BatchObjects {
     casting: bool,
 }
 
+/// Takes entities despawned outside the streaming (picked-up items) out of
+/// their batches' shown lists. Those lists later insert and remove
+/// components on them (the shadow switch at LOD 0) and despawn them again
+/// when the batch goes, and a command on a despawned entity panics.
+fn forget_despawned<'b>(
+    batches: impl Iterator<Item = &'b mut BatchObjects>,
+    despawned: &HashSet<Entity>,
+) {
+    if despawned.is_empty() {
+        return;
+    }
+    for b in batches {
+        for list in b.shown.iter_mut().flatten() {
+            list.retain(|e| !despawned.contains(e));
+        }
+    }
+}
+
 /// A scene's top-level objects on the main thread.
 struct SceneObjects {
     instances: Vec<Instance>,
@@ -3048,6 +3066,7 @@ impl ObjectStreamer {
     /// These objects left the world: their entities go now and they are
     /// not spawned again (M9d4b).
     pub fn hide_keys(&mut self, commands: &mut Commands, keys: &[EntityKey]) {
+        let mut despawned = HashSet::new();
         for key in keys {
             self.gone.insert(key.clone());
             if let Some(entities) = self.keyed.remove(key) {
@@ -3055,9 +3074,11 @@ impl ObjectStreamer {
                 self.item_stats.entities_hidden += entities.len();
                 for e in entities {
                     commands.entity(e).despawn();
+                    despawned.insert(e);
                 }
             }
         }
+        forget_despawned(self.batches.values_mut(), &despawned);
     }
 
     /// The server-made objects now (id, class, placement): new ones are
@@ -4555,6 +4576,58 @@ impl ObjectStreamer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The crash of 2026-10-12 (a picked-up item, then its batch's shadow
+    /// switch): every command the streaming later gives a batch's shown
+    /// entities must find them.
+    #[test]
+    fn picked_up_entities_leave_their_batch() {
+        use bevy::ecs::world::CommandQueue;
+        let mut world = World::new();
+        let kept = world.spawn_empty().id();
+        let picked = world.spawn_empty().id();
+        let mut batch = BatchObjects::default();
+        batch.shown[0] = Some(vec![kept, picked]);
+        // The pick-up: `hide_keys` despawns the item's entities.
+        let mut queue = CommandQueue::default();
+        let mut commands = Commands::new(&mut queue, &world);
+        commands.entity(picked).despawn();
+        queue.apply(&mut world);
+        forget_despawned(std::iter::once(&mut batch), &HashSet::from([picked]));
+        assert_eq!(batch.shown[0].as_deref(), Some(&[kept][..]));
+        // The batch leaves LOD 0, then goes; without the fix both panic.
+        let mut queue = CommandQueue::default();
+        let mut commands = Commands::new(&mut queue, &world);
+        for e in batch.shown.iter().flatten().flatten() {
+            commands.entity(*e).insert(bevy::light::NotShadowCaster);
+        }
+        for e in batch.shown[0].take().into_iter().flatten() {
+            commands.entity(e).despawn();
+        }
+        queue.apply(&mut world);
+        assert!(world.get_entity(kept).is_err());
+        // Nothing to forget leaves the lists alone.
+        let mut other = BatchObjects::default();
+        other.shown[1] = Some(vec![kept]);
+        forget_despawned(std::iter::once(&mut other), &HashSet::new());
+        assert_eq!(other.shown[1].as_deref(), Some(&[kept][..]));
+    }
+
+    /// The same commands on a list still holding a despawned entity panic
+    /// (what the fix prevents; if Bevy stops panicking here, this test
+    /// says so).
+    #[test]
+    #[should_panic]
+    fn a_command_on_a_despawned_entity_panics() {
+        use bevy::ecs::world::CommandQueue;
+        let mut world = World::new();
+        let picked = world.spawn_empty().id();
+        world.despawn(picked);
+        let mut queue = CommandQueue::default();
+        let mut commands = Commands::new(&mut queue, &world);
+        commands.entity(picked).insert(bevy::light::NotShadowCaster);
+        queue.apply(&mut world);
+    }
 
     /// A `UWE/Particles/UBER` material as stored: `keywords`, floats and
     /// colours (vectors live with the colours in Unity's material).
