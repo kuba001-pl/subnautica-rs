@@ -15,6 +15,8 @@ pub struct PickupInfo {
     pub destroy_on_death: bool,
     /// Has an `Eatable`.
     pub eatable: bool,
+    /// `Pickupable.randomizeRotationWhenDropped` (M9d5b).
+    pub randomize_rotation: bool,
 }
 
 /// One entry of an outcrop's `prefabList`.

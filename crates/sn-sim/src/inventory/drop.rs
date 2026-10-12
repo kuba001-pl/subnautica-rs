@@ -79,6 +79,23 @@ pub fn find_drop_position(world: &World, groups: u32, camera: V3, desired: V3) -
     }
 }
 
+/// `Random.rotation` (when `randomizeRotationWhenDropped`): a rotation
+/// drawn uniformly, from three values in [0, 1] (Shoemake's method; Unity's
+/// own way of drawing it is not known, any uniform draw is the game's
+/// behaviour).
+pub fn random_rotation(u1: f64, u2: f64, u3: f64) -> Q {
+    let unit = |v: f64| if v.is_nan() { 0.0 } else { v.clamp(0.0, 1.0) };
+    let (u1, u2, u3) = (unit(u1), unit(u2), unit(u3));
+    let (a, b) = ((1.0 - u1).sqrt(), u1.sqrt());
+    let tau = std::f64::consts::TAU;
+    Q {
+        x: a * (tau * u2).sin(),
+        y: a * (tau * u2).cos(),
+        z: b * (tau * u3).sin(),
+        w: b * (tau * u3).cos(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -184,5 +201,31 @@ mod tests {
         // Nothing in the cast's groups: no wall.
         let p = drop_ray(&w, 0, V3::ZERO, z, 0.0, (0.0, 0.0));
         assert!(close(p, z * 0.75));
+    }
+    #[test]
+    fn random_rotations_are_unit_and_spread() {
+        // Over a grid of draws: every rotation is a unit quaternion, and
+        // the turned forward axis averages to about nothing (no favoured
+        // direction).
+        let mut sum = V3::ZERO;
+        let n = 20;
+        for i in 0..n {
+            for j in 0..n {
+                for k in 0..n {
+                    let f = |v: usize| (v as f64 + 0.5) / n as f64;
+                    let q = random_rotation(f(i), f(j), f(k));
+                    let len = (q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w).sqrt();
+                    assert!((len - 1.0).abs() < 1e-9);
+                    sum += q.rotate(V3::new(0.0, 0.0, 1.0));
+                }
+            }
+        }
+        assert!(
+            (sum * (1.0 / (n * n * n) as f64)).length() < 0.02,
+            "{sum:?}"
+        );
+        // Out-of-range and NaN draws are clamped, not passed on.
+        let q = random_rotation(-1.0, 2.0, f64::NAN);
+        assert!([q.x, q.y, q.z, q.w].iter().all(|c| c.is_finite()));
     }
 }

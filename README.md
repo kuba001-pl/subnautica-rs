@@ -75,6 +75,18 @@ Tested on Windows 11 with game build 10 (Steam):
   pod → water → pod headless with 0 penetrations. In `sn-client` you are the player (the fly camera is
   `--free-cam`). Playing it with keyboard and mouse is not tested by the
   agent.
+- Items (M9d): the hand on a pickup says "Pick up *name*" (the
+  language file's text) and E or a click picks it up; outcrops break in
+  three hits into a resource; the lifepod's locker opens with the hand
+  (its `storage_open` animation, the panel 0.25 s later). Tab opens our
+  own inventory panel (the 6 × 8 grid, the 7 slots, the locker beside
+  them when open; not the game's PDA look yet): a left click does what
+  the game's click does (take out of or put into the locker, equip,
+  unequip), a right click drops the item where the game would (not in
+  the lifepod). Checked from scripted runs' logs (`--use-item`,
+  `--panel`, `--drop`): the pod's six supplies taken out, a flare
+  dropped outside and drawn. Playing it with keyboard and mouse is not
+  tested by the agent; dropped items do not fall yet.
 - Oxygen, suffocation, health, death and respawn in the lifepod, with
   the game's numbers (45 units, 1 / 1.5 / 2 per second by depth, refill
   30 per second at the surface, 8 s to pass out). `sn-inspect dive` runs

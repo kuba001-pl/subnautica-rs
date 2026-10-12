@@ -28,7 +28,9 @@
 //! Controls: click to capture the mouse (Esc releases it), mouse to look
 //! (the game's `MainCameraControl` rule, sensitivity and pitch limits,
 //! `sn_sim::look`), WASD to move, Space up / jump, C down, E or left click
-//! to use (the lifepod's hatches). The key layout is our own.
+//! to use (the lifepod's hatches, items and the locker; M9d5), Tab for the
+//! inventory panel (`crate::inventory`, M9d5b: while it is open the look
+//! and the hand are off). The key layout is our own.
 
 use std::sync::Mutex;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
@@ -303,12 +305,57 @@ impl PlayerSim {
         out.into_iter().map(|(_, t)| t).collect()
     }
 
-    /// The player's position and the camera's forward (Unity), if it
-    /// exists.
-    pub fn eye(&self) -> Option<(V3, V3)> {
+    /// `MainCameraControl`'s position and forward (M9d5b, the drop): the
+    /// game's eye (the player's position without a body) and the look.
+    pub fn camera(&self) -> Option<(V3, V3)> {
         let s = self.state.as_ref()?;
-        let yaw = s.look.rotation_x.to_radians();
-        Some((s.player.position, V3::new(yaw.sin(), 0.0, yaw.cos())))
+        let pose = player_pose(&s.player);
+        let eye = s
+            .body
+            .as_ref()
+            .map_or(s.player.position, |(p, b)| b.camera(p, pose, None).position);
+        let forward =
+            sn_sim::player::look_rotate(s.look.yaw(), s.look.pitch(), V3::new(0.0, 0.0, 1.0));
+        Some((eye, forward))
+    }
+
+    /// The player's position (`None` until the player exists).
+    pub fn position(&self) -> Option<V3> {
+        self.state.as_ref().map(|s| s.player.position)
+    }
+
+    /// The collision world around the player.
+    pub fn world(&self) -> &World {
+        &self.world
+    }
+
+    /// The centre of the lifepod locker's hand collider (M9d5b: our
+    /// stand-in for `EscapePod.storagePivot`).
+    pub fn locker_centre(&self) -> Option<V3> {
+        let (lo, hi) = self.world.get(LOCKER_BODY).and_then(Body::bounds)?;
+        Some((lo + hi) * 0.5)
+    }
+
+    /// The player can act: alive, not respawning, not in a cinematic.
+    pub fn controls(&self) -> bool {
+        self.state
+            .as_ref()
+            .is_some_and(|s| s.vitals.controls_enabled() && !s.player.cinematic)
+    }
+
+    /// Sets a bool of the lifepod's animator, here and on the drawn pod
+    /// (M9d5b: `storage_open`); false if the pod's controller lacks it.
+    pub fn set_pod_bool(&mut self, name: &str, on: bool, drive: &mut BodyDrive) -> bool {
+        let id = sn_unity::name_hash(name);
+        let known = self
+            .state
+            .as_mut()
+            .and_then(|s| s.pod_anim.as_mut())
+            .is_some_and(|(_, a)| a.set_bool(id, on));
+        if known {
+            drive.pod_values.push((id, on));
+        }
+        known
     }
 
     /// Seconds of play (physics steps run).
@@ -801,8 +848,12 @@ pub fn update(
     mut session: ResMut<Session>,
     mut camera: Query<&mut Transform, With<Camera3d>>,
     item_text: Option<Res<crate::items::Text>>,
+    panel: Option<Res<crate::inventory::Panel>>,
 ) {
     let sim = &mut *sim;
+    // The inventory panel is open (M9d5b): the cursor is the panel's, the
+    // look and the hand are off.
+    let panel_open = panel.is_some_and(|p| p.open);
     // Messages from the worker.
     let messages: Vec<FromWorker> = match sim.from_worker.lock() {
         Ok(rx) => rx.try_iter().collect(),
@@ -948,6 +999,9 @@ pub fn update(
     // Mouse capture and look.
     let mut captured = false;
     for (window, mut cursor) in &mut windows {
+        if panel_open {
+            continue;
+        }
         if buttons.just_pressed(MouseButton::Left) && window.focused {
             cursor.grab_mode = CursorGrabMode::Locked;
             cursor.visible = false;
@@ -961,7 +1015,7 @@ pub fn update(
     // Dead or respawning: no look, movement or use (`Player.OnKill`); in
     // a cinematic neither (`PlayerController` off).
     let controls = state.vitals.controls_enabled() && !state.player.cinematic;
-    if captured && controls {
+    if captured && controls && !panel_open {
         // Bevy's mouse delta is y down, Unity's y up.
         let d = motion.delta;
         state
@@ -1159,10 +1213,11 @@ pub fn update(
 
     // The hand (M9b: the lifepod's hatches; M9d5: items and the locker):
     // what it is aimed at, every frame, as `GUIHand` asks `OnHandHover`.
-    let wants_use = auto_use
-        || keys.just_pressed(KeyCode::KeyE)
-        || (captured && buttons.just_pressed(MouseButton::Left));
-    let hover = if sim.ready && controls && state.hatch.is_none() {
+    let wants_use = !panel_open
+        && (auto_use
+            || keys.just_pressed(KeyCode::KeyE)
+            || (captured && buttons.just_pressed(MouseButton::Left)));
+    let hover = if sim.ready && controls && state.hatch.is_none() && !panel_open {
         let pose = player_pose(&state.player);
         let eye = state.body.as_ref().map_or(state.player.position, |(p, b)| {
             b.camera(p, pose, None).position

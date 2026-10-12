@@ -58,6 +58,12 @@ fn method_instrs(asm: &Assembly, method: u32) -> Result<Vec<Instr>> {
 /// constants, in declaration order.
 pub fn enum_values(asm: &Assembly, namespace: &str, name: &str) -> Result<Vec<(String, i64)>> {
     let ty = find_type(asm, namespace, name)?;
+    enum_values_of(asm, ty, name)
+}
+
+/// [`enum_values`] of a TypeDef row (e.g. a nested enum's, from
+/// [`Assembly::find_nested_type`]); `name` is for errors.
+pub fn enum_values_of(asm: &Assembly, ty: u32, name: &str) -> Result<Vec<(String, i64)>> {
     let constants = asm.field_constants()?;
     let mut out = Vec::new();
     for field in asm.fields(ty)? {

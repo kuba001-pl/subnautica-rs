@@ -153,8 +153,12 @@ Commands:
                          every method body decoded, TechType names, the
                          crafting menus (--trees: every node), TechData's
                          defaults; checked against Balance/TechData
-  code --il <TYPE> <METHOD>
-                         One method's IL with tokens resolved
+  code --il <TYPE> <METHOD> [<PARAMS>]
+                         One method's IL with tokens resolved (PARAMS:
+                         the overload with that many parameters;
+                         METHOD#N: the Nth overload)
+  code --enum <TYPE>     An enum's names and values (Outer/Inner for a
+                         nested one)
   techdata               Recipes and item data (Balance/TechData) and the
                          prefab → tech type map (EntTechData), with checks
   player                 The player's numbers from the main scene (oxygen,
@@ -368,7 +372,14 @@ fn run(mut args: Vec<String>) -> Result<ExitCode> {
         }
         ["code"] => code::run(&game, false),
         ["code", "--trees"] => code::run(&game, true),
-        ["code", "--il", ty, method] => code::il(&game, ty, method),
+        ["code", "--il", ty, method] => code::il(&game, ty, method, None),
+        ["code", "--il", ty, method, params] => {
+            let n = params
+                .parse()
+                .map_err(|_| format!("parameter count {params:?} is not a number"))?;
+            code::il(&game, ty, method, Some(n))
+        }
+        ["code", "--enum", ty] => code::enum_values(&game, ty),
         ["techdata"] => gameplay::techdata(&game),
         ["player"] => gameplay::player(&game),
         ["pickups"] => pickups::run(&game),

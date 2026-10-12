@@ -605,8 +605,12 @@ impl Session {
 
     /// Sends an item request (M9d3); its number.
     pub fn request(&mut self, request: sn_protocol::Request) -> u32 {
-        info!("session: request {request:?}");
-        self.lock().client.request(request)
+        let text = format!("{request:?}");
+        let req = self.lock().client.request(request);
+        // The answer is the world event with this `req`, or "request
+        // {req} refused".
+        info!("session: request {req}: {text}");
+        req
     }
 }
 

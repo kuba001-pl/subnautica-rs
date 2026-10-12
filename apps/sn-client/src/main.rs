@@ -11,6 +11,7 @@ mod effects;
 mod game_light;
 mod grass_look;
 mod hud;
+mod inventory;
 mod items;
 mod lifepod_light;
 mod object_look;
@@ -133,6 +134,11 @@ Usage: sn-client [--game-dir <PATH>] [--start <X> <Y> <Z>] [--look <X> <Y> <Z>]
   --use-item     --use-item <SECONDS[,SECONDS…]>: at each time, turn to the
                  nearest pickup, outcrop or the lifepod's locker and use
                  the hand on it, as a click (a debug check, M9d5)
+  --panel        --panel <SECONDS=STEP[,SECONDS=STEP…]>: inventory panel
+                 steps at those times (open, close, take-all: a left click
+                 on every locker item, equip: a left click on the first
+                 grid item that equips, drop: a right click on the first
+                 grid item; a debug check, M9d5b)
   --use-hatch    --use-hatch <SECONDS[,SECONDS…]>: at each time (seconds of
                  play), aim at the nearest usable lifepod hatch and use it
                  (a debug check of the hatch cinematics, M9g5e)
@@ -145,7 +151,8 @@ Usage: sn-client [--game-dir <PATH>] [--start <X> <Y> <Z>] [--look <X> <Y> <Z>]
   --pick-up      --pick-up <SECONDS>: after SECONDS of play, ask to pick up
                  the nearest pickups within 3 m (a debug check, M9d4b)
   --drop         --drop <SECONDS>: after SECONDS of play, ask to drop the
-                 first item held a metre ahead (a debug check, M9d4b)
+                 first item held where the game drops it (a debug check,
+                 M9d4b)
   --host         --host [PORT]: open this game to other players on UDP PORT
                  (default 27420; experimental, M10h: no encryption, for
                  friends on trust)
@@ -165,7 +172,8 @@ Usage: sn-client [--game-dir <PATH>] [--start <X> <Y> <Z>] [--look <X> <Y> <Z>]
 
 Controls (player): click to capture the mouse, Esc to release it; mouse to
 look, WASD to move, Space up / jump, C down, E or left click to use (the
-lifepod's hatches).
+lifepod's hatches, items, the locker); Tab opens the inventory (left click
+on an item: its action, right click: drop; Tab or Esc closes it).
 Controls (--free-cam): right mouse (hold) or M (toggle) to look around, WASD
 to move, Q/E down/up, Shift to go fast, mouse wheel to change speed.
 ";
@@ -226,6 +234,8 @@ struct Args {
     use_hatch: Vec<f64>,
     /// `--use-item` (M9d5).
     use_item: Vec<f64>,
+    /// `--panel` (M9d5b): seconds of play and the step.
+    panel: Vec<(f64, inventory::Scripted)>,
     /// `--hatch-name`: only hatches whose name contains this.
     hatch_name: Option<String>,
     /// `--hold-forward`: hold W from this much play on.
@@ -299,6 +309,7 @@ fn parse_args_from(raw: &[String]) -> Result<Args, String> {
         look_down: 0.0,
         use_hatch: Vec::new(),
         use_item: Vec::new(),
+        panel: Vec::new(),
         hatch_name: None,
         hold_forward: None,
         kill: None,
@@ -438,6 +449,21 @@ fn parse_args_from(raw: &[String]) -> Result<Args, String> {
                             .map_err(|_| format!("--use-item: {t:?} is not a number"))
                     })
                     .collect::<Result<_, _>>()?;
+            }
+            "--panel" => {
+                let list = it.next().ok_or("--panel takes SECONDS=STEP,…")?;
+                for entry in list.split(',') {
+                    let (t, step) = entry
+                        .split_once('=')
+                        .ok_or_else(|| format!("--panel: {entry:?} is not SECONDS=STEP"))?;
+                    let t = t
+                        .trim()
+                        .parse::<f64>()
+                        .map_err(|_| format!("--panel: {t:?} is not a number"))?;
+                    let step = inventory::Scripted::parse(step.trim())
+                        .ok_or_else(|| format!("--panel: unknown step {step:?}"))?;
+                    args.panel.push((t, step));
+                }
             }
             "--use-hatch" => {
                 let list = it.next().ok_or("--use-hatch takes seconds")?;
@@ -1133,6 +1159,13 @@ fn main() -> AppExit {
                             .run_if(resource_exists::<ObjectStreamer>),
                     )
                     .add_systems(Startup, hud::setup)
+                    .add_systems(Startup, inventory::setup)
+                    .insert_resource(inventory::Panel::new(
+                        args.panel.clone(),
+                        sn_net::random_seed(),
+                    ))
+                    .add_systems(Update, inventory::input.before(player::update))
+                    .add_systems(Update, inventory::hover)
                     .add_systems(Update, player::update.before(terrain::stream))
                     .add_systems(Update, hud::update.after(player::update))
                     .add_systems(Update, hud::update_hand.after(player::update))
@@ -1146,7 +1179,8 @@ fn main() -> AppExit {
                         items::sync
                             .after(player::update)
                             .before(objects::stream_objects),
-                    );
+                    )
+                    .add_systems(Update, inventory::draw.after(items::sync));
                 if let Some((seconds, name)) = args.shot.clone() {
                     app.insert_resource(PlayShot {
                         seconds: f64::from(seconds),

@@ -17,6 +17,7 @@
 //! Item ids are the caller's: the server gives each item one, the rules
 //! only keep them apart.
 
+mod actions;
 mod container;
 mod drop;
 mod equipment;
@@ -25,8 +26,12 @@ mod luck;
 mod moves;
 mod rules;
 
+pub use actions::{
+    ASSIGN, Button, DROP, EAT, EQUIP, FIRST_AID_KIT, Place, SWAP, SWITCH, UNEQUIP, USE,
+    action_name, item_action, item_actions, opposite, place_of,
+};
 pub use container::{Container, ContainerParts, GroupParts, MAX_SIDE, Placed};
-pub use drop::{DropPlace, can_drop_here, drop_ray, find_drop_position};
+pub use drop::{DropPlace, can_drop_here, drop_ray, find_drop_position, random_rotation};
 pub use equipment::{Equipment, SlotTable};
 pub use known::{AnalysisEntry, KnownTech};
 pub use luck::{FairRandomizer, HitKind, Outcrop, PlayerEntropy, Resource, draw_resources};

@@ -137,7 +137,7 @@ fn print_node(code: &sn_assets::GameCode, n: &CraftNode, depth: usize) {
 
 /// `code --il <Type> <Method>`: one method's instructions with their
 /// tokens resolved (printed only, for reading the patterns P1 accepts).
-pub fn il(game: &GameData, type_name: &str, method: &str) -> Result<ExitCode> {
+pub fn il(game: &GameData, type_name: &str, method: &str, params: Option<u32>) -> Result<ExitCode> {
     let bytes = sn_assets::read_assembly(game)?;
     let asm = Assembly::parse(&bytes).map_err(|e| e.to_string())?;
     let (ns, n) = type_name.rsplit_once('.').unwrap_or(("", type_name));
@@ -145,8 +145,34 @@ pub fn il(game: &GameData, type_name: &str, method: &str) -> Result<ExitCode> {
         .find_type(ns, n)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("no type {type_name}"))?;
-    let m = asm
-        .find_method(ty, method)
+    // `NAME#N`: the Nth method of that name (overloads in declaration
+    // order, from 1).
+    let (name, nth) = match method.rsplit_once('#') {
+        Some((n, k)) => (
+            n,
+            k.parse::<usize>()
+                .map_err(|_| format!("bad overload {k:?}"))?,
+        ),
+        None => (method, 1),
+    };
+    let found = match params {
+        Some(n) if nth == 1 => asm.find_method_with(ty, name, n),
+        _ => {
+            let mut seen = 0;
+            let mut found = None;
+            for m in asm.methods(ty).map_err(|e| e.to_string())? {
+                if asm.method_name(m).map_err(|e| e.to_string())? == name {
+                    seen += 1;
+                    if seen == nth {
+                        found = Some(m);
+                        break;
+                    }
+                }
+            }
+            Ok(found)
+        }
+    };
+    let m = found
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("{type_name}: no method {method}"))?;
     let (code, base) = asm
@@ -165,6 +191,34 @@ pub fn il(game: &GameData, type_name: &str, method: &str) -> Result<ExitCode> {
             i.offset,
             opcode_name(i.opcode)
         );
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// `code --enum <TYPE>`: an enum's names and values, in declaration
+/// order.
+pub fn enum_values(game: &GameData, type_name: &str) -> Result<ExitCode> {
+    let bytes = sn_assets::read_assembly(game)?;
+    let asm = Assembly::parse(&bytes).map_err(|e| e.to_string())?;
+    // `Outer/Inner`: an enum nested in a type.
+    let (outer, inner) = match type_name.split_once('/') {
+        Some((o, i)) => (o, Some(i)),
+        None => (type_name, None),
+    };
+    let (ns, n) = outer.rsplit_once('.').unwrap_or(("", outer));
+    let mut ty = asm
+        .find_type(ns, n)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("no type {outer}"))?;
+    if let Some(i) = inner {
+        ty = asm
+            .find_nested_type(ty, i)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("no type {type_name}"))?;
+    }
+    let values = sn_dotnet::enum_values_of(&asm, ty, type_name).map_err(|e| e.to_string())?;
+    for (name, value) in values {
+        println!("{value:>12}  {name}");
     }
     Ok(ExitCode::SUCCESS)
 }

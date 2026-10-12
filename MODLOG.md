@@ -2,6 +2,81 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-12 — M9d5b: the inventory panel
+
+**What:**
+- `sn-sim::inventory::actions` (new): `item_actions` / `item_action` /
+  `opposite` / `place_of`, ports of `Inventory.GetAllItemActions`,
+  `GetItemAction` (keyboard and mouse) and `GetOppositeContainer`; 2 new
+  tests. `drop.rs`: `random_rotation` (`Random.rotation`); 1 new test.
+  `PickupInfo.randomize_rotation` (`randomizeRotationWhenDropped`), so the
+  rules fingerprint's `items` part changed.
+- `sn-client` `inventory.rs` (new): our panel (Bevy UI): the locker's
+  `EscapePod.StorageOpen` sequence (`storage_open` on the pod's animator
+  here and on the drawn rigs, the panel 0.25 s later, ignored while the
+  sequence runs; closing clears it); `PDA.Open`'s refusals and its
+  distance rule (stand-ins: the locker collider's centre, the player's
+  position); Tab toggles, Escape closes, death closes; a left click does
+  the item's action as a `Move`, a right click drops (`drop_ray`, then
+  `find_drop_position` from the camera, the client's own draws);
+  `--panel <SECONDS=STEP,…>` (open, close, take-all, equip, drop); 2 new
+  tests.
+- `player.rs`: while the panel is open the look, the hand and the cursor
+  capture are off; `camera()`, `world()`, `locker_centre()`, `controls()`,
+  `set_pod_bool()`; `eye()` removed (its only user was `--drop`'s
+  stand-in). `items.rs`: `--drop` uses the real drop point; the locker
+  logged after each change. `session.rs`: each request's log line has its
+  number, which its world event or refusal carries.
+- `sn-dotnet`: `find_method_with` (by parameter count),
+  `find_nested_type`, `enum_values_of`. `sn-inspect code --il TYPE
+  METHOD [PARAMS]`, `METHOD#N` (the Nth overload), `code --enum TYPE`
+  (`Outer/Inner`): needed to read the click rules, the PDA and the
+  locker from the DLL.
+- DESIGN: the M9d5b plan; `gameplay.md` § The inventory panel and the
+  locker; README's items bullet. No new dependency or file type.
+
+**Why:** M9d5b of the M9d plan: the inventory panel and the locker.
+
+**Verified:**
+- `cargo test --workspace`: 469 passed, 0 failed, 39 ignored. Clippy with
+  `-D warnings` and fmt pass.
+- In the pod, `sn-client --view 400 --resolution 960 540 --use-item 3
+  --panel 6=take-all,7=drop,9.5=close --shot 9 m9d5b-locker`
+  (`out/m9d/m9d5b_locker.log`): the hand on the locker at 1.99 m,
+  `storage_open` on (the controller has it), the panel 0.25 s later
+  (limit 2.75 m); 6 left clicks, each "switch", requests 0–5, world
+  events 2–7 with req 0–5; the locker empty, the grid Flare, Flare,
+  Filtered water ×2, Nutrient block ×2 at (0,0)–(5,0). The right click in
+  the pod: actions [switch] → none, "no drop in the lifepod".
+  `out/m9d5b-locker.png` shows the panel.
+- `--use-item 3 --panel 6=take-all,7=close,24=drop --use-hatch 8 --shot 26
+  m9d5b-drop` (`out/m9d/m9d5b_drop.log`): closed, `storage_open` off; out
+  through `top_out_trigger_first` (8.72 s); the right click: actions
+  [drop] → drop; camera (-127.135, 5.728, -49.755), forward (1, 0, 0),
+  draws 0.833 and (-0.337, -0.652), ray 1.37 m with no hit, lands there;
+  request 6 accepted (world event 15, req 6); server object 4 drawn (2
+  entities). `out/m9d5b-drop.png`: the flare ahead, "Pick up Flare".
+- `--use-item 3 --kill 6 --panel 20=open,21=close`
+  (`out/m9d/m9d5b_death.log`): death closes the panel and the locker;
+  after the respawn Tab-style open and close work.
+- `sn-server --port 27778` + `sn-inspect coop 127.0.0.1:27778 --count 4
+  --presets lan --seconds 20`: 18,252 of 18,252 ticks exact, 124 hash
+  checks, 0 differ (`out/m9d/m9d5b_server.log`, `m9d5b_coop.log`).
+
+**Dead ends:**
+1. `sn-inspect code --il` took the first method of a name, so
+   `ExecuteItemAction`'s second overload (both have 2 parameters) and the
+   nested `GameInput.Device` / `Button` enums could not be read; hence
+   the `#N` and `Outer/Inner` forms.
+2. The distance rule: `--use-item 3 --hold-forward 6`
+   (`out/m9d/m9d5b_walk.log`) walked towards the locker (the look is
+   frozen while the panel is open), 1.72 m from it at 10 s, under the
+   2.75 m limit, so it did not close. **Not tested** in a real run.
+
+**Not tested:** keyboard and mouse play (the clicks on the panel's
+boxes, Tab, Escape) by the agent; the distance rule; equip and unequip
+with real items (the supplies have no equipment; unit tests only).
+
 ## 2026-10-11 — M7g5: SIG coral and capped rock surfaces
 
 **What/why:** replace the flat or incomplete world-object fallback for

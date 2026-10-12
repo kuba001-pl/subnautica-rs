@@ -263,6 +263,7 @@ pub fn item_rules(
             pickupable: p.is_pickupable,
             destroy_on_death: p.destroy_on_death,
             eatable: item.eatable,
+            randomize_rotation: p.randomize_rotation_when_dropped,
         };
         for class in by_path.get(path).into_iter().flatten() {
             pickups.insert(class.clone(), info.clone());

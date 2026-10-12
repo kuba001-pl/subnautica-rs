@@ -866,6 +866,72 @@ Readers (M9d1): `sn-unity::items` (layouts), `sn-assets::items`
   0.78 m above the pod's origin; its node holds one collider. Reached by
   walking round the ladder: the hand's ray hits it from 1.98 m.
 
+## The inventory panel and the locker (M9d5b)
+
+Read with `sn-inspect code --il <TYPE> <METHOD>` (`METHOD#N` for an
+overload) and `code --enum <TYPE>` (`Outer/Inner` for a nested enum).
+
+- **Confirmed (code):** `ItemAction` is a flag set: None 0, Use 1, Eat 2,
+  Equip 4, Unequip 8, Assign 16, Switch 32, Swap 64, Drop 128.
+  `GameInput.Device`: Keyboard 0, Controller 1. `GameInput.Button` 1 is
+  `PDA`.
+- **Confirmed (code):** `uGUI_ItemIcon.OnPointerClick` passes the pointer
+  button as 0 left, 1 right, 2 middle, through `uGUI_ItemsContainer` to
+  `uGUI_InventoryTab.OnPointerClick`, which (unless an item is being
+  dragged) runs `Inventory.ExecuteItemAction(item, button)` if
+  `GetItemAction(item, button)` is not None.
+- **Confirmed (code):** `GetItemAction` with the keyboard: button 0 gives
+  the first of Use, Eat, Equip, Unequip, Swap, Switch that
+  `GetAllItemActions` allows; button 1 Drop if allowed; anything else
+  None. With a controller, buttons 2 and 3 give Drop and Assign.
+- **Confirmed (code):** `GetAllItemActions(item)`: the opposite store is
+  `GetOppositeContainer` (from the player's grid: the first used
+  storage with `HasRoomFor`, else the first used storage, else the
+  equipment; from anything else: the grid). For an item of the player's
+  grid: when the opposite is the equipment, Eat if the item has a
+  component (a generic `GetComponent`, **hypothesis:** `Eatable`) and the
+  game mode is not `NoSurvival` (or it is `Bladderfish`, 2515, without
+  `NoOxygen`), Use for `FirstAidKit` (4514); Drop if
+  `CanDropItemHere`; Assign if bindable. Then: from the equipment to the
+  grid Unequip if `CanDrag` and the grid `HasRoomFor`; into the equipment
+  Equip if `GetFreeSlot` of its equipment type, else Swap if
+  `GetCompatibleSlot`; into a container Switch if `CanDrag` and
+  `AllowedToAdd`, which asks the container's tech filter and its
+  `isAllowedToAdd` delegate, **not its room**.
+- **Confirmed (code):** `ExecuteItemAction(action, item)`: Use and Eat
+  call `Survival.Use` / `Eat` (the item is removed and destroyed if it
+  returns true); Assign begins a quick slot assignment; Equip, Unequip,
+  Switch and Swap call `AddOrSwap(item, opposite)`; Drop calls
+  `InternalDropItem(item, true)`.
+- **Confirmed (code):** `InternalDropItem`: if `CanDropItemHere`, the
+  point is `RayCast(MainCameraControl position, forward, 10, 0.75, 1.5)`,
+  then `Pickupable.Drop(point, zero, checkPosition true)`; with
+  `randomizeRotationWhenDropped` the rotation is `Random.rotation`; then
+  `SkyEnvironmentChanged.Send`.
+- **Confirmed (code):** `EscapePod.StorageOpen`: nothing while its
+  `storageSequence` is active; else `storage_open` true, the open sound,
+  and the sequence set for 0.25 s with `StorageOnFlapOpened`, which sets
+  the locker as `Inventory.SetUsedStorage` and calls
+  `PDA.Open(tab 1, storagePivot, StorageOnClosePDA)`; if that returns
+  false, `StorageOnClosePDA` at once. `StorageOnClosePDA`: the sequence
+  set for 0.25 s (no callback), the close sound, `storage_open` false.
+  `EscapePod.Update` runs the sequence.
+- **Confirmed (code):** `PDA.Open` returns false while it is in use (or
+  its input is ignored) and in a cinematic; else it returns the held
+  tool, sets `isInUse`, `ArmsController.SetUsingPda(true)`, starts its
+  0.5 s sequence, hides the crosshair and the view model, and with a
+  target stores `activeSqrDistance` = (target − PDA)² + 1.
+  `PDA.ManagedUpdate` closes it on `Button.PDA` (when focused, not in the
+  intro) and when the target is gone or (target − PDA)² ≥
+  `activeSqrDistance`.
+- **Confirmed (real data, M9d5b run):** the escape pod's controller has
+  the bool `storage_open` (layer "storage": `closed` ↔ `open`, 0.1 s
+  transitions). With our stand-ins (the hand collider's centre for
+  `storagePivot`, the player's position for the PDA's), the limit where
+  the hand opens the locker is 2.75 m.
+- **Hypothesis:** `PDA.Open` does not stop the player's movement (the
+  distance rule needs it); not checked in the game.
+
 ## Fabricator menus: `CraftTree` (code only)
 
 - **Confirmed (code):** each crafting machine's menu (fabricator,

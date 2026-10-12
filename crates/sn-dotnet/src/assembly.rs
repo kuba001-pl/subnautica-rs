@@ -303,6 +303,20 @@ impl<'a> Assembly<'a> {
         Ok(None)
     }
 
+    /// A type nested in `outer` (a TypeDef row) by name.
+    pub fn find_nested_type(&self, outer: u32, name: &str) -> Result<Option<u32>> {
+        for r in 1..=self.rows(Table::NESTED_CLASS) {
+            if self.tables.cell(Table::NESTED_CLASS, r, 1)? != outer {
+                continue;
+            }
+            let row = self.tables.cell(Table::NESTED_CLASS, r, 0)?;
+            if self.type_name(row)?.1 == name {
+                return Ok(Some(row));
+            }
+        }
+        Ok(None)
+    }
+
     /// The type whose member list (column `col`) holds `member`.
     fn owner(&self, member: u32, col: usize, table: TableId) -> Result<u32> {
         let n = self.rows(Table::TYPE_DEF);
@@ -342,6 +356,18 @@ impl<'a> Assembly<'a> {
     pub fn find_method(&self, type_row: u32, name: &str) -> Result<Option<u32>> {
         for m in self.methods(type_row)? {
             if self.method_name(m)? == name {
+                return Ok(Some(m));
+            }
+        }
+        Ok(None)
+    }
+
+    /// A method of a type by name and parameter count (an overload).
+    pub fn find_method_with(&self, type_row: u32, name: &str, params: u32) -> Result<Option<u32>> {
+        for m in self.methods(type_row)? {
+            if self.method_name(m)? == name
+                && self.sig_params(self.tables.cell(Table::METHOD_DEF, m, 4)?)? == params
+            {
                 return Ok(Some(m));
             }
         }

@@ -6,14 +6,15 @@
 //!
 //! M9d5: the hand on items ([`aim`]): what it shows over a pickup, an
 //! outcrop or the lifepod's locker, and what a click asks the server; the
-//! own inventory logged after each change.
+//! own inventory logged after each change (M9d5b: and the lifepod's
+//! locker).
 
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 
 use bevy::prelude::*;
 use sn_assets::{ItemText, TargetBody, TargetKind};
-use sn_protocol::{DropAt, EntityKey, HitKind, ItemId, Request};
+use sn_protocol::{EntityKey, HitKind, ItemId, Request};
 use sn_sim::V3;
 use sn_world::Transform as Placement;
 
@@ -34,6 +35,10 @@ pub struct ItemsView {
     /// The own inventory's last logged line, and the blueprints known.
     inventory_line: String,
     known: Vec<i32>,
+    /// The lifepod locker's last logged line (M9d5b).
+    locker_line: String,
+    /// `--drop`'s draws.
+    random: u64,
     gone: HashSet<EntityKey>,
     objects: BTreeMap<ItemId, (String, [f32; 3], [i16; 4])>,
     /// `--pick-up`, `--drop`: seconds of play.
@@ -47,6 +52,7 @@ impl ItemsView {
         ItemsView {
             pick_up_at,
             drop_at,
+            random: sn_net::random_seed(),
             ..Default::default()
         }
     }
@@ -164,10 +170,24 @@ pub fn aim(
 /// The own inventory as one log line: the grid's items with their cells,
 /// the slots in use, and the blueprints known.
 fn describe(text: &ItemText, inv: &sn_sim::inventory::Inventory) -> String {
-    let (placed, _) = inv.container.layout();
+    let slots: Vec<String> = inv
+        .equipment
+        .slots()
+        .filter_map(|(slot, item)| Some(format!("{slot}: {}", text.tech(item?.tech))))
+        .collect();
+    format!(
+        "{}; slots [{}]; known {}",
+        describe_grid(text, &inv.container),
+        slots.join(", "),
+        inv.known.known().count()
+    )
+}
+
+/// A grid and its items with their cells.
+fn describe_grid(text: &ItemText, c: &sn_sim::inventory::Container) -> String {
+    let (placed, _) = c.layout();
     let tech_of = |id| {
-        inv.container
-            .get(id)
+        c.get(id)
             .map_or_else(|| "?".to_string(), |i| text.tech(i.tech))
     };
     let grid: Vec<String> = placed
@@ -184,19 +204,7 @@ fn describe(text: &ItemText, inv: &sn_sim::inventory::Inventory) -> String {
             )
         })
         .collect();
-    let slots: Vec<String> = inv
-        .equipment
-        .slots()
-        .filter_map(|(slot, item)| Some(format!("{slot}: {}", text.tech(item?.tech))))
-        .collect();
-    format!(
-        "grid {}x{} [{}]; slots [{}]; known {}",
-        inv.container.size().0,
-        inv.container.size().1,
-        grid.join(", "),
-        slots.join(", "),
-        inv.known.known().count()
-    )
+    format!("grid {}x{} [{}]", c.size().0, c.size().1, grid.join(", "))
 }
 
 /// The wire's rotation as a placement's.
@@ -241,11 +249,18 @@ pub fn sync(
                     p.inventory.known.known().collect::<Vec<i32>>(),
                 )
             });
-            Some((events, new_gone, objects, held, inventory))
+            let locker = text.as_ref().map(|t| describe_grid(&t.0, &items.locker));
+            Some((events, new_gone, objects, held, inventory, locker))
         })
         .flatten();
-    if let Some((events, new_gone, objects, held, inventory)) = changed {
+    if let Some((events, new_gone, objects, held, inventory, locker)) = changed {
         view.events = Some(events);
+        if let Some(line) = locker
+            && line != view.locker_line
+        {
+            info!("items: lifepod locker after {events} world events: {line}");
+            view.locker_line = line;
+        }
         if let Some((line, known)) = inventory
             && line != view.inventory_line
         {
@@ -310,6 +325,7 @@ pub fn sync(
 
     // Debug requests.
     let Some(sim) = sim else { return };
+    let view = &mut *view;
     let play = sim.play_seconds();
     if view.pick_up_at.is_some_and(|t| play >= t) {
         view.pick_up_at = None;
@@ -336,32 +352,27 @@ pub fn sync(
         let first = me.and_then(|p| {
             session
                 .with_items(|items, _| {
-                    items
-                        .players
-                        .get(&p)?
-                        .inventory
-                        .container
-                        .items()
-                        .next()
-                        .map(|i| ItemId(i.id.0 as u32))
+                    let i = items.players.get(&p)?.inventory.container.items().next()?;
+                    let id = ItemId(i.id.0 as u32);
+                    let randomize = items
+                        .classes
+                        .get(&id)
+                        .and_then(|c| items.rules().pickups.get(c))
+                        .is_some_and(|i| i.randomize_rotation);
+                    Some((id, randomize))
                 })
                 .flatten()
         });
-        match (first, sim.eye()) {
-            (Some(item), Some((at, forward))) => {
-                // Our stand-in for the drop ray (M9d5 ports it): a metre
-                // ahead of the player.
-                let point = (at + forward).to_f32();
-                info!("items: --drop at {play:.1} s: item {} at {point:?}", item.0);
-                session.request(Request::Drop {
-                    item,
-                    at: DropAt {
-                        point,
-                        rotation: [0, 0, 0, 32_767],
-                    },
-                });
+        // Where the game drops it (M9d5b: `InternalDropItem`).
+        let request = first.and_then(|(item, randomize)| {
+            crate::inventory::drop_request(&sim, &mut view.random, item, randomize)
+        });
+        match request {
+            Some(r) => {
+                info!("items: --drop at {play:.1} s");
+                session.request(r);
             }
-            _ => info!("items: --drop at {play:.1} s: nothing held"),
+            None => info!("items: --drop at {play:.1} s: nothing held"),
         }
     }
 }
@@ -394,6 +405,7 @@ mod tests {
             pickupable,
             destroy_on_death: true,
             eatable: false,
+            randomize_rotation: true,
         };
         r.pickups.insert("ti".into(), pickup(5, true));
         r.pickups.insert("stuck".into(), pickup(5, false));
