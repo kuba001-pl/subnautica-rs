@@ -253,9 +253,9 @@ come out flat `_Color`, which is white for all of the ones above.
   client logs every other `UWE/Particles/UBER` material with the reason
   (keywords not decoded, or a blend/depth/cull value the pass does not
   draw) and keeps it on the old look: alpha-blended `_MainTex` × `_Color`,
-  with no scrolling, second texture, deformation or refraction. M7g4a also supports the unlit Tree Cove brine described below. Not
-  decoded yet: the lighting modes, `FX_LIGHT_NORMALMAP`, and the other
-  combinations (the lit Lost River lakes,
+  with no scrolling, second texture, deformation or refraction. M7g4a/b also
+  support Tree Cove and Lost River brine described below. Not decoded yet:
+  the actual lighting modes and the other combinations (
   sand and lava falls, the Gun's elevator and deactivation column, the
   water force field, the tech light cones). Differences: the fog uses the
   camera's water settings, not the fog volume at the mesh (as for the
@@ -298,9 +298,40 @@ the Tree Cove water prefab; research outputs remain ignored under `out/`.
 Our implementation reuses the existing mapping slots for triplanar scales,
 retains all three scroll components, and restores Unity's world Z coordinate
 before projection. Explicit texture gradients permit conditional triplanar
-sampling. The lit Bones Field/Ghost Tree combinations remain unsupported.
+sampling. The Bones Field/Ghost Tree saved-keyword combination is supported
+by M7g4b as the same unlit program (see below).
 Fog-volume selection still uses camera settings; original-game visual parity
 is **not tested**.
+
+### Lost River saved lighting keywords (M7g4b) — confirmed
+
+Confirmed on 2026-10-12 by a fresh UnityPy metadata and D3D11 program dump
+of the installed `UWE/Particles/UBER`, plus Rust `sn-inspect prefab --props`
+on Ghost Tree lake and Bones Field cave pool prefabs. Research dumps are
+ignored under `out/m7g4-brine/`.
+
+The two lake material families save the M7g4a keyword set plus
+`FX_LIGHT_2SIDED FX_LIGHT_NORMALMAP`. Neither keyword exists in any of the
+shader's 636 vertex or 636 fragment metadata entries. Both materials have
+`FX_LightMode = 0`, back culling, and the same blend/depth settings as Tree
+Cove. The compiled lighting selectors are `FX_LIGHTMODE_VERTEX`,
+`FX_LIGHTMODE_PIXEL` and `FX_FORCELIGHT_VERTEX`; none is saved on these lakes.
+
+Removing the two inactive saved keywords selects vertex blob 39 and
+fragment blob 357, the exact Tree Cove pair. The fresh fragment disassembly
+matches the previous dump by SHA-256. Its samplers include main, second main,
+deformation, scene depth and fog-volume textures; no normal map. The surface
+colour chain has no lighting term. A saved normal texture and its properties
+therefore do not justify adding normal-mapped lighting to this program.
+Runtime keyword changes in the original game are **not tested**; no claim
+of matched game imagery follows from this static program finding.
+
+Our loader accepts only this exact additional saved set and uses the
+existing brine pass. It does not globally discard unknown keywords. Actual
+lighting selectors, partial saved sets and unsupported render states remain
+rejected. The earlier description of these lakes as requiring lit shader
+variants was an incorrect hypothesis. Camera-based fog-volume selection
+and original-game visual acceptance remain open.
 
 ### Triplanar rocks (`UWE/SIG Triplanar with Capping`) — confirmed
 

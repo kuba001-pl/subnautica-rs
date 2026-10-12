@@ -2,6 +2,77 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-12 — M7g4b: Lost River brine saved-keyword selection
+
+**What/why:** after M7g5 and M7g4a, inspected the presumed lit lake
+variant. Fresh installed shader metadata (636 vertex + 636 fragment
+entries) contains neither `FX_LIGHT_2SIDED` nor `FX_LIGHT_NORMALMAP`.
+Ghost Tree/Bones Field materials save these keywords but have light mode 0;
+their active set selects Tree Cove's vertex/fragment pair, without normal
+sampling or surface lighting. The previous "lit brine" description was an
+incorrect hypothesis. Added only that exact saved set to the existing effect
+selector; actual lighting modes, unknown sets and wrong culling remain
+rejected. No WGSL, dependencies, architecture or whitelist changes.
+Format findings, roadmap and README updated; game install read-only.
+
+**Verified:**
+- `cargo test --workspace`: 472 passed, 39 ignored, 0 failed. Added synthetic
+  coverage for the saved set's equality with the unlit program's inputs,
+  inactive lighting properties, reordered keywords, partial sets, real
+  lighting selectors and incorrect culling.
+- `cargo clippy --workspace --all-targets -- -D warnings`,
+  `cargo fmt --all -- --check`, `cargo build --release -p sn-client`,
+  `git diff --check`: pass.
+- Fresh shader dump matches the earlier fragment disassembly by SHA-256.
+  Rust `sn-inspect prefab ... --props` checks Ghost Tree lake and Bones
+  Field cave pool properties. Ignored evidence: `out/m7g4-brine/`.
+- Six sequential 1600×900 runs, view 400 m, 120 settled warm-up frames,
+  300 measured frames each: no GPU errors, loader warnings or unsettled
+  frames. Reports, CSV samples and captures:
+  `out/baselines/run-m7g4b-{ghost,cove,precursor}-{before,after}/`.
+  Ghost Tree: both lake material families change from fallback to
+  `brine: true`; 2,113 entities/150 batches/1,816 meshes/309 materials/665
+  textures unchanged. Tree Cove: 6,335 entities/1,301 meshes/266 materials/
+  548 textures unchanged. Precursor: 8,202 entities/1,835 meshes/336
+  materials/645 textures unchanged. Terrain, sky and light counts equal.
+  The opaque global sky-material cache loses two fallback materials in
+  Ghost Tree/Cove; Precursor's cache is unchanged (no lake parts spawned).
+- Mean frame times before → after: Ghost Tree 5.939 → 6.152 ms; Tree Cove
+  6.340 → 6.256 ms; Precursor 6.666 → 6.631 ms. P99 respectively
+  8.978 → 13.459, 10.500 → 12.340, 11.028 → 10.132 ms. Ghost Tree adds
+  a 0.026 ms effects GPU pass; Cove 0.057 → 0.056 ms; Precursor
+  0.085 → 0.085 ms. Single pairs do not establish a speedup or isolate
+  the cost of the change. Animation remains live.
+- Control is the executable archived before editing, not a fresh isolated
+  source rebuild. Binary hashes and report checks are recorded in
+  `out/m7g4-brine/m7g4b-verification.log`; initial source HEAD was `adfc885`.
+
+**Reproduce:** set `SUBNAUTICA_DIR` to the player's install, build release,
+use a fresh baseline name (existing names are rejected):
+
+```powershell
+target/release/sn-client.exe --benchmark 300 --baseline m7g4b-check --baseline-revision local-M7g4b --warmup 120 --resolution 1600 900 --start -954 -643 989 --look -954 -653 1009 --fov 60 --view 400 --lifepod-seed 1 --slot-seed 1 --time 9.6 --time-scale 0 --aurora intact --water-quality high --color-grading off --gpu-timings
+```
+
+Expect both Lost River lake materials logged as effect materials with
+`brine: true`, zero warnings, 300 samples, report/capture and clean exit.
+For regressions use fresh names with
+`--start -931.2 -931.6 326.6 --look -931.2 -941.6 346.6` (Cove), or
+`--start -622 -558 1482 --look -608 -561 1483` (Precursor).
+
+**Dead ends/corrections:** no normal-map lighting was added because the
+installed program does not contain it. The first benchmark completed, but
+the PowerShell launcher read a null exit code after `WaitForExit`; changed
+to `Start-Process -Wait` and retained its completed report. The report
+checker initially expected identical sky-material cache counts; corrected
+the expectation to account for fallback materials leaving the opaque cache
+only where their parts are spawned. No implementation failures or random
+shader variations.
+
+**Not tested:** matched original-game imagery, runtime keyword changes in
+the original game, keyboard play, Linux/macOS. Camera-based fog-volume
+selection remains a limitation. No commits or pushes.
+
 ## 2026-10-12 — M7g4a: unlit Tree Cove brine
 
 **What/why:** the exact Tree Cove UBER variant now uses the effect pass,

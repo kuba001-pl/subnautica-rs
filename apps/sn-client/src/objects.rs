@@ -771,8 +771,10 @@ struct ParticlesVariant {
 /// The `UWE/Particles/UBER` keyword sets our effect pass draws, decoded
 /// from the game's compiled programs (`docs/formats/materials.md`
 /// § `UWE/Particles/UBER` meshes): the consoles' holograms and the doors'
-/// force fields, plus unlit Tree Cove brine.
-const PARTICLES_VARIANTS: [(&str, ParticlesVariant); 6] = {
+/// force fields, plus Tree Cove and Lost River brine. The latter's saved
+/// FX_LIGHT_2SIDED/FX_LIGHT_NORMALMAP keywords are absent from the installed
+/// shader's compiled keyword table; they do not select lighting programs.
+const PARTICLES_VARIANTS: [(&str, ParticlesVariant); 7] = {
     const fn v(fresnel_clip: bool, mul_map: bool, rest: bool, refract: bool) -> ParticlesVariant {
         ParticlesVariant {
             fresnel_clip,
@@ -803,6 +805,13 @@ const PARTICLES_VARIANTS: [(&str, ParticlesVariant); 6] = {
         ),
         (
             "FX_DEFORM FX_MULMAP FX_NEARCLIP FX_SCROLL FX_SOFTEDGES FX_TRIPLANAR WBOIT",
+            ParticlesVariant {
+                brine: true,
+                ..v(false, true, true, false)
+            },
+        ),
+        (
+            "FX_DEFORM FX_LIGHT_2SIDED FX_LIGHT_NORMALMAP FX_MULMAP FX_NEARCLIP FX_SCROLL FX_SOFTEDGES FX_TRIPLANAR WBOIT",
             ParticlesVariant {
                 brine: true,
                 ..v(false, true, true, false)
@@ -4645,12 +4654,57 @@ mod tests {
                     .starts_with("_MyCullVariable")
             );
         }
-        m.keywords.push_str(" FX_LIGHT_2SIDED FX_LIGHT_NORMALMAP");
-        assert!(
-            particles_values(&m, &shader, [None; 4])
-                .unwrap_err()
-                .contains("not decoded")
-        );
+    }
+
+    #[test]
+    fn saved_brine_lighting_keywords_do_not_invent_normal_mapped_lighting() {
+        let base = "FX_DEFORM FX_MULMAP FX_NEARCLIP FX_SCROLL FX_SOFTEDGES FX_TRIPLANAR WBOIT";
+        let mut m = particles_material(base, &[("_MyCullVariable", 2.0)]);
+        let shader = uber_shader();
+        let textures = [Some((3, [1.0, 1.0, 0.0, 0.0])), None, None, None];
+        let unlit = particles_values(&m, &shader, textures).unwrap();
+        m.keywords = format!("FX_LIGHT_NORMALMAP {base} FX_LIGHT_2SIDED");
+        // These saved properties cannot affect a program with no normal
+        // sampler or lighting constants. Use synthetic, non-game values.
+        m.floats.extend([
+            ("_NormalStrength".into(), 7.0),
+            ("_LightWrapAround".into(), 0.75),
+            ("_SelfIllumination".into(), 8.0),
+        ]);
+        m.colors.push(("_NormalMap_Speed".into(), [9.0; 4]));
+        assert_eq!(particles_values(&m, &shader, textures).unwrap(), unlit);
+        // No global removal of unknown keywords: actual lighting modes and
+        // partial saved sets remain undecoded, as do altered render states.
+        for extra in [
+            "FX_LIGHTMODE_PIXEL",
+            "FX_LIGHTMODE_VERTEX",
+            "FX_FORCELIGHT_VERTEX",
+            "UNKNOWN",
+        ] {
+            let mut wrong = m.clone();
+            wrong.keywords.push(' ');
+            wrong.keywords.push_str(extra);
+            assert!(
+                particles_values(&wrong, &shader, textures)
+                    .unwrap_err()
+                    .contains("not decoded")
+            );
+        }
+        for only in ["FX_LIGHT_NORMALMAP", "FX_LIGHT_2SIDED"] {
+            let mut wrong = m.clone();
+            wrong.keywords = format!("{base} {only}");
+            assert!(particles_values(&wrong, &shader, textures).is_err());
+        }
+        for cull in [0.0, 1.0] {
+            let mut wrong = m.clone();
+            wrong.floats.retain(|(name, _)| name != "_MyCullVariable");
+            wrong.floats.push(("_MyCullVariable".into(), cull));
+            assert!(
+                particles_values(&wrong, &shader, textures)
+                    .unwrap_err()
+                    .starts_with("_MyCullVariable")
+            );
+        }
     }
 
     #[test]

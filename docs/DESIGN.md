@@ -2100,7 +2100,37 @@ equal. Final paired mean frame times: 5.281 to 6.503 ms at Tree Cove,
 5.950 to 6.192 ms at the door. Tree Cove adds a 0.057 ms effects GPU pass;
 the overall timing regression is recorded, not attributed solely to that
 pass. Commands, counts and limitations are in MODLOG (2026-10-12 M7g4a).
-Visual acceptance remains open. Next implementation slice: lit brine.
+Visual acceptance remains open. Lost River's apparent lit brine is addressed
+by M7g4b below; its saved lighting keywords proved inactive.
+
+#### M7g4b Lost River brine plan (2026-10-12)
+
+Next after the implemented M7g5 and M7g4a slices: inspect the apparent lit
+brine keyword sets and compiled vertex/fragment programs, then implement
+only confirmed rules in the existing effect pass. Preserve Tree Cove
+brine and the five hologram/door variants.
+Keep extracted programs and property dumps in ignored `out/`.
+
+**Done when:**
+- [x] Document confirmed lighting selection and render state: the saved
+  `FX_LIGHT_2SIDED`/`FX_LIGHT_NORMALMAP` keywords are absent from the installed
+  shader's compiled keyword table. Both lake families have light mode 0 and
+  select M7g4a's program, which has no normal-map sampler or lighting terms.
+  The presumed need to add normal-map/two-sided lighting was incorrect.
+- [x] Implement exact variant selection and required inputs; reject undecoded sets.
+- [x] Synthetic tests, workspace tests, fmt, clippy and release build pass.
+- [x] Matching Lost River before/after benchmarks and Tree Cove/Precursor regressions
+  pass GPU validation; record counts, timings and reproduction commands.
+- [ ] Matched original-game comparison: **not tested** until available.
+
+**Implemented and numerically checked:** 472 workspace tests pass, 39 ignored.
+Both Lost River lake families replace their fallback through the existing
+brine shader. Six GPU runs complete with matching scene counts, zero loader
+warnings and zero unsettled measurement frames. Ghost Tree mean frame time
+5.939 → 6.152 ms; effects GPU pass 0.026 ms. Tree Cove and Precursor
+regressions pass. Full visual acceptance remains open. Next implementation
+slice: remaining M7g4 mesh-effect sets (sand/lava falls, elevator and column,
+water force field and tech cones), followed by M7g6's smaller shader census.
 
 #### M7g5 implementation plan (2026-10-11)
 
