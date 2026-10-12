@@ -14,6 +14,7 @@ mod game;
 mod il;
 mod items;
 mod reader;
+mod sig;
 mod tables;
 
 use std::fmt;
@@ -26,6 +27,10 @@ pub use game::{
 };
 pub use il::{Instr, Operand, decode, opcode_name};
 pub use items::{Arg, constructor_args, static_string_int_dictionary, string_array};
+pub use sig::{
+    FIELD_ACCESS_MASK, FIELD_INIT_ONLY, FIELD_LITERAL, FIELD_NOT_SERIALIZED, FIELD_PUBLIC,
+    FIELD_STATIC, SigType,
+};
 pub use tables::{Table, TableId};
 
 #[derive(Clone, Debug, PartialEq, Eq)]

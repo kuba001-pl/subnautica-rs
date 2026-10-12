@@ -119,7 +119,12 @@ impl Builder {
 
     /// A field of the last TypeDef; returns its token.
     pub fn field(&mut self, flags: u16, name: &str) -> u32 {
-        let (n, sig) = (self.string(name), self.blob(&[0x06, 0x08]));
+        self.field_with_sig(flags, name, &[0x06, 0x08])
+    }
+
+    /// A field with its signature blob as given; returns its token.
+    pub fn field_with_sig(&mut self, flags: u16, name: &str, sig: &[u8]) -> u32 {
+        let (n, sig) = (self.string(name), self.blob(sig));
         0x0400_0000 | self.row(Table::FIELD, vec![u32::from(flags), n, sig])
     }
 

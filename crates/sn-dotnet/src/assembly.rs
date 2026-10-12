@@ -196,6 +196,10 @@ impl<'a> Assembly<'a> {
         Ok((rest, start))
     }
 
+    pub(crate) fn tables(&self) -> &Tables<'a> {
+        &self.tables
+    }
+
     pub fn rows(&self, table: TableId) -> u32 {
         self.tables.rows.get(table as usize).copied().unwrap_or(0)
     }
@@ -427,7 +431,11 @@ impl<'a> Assembly<'a> {
 
     // --- Tokens --------------------------------------------------------
 
-    fn type_def_or_ref_name(&self, table: TableId, row: u32) -> Result<(String, String)> {
+    pub(crate) fn type_def_or_ref_name(
+        &self,
+        table: TableId,
+        row: u32,
+    ) -> Result<(String, String)> {
         match table {
             Table::TYPE_DEF => {
                 let (ns, n) = self.type_name(row)?;

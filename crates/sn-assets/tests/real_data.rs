@@ -2250,3 +2250,36 @@ fn hand_targets_follow_the_items() {
 fn world_bounds(world: &sn_sim::collide::World, id: u64) -> Option<(sn_sim::V3, sn_sim::V3)> {
     world.get(id)?.bounds()
 }
+
+/// M9u0: the UI hierarchies the game loads (`docs/formats/ui.md`).
+#[test]
+#[ignore = "needs SUBNAUTICA_DIR pointing at a Subnautica install"]
+fn ui_trees_from_the_install() {
+    let Some(dir) = std::env::var_os("SUBNAUTICA_DIR") else {
+        eprintln!("SUBNAUTICA_DIR not set; skipping");
+        return;
+    };
+    let game = GameData::locate(Some(PathBuf::from(dir))).unwrap();
+    let assets = Assets::index(&game).unwrap();
+    let catalog = assets.catalog().unwrap();
+    let root = assets.ugui_root(&catalog).unwrap();
+    let ugui = assets.ui_tree("uGUI.prefab", &root).unwrap();
+    assert_eq!(ugui.nodes.len(), 361);
+    assert_eq!(ugui.nodes[0].name, "uGUI");
+    assert_eq!(ugui.class_counts().get(&223), Some(&12)); // Canvas
+    assert_eq!(ugui.scripts("uGUI_HandReticleIcon").count(), 10);
+    assert_eq!(ugui.scripts("uGUI_CanvasScaler").count(), 4);
+    let (bar, _) = ugui.scripts("uGUI_OxygenBar").next().unwrap();
+    assert_eq!(
+        ugui.nodes[bar].path,
+        "uGUI/ScreenCanvas/HUD/Content/BarsPanel/OxygenBar"
+    );
+    let main = assets.scene("main").unwrap();
+    let (screen, anchor) = assets.pda_screen_refs(&main).unwrap();
+    assert!(anchor.is_some());
+    let pda = assets.ui_tree("PDA screen", &screen).unwrap();
+    assert_eq!(pda.nodes.len(), 402);
+    assert_eq!(pda.nodes[0].name, "uGUI_PDAScreen");
+    assert_eq!(pda.scripts("uGUI_ItemsContainer").count(), 6);
+    assert_eq!(pda.scripts("uGUI_Equipment").count(), 1);
+}

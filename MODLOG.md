@@ -2,6 +2,46 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-12 — M9u0: the game's UI, census
+
+**What/why:** the first step of the M9u plan. We need to know where the
+UI is and what it holds before we read or draw it. New:
+- `sn-dotnet::sig`: field type signatures (`SigType`, `field_type`,
+  `base_type`), the base for M9u1's script layouts.
+- `sn-inspect code --fields <TYPE>`.
+- `sn-unity::ui`: `Canvas` (every field, ends at its last byte),
+  `uGUI_CanvasScaler`'s five serialized fields, `SpriteAtlasHead`.
+- `sn-assets::ui`: `UiTree` (every node with path, active state, layer,
+  components and script names), `ugui_root` (the catalog key
+  `uGUI.prefab`), `pda_screen_refs` (the main scene's `PDA` fields).
+- `sn-inspect ui` and `docs/formats/ui.md`.
+
+No new dependencies. `.gitignore` is unchanged (`.rs`/`.md` already
+whitelisted).
+
+**Found:** the plan's counts were bundle totals. `uGUI` itself is 361
+nodes and 12 canvases, plus 10 small prefabs the scripts instantiate
+(26 nodes). 11 canvases are world space; scalers are 1 m in front of
+the UI camera (DepthClear 1000 m) at 1920×1080. The PDA screen is
+`uGUI_PDAScreen` (402 nodes, scaler mode Inversed). All 470 `Items`
+sprites resolve. Every TMP font asset is under 1.1 KB, so its glyph
+tables are probably empty (hypothesis), a risk for M9u3's check
+(DESIGN "M9u as built").
+
+**Verified:**
+- `sn-inspect ui` (real data): `0 checks differ (0.73 s)`, 23 checks
+  (output in `out/m9u/ui-census.txt`, gitignored).
+- `cargo test -q -p sn-dotnet sig`: 3 passed (primitives, classes,
+  arrays, generics, custom modifiers; bad and too-deep signatures are
+  errors). `sn-unity` `ui`: 4 passed (canvas, truncated and too-long
+  canvases, scaler, atlas head, huge count). `sn-assets` `ui`: 2 passed.
+- `SUBNAUTICA_DIR=… cargo test --release -p sn-assets --test real_data
+  ui_trees -- --ignored`: 1 passed (361 / 402 nodes, hosts, paths).
+- `cargo test --workspace`: 488 passed, 0 failed, 40 ignored.
+  `cargo clippy --workspace --all-targets -- -D warnings` and `cargo fmt
+  --all -- --check`: pass.
+- Committed with the user's OK.
+
 ## 2026-10-12 — M9u plan: the game's UI
 
 **What/why:** M9d is done, so M9u's plan is written before any code

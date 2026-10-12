@@ -28,6 +28,7 @@ mod skinned;
 mod slots;
 mod swim;
 mod texture;
+mod ui;
 mod unity;
 mod voxel;
 mod walk;
@@ -168,6 +169,9 @@ Commands:
                          nested one; also for --il)
   code --nested <TYPE>   The types nested in a type (coroutines, enums)
                          and their methods
+  code --fields <TYPE>   A type's fields in declaration order: declared
+                         type, public/static/readonly/const/[NonSerialized],
+                         and the type it extends
   techdata               Recipes and item data (Balance/TechData) and the
                          prefab → tech type map (EntTechData), with checks
   player                 The player's numbers from the main scene (oxygen,
@@ -194,6 +198,12 @@ Commands:
                          count (default 2,4); every drawn tick and every
                          event compared with its owner's; --seed N must be
                          the server's --lifepod-seed (default 1)
+  ui                     M9u0: the game's UI, headless: where uGUI.prefab
+                         and the PDA's screen come from, their nodes and
+                         components, every canvas and canvas scaler, the
+                         hosts of the scripts M9u ports, the sprite
+                         atlases and the fonts; counts checked against
+                         the plan's
   orient <X> <Y> <Z>     Score candidate child/octree orders using a batch and
                          its +X/+Y/+Z neighbours (default batch: 12 18 12)
 ";
@@ -391,9 +401,11 @@ fn run(mut args: Vec<String>) -> Result<ExitCode> {
         }
         ["code", "--enum", ty] => code::enum_values(&game, ty),
         ["code", "--nested", ty] => code::nested(&game, ty),
+        ["code", "--fields", ty] => code::fields(&game, ty),
         ["techdata"] => gameplay::techdata(&game),
         ["player"] => gameplay::player(&game),
         ["pickups"] => pickups::run(&game),
+        ["ui"] => ui::run(&game),
         ["player", "--body"] => gameplay::player_body(&game),
         ["orient"] => orient::run(&game, BatchCoord::new(12, 18, 12)),
         ["orient", x, y, z] => orient::run(&game, parse_coord(x, y, z)?),

@@ -225,6 +225,47 @@ fn resolve_type(asm: &Assembly, type_name: &str) -> Result<u32> {
     Ok(ty)
 }
 
+/// `code --fields <TYPE>`: a type's fields in declaration order with
+/// their flags and declared types, and the type it extends (M9u0).
+pub fn fields(game: &GameData, type_name: &str) -> Result<ExitCode> {
+    let bytes = sn_assets::read_assembly(game)?;
+    let asm = Assembly::parse(&bytes).map_err(|e| e.to_string())?;
+    let ty = resolve_type(&asm, type_name)?;
+    let e = |e: sn_dotnet::Error| e.to_string();
+    match asm.base_type(ty).map_err(e)? {
+        Some((ns, n)) if ns.is_empty() => println!("{type_name} extends {n}"),
+        Some((ns, n)) => println!("{type_name} extends {ns}.{n}"),
+        None => println!("{type_name} extends nothing"),
+    }
+    for row in asm.fields(ty).map_err(e)? {
+        let flags = asm.field_flags(row).map_err(e)?;
+        let mut marks = Vec::new();
+        if flags & sn_dotnet::FIELD_ACCESS_MASK == sn_dotnet::FIELD_PUBLIC {
+            marks.push("public");
+        }
+        for (bit, name) in [
+            (sn_dotnet::FIELD_STATIC, "static"),
+            (sn_dotnet::FIELD_INIT_ONLY, "readonly"),
+            (sn_dotnet::FIELD_LITERAL, "const"),
+            (sn_dotnet::FIELD_NOT_SERIALIZED, "[NonSerialized]"),
+        ] {
+            if flags & bit != 0 {
+                marks.push(name);
+            }
+        }
+        let ty = asm
+            .field_type(row)
+            .map_or_else(|err| format!("[{err}]"), |t| t.to_string());
+        println!(
+            "  {:<32} {:<40} {}",
+            asm.field_name(row).map_err(e)?,
+            ty,
+            marks.join(" ")
+        );
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
 /// `code --nested <TYPE>`: the types nested in a type and their methods.
 pub fn nested(game: &GameData, type_name: &str) -> Result<ExitCode> {
     let bytes = sn_assets::read_assembly(game)?;

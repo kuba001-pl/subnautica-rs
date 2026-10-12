@@ -27,6 +27,7 @@ mod scene;
 mod skin;
 mod slots;
 mod terrain;
+mod ui;
 mod water;
 
 use std::collections::HashMap;
@@ -81,6 +82,7 @@ pub use terrain::{
     BlendSettings, BlockSource, GrassLook, GrassShader, SurfaceLayer, TerrainGrass,
     TerrainMaterial, TerrainMaterials, TerrainTexture, terrain_materials,
 };
+pub use ui::{UGUI_PREFAB_KEY, UiComponent, UiNode, UiTree};
 pub use water::{
     SkyTextures, WaterSurfaceData, builtin_texture, resource_bytes, resource_texture, sky,
     sky_textures, water_biomes, water_caustics, water_surface, water_volume,

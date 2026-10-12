@@ -1082,7 +1082,7 @@ MODLOG entry.
 
 | Step | Work | Done when |
 |---|---|---|
-| **M9u0** | **Census, headless.** `sn-inspect ui`: the files above, each canvas (render mode, sorting, scaler mode and `distance`), and the script hosts for the in-scope screens. Also who spawns `uGUI.prefab` and the PDA screen, and how (from the IL). `docs/formats/ui.md` started. | Counts equal the ones above (13 canvases, 385 rect transforms, 504 behaviours, 8 atlases, 470 item sprites, 9 fonts); every in-scope `uGUI_*` named with its object path; spawn path written as *confirmed* or *hypothesis*. |
+| **M9u0** ✅ | **Done 2026-10-12** (MODLOG; facts in `docs/formats/ui.md`; see "M9u as built"). `sn-inspect ui`: 0 of 23 checks differ in 0.73 s. Plan as written: **Census, headless.** `sn-inspect ui`: the files above, each canvas (render mode, sorting, scaler mode and `distance`), and the script hosts for the in-scope screens. Also who spawns `uGUI.prefab` and the PDA screen, and how (from the IL). `docs/formats/ui.md` started. | Counts equal the ones above (13 canvases, 385 rect transforms, 504 behaviours, 8 atlases, 470 item sprites, 9 fonts); every in-scope `uGUI_*` named with its object path; spawn path written as *confirmed* or *hypothesis*. |
 | **M9u1** | **Script layouts from the DLLs** (`sn-dotnet`: field signatures, `CustomAttribute`, type refs across the four assemblies; `sn-unity`: a generic field reader giving a value tree). | Synthetic tests (our own encoded assemblies and objects); real data: every MonoBehaviour in the uGUI prefab, the main scene's PDA, the fonts bundle and the main scene ends exactly at its last byte, N/N logged with each miss named; the generic reader equals the hand-written readers (`Player`, `PDAData`, `BreakableResource`, …) on every object they read. **Stop and ask** if more than 2% miss after two attempts. |
 | **M9u2** | **Built-in UI classes and sprites** (`sn-unity`): `RectTransform`, `Canvas`, `CanvasGroup`, `CanvasRenderer`, `Sprite` (rect, border, pivot, its render data), `SpriteAtlas` (render data map); `SpriteManager`'s lookup rule by group and name from the IL; tech type → icon. | Every one of the game's 1,190 sprites and 8 atlases parses; every item tech type in `ItemRules` gets an icon or the game's fallback, counts logged; 20 sprites' rects and borders equal UnityPy's (dev-time oracle, not a dependency); `sn-inspect ui --icons` writes the item icons to `out/ui/` for the user. |
 | **M9u3** | **TMP fonts** (`sn-unity` + `sn-ui`): `TMP_FontAsset` (face info, glyph and character tables, kerning pairs, creation settings) through M9u1; `Font` bytes; the stored atlas; glyphs on demand. | Every font asset parses; for each `Aller_Rg` glyph in the stored atlas, our generated glyph's metrics equal the table's and the distance texels' mean error is logged per glyph and in total (target written before the run: mean ≤ 3/255, worst glyph reported); English strings used by the in-scope screens have 0 missing glyphs. |
@@ -1106,6 +1106,25 @@ navigation; the food and water drain (the bars show the starting values
 until eating lands with item 1, because a drain without food would starve the
 player); languages other than English (the code path is the same; not
 tested).
+
+**M9u as built:**
+- **M9u0.** Built as planned, with `sn-dotnet` field types
+  (`SigType`, `Assembly::field_type`, `base_type`) and `sn-inspect code
+  --fields`, the `Canvas` and `uGUI_CanvasScaler` readers and
+  `SpriteAtlasHead` (`sn-unity::ui`), and `Assets::ui_tree` /
+  `ugui_root` / `pda_screen_refs` (`sn-assets::ui`). Corrections to the
+  numbers above, which were bundle totals: the bundle is `uGUI` (361
+  nodes, 12 canvases, 143 `Image`, 101 text) plus 10 small prefabs its
+  scripts instantiate (26 nodes); together they give the 387 / 385 / 13
+  / 148 / 110 above. The 504 behaviours include assets that are not
+  components (`FMODAsset`), so that count was not checked. Spawn path
+  confirmed: `uGUI.InitializeAsync` loads the key `uGUI.prefab`;
+  `PDA.prefabScreen` is `uGUI_PDAScreen` (402 nodes). **New risk for
+  M9u3:** every `TMP_FontAsset` is 784–1,024 bytes, so its glyph tables
+  are probably empty (*hypothesis*, settled in M9u1). If so, the stored
+  `Aller_Rg` atlas has no glyph rectangles, and M9u3's check against it
+  must first find each glyph in the atlas or use another oracle. M9u3
+  stops and asks if neither works.
 
 **Risks.** TMP's layout has many options. M9u4 ports only what the
 in-scope screens set, and logs any option it meets but does not port.
