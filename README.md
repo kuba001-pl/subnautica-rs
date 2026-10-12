@@ -133,7 +133,10 @@ shadows; the fake light glows on ion crystal pedestals and under Precursor
 lights with the game's decoded shader and its transparency compositing,
 coloured by their lights as the game's script does; the Precursor consoles'
 holograms and the cache doors' force fields with the game's decoded effect
-shader (scrolling textures, soft edges, deformation, refraction); Tree Cove's
+shader (scrolling textures, soft edges, deformation, refraction); the Gun
+control-room force field and terminal material variants with UV deformation
+and optional refraction, without soft fading (M7g4c; scripted activation
+not tested); rigid effect meshes retain their animated-node attachment; Tree Cove's
 brine and the Ghost Tree/Bones Field lakes with world-space scrolling,
 deformation, near fading and weighted transparency (M7g4a/b; GPU validated,
 saved lake lighting keywords are inactive in the installed shader;

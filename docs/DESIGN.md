@@ -2132,6 +2132,40 @@ regressions pass. Full visual acceptance remains open. Next implementation
 slice: remaining M7g4 mesh-effect sets (sand/lava falls, elevator and column,
 water force field and tech cones), followed by M7g6's smaller shader census.
 
+#### M7g4c Precursor control-room effects plan (2026-10-12)
+
+Decode the two exact UV-space deformation sets without `FX_SOFTEDGES`,
+used by the Gun deactivation column's force field and its terminal screens.
+Compare their installed programs with the existing door effect. Reuse the
+current shader only if colour, opacity, scrolling, deformation and optional
+refraction rules agree; soft fading must stay off. Preserve all existing sets.
+Rigid effect meshes must retain their animated-node parent, as ordinary
+object meshes do; the first GPU run exposed a missing attachment.
+Keep program/property dumps under ignored `out/`.
+
+**Done when:**
+- [x] Document confirmed formulas, render state and defaults.
+- [x] Add exact selection with synthetic tests for deformation independently
+  of soft fading, optional refraction and rejected sets/states.
+- [x] Workspace tests, fmt, clippy and release build pass.
+- [x] Matched control-room before/after GPU benchmarks and a door regression
+  complete; log counts, shader validation, timings and exact commands.
+- [ ] Original-game visual comparison: **not tested** until available.
+
+**Implemented and numerically checked:** 473 workspace tests pass, 39 ignored.
+The column force field and two terminal material instances replace their
+fallbacks. Rigid effect parts keep their rig reference through loading and
+spawn under their animated node; five attachments logged in the control room.
+Final GPU pairs have zero errors, warnings or unsettled frames. Mesh/material/
+texture counts stay equal; tracked top-level handles decrease by four because
+existing effects become rig-owned children. Mean control-room frame time
+17.223 → 16.841 ms; door 8.049 → 8.072 ms. Another client was running on the
+same GPU, so no isolated performance or speedup claim. Release built in
+`out/m7g4c/target` because the user's running client locked the default output.
+Commands and limitations are in MODLOG. The column's back-culled inner layer,
+elevator, tech cones and other M7g4 sets remain open; terminal scripted colour
+activation and original-game imagery are **not tested**.
+
 #### M7g5 implementation plan (2026-10-11)
 
 1. Decode the installed `UWE/SIG` and `UWE/SIG Triplanar with Capping`

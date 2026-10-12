@@ -263,6 +263,50 @@ come out flat `_Color`, which is white for all of the ones above.
   render-texture uv may run the other way; the force fields' maps are
   noise, so it does not show).
 
+### Control-room UV deformation without soft fading (M7g4c) — confirmed
+
+Confirmed from the installed shader's D3D11 vertex/fragment metadata and
+programs, dumped freshly during M7g4b: vertex/fragment blobs 17/335 for
+`FX_ADDFOG FX_DEFORM FX_MULMAP FX_SCROLL WBOIT`, and 82/400 when
+`FX_REFRACTMAP` is also present. Rust `sn-inspect prefab --props` checks
+the Gun control-room column and disable-gun terminal. Dumps remain ignored.
+
+Both sets use the door's UV deformation and colour chain: twice material
+colour times vertex colour, both scrolling main textures and local day/night
+strength. Deformation samples its independent ST/scroll coordinates, then
+adds `(map.xy − 1) × _DeformStrength` to the base UV before the main and
+refraction maps use their own ST/scroll. Cutoff tests the resulting colour
+alpha. Opacity is the saturated mean of RGB times that alpha, followed by
+fog-path fading and saturation; WBOIT weighting is unchanged.
+
+There is no scene-depth sampler or `_InvFade` constant in these fragment
+programs: no soft-intersection fade. Their vertices have no near-clip alpha
+fade. Saved `_InvFade`, `_ClipOffset` and `_ClipFade` therefore do not enable
+either fade. Depth occlusion is still the material's Less test. The refracting
+set uses the same packed-map unpacking, scalar `_RefractStrength`, colour
+alpha and blue fog extinction as the door's refraction output. It does not
+multiply the offset by brightness opacity or WBOIT weight.
+
+The sampled materials request the existing effect blend/depth state and
+cull off. Declared defaults confirmed with UnityPy: main, second main and
+deformation textures white; deformation strength 0.2; refraction strength
+0.1; refraction texture bump. Our shader already implements these formulas,
+so M7g4c only selects the two exact sets with deformation on and soft fading
+off. Missing/failed active refraction maps are rejected rather than using
+the current white fallback in place of the declared neutral bump. Missing
+main/second/deformation maps continue using white.
+
+Rigid animated effect meshes retain their animated-node parent and identity
+local transform, matching ordinary object meshes. The first M7g4c run
+exposed that the old effect path placed these meshes independently in world
+space. This was corrected before the final checks; scripted activation is
+still **not tested**.
+
+The terminal's stored colour is zero, so its selected effect is invisible
+until something changes that colour. Original-game scripted activation and
+matched visual comparison are **not tested**. Camera-selected fog settings
+and unchecked refraction Y sign retain the earlier limitations.
+
 ### Tree Cove unlit brine (M7g4a) — confirmed from compiled programs
 
 The exact keyword set `FX_DEFORM FX_MULMAP FX_NEARCLIP FX_SCROLL

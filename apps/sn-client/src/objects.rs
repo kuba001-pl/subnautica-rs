@@ -774,7 +774,7 @@ struct ParticlesVariant {
 /// force fields, plus Tree Cove and Lost River brine. The latter's saved
 /// FX_LIGHT_2SIDED/FX_LIGHT_NORMALMAP keywords are absent from the installed
 /// shader's compiled keyword table; they do not select lighting programs.
-const PARTICLES_VARIANTS: [(&str, ParticlesVariant); 7] = {
+const PARTICLES_VARIANTS: [(&str, ParticlesVariant); 9] = {
     const fn v(fresnel_clip: bool, mul_map: bool, rest: bool, refract: bool) -> ParticlesVariant {
         ParticlesVariant {
             fresnel_clip,
@@ -802,6 +802,20 @@ const PARTICLES_VARIANTS: [(&str, ParticlesVariant); 7] = {
         (
             "FX_ADDFOG FX_DEFORM FX_MULMAP FX_SCROLL FX_SOFTEDGES WBOIT",
             v(false, true, true, false),
+        ),
+        (
+            "FX_ADDFOG FX_DEFORM FX_MULMAP FX_REFRACTMAP FX_SCROLL WBOIT",
+            ParticlesVariant {
+                soft_edges: false,
+                ..v(false, true, true, true)
+            },
+        ),
+        (
+            "FX_ADDFOG FX_DEFORM FX_MULMAP FX_SCROLL WBOIT",
+            ParticlesVariant {
+                soft_edges: false,
+                ..v(false, true, true, false)
+            },
         ),
         (
             "FX_DEFORM FX_MULMAP FX_NEARCLIP FX_SCROLL FX_SOFTEDGES FX_TRIPLANAR WBOIT",
@@ -860,6 +874,12 @@ fn particles_values(
         if v != wanted {
             return Err(format!("{name} {v} (the pass draws {wanted})"));
         }
+    }
+    // The pass's missing-texture fallback is white, while this shader
+    // declares a neutral bump for refraction. Do not invent an offset when
+    // an active refraction map is absent or failed to load.
+    if variant.refract && textures[3].is_none() {
+        return Err("missing _RefractMap (neutral bump default not implemented)".into());
     }
     let vector = |name: &str, default: [f32; 4]| {
         material
@@ -1859,13 +1879,6 @@ impl Library {
                     }
                 } else {
                     *sub_mesh
-                };
-                // Effect parts stay where the hierarchy stores them (not
-                // animated yet).
-                let (local, rig) = if effect {
-                    (node.in_prefab, None)
-                } else {
-                    (local, rig)
                 };
                 parts.push(Part {
                     mesh: mesh_id,
@@ -4316,6 +4329,29 @@ impl ObjectStreamer {
                     look,
                     textures,
                 };
+                // A rigid animated mesh belongs to its animated node, just
+                // as on the ordinary object path. Its local placement is
+                // already held by that node; applying it again would move
+                // it twice and a world-space marker would stop following it.
+                if let Some(RigPart::Node { rig, node }) = part.rig {
+                    let Some((_, nodes, drawn, _)) = rig_entities.get_mut(usize::from(rig)) else {
+                        continue;
+                    };
+                    let Some(&parent) = nodes.get(usize::from(node)) else {
+                        continue;
+                    };
+                    let entity = s
+                        .commands
+                        .spawn((marker, Transform::IDENTITY, ChildOf(parent)))
+                        .id();
+                    lod_member(s.commands, &mut lod_members, part.lod, entity, 0);
+                    drawn.push(entity);
+                    info!(
+                        "objects: rigid effect mesh {} attached to rig {rig} node {node}",
+                        part.mesh
+                    );
+                    continue;
+                }
                 let entity = s.commands.spawn((marker, to_bevy(&world))).id();
                 lod_member(s.commands, &mut lod_members, part.lod, entity, 0);
                 entities.push(entity);
@@ -4615,6 +4651,68 @@ mod tests {
         );
         let v = particles_values(&m, &uber_shader(), [None; 4]).unwrap();
         assert!(v.soft_edges && v.deform && !v.refract);
+    }
+
+    #[test]
+    fn control_room_deformation_does_not_enable_soft_intersection_fading() {
+        let base = "FX_ADDFOG FX_DEFORM FX_MULMAP FX_SCROLL WBOIT";
+        let textures = [
+            Some((2, [3.0, 4.0, 0.2, 0.3])),
+            None,
+            Some((5, [0.5, 0.6, 0.7, 0.8])),
+            Some((6, [7.0, 8.0, 0.9, 0.1])),
+        ];
+        let mut shader = uber_shader();
+        shader.defaults.insert("_DeformStrength".into(), [0.7; 4]);
+        shader.defaults.insert("_RefractStrength".into(), [0.03; 4]);
+        for refract in [false, true] {
+            let keywords = if refract {
+                format!("FX_REFRACTMAP {base}")
+            } else {
+                base.into()
+            };
+            let mut material = particles_material(&keywords, &[("_InvFade", 999.0)]);
+            // A material vector with the same name must not override the
+            // scalar refraction constant read by the compiled program.
+            material.colors.push(("_RefractStrength".into(), [9.0; 4]));
+            let values = particles_values(&material, &shader, textures).unwrap();
+            assert!(values.deform && values.mul_map);
+            assert!(!values.soft_edges && !values.brine && !values.fresnel_clip);
+            assert_eq!(values.refract, refract);
+            assert_eq!(
+                (values.deform_strength, values.refract_strength),
+                (0.7, 0.03)
+            );
+            assert_eq!(values.textures, [Some(2), None, Some(5), Some(6)]);
+            assert_eq!(values.main_st, [3.0, 4.0, 0.2, 0.3]);
+            assert_eq!(values.main2_st, [1.0, 1.0, 0.0, 0.0]);
+            assert_eq!(values.deform_st, [0.5, 0.6, 0.7, 0.8]);
+            assert_eq!(values.refract_st, [7.0, 8.0, 0.9, 0.1]);
+            let mut missing = textures;
+            missing[3] = None;
+            assert_eq!(
+                particles_values(&material, &shader, missing).is_err(),
+                refract
+            );
+            material.keywords.push_str(" FX_SOFTEDGES");
+            let door = particles_values(&material, &shader, textures).unwrap();
+            assert!(door.soft_edges && door.deform);
+            assert_eq!(door.refract, refract);
+            for extra in ["FX_TRIPLANAR", "FX_LIGHTMODE_PIXEL", "UNKNOWN"] {
+                material.keywords = format!("{keywords} {extra}");
+                assert!(particles_values(&material, &shader, textures).is_err());
+            }
+            material.keywords = keywords;
+            material.floats.push(("_MyCullVariable".into(), 2.0));
+            material
+                .floats
+                .retain(|(name, value)| name != "_MyCullVariable" || *value == 2.0);
+            assert!(
+                particles_values(&material, &shader, textures)
+                    .unwrap_err()
+                    .starts_with("_MyCullVariable")
+            );
+        }
     }
 
     #[test]

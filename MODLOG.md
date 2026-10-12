@@ -2,6 +2,94 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-12 — M7g4c: control-room UV deformation and rigid effect ownership
+
+**What/why:** user approved committing/pushing M7g4b; commit `92bf67f`
+was pushed to `origin/main` and the remote hash verified. Continued with
+the next scoped M7g4 slice; this new work remains uncommitted.
+The Gun column force field and two terminal material instances now select
+their compiled UV deformation sets, with optional refraction and no soft
+fade. Existing WGSL already implements their confirmed formulas. Exact
+keyword/state guards remain; missing active refraction maps are rejected
+because the current white fallback does not implement the declared bump
+default. No dependency, architecture or whitelist changes.
+
+The GPU count check exposed rigid effects losing animated-node ownership.
+The loader now retains their rig reference, and spawning uses the rig node
+as parent with identity local transform, as the ordinary object path does.
+Five attachments are logged in the control-room case. Format docs, roadmap
+and README updated. All extraction/captures remain ignored; install read-only.
+
+**Verified:**
+- `cargo test --workspace`: 473 passed, 39 ignored, 0 failed, including
+  synthetic tests for deformation independently of soft fading, optional
+  refraction, scalar defaults/overrides, missing second main map, missing
+  active refraction map, unsupported sets and incorrect culling.
+- `cargo clippy --workspace --all-targets -- -D warnings`,
+  `cargo fmt --all -- --check`, `git diff --check`: pass.
+- `cargo build --release -p sn-client --target-dir out/m7g4c/target`: pass.
+  Default output was locked by the user's running client; that process was
+  left running. Copied the existing release dependency cache inside ignored
+  `out/` and built to the separate target directory.
+- Installed D3D11 programs and shader defaults checked with UnityPy; Rust
+  `sn-inspect prefab ... --props` checks both control-room prefabs. The
+  selected programs have no scene-depth soft-fade sampler or vertex near
+  fade. Research/verification logs: `out/m7g4c/`.
+- Final pairs, after then before, 1600×900, view 400 m, 120 settled warm-up
+  frames and 300 measured frames: no GPU errors, loader warnings or
+  unsettled frames. Reports/CSV/captures:
+  `out/baselines/run-m7g4c-final2-{column,door}-{before,after}/`.
+  Three control-room materials replace fallback; effects 73 → 76 parts.
+  Control room retains 102 batches/6,815 meshes/857 materials/1,064 textures;
+  tracked top-level entities 20,676 → 20,672 (four formerly independent
+  effects now owned by rig nodes, plus one newly ported rigid mesh already
+  owned by its rig on the ordinary path). No geometry was removed. Global
+  opaque sky cache loses three converted material instances (567 → 564).
+  Door: unchanged 8,202 entities/1,835 meshes/336 materials/645 textures.
+  Terrain, sky and light counts equal in both pairs.
+- Final mean frame times before → after: control room 17.223 → 16.841 ms,
+  p99 20.697 → 20.375 ms; door 8.049 → 8.072 ms, p99 11.346 → 12.689 ms.
+  Recent effects GPU: control room 0.0587 → 0.0596 ms; door
+  0.0876 → 0.0877 ms. The user's other client shared the GPU throughout;
+  these are contended runtime checks, not isolated performance evidence.
+  Neither a speedup nor meeting the 16.7 ms target is established.
+- Archived control binary hash matches the previous M7g4b final executable;
+  source baseline is `92bf67f`. Both binary hashes and numeric checks are
+  in `out/m7g4c/verification-final.log`.
+
+**Reproduce:** set `SUBNAUTICA_DIR` to the player's install, run the build
+command above and use a fresh baseline name:
+
+```powershell
+out/m7g4c/target/release/sn-client.exe --benchmark 300 --baseline m7g4c-check --baseline-revision local-M7g4c --warmup 120 --resolution 1600 900 --start 356 -68 1075 --look 360 -71 1083 --fov 60 --view 400 --lifepod-seed 1 --slot-seed 1 --time 9.6 --time-scale 0 --aurora intact --water-quality high --color-grading off --gpu-timings
+```
+
+Expect the column force field and both terminal materials as effect
+materials with `deform: true, soft_edges: false`, five rigid attachment
+lines, zero warnings, 300 samples/report/capture and clean exit. For the
+door regression use another fresh name and
+`--start -622 -558 1482 --look -608 -561 1483`.
+
+**Dead ends/corrections:** default release build failed with Windows access
+denied because the running client locked its executable; isolated build
+resolved this. Initial control-room pair was 12.100 → 17.835 ms; reverse-order
+final checks did not reproduce that gap. Initial entity count rose by one.
+The first attachment correction addressed spawning only; a rerun showed
+the loader still explicitly cleared effect rig references. Correcting both
+paths yielded the five logged attachments and the explained ownership
+counts above. Earlier `run-m7g4c-*` and `run-m7g4c-final-*` reports precede
+that complete fix and are not final acceptance. A repeat launcher initially
+had a trailing array comma; it did not run. The report checker was adjusted
+to distinguish tracked handles from geometry and to match `entities` without
+also modifying `scene_entities`.
+
+**Not tested:** original-game matched images, terminal scripted colour
+activation, keyboard play, isolated GPU timings, Linux/macOS. Terminal
+stored colours are zero; shader selection alone does not activate them.
+The column's back-culled inner layer and elevator/tech-cone/other M7g4
+sets remain rejected. Camera-selected fog and refraction Y sign remain
+limitations. No commits or pushes of this new M7g4c work.
+
 ## 2026-10-12 — M7g4b: Lost River brine saved-keyword selection
 
 **What/why:** after M7g5 and M7g4a, inspected the presumed lit lake
