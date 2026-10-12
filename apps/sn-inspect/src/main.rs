@@ -20,6 +20,7 @@ mod materials;
 mod mesh;
 mod octree;
 mod orient;
+mod pickup;
 mod pickups;
 mod prefab;
 mod scene;
@@ -129,6 +130,12 @@ Commands:
                          in the lifepod, walk to the hatch, leave, swim
                          away 10 s and back, enter; positions, motor
                          changes, speeds next to the values read
+  pickup [--seed <N>]    M9d6b: the items headless, with the player's rules,
+                         an in-process server and client: the supplies
+                         out of the locker, out of the pod, the nearest
+                         pickup, the nearest outcrop broken and its
+                         resource, a drop picked up again, a death's
+                         drops; each step's counts checked
   dive [--seed <N>]      M9c: oxygen, suffocation and respawn: out of the
                          lifepod, to the seabed until the player dies,
                          respawn in the pod, a dive cut short by surfacing;
@@ -158,7 +165,9 @@ Commands:
                          the overload with that many parameters;
                          METHOD#N: the Nth overload)
   code --enum <TYPE>     An enum's names and values (Outer/Inner for a
-                         nested one)
+                         nested one; also for --il)
+  code --nested <TYPE>   The types nested in a type (coroutines, enums)
+                         and their methods
   techdata               Recipes and item data (Balance/TechData) and the
                          prefab → tech type map (EntTechData), with checks
   player                 The player's numbers from the main scene (oxygen,
@@ -347,6 +356,7 @@ fn run(mut args: Vec<String>) -> Result<ExitCode> {
         ["scene", "--lifepod"] => scene::lifepod(&game, seed),
         ["walk"] => walk::run(&game, seed),
         ["dive"] => dive::run(&game, seed),
+        ["pickup"] => pickup::run(&game, seed),
         ["swim"] => swim::run(&game, seed, 600.0),
         ["swim", "--seconds", s] => swim::run(
             &game,
@@ -380,6 +390,7 @@ fn run(mut args: Vec<String>) -> Result<ExitCode> {
             code::il(&game, ty, method, Some(n))
         }
         ["code", "--enum", ty] => code::enum_values(&game, ty),
+        ["code", "--nested", ty] => code::nested(&game, ty),
         ["techdata"] => gameplay::techdata(&game),
         ["player"] => gameplay::player(&game),
         ["pickups"] => pickups::run(&game),

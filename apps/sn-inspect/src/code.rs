@@ -140,11 +140,7 @@ fn print_node(code: &sn_assets::GameCode, n: &CraftNode, depth: usize) {
 pub fn il(game: &GameData, type_name: &str, method: &str, params: Option<u32>) -> Result<ExitCode> {
     let bytes = sn_assets::read_assembly(game)?;
     let asm = Assembly::parse(&bytes).map_err(|e| e.to_string())?;
-    let (ns, n) = type_name.rsplit_once('.').unwrap_or(("", type_name));
-    let ty = asm
-        .find_type(ns, n)
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| format!("no type {type_name}"))?;
+    let ty = resolve_type(&asm, type_name)?;
     // `NAME#N`: the Nth method of that name (overloads in declaration
     // order, from 1).
     let (name, nth) = match method.rsplit_once('#') {
@@ -200,7 +196,17 @@ pub fn il(game: &GameData, type_name: &str, method: &str, params: Option<u32>) -
 pub fn enum_values(game: &GameData, type_name: &str) -> Result<ExitCode> {
     let bytes = sn_assets::read_assembly(game)?;
     let asm = Assembly::parse(&bytes).map_err(|e| e.to_string())?;
-    // `Outer/Inner`: an enum nested in a type.
+    let ty = resolve_type(&asm, type_name)?;
+    let values = sn_dotnet::enum_values_of(&asm, ty, type_name).map_err(|e| e.to_string())?;
+    for (name, value) in values {
+        println!("{value:>12}  {name}");
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// A type by name: `Namespace.Name`, or `Outer/Inner` for a nested one
+/// (a compiler-made coroutine's `<Method>d__N`, a nested enum).
+fn resolve_type(asm: &Assembly, type_name: &str) -> Result<u32> {
     let (outer, inner) = match type_name.split_once('/') {
         Some((o, i)) => (o, Some(i)),
         None => (type_name, None),
@@ -216,9 +222,28 @@ pub fn enum_values(game: &GameData, type_name: &str) -> Result<ExitCode> {
             .map_err(|e| e.to_string())?
             .ok_or_else(|| format!("no type {type_name}"))?;
     }
-    let values = sn_dotnet::enum_values_of(&asm, ty, type_name).map_err(|e| e.to_string())?;
-    for (name, value) in values {
-        println!("{value:>12}  {name}");
+    Ok(ty)
+}
+
+/// `code --nested <TYPE>`: the types nested in a type and their methods.
+pub fn nested(game: &GameData, type_name: &str) -> Result<ExitCode> {
+    let bytes = sn_assets::read_assembly(game)?;
+    let asm = Assembly::parse(&bytes).map_err(|e| e.to_string())?;
+    let ty = resolve_type(&asm, type_name)?;
+    let e = |e: sn_dotnet::Error| e.to_string();
+    for row in asm.nested_types(ty).map_err(e)? {
+        let methods: Vec<&str> = asm
+            .methods(row)
+            .map_err(e)?
+            .map(|m| asm.method_name(m))
+            .collect::<std::result::Result<_, _>>()
+            .map_err(e)?;
+        println!(
+            "{}/{}: {}",
+            type_name,
+            asm.type_name(row).map_err(e)?.1,
+            methods.join(", ")
+        );
     }
     Ok(ExitCode::SUCCESS)
 }

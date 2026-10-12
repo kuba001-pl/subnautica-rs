@@ -84,9 +84,14 @@ Tested on Windows 11 with game build 10 (Steam):
   the game's click does (take out of or put into the locker, equip,
   unequip), a right click drops the item where the game would (not in
   the lifepod). Checked from scripted runs' logs (`--use-item`,
-  `--panel`, `--drop`): the pod's six supplies taken out, a flare
-  dropped outside and drawn. Playing it with keyboard and mouse is not
-  tested by the agent; dropped items do not fall yet.
+  `--panel`, `--drop`) and headless with `sn-inspect pickup --seed N`
+  (the locker, a pickup, an outcrop and its resource, a drop picked up
+  again, a death; every count checked, seeds 1–3): the pod's six
+  supplies taken out, a flare
+  dropped outside and drawn. Dying outside the lifepod drops what you
+  carry but one item (as the game does), inside it nothing. Playing it
+  with keyboard and mouse is not tested by the agent; dropped items do
+  not fall yet.
 - Oxygen, suffocation, health, death and respawn in the lifepod, with
   the game's numbers (45 units, 1 / 1.5 / 2 per second by depth, refill
   30 per second at the surface, 8 s to pass out). `sn-inspect dive` runs
@@ -258,8 +263,12 @@ network: only positions, animation values, events and checks.
   relay or NAT punching: it would need a third-party service.
 - **Synced:** each player's position, look, swimming and walking
   animations, the lifepod hatch cinematics (doors and climbing: logged, not yet checked by eye), deaths
-  and respawns, the game clock and the Aurora. **Not yet:** items,
-  inventory, crafting, saves, creatures, chat, players colliding.
+  and respawns, the game clock and the Aurora; items (pick-ups,
+  outcrops, drops, the locker, death drops: each change is a world event
+  every machine replays; checked with two clients on one machine, a drop
+  drawn and taken away at the same event on both). **Not yet:**
+  crafting, saves, creatures, chat, players colliding; other players'
+  held items and the locker's flap.
 - **Trust:** no encryption and no password in the client yet: for
   friends, not public servers.
 - **Tested:** two clients on one machine (also with simulated latency

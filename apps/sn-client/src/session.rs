@@ -617,6 +617,12 @@ impl Session {
 impl Drop for Session {
     fn drop(&mut self) {
         let mut i = self.lock();
+        // A last report (runs shorter than its period print none).
+        let now = i.now();
+        i.report(now);
+        for (_, line) in std::mem::take(&mut i.log) {
+            info!("{line}");
+        }
         i.client.bye();
         i.pump();
         i.stop = true;

@@ -59,7 +59,7 @@ fn life(l: Option<sn_sim::vitals::Life>) -> Life {
 }
 
 /// A record as the protocol's state (tick filled in at replay).
-fn to_state(r: &StepRecord) -> (PlayerState, Vec<u8>) {
+pub(crate) fn to_state(r: &StepRecord) -> (PlayerState, Vec<u8>) {
     let mut anim_state = AnimState::default();
     let mut triggers = Vec::new();
     for &(name, v) in &r.values {

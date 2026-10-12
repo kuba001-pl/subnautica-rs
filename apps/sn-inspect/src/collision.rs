@@ -3,8 +3,11 @@
 //! batches within the game's collision range of the player in an
 //! `sn-sim` world, and the lifepod.
 
-use sn_assets::{BatchBodies, CollisionLoader, LayerRules, SCENE_BODY, Scene, bodies};
+use std::collections::HashSet;
+
+use sn_assets::{BatchBodies, CollisionLoader, LayerRules, SCENE_BODY, Scene, TargetBody, bodies};
 use sn_install::GameData;
+use sn_protocol::EntityKey;
 use sn_sim::V3;
 use sn_sim::collide::{Body, Capsule, World};
 
@@ -17,6 +20,8 @@ pub struct Streamed<'a> {
     pub rules: LayerRules,
     pub world: World,
     batches: BatchBodies,
+    /// Objects gone from the world whose bodies went (M9d6b).
+    gone: HashSet<EntityKey>,
     pub load_ms: Vec<f64>,
     pub terrain_triangles: usize,
     pub object_triangles: usize,
@@ -36,6 +41,7 @@ impl<'a> Streamed<'a> {
             rules,
             world: World::new(),
             batches: BatchBodies::new(),
+            gone: HashSet::new(),
             load_ms: Vec::new(),
             terrain_triangles: 0,
             object_triangles: 0,
@@ -46,9 +52,12 @@ impl<'a> Streamed<'a> {
 
     /// Loads the batches within reach of `pos` and drops the others.
     pub fn stream(&mut self, pos: V3) -> Result<()> {
+        let gone = &self.gone;
         let c = self
             .batches
-            .update(&mut self.loader, &self.rules, pos.to_f32())?;
+            .update_with(&mut self.loader, &self.rules, pos.to_f32(), &|k| {
+                gone.contains(k)
+            })?;
         for id in c.remove {
             self.world.remove(id);
         }
@@ -61,6 +70,71 @@ impl<'a> Streamed<'a> {
         self.object_shapes += c.object_shapes;
         self.skipped += c.skipped;
         Ok(())
+    }
+
+    /// The target a body belongs to (M9d6b; targets load once the loader
+    /// has the item rules).
+    pub fn target(&self, body: u64) -> Option<&TargetBody> {
+        self.batches.target(body)
+    }
+
+    /// Every target with bodies, once per key, with one of its bodies.
+    pub fn targets(&self) -> Vec<(u64, TargetBody)> {
+        let mut seen = HashSet::new();
+        let mut out: Vec<(u64, TargetBody)> = self
+            .batches
+            .targets()
+            .map(|(id, t)| (id, t.clone()))
+            .collect();
+        out.sort_by_key(|(id, _)| *id);
+        out.retain(|(_, t)| seen.insert(t.key.clone()));
+        out
+    }
+
+    /// The bodies of the target `key`.
+    pub fn targets_of(&self, key: &EntityKey) -> Vec<u64> {
+        self.batches
+            .targets()
+            .filter(|(_, t)| &t.key == key)
+            .map(|(id, _)| id)
+            .collect()
+    }
+
+    /// Makes the bodies follow the shared items (M9d6b, as the client's
+    /// collision worker does): gone keys lose theirs, the objects the
+    /// server made get them. Bodies removed and added.
+    pub fn follow_items(&mut self, items: &sn_session::ItemsState) -> (usize, usize) {
+        let mut removed = 0;
+        let new: Vec<EntityKey> = items
+            .gone
+            .keys()
+            .filter(|k| !self.gone.contains(*k))
+            .cloned()
+            .collect();
+        for k in new {
+            for id in self.batches.remove_key(&k) {
+                self.world.remove(id);
+                removed += 1;
+            }
+            self.gone.insert(k);
+        }
+        let c = self.batches.sync_spawned(
+            &mut self.loader,
+            &self.rules,
+            items
+                .objects
+                .iter()
+                .map(|(id, o)| (*id, o.class.as_str(), o.point, o.rotation)),
+        );
+        for id in c.remove {
+            self.world.remove(id);
+            removed += 1;
+        }
+        let added = c.add.len();
+        for (id, body) in c.add {
+            self.world.insert(id, body);
+        }
+        (removed, added)
     }
 
     /// Adds a placed scene's colliders (the lifepod and its modules),

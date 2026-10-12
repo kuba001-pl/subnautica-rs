@@ -5,6 +5,7 @@
 //! headless in tests with as many simulated clients as wanted.
 
 pub mod client;
+pub mod drops;
 pub mod items;
 pub mod server;
 pub mod world;

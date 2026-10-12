@@ -932,6 +932,27 @@ overload) and `code --enum <TYPE>` (`Outer/Inner` for a nested enum).
 - **Hypothesis:** `PDA.Open` does not stop the player's movement (the
   distance rule needs it); not checked in the game.
 
+## Death drops (M9d6a)
+
+- **Confirmed (code, `sn-inspect code --il 'Player/<ResetPlayerOnDeath>d__302'
+  MoveNext` and `code --il Player OnKill`):** `Player.OnKill` turns the
+  player's input and controller off, ignores quick slot and PDA input
+  (`SetIgnorePDAInput(true)`), freezes the stats, and starts
+  `ResetPlayerOnDeath(5)`. That coroutine waits 5 s, ends the game in
+  permadeath, triggers `playerDeathEvent`, sends
+  `DisableHeadCameraController`, rebinds the animator (unless piloting),
+  shows the respawn screen, `ToNormalMode(false)`, then
+  `Inventory.LoseItems()`, then `MovePlayerToRespawnPoint`; 1 s later
+  it waits for the world to settle, hides the screen, resets health and
+  oxygen.
+- **Confirmed (code):** `LoseItems` lists the grid's items then the
+  equipment's with `destroyOnDeath`, and calls `InternalDropItem(item,
+  false)` for all but the last (see § Inventory), so each drop draws its
+  own ray and rotation from the same camera.
+- **Confirmed (real data, M9d6a run):** the six supplies, all
+  `destroyOnDeath`: a death outside drops five, keeps the last in the
+  grid's order (a Nutrient block); a death in the lifepod drops none.
+
 ## Fabricator menus: `CraftTree` (code only)
 
 - **Confirmed (code):** each crafting machine's menu (fabricator,

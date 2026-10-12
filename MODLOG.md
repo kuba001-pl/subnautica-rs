@@ -2,6 +2,128 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-12 — M9d6c: two players, and the M9d6 summary
+
+**What:**
+- `objects.rs`: a server-made object's "drawn" line gives the world
+  event at which it was asked for and the drawn count; its removal is
+  logged with the event and the count (to compare two clients' logs).
+- `session.rs`: a last session report on exit (the periodic one is every
+  60 s, longer than these runs), with the server's hash checks.
+- README: "Play together" lists items as synced.
+
+**Why:** M9d6c of the M9d6 plan; with a, b and c M9d6 is done.
+
+**Verified:**
+- Host `sn-client --view 400 --resolution 960 540 --host 27431 --name
+  host --use-item 3,26 --panel 6=take-all,7=close,24=drop --use-hatch 8
+  --kill 30 --shot 50 m9d6c-host`, 8 s later joiner `--join
+  127.0.0.1:27431 --name joiner --shot 44 m9d6c-joiner`
+  (`out/m9d/m9d6c_{host,joiner}.log`). On both, the same lines: object 4
+  drawn, asked at world event 18, 1 drawn; removed at event 19, 0 drawn
+  (the host's hand picked it up from 1.01 m); objects 0, 1, 2, 4, 5
+  drawn, asked at event 23, 5 drawn (the host's death drops). Host
+  report: 100 hash checks, 0 differ; 53 and 49 hash reports.
+- `sn-server --port 27778` + `sn-inspect coop 127.0.0.1:27778 --count 4
+  --presets lan,bad --seconds 20` (`out/m9d/m9d6c_{server,coop}.log`):
+  lan 18,252/18,252 exact; bad 18,025/18,060 (99.806 %, target 99 %,
+  max error 0.032 m); 252 hash checks, 0 differ.
+- Solo `--hatch-name top --use-hatch 3,15,27 --hold-forward 31 --kill 40
+  --shot 45 m9d6c-solo`, compared with `out/m10g/cmp.py` to M10g's
+  `n1.txt`: 453/453 states equal, step shift 0 on every line, 15/15
+  events equal.
+- `cargo test --workspace` (with M9d6a and b): 470 passed, 0 failed, 39
+  ignored; clippy `-D warnings` and fmt pass.
+
+**Found:** the first two-client run had no hash count in the logs (runs
+under 60 s print no report), hence the report on exit; its joiner logged
+"lost the connection (TimedOut)" because the host quit first (expected;
+the rerun let the joiner quit first).
+
+**Not tested:** two machines; two players at the locker at once; another
+player's drops dropped while that player's state overtakes the `Lose`
+request over UDP (the server takes "in the pod" from the latest state:
+in solo the request comes first; not seen in these runs).
+
+## 2026-10-12 — M9d6b: `sn-inspect pickup`, the items headless
+
+**What:**
+- `sn-inspect pickup [--seed N]` (`pickup.rs`, new): `walk`'s run with
+  the vitals and the item targets, an in-process server and client
+  (`sn-session`, a direct in-memory link on a simulated clock; the run's
+  steps go to the server as the client's states, one tick each, before
+  each request). Steps: the hand on the locker and every supply out
+  (left clicks by `item_action`), out of the pod, the nearest pickup, the
+  nearest outcrop hit until it breaks and its resource, a drop
+  (`drop_at`) picked up again at once, a death (`death_drops` from the
+  camera at `MoveToRespawn`, sent before the respawn's state). Each step
+  logs the grid with cells, the slots, the locker, the server-made
+  objects and the gone keys; 14 checks set the exit code.
+- `collision.rs`: `Streamed` keeps gone keys out of loads, `target`,
+  `targets`, `targets_of`, `follow_items` (bodies follow the shared
+  items, as the client's worker). `BatchBodies::targets`. `walk.rs`:
+  `look_at`, `eye`, `look` visible; `death_camera` (the camera before
+  the respawn's move). `coop::to_state` shared.
+- No new dependency or file type.
+
+**Why:** M9d6b of the M9d6 plan.
+
+**Verified:**
+- `sn-inspect pickup --seed 1|2|3` (`out/m9d/m9d6b_seed{1,2,3}.log`):
+  14 checks, 0 failed, each; 0 requests refused; client and server world
+  hashes equal; 0 penetrations, 0 surfaces passed through. Seed 1: locker
+  from 1.95 m; acid mushroom at 17.4 m; limestone outcrop 3 hits → copper
+  ore; the drop 1.30 m from the camera, picked up from 0.94 m; the death
+  dropped 7 of 8, kept copper ore; 1,317 steps in 4.3 s. Seeds 2 and 3:
+  resources titanium and copper ore; 2,904 and 2,857 steps.
+- `cargo test --workspace`, clippy, fmt: see the M9d6c entry.
+
+**Dead ends / found:**
+1. Seeds 2 and 3: the nearest outcrop (26.8 m, 7.1 m) was not reached in
+   30 s: the script swims straight at it and stalled against the terrain
+   (0.4–1.9 m/s at the end). It takes the next nearest; a path finder is
+   not worth it for a proof.
+2. A death drop 2.4 m from the camera on seed 1, past the ray's 1.5 m:
+   `FindDropPosition` casts its sphere 5 m, beyond the ray's point, and
+   moves the item to the first contact (§ Inventory, ported as read).
+
+## 2026-10-12 — M9d6a: death drops and shared hand code
+
+**What:**
+- DESIGN: the M9d6 plan; M9d6 split into a (this), b (`sn-inspect
+  pickup`), c (two players). Found while planning b: no client sent a
+  death's drops (`Request::Lose`), though the protocol and the server
+  have had them since M9d3.
+- `sn-session::drops` (new): `Draws` (SplitMix64, `insideUnitCircle`),
+  `drop_at` (`InternalDropItem`: `drop_ray`, `find_drop_position`,
+  `Random.rotation`), `death_drops` (`LoseItems`' points as millimetre
+  offsets from the camera); 2 tests.
+- `sn-assets::hand` (new): the hand's `aim` moved from `sn-client`'s
+  `items.rs` with its test, so `sn-inspect` can use it.
+- `sn-client`: the panel's and `--drop`'s drop use `drop_at`; at the
+  death's `MoveToRespawn`, before the teleport, `lose_items` sends `Lose`
+  (as `ResetPlayerOnDeath` calls `LoseItems` before
+  `MovePlayerToRespawnPoint`).
+- `sn-dotnet`: `nested_types`; `sn-inspect code --nested TYPE` and
+  `Outer/Inner` for `--il` (to read the death coroutine).
+- `gameplay.md` § Death drops; README. No new dependency or file type.
+
+**Why:** M9d6a of the M9d6 plan.
+
+**Verified:**
+- `cargo test --workspace`: 470 passed, 0 failed, 39 ignored. Clippy with
+  `-D warnings` and fmt pass.
+- `sn-client --view 400 --resolution 960 540 --use-item 3 --panel
+  6=take-all,7=close --use-hatch 8 --kill 20 --shot 29 m9d6a-death`
+  (`out/m9d/m9d6a_death.log`): died on the pod's top at (-126.98, 5.67,
+  -49.75); at `MoveToRespawn` "LoseItems: 5 items dropped", offsets
+  1.09–1.45 m; request 6 → world event 17 `Lost` with the 5 items; the
+  grid then holds Nutrient block #3 only; 5 server-made objects drawn.
+- Killed in the pod (`--kill 9`, `out/m9d/m9d6a_death_pod.log`):
+  "LoseItems: nothing to drop (in pod true)", no request.
+
+**Not tested:** two players seeing another's death drops (M9d6c).
+
 ## 2026-10-12 — M9d5b: the inventory panel
 
 **What:**

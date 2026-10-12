@@ -15,6 +15,7 @@ mod code;
 mod collision;
 mod collision_world;
 mod gameplay;
+pub mod hand;
 mod host;
 mod item_rules;
 mod items;

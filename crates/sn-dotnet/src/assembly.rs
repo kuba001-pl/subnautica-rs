@@ -303,6 +303,17 @@ impl<'a> Assembly<'a> {
         Ok(None)
     }
 
+    /// The types nested in `outer` (TypeDef rows), in table order.
+    pub fn nested_types(&self, outer: u32) -> Result<Vec<u32>> {
+        let mut out = Vec::new();
+        for r in 1..=self.rows(Table::NESTED_CLASS) {
+            if self.tables.cell(Table::NESTED_CLASS, r, 1)? == outer {
+                out.push(self.tables.cell(Table::NESTED_CLASS, r, 0)?);
+            }
+        }
+        Ok(out)
+    }
+
     /// A type nested in `outer` (a TypeDef row) by name.
     pub fn find_nested_type(&self, outer: u32, name: &str) -> Result<Option<u32>> {
         for r in 1..=self.rows(Table::NESTED_CLASS) {

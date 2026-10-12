@@ -12,9 +12,9 @@
 use bevy::prelude::*;
 use bevy::window::{CursorGrabMode, CursorOptions};
 use sn_assets::ItemText;
-use sn_protocol::{DropAt, ItemId, MoveTarget, Request, Store, quant};
+use sn_protocol::{ItemId, MoveTarget, Request, Store};
+use sn_session::drops::{Draws, drop_at};
 use sn_sim::V3;
-use sn_sim::collide::MOVE;
 use sn_sim::inventory::{self as inv, Button as Click, DropPlace, Place};
 
 use crate::body::BodyDrive;
@@ -70,7 +70,7 @@ pub struct Panel {
     /// `PDA.target` and `activeSqrDistance`.
     target: Option<(V3, f64)>,
     /// The drops' draws (the game's `Random` is unseeded).
-    random: u64,
+    draws: Draws,
     /// `--panel`, latest first.
     script: Vec<(f64, Scripted)>,
     /// What the UI shows (rebuilt when it changes).
@@ -86,64 +86,27 @@ impl Panel {
             storage: None,
             locker_seen: 0,
             target: None,
-            random: seed,
+            draws: Draws(seed),
             script,
             drawn: None,
         }
     }
 }
 
-/// SplitMix64 as a value in [0, 1).
-pub fn next_value(state: &mut u64) -> f64 {
-    *state = state.wrapping_add(0x9e37_79b9_7f4a_7c15);
-    let mut z = *state;
-    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-    ((z ^ (z >> 31)) >> 11) as f64 / (1u64 << 53) as f64
-}
-
-/// `Random.insideUnitCircle`: a point drawn uniformly in the unit disc.
-fn inside_unit_circle(state: &mut u64) -> (f64, f64) {
-    for _ in 0..64 {
-        let (x, y) = (2.0 * next_value(state) - 1.0, 2.0 * next_value(state) - 1.0);
-        if x * x + y * y <= 1.0 {
-            return (x, y);
-        }
-    }
-    (0.0, 0.0)
-}
-
-/// `Inventory.InternalDropItem` for `item`: where it lands from the
-/// camera (`drop_ray`, then `find_drop_position`) and its rotation
-/// (`Random.rotation` if `randomizeRotationWhenDropped`, else identity:
-/// our stand-in for the rotation it had). Logged next to the camera and
-/// the ray's point. `None` before the player exists.
+/// `Inventory.InternalDropItem` for `item` (`sn_session::drops::drop_at`):
+/// logged next to the camera and the ray's point. `None` before the
+/// player exists.
 pub fn drop_request(
     sim: &PlayerSim,
-    random: &mut u64,
+    draws: &mut Draws,
     item: ItemId,
     randomize: bool,
 ) -> Option<Request> {
     let (camera, forward) = sim.camera()?;
-    let value = next_value(random);
-    let circle = inside_unit_circle(random);
-    let world = sim.world();
-    let ray = inv::drop_ray(world, MOVE, camera, forward, value, circle);
-    let point = inv::find_drop_position(world, MOVE, camera, ray);
-    let q = if randomize {
-        inv::random_rotation(next_value(random), next_value(random), next_value(random))
-    } else {
-        sn_sim::Q::IDENTITY
-    };
-    let scale = quant::QUATERNION_SCALE;
-    let rotation = [
-        quant::fixed(q.x, scale),
-        quant::fixed(q.y, scale),
-        quant::fixed(q.z, scale),
-        quant::fixed(q.w, scale),
-    ];
+    let d = drop_at(sim.world(), camera, forward, randomize, draws);
+    let (ray, point) = (d.ray, V3::from_f32(d.at.point));
     info!(
-        "inventory: drop of item {}: camera ({:.3}, {:.3}, {:.3}) forward ({:.3}, {:.3}, {:.3}); draws {value:.3}, ({:.3}, {:.3}); ray to ({:.3}, {:.3}, {:.3}), {:.2} m; lands at ({:.3}, {:.3}, {:.3}), {:.2} m from the camera; rotation {rotation:?}{}",
+        "inventory: drop of item {}: camera ({:.3}, {:.3}, {:.3}) forward ({:.3}, {:.3}, {:.3}); draws {:.3}, ({:.3}, {:.3}); ray to ({:.3}, {:.3}, {:.3}), {:.2} m; lands at ({:.3}, {:.3}, {:.3}), {:.2} m from the camera; rotation {:?}{}",
         item.0,
         camera.x,
         camera.y,
@@ -151,8 +114,9 @@ pub fn drop_request(
         forward.x,
         forward.y,
         forward.z,
-        circle.0,
-        circle.1,
+        d.value,
+        d.circle.0,
+        d.circle.1,
         ray.x,
         ray.y,
         ray.z,
@@ -161,15 +125,10 @@ pub fn drop_request(
         point.y,
         point.z,
         (point - camera).length(),
+        d.at.rotation,
         if randomize { " (random)" } else { "" }
     );
-    Some(Request::Drop {
-        item,
-        at: DropAt {
-            point: point.to_f32(),
-            rotation,
-        },
-    })
+    Some(Request::Drop { item, at: d.at })
 }
 
 fn sim_id(id: ItemId) -> inv::ItemId {
@@ -262,7 +221,7 @@ fn click(
             to: to(inv::opposite(from, with_locker)),
             target: MoveTarget::Store,
         }),
-        inv::DROP => drop_request(sim, &mut panel.random, item, randomize),
+        inv::DROP => drop_request(sim, &mut panel.draws, item, randomize),
         inv::USE | inv::EAT => {
             info!("inventory: {} is not ported yet", inv::action_name(action));
             None
@@ -772,17 +731,6 @@ pub fn hover(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn draws_stay_in_range_and_the_circle_in_the_disc() {
-        let mut s = 7;
-        for _ in 0..10_000 {
-            let v = next_value(&mut s);
-            assert!((0.0..1.0).contains(&v));
-            let (x, y) = inside_unit_circle(&mut s);
-            assert!(x * x + y * y <= 1.0);
-        }
-    }
 
     #[test]
     fn panel_steps_parse() {

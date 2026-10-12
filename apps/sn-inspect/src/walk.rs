@@ -30,7 +30,7 @@ use crate::collision::{HATCH, Streamed, kind};
 use crate::swim::{PENETRATION, percentile};
 
 /// Yaw and pitch (Unity's, radians) to look from `eye` at `at`.
-fn look_at(eye: V3, at: V3) -> (f64, f64) {
+pub(crate) fn look_at(eye: V3, at: V3) -> (f64, f64) {
     let d = at - eye;
     let yaw = d.x.atan2(d.z);
     let flat = (d.x * d.x + d.z * d.z).sqrt();
@@ -66,7 +66,11 @@ pub(crate) struct Run<'a, 'g> {
     /// The hatch cinematic playing.
     hatch: Option<HatchUse>,
     /// The look: from the script's input, zero while a cinematic plays.
-    look: Look,
+    pub(crate) look: Look,
+    /// The camera (eye, forward) at the last death's `MoveToRespawn`,
+    /// before the respawn moved the player (M9d6b: where `LoseItems`
+    /// drops from).
+    pub(crate) death_camera: Option<(V3, V3)>,
     /// Each hatch cinematic that ended, for the report.
     pub(crate) hatch_uses: Vec<HatchDone>,
     /// M10f: every step's state, if recording (the bots replay it).
@@ -166,7 +170,7 @@ impl Run<'_, '_> {
     }
 
     /// The main camera in the world now.
-    fn eye(&self) -> V3 {
+    pub(crate) fn eye(&self) -> V3 {
         let root = self.hatch.as_ref().and_then(|h| h.camera_root);
         self.body.camera(self.player_pose(), root).position
     }
@@ -448,6 +452,14 @@ impl Run<'_, '_> {
             }
         }
         if respawn {
+            // `ResetPlayerOnDeath`: `LoseItems` drops from here, before
+            // the move.
+            let forward = sn_sim::player::look_rotate(
+                self.look.yaw(),
+                self.look.pitch(),
+                V3::new(0.0, 0.0, 1.0),
+            );
+            self.death_camera = Some((self.eye(), forward));
             // `EscapePod.RespawnPlayer`: the pod's player spawn, inside.
             let spawn = V3::from_f32(self.pod.spawn.position);
             self.player.teleport(&self.params, spawn, Some(true));
@@ -679,6 +691,7 @@ pub(crate) fn start<'a, 'g>(s: &'a mut Streamed<'g>, seed: u64) -> Result<Run<'a
         pod_anim,
         hatch: None,
         look: Look::default(),
+        death_camera: None,
         hatch_uses: Vec::new(),
         record: None,
     };

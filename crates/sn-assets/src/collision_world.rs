@@ -913,6 +913,11 @@ impl BatchBodies {
         self.targets.get(&body)
     }
 
+    /// Every target body and what it belongs to.
+    pub fn targets(&self) -> impl Iterator<Item = (u64, &TargetBody)> {
+        self.targets.iter().map(|(&id, t)| (id, t))
+    }
+
     /// Targets with bodies now, by kind (pickups, outcrops).
     pub fn target_counts(&self) -> [usize; 2] {
         let mut n = [0; 2];

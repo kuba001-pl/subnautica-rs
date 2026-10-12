@@ -2863,6 +2863,9 @@ pub struct ObjectStreamer {
     gone: HashSet<EntityKey>,
     keyed: HashMap<EntityKey, Vec<Entity>>,
     spawned_wanted: HashSet<u32>,
+    /// The world event index at which each wanted object was asked for
+    /// (M9d6c: logged when it is drawn, to compare two clients).
+    spawned_asked: HashMap<u32, u32>,
     spawned: HashMap<u32, Vec<Entity>>,
     spawned_pending: Vec<(u32, Instance)>,
     pub item_stats: ItemDrawStats,
@@ -2958,6 +2961,7 @@ impl ObjectStreamer {
             gone: HashSet::new(),
             keyed: HashMap::new(),
             spawned_wanted: HashSet::new(),
+            spawned_asked: HashMap::new(),
             spawned: HashMap::new(),
             spawned_pending: Vec::new(),
             item_stats: ItemDrawStats::default(),
@@ -2981,7 +2985,13 @@ impl ObjectStreamer {
 
     /// The server-made objects now (id, class, placement): new ones are
     /// loaded and drawn, missing ones despawned (M9d4b).
-    pub fn set_spawned(&mut self, commands: &mut Commands, objects: &[(u32, String, Placement)]) {
+    /// `events`: the world events applied (for the logs).
+    pub fn set_spawned(
+        &mut self,
+        commands: &mut Commands,
+        objects: &[(u32, String, Placement)],
+        events: u32,
+    ) {
         let now: HashSet<u32> = objects.iter().map(|o| o.0).collect();
         let gone: Vec<u32> = self
             .spawned_wanted
@@ -2991,17 +3001,23 @@ impl ObjectStreamer {
             .collect();
         for id in gone {
             self.spawned_wanted.remove(&id);
+            self.spawned_asked.remove(&id);
             self.spawned_pending.retain(|p| p.0 != id);
             if let Some(entities) = self.spawned.remove(&id) {
                 self.item_stats.spawned_removed += 1;
                 for e in entities {
                     commands.entity(e).despawn();
                 }
+                info!(
+                    "items: server-made object {id} removed at world event {events}; {} server-made objects drawn",
+                    self.spawned.len()
+                );
             }
         }
         let mut asked = Vec::new();
         for (id, class, at) in objects {
             if self.spawned_wanted.insert(*id) {
+                self.spawned_asked.insert(*id, events);
                 asked.push((*id, class.clone(), *at));
             }
         }
@@ -3836,12 +3852,17 @@ pub fn stream_objects(
         streamer.spawn_instance(&inst, true, &mut spawner, &mut entities);
         streamer.item_stats.spawned_drawn += 1;
         streamer.item_stats.spawned_entities += entities.len();
+        let n = entities.len();
+        streamer.spawned.insert(id, entities);
         info!(
-            "items: server-made object {id} drawn ({} entities); drawing {:?}",
-            entities.len(),
+            "items: server-made object {id} drawn ({n} entities), asked at world event {}; {} server-made objects drawn; drawing {:?}",
+            streamer
+                .spawned_asked
+                .get(&id)
+                .map_or("?".into(), |e| e.to_string()),
+            streamer.spawned.len(),
             streamer.item_stats
         );
-        streamer.spawned.insert(id, entities);
     }
 
     // The player's body: spawned once, hidden until `crate::body` places it.

@@ -216,6 +216,8 @@ pub struct PlayerSim {
     /// `--use-item`: seconds of play, latest first (taken when done).
     use_item_at: Vec<f64>,
     locker_at: Option<V3>,
+    /// A death's drops' draws (M9d6a).
+    drop_draws: sn_session::drops::Draws,
 }
 
 /// Lifepod 5 where the player starts (the client's own start choice).
@@ -308,15 +310,7 @@ impl PlayerSim {
     /// `MainCameraControl`'s position and forward (M9d5b, the drop): the
     /// game's eye (the player's position without a body) and the look.
     pub fn camera(&self) -> Option<(V3, V3)> {
-        let s = self.state.as_ref()?;
-        let pose = player_pose(&s.player);
-        let eye = s
-            .body
-            .as_ref()
-            .map_or(s.player.position, |(p, b)| b.camera(p, pose, None).position);
-        let forward =
-            sn_sim::player::look_rotate(s.look.yaw(), s.look.pitch(), V3::new(0.0, 0.0, 1.0));
-        Some((eye, forward))
+        self.state.as_ref().map(camera_of)
     }
 
     /// The player's position (`None` until the player exists).
@@ -418,6 +412,7 @@ impl PlayerSim {
             locker_at: None,
             grab_shown: false,
             item_goal: None,
+            drop_draws: sn_session::drops::Draws(sn_net::random_seed()),
         }
     }
 }
@@ -685,6 +680,69 @@ fn node_world(body: &PlayerBody, node: &PosedNode, anim: &Animator, player: Pose
         V3::from_f32(t.position),
         Q::from_f32(t.rotation).normalized(),
     ))
+}
+
+/// The game's eye and the look's forward.
+fn camera_of(s: &State) -> (V3, V3) {
+    let pose = player_pose(&s.player);
+    let eye = s
+        .body
+        .as_ref()
+        .map_or(s.player.position, |(p, b)| b.camera(p, pose, None).position);
+    let forward = sn_sim::player::look_rotate(s.look.yaw(), s.look.pitch(), V3::new(0.0, 0.0, 1.0));
+    (eye, forward)
+}
+
+/// `ResetPlayerOnDeath`'s `Inventory.LoseItems()` (M9d6a): every item lost
+/// on death but the last, dropped from the camera, sent as one `Lose`.
+/// Nothing where dropping is not allowed (the lifepod).
+fn lose_items(
+    state: &State,
+    world: &World,
+    session: &mut Session,
+    draws: &mut sn_session::drops::Draws,
+) {
+    let place = sn_sim::inventory::DropPlace {
+        in_escape_pod: state.player.in_pod,
+        ..Default::default()
+    };
+    let me = session.player();
+    let list = session
+        .with_items(|items, _| {
+            let ids = items.lose_list(me?, place);
+            Some(
+                ids.into_iter()
+                    .map(|id| {
+                        let random = items
+                            .classes
+                            .get(&id)
+                            .and_then(|c| items.rules().pickups.get(c))
+                            .is_some_and(|i| i.randomize_rotation);
+                        (id, random)
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .flatten()
+        .unwrap_or_default();
+    if list.is_empty() {
+        info!(
+            "player: LoseItems: nothing to drop (in pod {})",
+            state.player.in_pod
+        );
+        return;
+    }
+    let (camera, forward) = camera_of(state);
+    let (origin, drops) = sn_session::drops::death_drops(world, camera, forward, &list, draws);
+    info!(
+        "player: LoseItems: {} items dropped from the camera at ({:.2}, {:.2}, {:.2}), offsets (mm) {:?}",
+        drops.len(),
+        camera.x,
+        camera.y,
+        camera.z,
+        drops.iter().map(|d| d.offset).collect::<Vec<_>>()
+    );
+    session.request(sn_protocol::Request::Lose { origin, drops });
 }
 
 /// `Player.camAnchor` in the world now (the player's transform without a
@@ -1232,7 +1290,7 @@ pub fn update(
             session
                 .with_items(|items, _| {
                     let own = me.and_then(|p| items.players.get(&p));
-                    crate::items::aim(
+                    sn_assets::hand::aim(
                         &text.0,
                         items.rules(),
                         sim.targets.get(&hit.body),
@@ -1336,18 +1394,18 @@ pub fn update(
             Some((d, hit)) if hit.body & (TARGET_BODY | LOCKER_BODY) != 0 => {
                 let now = sim.steps as f64 * state.params.fixed_dt + sim.accumulator;
                 match item_aim.map(|a| a.action) {
-                    Some(crate::items::AimAction::Request(request)) => {
+                    Some(sn_assets::hand::AimAction::Request(request)) => {
                         info!("player: hand on an item at {d:.2} m");
                         session.request(request);
                         // `Player.PlayGrab`, as the game does on a pick-up
                         // and on a hit without a bash tool.
                         sim.time_grabbed = now;
                     }
-                    Some(crate::items::AimAction::OpenLocker) => {
+                    Some(sn_assets::hand::AimAction::OpenLocker) => {
                         sim.locker_opened += 1;
                         info!("player: opened the lifepod's locker from {d:.2} m");
                     }
-                    Some(crate::items::AimAction::None) => {
+                    Some(sn_assets::hand::AimAction::None) => {
                         info!("player: the item cannot be taken (no room or not pickupable)");
                     }
                     None => info!(
@@ -1467,6 +1525,9 @@ pub fn update(
                     b.died();
                 }
                 if e == VitalsEvent::MoveToRespawn {
+                    // `ResetPlayerOnDeath`: `LoseItems` first, then
+                    // `MovePlayerToRespawnPoint`.
+                    lose_items(state, &sim.world, &mut session, &mut sim.drop_draws);
                     // `EscapePod.RespawnPlayer` (or the start point).
                     let (at, in_pod) = state.respawn;
                     state.player.teleport(&state.params, at, Some(in_pod));
