@@ -31,6 +31,10 @@ pub struct RectTransform {
     pub pivot: V2,
     /// `localScale`.
     pub scale: [f32; 3],
+    /// `localRotation`, quaternion x, y, z, w.
+    pub rotation: [f32; 4],
+    /// `localPosition.z` (x and y follow from the anchors).
+    pub z: f32,
 }
 
 impl Default for RectTransform {
@@ -42,6 +46,8 @@ impl Default for RectTransform {
             size_delta: [100.0, 100.0],
             pivot: [0.5, 0.5],
             scale: [1.0, 1.0, 1.0],
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            z: 0.0,
         }
     }
 }

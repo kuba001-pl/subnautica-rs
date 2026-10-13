@@ -2,6 +2,41 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-13 — M9u4d: the draw list
+
+**What/why:** M9u4's last part. Each graphic is placed in uGUI's order,
+in its canvas's space, with its inherited alpha and clip rect, ready for
+the client to draw in M9u5 (`docs/formats/ui.md` § Draw order). New:
+- `sn-ui::draw` (pure): `draw_list` (draw groups and order, transforms,
+  `CanvasGroup` alpha, `RectMask2D` clipping and culling, transparent
+  culling) and `DrawList::hash`. Clipping is read from the decompiled
+  `UnityEngine.UI.dll` (read only, in `out/`).
+- `sn-ui::layout::RectTransform` keeps rotation and `z`.
+- `sn-assets`: `Assets::ui_draw_parts` (canvases with their sorting
+  layer's index, canvas groups, rect masks, `m_Maskable`,
+  `cullTransparentMesh`). A plain `Transform` is now a zero-size rect at
+  its position, not a default 100 × 100 one. This changed no M9u4a–c
+  result.
+- `sn-inspect ui --draw`.
+No new dependencies.
+
+**Corrections:** one unit test of mine expected a clip rect for a
+graphic that the mask correctly culled (its rect no longer overlapped).
+
+**Verified:**
+- `sn-inspect ui --draw` (exit 0): 12 of 12 hashes equal over two runs
+  from scratch; uGUI 174 draws, PDA screen 192 (2 clipped); 0
+  non-finite.
+- `ui --rects`, `ui --texts`, `ui --meshes`: unchanged (370 of 370
+  stored as 0, 20 of 20 auto-sizes, 0 mesh failures).
+- `SUBNAUTICA_DIR=… cargo test --release -p sn-assets --test real_data
+  -- --ignored the_pda_screen_draw`: 1 passed.
+- 6 unit tests: hierarchy order and canvas space, rotation and scale,
+  override sorting, canvas-group alpha and transparent culling, mask
+  clipping (padding, intersection, culling, not maskable, an override
+  canvas between), the hash.
+- Not drawn yet (M9u5).
+
 ## 2026-10-13 — M9u4c: TMP text layout
 
 **What/why:** M9u4's third part: where TextMesh Pro puts each character,

@@ -11,6 +11,7 @@ mod collision;
 mod coop;
 mod density;
 mod dive;
+mod draw;
 mod entities;
 mod fonts;
 mod game;
@@ -239,6 +240,9 @@ Commands:
                          per kind, vertices inside rects, UVs inside sprites
   ui --texts             M9u4c: the in-scope TMP texts' settings and the
                          rich-text tags of the stored texts and English
+  ui --draw              M9u4d: every in-scope tree's draw list (order,
+                         canvas space, alpha, clipping), built twice from
+                         scratch; the hashes must be equal
   ui --layout <CLASS> [<NAME>]
                          M9u1: a script's layout and, for its first object
                          (named NAME), where each field starts and its value
@@ -453,6 +457,7 @@ fn run(mut args: Vec<String>) -> Result<ExitCode> {
         ["ui", "--rects"] => rects::run(&game),
         ["ui", "--meshes"] => meshes::run(&game),
         ["ui", "--texts"] => texts::run(&game),
+        ["ui", "--draw"] => draw::run(&game),
         ["ui", "--fonts"] => fonts::run(&game, false),
         ["ui", "--fonts", "--atlas"] => fonts::run(&game, true),
         ["ui", "--sprites"] => ui::sprites(&game, false),

@@ -2685,3 +2685,61 @@ fn auto_sized_texts_match_the_stored_sizes() {
     }
     assert_eq!(compared, 20);
 }
+
+/// M9u4d: the PDA screen's draw items, built twice, are the same, and
+/// its rect masks clip some of them.
+#[test]
+#[ignore = "needs SUBNAUTICA_DIR pointing at a Subnautica install"]
+fn the_pda_screen_draw_list_is_stable() {
+    let Some(dir) = std::env::var_os("SUBNAUTICA_DIR") else {
+        eprintln!("SUBNAUTICA_DIR not set; skipping");
+        return;
+    };
+    let game = GameData::locate(Some(PathBuf::from(dir))).unwrap();
+    let assets = Assets::index(&game).unwrap();
+    let tags = sn_assets::physics_settings(&assets).unwrap().tags;
+    let assemblies = sn_assets::ScriptAssemblies::load(&game).unwrap();
+    let layouts = assemblies.layouts().unwrap();
+    let main = assets.scene("main").unwrap();
+    let (screen, _) = assets.pda_screen_refs(&main).unwrap();
+    let ui = assets.ui_tree("PDA", &screen).unwrap();
+    let build = || {
+        let parts = assets
+            .ui_draw_parts(&layouts, &ui, &tags.sorting_layers)
+            .unwrap();
+        let mut tree = assets.ui_layout(&layouts, &ui).unwrap().tree;
+        sn_ui::layout::layout(&mut tree);
+        let mut graphics = Vec::new();
+        for g in assets.ui_graphics(&layouts, &ui).unwrap() {
+            let rect = tree.rect(g.node);
+            let sn_assets::UiGraphicKind::Image { params, .. } = &g.kind else {
+                continue;
+            };
+            if !g.enabled || !rect.width.is_finite() || !rect.height.is_finite() {
+                continue;
+            }
+            let (_, mesh) =
+                sn_ui::mesh::image_mesh(rect, tree.nodes[g.node].rect.pivot, params, 100.0);
+            graphics.push(sn_ui::draw::Graphic {
+                node: g.node,
+                mesh,
+                texture: 0,
+                maskable: parts.maskable.get(&g.node).copied().unwrap_or(true),
+                cull_transparent: false,
+                kind: "Image".into(),
+            });
+        }
+        let input = sn_ui::draw::DrawInput {
+            canvases: parts.canvases,
+            groups: parts.groups,
+            masks: parts.masks,
+            graphics,
+        };
+        sn_ui::draw::draw_list(&tree, &input)
+    };
+    let a = build();
+    let b = build();
+    assert_eq!(a.hash(), b.hash());
+    assert!(a.items.len() > 100, "{}", a.items.len());
+    assert!(a.items.iter().any(|i| i.clip.is_some()));
+}

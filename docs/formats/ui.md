@@ -500,6 +500,55 @@ break), `<line-height>` and the other tags. The text's quads and UVs
 (with the material padding, `ShaderUtilities.GetPadding`) are built
 with the drawing in M9u5.
 
+## Draw order (M9u4d)
+
+Our port is `crates/sn-ui/src/draw.rs`. Its inputs come from
+`crates/sn-assets/src/ui_layout.rs` (`ui_draw_parts`), and `sn-inspect
+ui --draw` runs the check. Clipping follows the decompiled
+`UnityEngine.UI.dll` (`RectMask2D.PerformClipping`,
+`Clipping.FindCullAndClipWorldRect`, `MaskUtilities.GetRectMasksForClip`,
+`MaskableGraphic.Cull`). Canvas batching is native, so the order follows
+Unity's documented rules.
+
+- **Order:** each root canvas draws its graphics depth first in
+  hierarchy order. A nested canvas draws in place unless it has
+  `overrideSorting`; then it is its own draw group. Groups sort by
+  (sorting layer's index in the TagManager, sorting order, hierarchy
+  order).
+- **Alpha:** `CanvasGroup` alpha multiplies down the hierarchy, stopping
+  at `ignoreParentGroups`. A `CanvasRenderer` with `cullTransparentMesh`
+  draws nothing at alpha 0.
+- **Clipping:** the intersection of every active `RectMask2D` above a
+  maskable graphic (itself included; none across an override-sorting
+  canvas). Each mask's rect is its corners 0 and 2 in its canvas's
+  space, inset by `m_Padding` (left, bottom, right, top). This build's
+  `RectMask2D` has `m_Padding` and `m_Softness`. An empty intersection,
+  or a graphic whose own rect does not overlap it, is culled.
+- **Transforms:** every vertex goes to its root canvas's space through
+  each node's local transform (its anchored place, `z`, rotation,
+  scale). A plain `Transform` (the `uGUI` root) is a rect of size 0 at
+  its position, as Unity gives its children a parent size of 0.
+
+**TagManager sorting layers** (in order): Default, PDA, DepthClear,
+EndCredits, XMenu, HUD, CraftingMenu, BuilderMenu, ItemDragManager,
+Tooltip, Overlay, StartScreen, ErrorMessage, IngameMenu, … (the names
+only; `sn-inspect ui --draw` prints them all).
+
+**The run** (`ui --draw`; images, raw images and the texts' character
+quads): `uGUI` gives 174 draws, 3,824 vertices and 57 textures. Its
+draw groups, in order: `DepthClear`, `ScreenCanvas` (168), `Tooltip`,
+`OverlayCanvas`. One graphic is culled by a mask and one is transparent.
+The PDA screen gives 192 draws (2 clipped by its masks, 147 with alpha
+below 1: its stored state is faded out). The other roots of `uGUI.prefab`
+have no canvas of their own: the game instantiates them under one.
+**Built twice from scratch, 12 of 12 hashes are equal.** No vertex is
+non-finite.
+
+**Not ported:** the stencil `Mask` (none in scope), `m_Softness`'s edge
+fade (kept with the item for the shader, M9u5), world-space canvases'
+distance sorting between root canvases (they sort by layer and order
+here).
+
 ## Script fields (M9u1) — confirmed
 
 A MonoBehaviour's fields follow its header (game object, enabled,

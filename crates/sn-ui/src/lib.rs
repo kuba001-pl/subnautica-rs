@@ -9,9 +9,11 @@
 //! - [`layout`] (M9u4a): RectTransform rects and uGUI's layout system
 //!   (layout groups, fitters, layout elements).
 //! - [`mesh`] (M9u4b): the meshes `Image` and `RawImage` build.
+//! - [`draw`] (M9u4d): the draw list: order, canvas space, alpha, clipping.
 //! - [`text`] (M9u4c): TextMesh Pro's text layout, auto-size and
 //!   preferred sizes.
 
+pub mod draw;
 pub mod font;
 pub mod layout;
 pub mod mesh;

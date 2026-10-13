@@ -8,6 +8,7 @@ use sn_unity::{Fields, MonoBehaviourHeader, Sprite, Value};
 use crate::{Assets, Layouts, ObjectRef, Result, UiComponent, UiTree};
 
 const RECT_TRANSFORM: i32 = 224;
+const TRANSFORM: i32 = 4;
 const MONO_BEHAVIOUR: i32 = 114;
 const SPRITE: i32 = 213;
 
@@ -221,7 +222,24 @@ impl Assets<'_> {
             let mut components = Vec::new();
             let mut found_rect = false;
             for c in &n.components {
-                if c.class_id == RECT_TRANSFORM {
+                if c.class_id == TRANSFORM {
+                    // A plain Transform: no rect (its children see a parent
+                    // size of 0), placed at its own position.
+                    let (_, d) = c.object.data()?;
+                    let t = sn_unity::TransformNode::parse(d, c.object.file.file().big_endian)
+                        .map_err(|e| format!("{}: Transform: {e}", n.path))?;
+                    rect = RectTransform {
+                        anchor_min: [0.0, 0.0],
+                        anchor_max: [0.0, 0.0],
+                        anchored_position: [t.position[0], t.position[1]],
+                        size_delta: [0.0, 0.0],
+                        pivot: [0.0, 0.0],
+                        scale: t.scale,
+                        rotation: t.rotation,
+                        z: t.position[2],
+                    };
+                    found_rect = true;
+                } else if c.class_id == RECT_TRANSFORM {
                     let (_, d) = c.object.data()?;
                     let r = sn_unity::RectTransform::parse(d, c.object.file.file().big_endian)
                         .map_err(|e| format!("{}: RectTransform: {e}", n.path))?;
@@ -232,6 +250,8 @@ impl Assets<'_> {
                         size_delta: r.size_delta,
                         pivot: r.pivot,
                         scale: r.scale,
+                        rotation: r.rotation,
+                        z: r.position[2],
                     };
                     found_rect = true;
                 } else if c.class_id == MONO_BEHAVIOUR {
@@ -241,7 +261,7 @@ impl Assets<'_> {
                 }
             }
             if !found_rect {
-                notes.push(format!("{}: no RectTransform", n.path));
+                notes.push(format!("{}: no Transform", n.path));
             }
             nodes.push(Node {
                 name: n.name.clone(),
@@ -453,6 +473,117 @@ impl Assets<'_> {
                 enabled,
                 kind,
             });
+        }
+        Ok(out)
+    }
+}
+
+/// What the draw list reads from a UI tree besides its layout and
+/// graphics (M9u4d): canvases, canvas groups, rect masks, and each
+/// graphic's `m_Maskable` and `CanvasRenderer.cullTransparentMesh`.
+#[derive(Default)]
+pub struct UiDrawParts {
+    pub canvases: std::collections::HashMap<usize, sn_ui::draw::CanvasInfo>,
+    pub groups: std::collections::HashMap<usize, sn_ui::draw::GroupInfo>,
+    pub masks: std::collections::HashMap<usize, sn_ui::draw::MaskInfo>,
+    /// Graphic nodes and whether they are maskable (one graphic a node).
+    pub maskable: std::collections::HashMap<usize, bool>,
+    pub cull_transparent: std::collections::HashMap<usize, bool>,
+    /// Sorting layer ids not in the TagManager.
+    pub unknown_layers: Vec<i32>,
+}
+
+const CANVAS: i32 = 223;
+const CANVAS_GROUP: i32 = 225;
+const CANVAS_RENDERER: i32 = 222;
+
+impl Assets<'_> {
+    /// The draw parts of `tree`; `sorting_layers` is the TagManager's list
+    /// (name, unique id) in order.
+    pub fn ui_draw_parts(
+        &self,
+        layouts: &Layouts,
+        tree: &UiTree,
+        sorting_layers: &[(String, u32)],
+    ) -> Result<UiDrawParts> {
+        let mut out = UiDrawParts::default();
+        for (node, c) in tree.components() {
+            let path = &tree.nodes[node].path;
+            match c.class_id {
+                CANVAS => {
+                    let (_, d) = c.object.data()?;
+                    let cv = sn_unity::Canvas::parse(d, c.object.file.file().big_endian)
+                        .map_err(|e| format!("{path}: Canvas: {e}"))?;
+                    let layer = sorting_layers
+                        .iter()
+                        .position(|(_, id)| *id as i32 == cv.sorting_layer_id);
+                    if layer.is_none() {
+                        out.unknown_layers.push(cv.sorting_layer_id);
+                    }
+                    out.canvases.insert(
+                        node,
+                        sn_ui::draw::CanvasInfo {
+                            enabled: cv.enabled,
+                            override_sorting: cv.override_sorting,
+                            sorting_layer: layer.map_or(0, |l| l as i32),
+                            sorting_order: i32::from(cv.sorting_order),
+                        },
+                    );
+                }
+                CANVAS_GROUP => {
+                    let (_, d) = c.object.data()?;
+                    let g = sn_unity::CanvasGroup::parse(d, c.object.file.file().big_endian)
+                        .map_err(|e| format!("{path}: CanvasGroup: {e}"))?;
+                    out.groups.insert(
+                        node,
+                        sn_ui::draw::GroupInfo {
+                            alpha: g.alpha,
+                            ignore_parent_groups: g.ignore_parent_groups,
+                            enabled: g.enabled,
+                        },
+                    );
+                }
+                CANVAS_RENDERER => {
+                    let (_, d) = c.object.data()?;
+                    let r = sn_unity::CanvasRenderer::parse(d, c.object.file.file().big_endian)
+                        .map_err(|e| format!("{path}: CanvasRenderer: {e}"))?;
+                    out.cull_transparent.insert(node, r.cull_transparent_mesh);
+                }
+                MONO_BEHAVIOUR => {
+                    let Some(script) = c.script.as_deref() else {
+                        continue;
+                    };
+                    if script == "RectMask2D" {
+                        let (enabled, f) = self.script_fields(layouts, c)?;
+                        let p = f
+                            .get("m_Padding")
+                            .and_then(Value::as_struct)
+                            .ok_or("no m_Padding")?;
+                        let s = f
+                            .get("m_Softness")
+                            .and_then(Value::as_struct)
+                            .ok_or("no m_Softness")?;
+                        out.masks.insert(
+                            node,
+                            sn_ui::draw::MaskInfo {
+                                enabled,
+                                padding: [
+                                    f32_of(p, "x")?,
+                                    f32_of(p, "y")?,
+                                    f32_of(p, "z")?,
+                                    f32_of(p, "w")?,
+                                ],
+                                softness: [i32_of(s, "m_X")?, i32_of(s, "m_Y")?],
+                            },
+                        );
+                    } else if matches!(script, "Image" | "RawImage" | "TextMeshProUGUI") {
+                        let (_, f) = self.script_fields(layouts, c)?;
+                        out.maskable
+                            .insert(node, bool_of(&f, "m_Maskable").unwrap_or(true));
+                    }
+                }
+                _ => {}
+            }
         }
         Ok(out)
     }
