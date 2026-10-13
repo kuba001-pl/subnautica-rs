@@ -346,7 +346,7 @@ fn fonts(assets: &Assets) -> Result<(usize, usize, usize)> {
 
 /// GameObjects in `root`'s file whose transform has no parent, other
 /// than `root`.
-fn other_roots(assets: &Assets, root: &ObjectRef) -> Result<Vec<ObjectRef>> {
+pub(crate) fn other_roots(assets: &Assets, root: &ObjectRef) -> Result<Vec<ObjectRef>> {
     let file = &root.file;
     let be = file.file().big_endian;
     let mut out = Vec::new();

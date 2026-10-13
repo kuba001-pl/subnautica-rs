@@ -138,7 +138,19 @@ fn print_node(code: &sn_assets::GameCode, n: &CraftNode, depth: usize) {
 /// `code --il <Type> <Method>`: one method's instructions with their
 /// tokens resolved (printed only, for reading the patterns P1 accepts).
 pub fn il(game: &GameData, type_name: &str, method: &str, params: Option<u32>) -> Result<ExitCode> {
-    let bytes = sn_assets::read_assembly(game)?;
+    // `ASSEMBLY:TYPE` reads `Managed/ASSEMBLY.dll` instead of the game's.
+    let (bytes, type_name) = match type_name.split_once(':') {
+        Some((assembly, ty)) => (
+            game.read_file(
+                &game
+                    .data_dir
+                    .join("Managed")
+                    .join(format!("{assembly}.dll")),
+            )?,
+            ty,
+        ),
+        None => (sn_assets::read_assembly(game)?, type_name),
+    };
     let asm = Assembly::parse(&bytes).map_err(|e| e.to_string())?;
     let ty = resolve_type(&asm, type_name)?;
     // `NAME#N`: the Nth method of that name (overloads in declaration

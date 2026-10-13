@@ -23,6 +23,7 @@ sn-anim = { path = "crates/sn-anim" }
 sn-protocol = { path = "crates/sn-protocol" }
 sn-net = { path = "crates/sn-net" }
 sn-session = { path = "crates/sn-session" }
+sn-ui = { path = "crates/sn-ui" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

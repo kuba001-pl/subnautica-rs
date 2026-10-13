@@ -12,6 +12,7 @@ mod coop;
 mod density;
 mod dive;
 mod entities;
+mod fonts;
 mod game;
 mod gameplay;
 mod grass;
@@ -163,7 +164,8 @@ Commands:
                          crafting menus (--trees: every node), TechData's
                          defaults; checked against Balance/TechData
   code --il <TYPE> <METHOD> [<PARAMS>]
-                         One method's IL with tokens resolved (PARAMS:
+                         One method's IL with tokens resolved (TYPE as
+                         ASSEMBLY:TYPE reads Managed/ASSEMBLY.dll; PARAMS:
                          the overload with that many parameters;
                          METHOD#N: the Nth overload)
   code --enum <TYPE>     An enum's names and values (Outer/Inner for a
@@ -214,6 +216,12 @@ Commands:
                          their sprites are packed; every tech type's
                          icon by the game's rule (--icons: the items'
                          icons as PNGs in out/ui/icons/)
+  ui --fonts [--atlas]   M9u3: every TMP font asset's face metrics from its
+                         font file against the stored ones; the 2 stored
+                         glyphs remade (metrics, places, distance texels);
+                         the English text's characters in each text's
+                         font chain, glyph cost (--atlas: the made atlases
+                         as PNGs in out/ui/fonts/)
   ui --layout <CLASS> [<NAME>]
                          M9u1: a script's layout and, for its first object
                          (named NAME), where each field starts and its value
@@ -421,6 +429,8 @@ fn run(mut args: Vec<String>) -> Result<ExitCode> {
         ["ui"] => ui::run(&game),
         ["ui", "--scripts"] => ui::scripts(&game, false),
         ["ui", "--scripts", "--all"] => ui::scripts(&game, true),
+        ["ui", "--fonts"] => fonts::run(&game, false),
+        ["ui", "--fonts", "--atlas"] => fonts::run(&game, true),
         ["ui", "--sprites"] => ui::sprites(&game, false),
         ["ui", "--sprites", "--icons"] => ui::sprites(&game, true),
         ["ui", "--layout", class] => ui::layout(&game, class, None),

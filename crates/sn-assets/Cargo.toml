@@ -16,6 +16,8 @@ sn-install.workspace = true
 sn-protocol.workspace = true
 sn-sim.workspace = true
 sn-terrain.workspace = true
+# M9u3: font assets typed as the UI crate's font types.
+sn-ui.workspace = true
 sn-unity.workspace = true
 sn-world.workspace = true
 

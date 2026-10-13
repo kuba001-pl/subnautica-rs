@@ -2,6 +2,66 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-13 — M9u3: TMP fonts made from the game's font files
+
+**What/why:** the M9u plan's fourth step. Every TextMesh Pro font asset
+of the game is dynamic, so the game makes each glyph from the font file
+while it runs. We do the same, so M9u4 can lay out text and M9u5 can
+draw it. New:
+- crate `sn-ui` (layer 2, pure), module `font`: `FontFile` (face
+  metrics, glyph metrics by FreeType's unhinted fixed-point scaling,
+  composite glyphs placed by FreeType's offset rule), our own coverage
+  rasterizer and distance field, and `DynamicAtlas` / `Packer`
+  (MaxRects, best short side fit, as TMP packs). **New dependency:
+  `ttf-parser` 0.25** (TrueType and CFF tables and outlines; pure Rust,
+  no dependencies; already in `Cargo.lock` through Bevy; approved in
+  the M9u plan). Default features off but `std`.
+- `sn-unity::Font` (class 128); `sn-assets::fonts` (`font_assets`: the
+  font assets typed with `stored()`, sprite assets, `TMP Settings` from
+  `resources.assets`). `sn-assets` now depends on `sn-ui` for the font
+  types.
+- `sn-inspect ui --fonts [--atlas]` (atlases as PNGs in `out/ui/fonts/`,
+  not committed); `code --il ASSEMBLY:TYPE METHOD` reads
+  `Managed/ASSEMBLY.dll` (used for TMP's lookup order).
+- `docs/formats/ui.md` § Fonts rewritten with the rules found.
+`.gitignore` unchanged (no new file types).
+
+**Dead ends / corrections:**
+- First run: `…` was 0.27 px too wide. It is a composite of three
+  periods. `ttf-parser` adds component offsets in font units; FreeType
+  scales each offset and, with `ROUND_XY_TO_GRID`, rounds it to the
+  pixel. Our own composite reader fixed it (exact; texel error 1.38 →
+  1.04/255).
+- My check assumed no asset had multi-atlas on; the CJK asset has it.
+  The check was wrong, not the data. CJK also has padding 5 and point
+  size 45, not the plan's "padding 9".
+- 3 private-use characters looked missing. Reading `TMP Settings` and
+  both sprite assets: no font or sprite has them. The IL shows the 6
+  texts holding them are always replaced before they are shown
+  (`HandReticle.UpdateText`, `uGUI_Toolbar.UpdateCycleBtnText`), so the
+  check lists those texts apart and counts the rest.
+- Cap and mean lines cannot match without a TrueType hinter. TMP uses
+  the stored values while the game runs, so these are reported, not
+  counted (12 of 24 differ by under a pixel).
+
+**Verified:**
+- `sn-inspect ui --fonts`: `0 checks differ`. Face metrics 136 of 136
+  fields equal within 0.01 (8 assets; names exact). Both stored glyphs:
+  index, metrics (as `f32`) and glyph rectangles equal; used rectangles
+  equal in order, free rectangles equal as sets. Texels over the used
+  rectangles: **mean 1.043/255** (target ≤ 3, written in the plan before
+  the run), max 13, 60% exact; the no-shift alignment is best (others
+  4.4–11.4). English: 118 distinct characters, 0 missing (100 from
+  Aller, 18 from Noto Sans CJK SC). 141 screen texts, 0 missing outside
+  the 6 replaced ones. Cost: 118 glyphs in 262 ms, 2.2 ms each
+  (release).
+- `SUBNAUTICA_DIR=… cargo test --release -p sn-assets --test real_data
+  -- --ignored fonts_remade`: 1 passed.
+- `cargo test --workspace`: 519 passed, 0 failed, 43 ignored. Clippy and
+  fmt: pass. 18 new unit tests (`sn-ui`: 17 on a TrueType font written
+  in the test, `sn-unity`: 1).
+- Not drawn yet (M9u5); not compared with the game on screen.
+
 ## 2026-10-12 — M9u2: UI built-in classes, sprites and item icons
 
 **What/why:** the M9u plan's third step. The HUD, the PDA and the

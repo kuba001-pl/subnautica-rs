@@ -12,6 +12,7 @@ mod bundle;
 mod camera;
 mod classes;
 mod collider;
+mod font;
 mod gameplay;
 mod items;
 pub mod json;
@@ -57,6 +58,7 @@ pub use classes::class_name;
 pub use collider::{
     BOX_COLLIDER, CAPSULE_COLLIDER, Collider, ColliderShape, MESH_COLLIDER, SPHERE_COLLIDER,
 };
+pub use font::Font;
 pub use gameplay::{
     AnalysisTech, ArmsController, AutoParent, BreakableResource, CameraToPlayerManager,
     CinematicEndForward, CinematicModeTrigger, CompoundTech, EncyclopediaEntry, EntTechEntry,

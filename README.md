@@ -92,6 +92,14 @@ Tested on Windows 11 with game build 10 (Steam):
   carry but one item (as the game does), inside it nothing. Playing it
   with keyboard and mouse is not tested by the agent; dropped items do
   not fall yet.
+- Reading the game's UI, headless (not drawn yet): where `uGUI.prefab`
+  and the PDA screen come from and what they hold (`sn-inspect ui`),
+  every MonoBehaviour's fields from the game's own assemblies (`ui
+  --scripts --all`: 45,137 of 45,137), every sprite and atlas and each
+  item's icon (`ui --sprites --icons`), and TextMesh Pro's fonts made from
+  the game's font files: face metrics equal the stored ones, the two
+  stored glyphs equal ours, distance texels within 1.04/255 on average
+  (`ui --fonts`).
 - Oxygen, suffocation, health, death and respawn in the lifepod, with
   the game's numbers (45 units, 1 / 1.5 / 2 per second by depth, refill
   30 per second at the surface, 8 s to pass out). `sn-inspect dive` runs

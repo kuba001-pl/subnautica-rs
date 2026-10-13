@@ -1,0 +1,16 @@
+[package]
+name = "sn-ui"
+description = "The game's UI, headless: TextMesh Pro fonts and glyphs (later layout, meshes and the UI's rules)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+# M9u3: TrueType and CFF outlines and tables from the game's font files
+# (pure Rust, no dependencies; Noto CJK is CFF).
+ttf-parser = { version = "0.25", default-features = false, features = ["std"] }
+
+[lints]
+workspace = true

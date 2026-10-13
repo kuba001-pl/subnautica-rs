@@ -21,6 +21,8 @@ sn-protocol.workspace = true
 sn-session.workspace = true
 sn-terrain.workspace = true
 sn-sim.workspace = true
+# M9u3: fonts and glyphs for `ui --fonts`.
+sn-ui.workspace = true
 sn-unity.workspace = true
 
 [lints]

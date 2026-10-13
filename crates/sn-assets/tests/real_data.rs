@@ -2456,3 +2456,77 @@ fn sprites_by_the_games_rule() {
     assert_eq!(px.len(), w * h * 4);
     assert!(px.chunks_exact(4).any(|p| p[3] > 0));
 }
+
+/// M9u3: TMP's font assets remade from the font files. Face metrics (but
+/// the hinted cap and mean lines) equal the stored ones; `Aller_Rg SDF`'s
+/// 2 stored glyphs equal ours in metrics and place; English needs no
+/// glyph outside the fonts.
+#[test]
+#[ignore = "needs SUBNAUTICA_DIR pointing at a Subnautica install"]
+fn fonts_remade_from_the_font_files() {
+    use sn_ui::font::{Added, DynamicAtlas, FontFile};
+    let Some(dir) = std::env::var_os("SUBNAUTICA_DIR") else {
+        eprintln!("SUBNAUTICA_DIR not set; skipping");
+        return;
+    };
+    let game = GameData::locate(Some(PathBuf::from(dir))).unwrap();
+    let assets = Assets::index(&game).unwrap();
+    let assemblies = sn_assets::ScriptAssemblies::load(&game).unwrap();
+    let fonts = assets.font_assets(&assemblies).unwrap();
+    assert_eq!(fonts.fonts.len(), 9);
+    assert_eq!(fonts.assets.len(), 8);
+    assert!(fonts.settings.is_some());
+    let hinted = ["m_CapLine", "m_MeanLine", "m_StrikethroughOffset"];
+    for a in &fonts.assets {
+        let s = a.stored().unwrap();
+        assert_eq!((s.population_mode, s.render_mode), (1, 4165), "{}", a.name);
+        let font = fonts.font(a.source.as_ref().unwrap()).unwrap();
+        let file = FontFile::parse(&font.font.data).unwrap();
+        let ours = file.face_info(s.point_size);
+        assert_eq!(ours.family_name, s.face.family_name);
+        assert_eq!(ours.style_name, s.face.style_name);
+        for ((name, want), (_, got)) in s.face.numbers().iter().zip(ours.numbers()) {
+            if !hinted.contains(name) {
+                assert!(
+                    (want - got).abs() <= 0.01,
+                    "{} {name}: {got} vs {want}",
+                    a.name
+                );
+            }
+        }
+    }
+    let aller = fonts.asset("Aller_Rg SDF").unwrap();
+    let s = aller.stored().unwrap();
+    assert_eq!(s.glyphs.len(), 2);
+    let font = fonts.font(aller.source.as_ref().unwrap()).unwrap();
+    let file = FontFile::parse(&font.font.data).unwrap();
+    let mut atlas = DynamicAtlas::new(s.atlas_width, s.atlas_height, s.padding, s.point_size);
+    for &(unicode, index) in &s.characters {
+        let Added::New(g) = atlas.add_character(&file, char::from_u32(unicode).unwrap()) else {
+            panic!("U+{unicode:04X} not added");
+        };
+        let want = s.glyphs.iter().find(|g| g.index == index).unwrap();
+        assert_eq!(g, *want, "U+{unicode:04X}");
+    }
+    assert_eq!(atlas.packer.used, s.used_rects);
+    let mut free = atlas.packer.free.clone();
+    let mut want = s.free_rects.clone();
+    free.sort();
+    want.sort();
+    assert_eq!(free, want);
+    let english = sn_assets::language(&game, "English").unwrap();
+    let chain: Vec<FontFile> = ["Aller_Rg", "PTSans", "NotoSansCJKsc-Regular"]
+        .iter()
+        .map(|n| {
+            let f = fonts.fonts.iter().find(|f| f.font.name == *n).unwrap();
+            FontFile::parse(&f.font.data).unwrap()
+        })
+        .collect();
+    let missing = english
+        .values()
+        .flat_map(|v| v.chars())
+        .filter(|c| !c.is_control())
+        .filter(|&c| chain.iter().all(|f| f.glyph_index(c).is_none()))
+        .count();
+    assert_eq!(missing, 0);
+}

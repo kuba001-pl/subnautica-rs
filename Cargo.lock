@@ -4778,6 +4778,7 @@ dependencies = [
  "sn-protocol",
  "sn-sim",
  "sn-terrain",
+ "sn-ui",
  "sn-unity",
  "sn-world",
 ]
@@ -4820,6 +4821,7 @@ dependencies = [
  "sn-session",
  "sn-sim",
  "sn-terrain",
+ "sn-ui",
  "sn-unity",
  "sn-world",
 ]
@@ -4883,6 +4885,13 @@ dependencies = [
  "sn-mesh",
  "sn-octree",
  "sn-world",
+]
+
+[[package]]
+name = "sn-ui"
+version = "0.0.0"
+dependencies = [
+ "ttf-parser",
 ]
 
 [[package]]

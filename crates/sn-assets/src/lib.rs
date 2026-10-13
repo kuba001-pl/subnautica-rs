@@ -14,6 +14,7 @@ mod cinematics;
 mod code;
 mod collision;
 mod collision_world;
+mod fonts;
 mod gameplay;
 pub mod hand;
 mod host;
@@ -53,6 +54,10 @@ pub use collision_world::{
     LOCKER_BODY, LayerRules, Lifepod, LifepodLocker, LifepodTrigger, LoaderStats, OBJECTS_BODY,
     PlacedCollider, SCENE_BODY, SPAWNED, SceneCollider, SlotTables, TARGET_BODY, Target,
     TargetBody, TargetKind, bodies, body_kind, look_params, player_params, vitals_params,
+};
+pub use fonts::{
+    FONTS_BUNDLE, FontAssets, LoadedFont, LoadedFontAsset, LoadedSpriteAsset, StoredFontAsset,
+    TmpSettings,
 };
 pub use gameplay::{
     Ingredient, PhysicsSettings, PlayerData, TechData, TechEntry, ent_tech_data, parse_tech_data,

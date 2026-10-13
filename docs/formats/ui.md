@@ -1,8 +1,10 @@
 # The game's UI (uGUI, sprites, TextMesh Pro)
 
 Described build: game build `10` (Unity 2019.4.36f1). Readers:
-`crates/sn-unity/src/ui.rs`, `crates/sn-assets/src/ui.rs`. Inspector:
-`sn-inspect ui` (M9u0), `sn-inspect code --fields <TYPE>`. Plan:
+`crates/sn-unity/src/ui.rs`, `crates/sn-unity/src/font.rs`,
+`crates/sn-assets/src/ui.rs`, `crates/sn-assets/src/fonts.rs`; fonts and
+glyphs: `crates/sn-ui/src/font/`. Inspector: `sn-inspect ui` (M9u0),
+`ui --fonts` (M9u3), `sn-inspect code --fields <TYPE>`. Plan:
 `docs/DESIGN.md` "M9u plan".
 
 Each fact is marked **confirmed** (with how) or **hypothesis**. Only
@@ -191,14 +193,124 @@ others are 0×0 in the file.
 **Every font asset is dynamic** (confirmed in M9u1, read with the
 layout from `Unity.TextMeshPro.dll`, `sn-inspect ui --layout
 TMPro.TMP_FontAsset [<NAME>]`). `m_AtlasPopulationMode` is 1 (dynamic),
-`m_AtlasRenderMode` 4165 (SDFAA), `m_AtlasPadding` 9, and the atlas is
-1024×1024. The glyph and character tables are empty except in `Aller_Rg
-SDF`, which holds 2 glyphs (one is U+2026, "…") and their used
-rectangles. TMP makes every other glyph while the game runs, from the
-font file (`m_SourceFontFile`, the `Font` object) at the asset's
-creation settings. Each asset stores its `m_FaceInfo` (family and style
-names, point size, scale, line height, ascent, descent, …): the M9u3
-check for our own face metrics.
+`m_AtlasRenderMode` 4165 (SDFAA). Sampling point size 90, padding 9,
+atlas 1024×1024 for all but `NotoSansCJKsc-Regular SDF`: point size 45,
+padding 5, atlas 2048×2048, and the only one with
+`m_IsMultiAtlasTexturesEnabled` (a new page when one is full). The glyph
+and character tables are empty except in `Aller_Rg SDF`, which holds 2
+glyphs, U+2026 "…" and U+005F "_", and their used rectangles.
+*Hypothesis:* those two are TMP's ellipsis and underline special
+characters, which a text looks up when it is first laid out
+(`TextMeshProUGUI.SetArraySizes` calls `GetEllipsisSpecialCharacter`,
+read in its IL). TMP makes every other glyph while the game runs, from
+the font file (`m_SourceFontFile`, the `Font` object) at the asset's
+creation settings. Each asset's material has `_GradientScale` = padding
++ 1 (10; 6 for CJK).
+
+The rules below are ours, written from what the stored data shows
+(`crates/sn-ui/src/font/`). `sn-inspect ui --fonts` checks them, and so
+does the real-data test `fonts_remade_from_the_font_files`.
+
+**`Font` (class 128)** (field order from UnityPy's type-tree database
+for 2019.4.36f1; all 9 parse to their last byte): `string` name, `f32`
+line spacing, PPtr default material, `f32` font size, PPtr texture
+(aligned), `i32` ASCII start offset, `f32` tracking, `i32` character
+spacing, `i32` character padding, `i32` convert case, `CharacterInfo[]`
+(index, uv rect, vert rect, advance, `bool` flipped aligned: 44 bytes
+each), kerning map {`u16`, `u16`, `f32`}[], `f32` pixel scale, `byte[]`
+font data (aligned), `f32` ascent, `f32` descent, `u32` default style,
+string[] font names, PPtr[] fallback fonts, `i32` rendering mode,
+`bool` legacy bounds, `bool` round advance (padding after them is
+optional).
+
+**Face metrics** (`m_FaceInfo`): ours from each font file equal the
+stored ones within 0.01 in 136 of 136 fields (17 per asset: names,
+sizes and lines; the three below excepted). Scale `s = point size /
+units per em`, in floating point (not FreeType's 26.6):
+- ascent line = `hhea` ascender · s; descent line = descender · s; line
+  height = (ascender − descender + line gap) · s;
+- underline offset = (`post` underline position − thickness / 2) · s
+  (integer halving: FreeType's rule), thickness = `post` thickness · s;
+- strikethrough offset = mean line / 2.5, its thickness the
+  underline's;
+- superscript offset = ascent line, subscript offset = descent line,
+  both size 0.5; baseline 0, scale 1, face index 0;
+- tab width = the space's advance · s, rounded;
+- family and style names from the name table (typographic names 16/17
+  first, then 1/2; every game font gives the stored names).
+- **Cap and mean lines are hinted** in the game: they are the top of `H`
+  and `x` but rounded by the font's hinting (66 where the outline gives
+  65.06 for `Aller_Rg`, 64 where it gives 64.25 for Open Sans). Ours are
+  unhinted, so 12 of the 24 cap, mean and strikethrough values differ by
+  under a pixel. TMP uses the stored `m_FaceInfo` while the game runs,
+  so the client uses the stored values too. A font without `H` or `x`
+  (Noto Sans Thai) has 0.
+
+**Glyph metrics**: equal the 2 stored glyphs exactly (every field as
+`f32`). Unhinted FreeType loading:
+- the 16.16 scale is `FT_DivFix(point size · 64, units per em)`; every
+  outline point and the advance are scaled with `FT_MulFix` into 26.6
+  pixels (each rounds half away from zero: 733 units at 90 px on a
+  1,000-unit em is 4,222/64 px, not 4,221.44/64);
+- width, height and bearings come from the control box of the scaled
+  points (all points, off-curve ones too), not from the `glyf` header's
+  box (U+2026's header says 673 units, its outline reaches 670 after
+  placement);
+- **composite glyphs**: each component is scaled first, then its offset
+  is added: the offset in font units scaled with `FT_MulFix` and, with
+  `ROUND_XY_TO_GRID`, rounded to a whole pixel. U+2026 is three periods
+  at 0, 246 and 492 units; 492 → 2,834/64 → 2,816/64 gives the stored
+  width (adding offsets in font units, as `ttf-parser` does, gives a
+  width 0.27 px too large);
+- the bitmap box is FreeType's: floor of the minimum and ceil of the
+  maximum, in pixels.
+
+**Atlas packing** (equal to `Aller_Rg SDF`'s stored glyph, used and
+free rectangles): MaxRects, best short side fit. The free list starts as
+`(0, 0, width − 1, height − 1)`. A `w × h` glyph takes a used rectangle
+of `(w + 2·padding + 1) × (h + 2·padding + 1)`. Its glyph rectangle is
+`padding + 1` in from the used rectangle's left and bottom, and its
+distance field (`(w + 2·padding) × (h + 2·padding)`) starts 1 texel in.
+Atlas rows are bottom first.
+
+**Distance field**: texel = `0.5 − d / (2 · _GradientScale)` on 0–255,
+`d` the distance in pixels from the texel's centre to the outline
+(positive outside). Ours uses the exact distance to the flattened
+outline (inside by non-zero winding). Against the 2 stored glyphs'
+4,015 texels (their used rectangles): **mean error 1.04/255**, maximum
+13/255, 60% equal. Shifting ours by one texel in any direction makes the
+error 4.4–11.4, so the placement is right. *Hypothesis:* the remaining
+error is because the game's SDFAA mode works from an anti-aliased
+bitmap (as its name says), not the outline. Nothing else in the stored
+atlas is non-zero.
+
+**Which font draws a character** (confirmed from the IL of
+`TMP_Text.GetTextElement`): the text's font asset, then its fallbacks
+(`m_FallbackFontAssetTable`, depth first), then the text's own sprite
+asset, then `TMP Settings`' fallback fonts, then its default font, then
+its default sprite asset. Otherwise the missing-glyph character.
+`TMP Settings` (in `resources.assets`, read by its layout): no default
+font, no fallbacks, default sprite asset `EmojiOne` (16 sprites),
+missing-glyph character 63 ("?"). `Aller_Rg SDF` falls back to PT Sans,
+Noto Sans CJK SC, Noto Sans Thai and Open Sans; `Aller_W_Bd SDF` to PT
+Sans Bold, Noto Sans CJK SC, Noto Sans Thai Bold and `Aller_Rg SDF`.
+
+**Text coverage**: the English language file uses 118 distinct
+characters that need a glyph. 100 are in `Aller_Rg` (or `Aller_W_Bd`)
+and 18 come from Noto Sans CJK SC. None is missing. The in-scope
+screens hold 141 texts (132 `Aller_Rg SDF`, 9 `Aller_W_Bd SDF`, none
+with its own sprite asset). Their stored strings need no missing glyph,
+except 6 placeholders the game always replaces before showing them
+(confirmed from the IL): the hand reticle's four texts
+(`HandReticle.UpdateText` sets each and shows it only if it is not empty)
+and the PDA toolbar's two gamepad labels (`uGUI_Toolbar.OnEnable` →
+`UpdateCycleBtnText`: hidden without a gamepad, otherwise
+`GameInput.FormatButton`). Their stored strings hold private-use
+characters (U+E005, U+E019, U+E03B) that no font or sprite asset has.
+
+**Cost** (ours, release build, this machine): 2.2 ms per glyph (118 in
+262 ms), with the brute-force distance to every outline segment. The
+English glyphs fill 42% of `Aller_Rg SDF`'s atlas.
 
 ## Script fields (M9u1) — confirmed
 
