@@ -44,7 +44,7 @@ const TMP_PROPERTIES: [&str; 10] = [
     "_PerspectiveFilter",
 ];
 
-fn trees(assets: &Assets) -> Result<Vec<UiTree>> {
+pub(crate) fn trees(assets: &Assets) -> Result<Vec<UiTree>> {
     let catalog = assets.catalog()?;
     let root = assets.ugui_root(&catalog)?;
     let mut out = vec![assets.ui_tree("uGUI.prefab", &root)?];

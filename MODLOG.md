@@ -2,6 +2,54 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-13 — M9u5b: the UI camera and canvas placement
+
+**What/why:** the client must place the game's canvases as the game
+does before it draws them (M9u5c).
+- `sn-ui::scaler` ports `uGUI_CanvasScaler`'s Static mode
+  (`UpdateTransform`, `UpdateFrustum`, `SetScaleFactor`) and the UI
+  camera (`SNCameraRoot`: at the origin, no rotation, the main camera's
+  field of view and planes), with Unity-convention projection and
+  `SetSizeWithCurrentAnchors`.
+- `sn-assets` adds `Assets::ui_scalers` and `Assets::ui_draw_placed`,
+  which lays a tree out at the placed canvas sizes.
+- `sn-unity::Camera` now exposes `clear_flags`, and `scene --tree`
+  prints it and the camera depth.
+- New tool: `sn-inspect ui --canvas`.
+
+Decompiled `uGUI_CanvasScaler`, `ManagedCanvasUpdate`, `GraphicsUtil`,
+`MainCamera` and `SNCameraRoot` with `ilspycmd` into the ignored
+`out/decompiled/full/` (read only). No new dependencies, no
+architecture change.
+
+**Verified:**
+- `sn-inspect ui --canvas` (exit 0, 1.1 s; `out/m9u5/canvas-final.txt`):
+  - placements: 16 of 16 (4 Static scalers × 1920×1080, 2560×1440,
+    1920×1200, 3440×1440). The canvas corners land on the screen corners
+    within 0.0001 px; the target written before the run was ≤ 0.5 px.
+  - `uGUI` laid out and drawn at each size: 178 draws, 0 non-finite.
+    1920×1080 and 2560×1440 give the same hash, as the rule predicts.
+  - 4 draws reach past the canvas (named in the log).
+  - The PDA screen (Inversed) is logged as not placed (M9u8a).
+- `scene main --tree`: the UI camera has clear flags 4 and depth 2; the
+  main camera has 1 and 0.
+- 7 new unit tests: the reference size, larger, 16:10 and ultrawide
+  screens, UI scale and `DontScale`, corners on screen from a turned and
+  moved camera at several fields of view, a mismatched field of view
+  missing the corners, the anchored modes refused, and
+  `SetSizeWithCurrentAnchors`.
+- 1 new opt-in real-data test, `the_hud_canvases_fill_the_screen`
+  (passes).
+- `cargo test --workspace`: 582 passed, 49 ignored. fmt and clippy
+  (`-D warnings`) pass.
+
+**Dead ends:** clippy's `needless_range_loop` on the axis loop (fixed
+with `enumerate`). One `ui --canvas` run had no `SUBNAUTICA_DIR` (it
+exited with "no game folder"); rerun with it set.
+
+**Not tested:** anything on screen (M9u5c); VR; the anchored modes; UI
+scales other than 1 against the game.
+
 ## 2026-10-13 — M9u5a: materials and text vertices
 
 **What/why:** the first step of M9u5. The client needs each UI draw's

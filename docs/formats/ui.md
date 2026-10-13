@@ -103,8 +103,59 @@ Postponed). Every object read ends after `scaleMode`. Values:
 
 `UpdateTransform` (IL) places the canvas at the UI camera's position +
 forward × `distance` with the camera's rotation, or at an `_anchor`'s
-pose. *Hypothesis*: Inversed and Parented are the anchored modes, and
-the PDA screen follows `PDA.screenAnchor`. Not read yet (M9u5, M9u8a).
+pose. Read in M9u5b (§ Canvas placement): Inversed and Parented are the
+anchored modes. Inversed takes `_anchor` (the canvas's parent when it is
+enabled, or one set by `SetAnchor(transform)`) and turns the pose into
+the main camera's space. *Hypothesis*: the PDA screen follows
+`PDA.screenAnchor` (M9u8a).
+
+## Canvas placement (M9u5b) — confirmed (decompiled code, `ui --canvas`)
+
+Our port: `crates/sn-ui/src/scaler.rs`; `sn-inspect ui --canvas` runs
+the check. Read from the decompiled `uGUI_CanvasScaler`, `SNCameraRoot`,
+`ManagedCanvasUpdate`, `GraphicsUtil`, `MainCamera` and `MiscSettings`
+(read only, in `out/`).
+
+- **The UI camera** is the first camera whose culling mask has layer 5
+  (`ManagedCanvasUpdate.GetUICamera`): `MainCamera (UI)`. Its stored
+  numbers: clear flags 4 (nothing), depth 2, mask `0x20`. The main
+  camera: clear flags 1, depth 0. `SNCameraRoot.Start` unparents the UI
+  camera and puts it at the world origin with no rotation. `Awake` copies
+  the main camera's near (0.03) and far (1700) planes and field of view
+  to it, and `SyncFieldOfView` keeps both at `MiscSettings.fieldOfView`
+  (default 60). So it draws over the main camera's image without
+  clearing, and only the `DepthClear` canvas resets the depth (colour
+  mask 0, z always, at 1000 m).
+- **Static mode** (`UpdateTransform`): position = UI camera position +
+  forward × `distance`, rotation = the UI camera's.
+- **`UpdateFrustum`** (every mode but Inversed with an anchor). It uses
+  the **main** camera's field of view (`MainCamera.camera`) and the
+  screen size (`Screen.width`, `height`). The frustum at `distance` is
+  `2 · distance · tan(fov / 2)` high, × aspect wide. The factor is
+  `min(screen.x ÷ reference.x, screen.y ÷ reference.y)`, × `uiScale`
+  unless `DontScale`. The size is the screen ÷ factor
+  (`SetSizeWithCurrentAnchors`), and `localScale = (s, s', s)` with
+  `s = frustum width ÷ screen width × factor` (`s'` from the height).
+  `Canvas.scaleFactor` = factor. So the canvas fills the view exactly.
+- **`uiScale`** = `MiscSettings.GetUIScale()`: 1 on desktop (1.4
+  handheld). VR (`XRSettings.enabled`) adds 10 % and other paths: not
+  ported.
+
+**The run** (`ui --canvas`, 2026-10-13). `uGUI`'s 4 scalers
+(`CraftingCanvas`, `ScreenCanvas`, `OverlayCanvas` at 1 m, `DepthClear`
+at 1000 m and `DontScale`) are all Static, with pivot (0.5, 0.5). Their
+stored rects (1920×1080; `DepthClear` 100×100) and scales (0.005) are
+editor values that `UpdateFrustum` overwrites. At 1920×1080, 2560×1440,
+1920×1200 and 3440×1440, all 16 placements put the corners on the
+screen's corners; the worst is 0.0001 px (expected before the run: ≤ 0.5
+px). Canvas sizes: 1920×1080 (16:9 at both sizes, factor 1 and 4/3),
+1920×1200, 2580×1080. Laid out and drawn at those sizes, `uGUI` gives
+178 draws each, with no non-finite vertex. 1920×1080 and 2560×1440 give
+the same hash, as the rule says they must. At 1920×1080, 4 draws reach
+past the canvas: the two `PopupNotification` control texts, the
+`LoadingArtwork` image and `RadioIcon` (*hypothesis*: their stored,
+off-screen or cover-filled states). The PDA screen's scaler is Inversed
+and follows an anchor: not placed here (M9u8a).
 
 ## Sprite atlases — confirmed
 

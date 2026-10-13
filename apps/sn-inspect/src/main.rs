@@ -6,6 +6,7 @@ mod aurora;
 mod biomes;
 mod body_run;
 mod bots;
+mod canvas;
 mod code;
 mod collision;
 mod coop;
@@ -240,9 +241,13 @@ Commands:
                          per kind, vertices inside rects, UVs inside sprites
   ui --texts             M9u4c: the in-scope TMP texts' settings and the
                          rich-text tags of the stored texts and English
-  ui --draw              M9u4d: every in-scope tree's draw list (order,
-                         canvas space, alpha, clipping), built twice from
-                         scratch; the hashes must be equal
+  ui --draw              M9u4d, M9u5a: every in-scope tree's draw list
+                         (order, canvas space, alpha, clipping, materials,
+                         text vertices), built twice from scratch; the
+                         hashes must be equal
+  ui --canvas            M9u5b: each canvas scaler's placement at several
+                         screens, its corners projected through the UI
+                         camera, and the trees laid out at those sizes
   ui --layout <CLASS> [<NAME>]
                          M9u1: a script's layout and, for its first object
                          (named NAME), where each field starts and its value
@@ -458,6 +463,7 @@ fn run(mut args: Vec<String>) -> Result<ExitCode> {
         ["ui", "--meshes"] => meshes::run(&game),
         ["ui", "--texts"] => texts::run(&game),
         ["ui", "--draw"] => draw::run(&game),
+        ["ui", "--canvas"] => canvas::run(&game),
         ["ui", "--fonts"] => fonts::run(&game, false),
         ["ui", "--fonts", "--atlas"] => fonts::run(&game, true),
         ["ui", "--sprites"] => ui::sprites(&game, false),

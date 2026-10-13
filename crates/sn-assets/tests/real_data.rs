@@ -2884,3 +2884,31 @@ fn the_hud_draws_with_materials_and_glyphs() {
     }
     assert!(quads > 300, "{quads}");
 }
+
+/// M9u5b: `uGUI`'s four scalers are Static; placed on a 2560 × 1440 screen
+/// with the game's UI camera, each canvas's corners land on the screen's.
+#[test]
+#[ignore = "needs SUBNAUTICA_DIR pointing at a Subnautica install"]
+fn the_hud_canvases_fill_the_screen() {
+    let Some(dir) = std::env::var_os("SUBNAUTICA_DIR") else {
+        eprintln!("SUBNAUTICA_DIR not set; skipping");
+        return;
+    };
+    let game = GameData::locate(Some(PathBuf::from(dir))).unwrap();
+    let assets = Assets::index(&game).unwrap();
+    let catalog = assets.catalog().unwrap();
+    let root = assets.ugui_root(&catalog).unwrap();
+    let ui = assets.ui_tree("uGUI.prefab", &root).unwrap();
+    let scalers = assets.ui_scalers(&ui).unwrap();
+    assert_eq!(scalers.len(), 4);
+    let cam = sn_ui::scaler::UiCamera::game(60.0, 0.03, 1700.0);
+    for (_, s) in &scalers {
+        assert_eq!(s.mode, sn_ui::scaler::MODE_STATIC);
+        let p = sn_ui::scaler::place(s, &cam, 60.0, [2560, 1440], 1.0).unwrap();
+        let c = p.corners([0.5, 0.5]);
+        let tr = cam.project(c[2], [2560, 1440]).unwrap();
+        let bl = cam.project(c[0], [2560, 1440]).unwrap();
+        assert!((tr[0] - 2560.0).abs() < 0.5 && (tr[1] - 1440.0).abs() < 0.5, "{tr:?}");
+        assert!(bl[0].abs() < 0.5 && bl[1].abs() < 0.5, "{bl:?}");
+    }
+}

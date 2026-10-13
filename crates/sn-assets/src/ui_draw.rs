@@ -27,6 +27,7 @@ use sn_ui::font::{Added, DynamicAtlas};
 use sn_ui::layout::layout_with;
 use sn_ui::material::{UiMaterial, fallback_material, tmp_padding};
 use sn_ui::mesh::{image_mesh, raw_image_mesh};
+use sn_ui::scaler::{Placement, ScalerSettings, apply_to_tree};
 use sn_ui::text::{
     AtlasGlyph, FontPad, FontSet, MeshOptions, Pads, Texts, layout_text, layout_text_with,
     text_meshes,
@@ -215,8 +216,32 @@ impl Assets<'_> {
         }
     }
 
-    /// The draw list of `tree` with materials and text vertices; glyphs go
-    /// into `atlases`. `sorting_layers` is the TagManager's list.
+    /// Every enabled `uGUI_CanvasScaler` of a tree, by node (M9u5b).
+    pub fn ui_scalers(&self, tree: &UiTree) -> Result<Vec<(usize, ScalerSettings)>> {
+        let mut out = Vec::new();
+        for (node, c) in tree.scripts("uGUI_CanvasScaler") {
+            let (_, d) = c.object.data()?;
+            let s = sn_unity::CanvasScaler::parse(d, c.object.file.file().big_endian)
+                .map_err(|e| format!("{}: uGUI_CanvasScaler: {e}", tree.nodes[node].path))?;
+            if !s.enabled {
+                continue;
+            }
+            out.push((
+                node,
+                ScalerSettings {
+                    reference_resolution: s.reference_resolution,
+                    mode: s.mode,
+                    distance: s.distance,
+                    scale_mode: s.scale_mode,
+                },
+            ));
+        }
+        Ok(out)
+    }
+
+    /// The draw list of `tree` with materials and text vertices, its
+    /// canvases at their stored sizes; glyphs go into `atlases`.
+    /// `sorting_layers` is the TagManager's list.
     pub fn ui_draw(
         &self,
         layouts: &Layouts,
@@ -226,8 +251,39 @@ impl Assets<'_> {
         atlases: &mut GlyphAtlases,
         sorting_layers: &[(String, u32)],
     ) -> Result<UiDraw> {
+        self.ui_draw_placed(
+            layouts,
+            tree_in,
+            fonts,
+            set,
+            atlases,
+            sorting_layers,
+            &HashMap::new(),
+        )
+    }
+
+    /// [`Assets::ui_draw`] with canvases sized and scaled as their scalers
+    /// place them (`placements` by node, from `sn_ui::scaler::place`)
+    /// before the layout.
+    #[allow(clippy::too_many_arguments)]
+    pub fn ui_draw_placed(
+        &self,
+        layouts: &Layouts,
+        tree_in: &UiTree,
+        fonts: &FontAssets,
+        set: &FontSet,
+        atlases: &mut GlyphAtlases,
+        sorting_layers: &[(String, u32)],
+        placements: &HashMap<usize, Placement>,
+    ) -> Result<UiDraw> {
         let parts = self.ui_draw_parts(layouts, tree_in, sorting_layers)?;
         let mut tree = self.ui_layout(layouts, tree_in)?.tree;
+        // Parents first, so a nested canvas sees its parent's new size.
+        let mut placed: Vec<(&usize, &Placement)> = placements.iter().collect();
+        placed.sort_by_key(|(n, _)| **n);
+        for (node, p) in placed {
+            apply_to_tree(&mut tree, *node, p);
+        }
         let texts = self.ui_texts(layouts, tree_in, fonts)?;
         let sizer = Texts {
             fonts: set,

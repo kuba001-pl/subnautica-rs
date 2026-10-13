@@ -13,6 +13,8 @@ pub const TAG_MAIN_CAMERA: u16 = 5;
 pub struct Camera {
     pub game_object: PPtr,
     pub enabled: bool,
+    /// `m_ClearFlags`: 1 skybox, 2 solid colour, 3 depth only, 4 nothing.
+    pub clear_flags: u32,
     pub near: f32,
     pub far: f32,
     /// Vertical, degrees.
@@ -29,7 +31,7 @@ impl Camera {
         let game_object = PPtr::read(&mut r)?;
         let enabled = r.u8()? != 0;
         r.align(4)?;
-        let _clear_flags = r.u32()?;
+        let clear_flags = r.u32()?;
         let _background = [r.f32()?, r.f32()?, r.f32()?, r.f32()?];
         let _projection_matrix_mode = r.i32()?;
         let _gate_fit = r.i32()?;
@@ -48,6 +50,7 @@ impl Camera {
         Ok(Camera {
             game_object,
             enabled,
+            clear_flags,
             near,
             far,
             field_of_view,

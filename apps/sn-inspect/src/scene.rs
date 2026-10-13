@@ -119,8 +119,14 @@ pub fn run(
             .find(|n| n.object.2 == camera.game_object.path_id)
             .map_or("?", |n| n.name.as_str());
         println!(
-            "camera {name:?}: enabled {}, near {}, far {}, field of view {}, culling mask {:#010x}",
-            camera.enabled, camera.near, camera.far, camera.field_of_view, camera.culling_mask
+            "camera {name:?}: enabled {}, clear flags {}, depth {}, near {}, far {}, field of view {}, culling mask {:#010x}",
+            camera.enabled,
+            camera.clear_flags,
+            camera.depth,
+            camera.near,
+            camera.far,
+            camera.field_of_view,
+            camera.culling_mask
         );
     }
 
