@@ -2512,7 +2512,7 @@ no serialized bones/root bone. `PrecursorKeyTerminal.Start` selects
 `keyMats[acceptKeyType]` for `keyFace`, replacing the saved orange material.
 Do not call terminal symbols visually ready until these are handled.
 
-**Proposed correction (requires approval for the larger animation change):**
+**Correction approved (2026-10-13; checkpoint `ff4ef2d` pushed):**
 1. Decode the terminal script's stored material references and key type;
    apply its startup material selection through the existing material loader.
 2. Extend the existing avatar/rig loader to reconstruct optimized skeleton
@@ -2526,7 +2526,17 @@ Do not call terminal symbols visually ready until these are handled.
 **Done when:** the required material is selected, all required optimized
 bindings resolve, body vertices use the reconstructed skin palette, default
 closed pose is applied, workspace/GPU regressions pass, and the user confirms
-the symbol/body placement. Optimized skeleton support is not implemented yet.
+the symbol/body placement.
+
+**Implemented; human confirmation pending:** the loader reads the terminal
+startup fields, selects its required material, restores its optimized avatar
+paths/default locals and maps the mesh palette from bone-name hashes. Scope
+is key terminals; ordinary rigs keep their current path. All three terminal
+templates resolve 240/240 clip bindings and seven skin bones and use distinct
+materials. Synthetic malformed-data and reference-remapping tests passed.
+Numerical closed-pose and GPU validation are recorded in MODLOG. Original
+game comparison and a fresh user screenshot remain open; insertion gameplay
+is outside this correction.
 
 After this correction, next visual slice: M7g4e,
 decode actual light inputs for the remaining lit particle variants before

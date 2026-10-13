@@ -85,8 +85,8 @@ pub use physics::{
 };
 pub use placeholder::{PrefabPlaceholder, PrefabPlaceholdersGroup};
 pub use prefab::{
-    AssetBundleManifest, GameObject, Lod, LodGroup, MeshRenderer, SkinnedMeshRenderer,
-    TransformNode, parse_resource_container, parse_text_asset,
+    AssetBundleManifest, GameObject, Lod, LodGroup, MeshRenderer, PrecursorKeyTerminal,
+    SkinnedMeshRenderer, TransformNode, parse_resource_container, parse_text_asset,
 };
 pub use quality::{QualityLevel, QualitySettings};
 pub use scene_scripts::{

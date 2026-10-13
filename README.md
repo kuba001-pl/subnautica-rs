@@ -155,9 +155,10 @@ saved lake lighting keywords are inactive in the installed shader;
 original-game visual parity not tested); tech light cones, Gun elevator
 smoke/dots and control-room inner blocks, thermal reactor electricity,
 lava falls and orange key symbols use their decoded unlit effect programs
-(M7g4d; GPU validated, original-game visual parity not tested; key-terminal
-symbols are visibly broken: startup material selection and optimized-avatar
-skinning are missing); the
+(M7g4d; GPU validated, original-game visual parity not tested; key terminals
+now select their required symbol material and restore optimized bones for
+the default closed pose, with numerical tests passing; fresh human visual
+confirmation pending); the
 objects the game spawns from prefabs' placeholders, e.g. the cache doors,
 key terminals and pedestal crystals; none of these compared with the game
 on screen yet); the game's animators on objects (M7f4: its own

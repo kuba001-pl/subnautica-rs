@@ -365,9 +365,14 @@ and refraction-sign limitations above still apply.
 `keyFace.material`. A purple-key terminal can therefore store the material
 named `Precursor_Symbol_Orange` in its prefab and replace it on startup.
 Rendering the stored material alone does not reproduce its runtime appearance.
-Our loader does not implement this selection yet. A human screenshot at
-the Blood Kelp cache also shows the symbol detached from the terminal body;
-optimized-avatar handling is an additional missing requirement (animation.md).
+Our loader now implements this startup selection for active, enabled
+terminals. The script prefix follows its MonoBehaviour header: key type
+`i32`, counted material `PPtr[]`, key-slot Transform pointer and face
+MeshRenderer pointer (confirmed by metadata and all three template results).
+HandTarget has no serialized base fields. Other cinematic/interaction
+fields are not consumed. A human screenshot at the Blood Kelp cache showed
+the symbol detached before optimized-avatar support was added (animation.md);
+fresh human confirmation of the corrected placement remains pending.
 
 ### Control-room UV deformation without soft fading (M7g4c) — confirmed
 

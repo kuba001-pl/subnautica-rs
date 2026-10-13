@@ -292,3 +292,74 @@ impl AssetBundleManifest {
         })
     }
 }
+/// Startup fields of `PrecursorKeyTerminal` (HandTarget has no serialized
+/// fields). The remaining interaction/cinematic fields are outside this port.
+#[derive(Clone, Debug)]
+pub struct PrecursorKeyTerminal {
+    pub enabled: bool,
+    pub accept_key_type: i32,
+    pub key_materials: Vec<PPtr>,
+    pub key_face: PPtr,
+}
+
+impl PrecursorKeyTerminal {
+    pub fn selected_material(&self) -> Option<PPtr> {
+        usize::try_from(self.accept_key_type)
+            .ok()
+            .and_then(|i| self.key_materials.get(i).copied())
+    }
+    pub fn parse(data: &[u8], big_endian: bool) -> crate::Result<Self> {
+        let header = crate::MonoBehaviourHeader::parse(data, big_endian)?;
+        let mut r = Reader::new(data, big_endian);
+        r.seek(header.fields_offset)?;
+        let accept_key_type = r.i32()?;
+        let count = r.count(12)?;
+        let mut key_materials = Vec::with_capacity(count);
+        for _ in 0..count {
+            key_materials.push(PPtr::read(&mut r)?);
+        }
+        PPtr::read(&mut r)?; // keySlotPos
+        let key_face = PPtr::read(&mut r)?;
+        Ok(Self {
+            enabled: header.enabled,
+            accept_key_type,
+            key_materials,
+            key_face,
+        })
+    }
+}
+
+#[cfg(test)]
+mod terminal_tests {
+    use super::*;
+
+    #[test]
+    fn terminal_startup_fields_are_checked_and_select_by_key_type() {
+        let mut bytes = Vec::new();
+        let ptr = |b: &mut Vec<u8>, id: i64| {
+            b.extend_from_slice(&0i32.to_le_bytes());
+            b.extend_from_slice(&id.to_le_bytes());
+        };
+        ptr(&mut bytes, 1);
+        bytes.extend_from_slice(&[1, 0, 0, 0]);
+        ptr(&mut bytes, 2);
+        bytes.extend_from_slice(&0i32.to_le_bytes()); // empty name
+        bytes.extend_from_slice(&1i32.to_le_bytes()); // key type
+        bytes.extend_from_slice(&2i32.to_le_bytes()); // materials
+        ptr(&mut bytes, 10);
+        ptr(&mut bytes, 20);
+        ptr(&mut bytes, 30); // slot
+        ptr(&mut bytes, 40); // face
+        let mut t = PrecursorKeyTerminal::parse(&bytes, false).unwrap();
+        assert!(t.enabled);
+        assert_eq!(t.selected_material().unwrap().path_id, 20);
+        assert_eq!(t.key_face.path_id, 40);
+        for key in [-1, 2, i32::MAX] {
+            t.accept_key_type = key;
+            assert!(t.selected_material().is_none());
+        }
+        for length in 0..bytes.len() {
+            assert!(PrecursorKeyTerminal::parse(&bytes[..length], false).is_err());
+        }
+    }
+}

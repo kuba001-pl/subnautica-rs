@@ -10,6 +10,92 @@ use sn_install::GameData;
 
 #[test]
 #[ignore = "needs SUBNAUTICA_DIR pointing at a Subnautica install"]
+fn optimized_key_terminals_bind_skin_and_select_distinct_materials() {
+    use sn_anim::{Animator, Program, SlotKind};
+    use std::collections::{HashMap, HashSet};
+    use std::sync::Arc;
+    let Some(dir) = std::env::var_os("SUBNAUTICA_DIR") else {
+        return;
+    };
+    let game = GameData::locate(Some(PathBuf::from(dir))).unwrap();
+    let assets = Assets::index(&game).unwrap();
+    let catalog = assets.catalog().unwrap();
+    let mut cache = HashMap::new();
+    let mut materials = HashSet::new();
+    for color in ["Purple", "Orange", "Blue"] {
+        let path =
+            format!("WorldEntities/Environment/Precursor/Precursor_{color}KeyTerminal.prefab");
+        let mut prefab = assets.prefab(&catalog, &path).unwrap();
+        let (root, animator) = prefab
+            .nodes
+            .iter()
+            .enumerate()
+            .find_map(|(i, n)| n.animator.as_ref().map(|a| (i, a)))
+            .unwrap();
+        let set = assets
+            .animation_set(animator.controller.as_ref().unwrap(), &mut cache)
+            .unwrap();
+        let program = Arc::new(Program::new(Arc::new(set.controller), &set.clips));
+        let binding = prefab.bind_animator(root, &program, &|_| Vec::new());
+        assert_eq!(binding.missing, 0, "{color}");
+        let mut runtime = Animator::new(program.clone(), binding.defaults.clone());
+        for _ in 0..60 {
+            runtime.update(1.0 / 60.0);
+        }
+        assert!(runtime.pose().iter().all(|v| v.is_finite()));
+        for (slot, node) in program.slots.iter().zip(&binding.nodes) {
+            let Some(node) = *node else { continue };
+            let mut local = prefab.nodes[node].local;
+            match slot.kind {
+                SlotKind::Position => local
+                    .position
+                    .copy_from_slice(&runtime.pose()[slot.offset..slot.offset + 3]),
+                SlotKind::Rotation => local
+                    .rotation
+                    .copy_from_slice(&runtime.pose()[slot.offset..slot.offset + 4]),
+                SlotKind::Scale => local
+                    .scale
+                    .copy_from_slice(&runtime.pose()[slot.offset..slot.offset + 3]),
+                _ => continue,
+            }
+            prefab.set_local(node, local);
+        }
+        let (body, node) = prefab.visible().find(|(_, n)| n.skinned).unwrap();
+        assert_eq!(node.bones.len(), 7);
+        assert!(node.bones.iter().all(Option::is_some));
+        let (mesh, geometry) = assets.mesh(node.mesh.as_ref().unwrap()).unwrap();
+        assert_eq!(mesh.bone_name_hashes.len(), 7);
+        let skin = prefab.skinned_geometry(body, &mesh, &geometry).unwrap();
+        assert_eq!(skin.positions.len(), 1903);
+        assert!(skin.positions.iter().flatten().all(|v| v.is_finite()));
+        let (_, face) = prefab.visible().find(|(_, n)| !n.skinned).unwrap();
+        materials.insert(face.materials[0].as_ref().unwrap().key());
+        let centre = face.in_prefab.position;
+        let distance = skin
+            .positions
+            .iter()
+            .map(|p| {
+                p.iter()
+                    .zip(centre)
+                    .map(|(p, c)| (p - c).powi(2))
+                    .sum::<f32>()
+                    .sqrt()
+            })
+            .fold(f32::INFINITY, f32::min);
+        eprintln!(
+            "{color}: bound slots {}, bones 7, glyph/body nearest-vertex distance {distance:.6} m",
+            program.slots.len()
+        );
+        assert!(
+            distance < 0.25,
+            "glyph detached: {color} distance {distance}"
+        );
+    }
+    assert_eq!(materials.len(), 3);
+}
+
+#[test]
+#[ignore = "needs SUBNAUTICA_DIR pointing at a Subnautica install"]
 fn terrain_materials_resolve_and_decode() {
     let Some(dir) = std::env::var_os("SUBNAUTICA_DIR") else {
         eprintln!("SUBNAUTICA_DIR not set; skipping");

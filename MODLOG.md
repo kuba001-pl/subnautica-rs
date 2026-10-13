@@ -2,6 +2,75 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-13 — key-terminal material and optimized skeleton correction
+
+**Checkpoint:** user authorized committing/pushing the prior M7g4d work;
+`ff4ef2d` pushed to `origin/main`. User also approved the larger terminal
+correction. This correction was initially left uncommitted for testing;
+the user subsequently authorized committing and pushing it.
+
+**What/why:** fixed the two concrete omissions behind the user's cache
+screenshot. `sn-unity` retains mesh bone-name hashes and reads the checked
+startup prefix of `PrecursorKeyTerminal`. `sn-assets` applies its selected
+face material and reconstructs its optimized generic avatar skeleton,
+including flattened exposed nodes such as the glyph. Mesh palette hashes
+resolve in bind-pose order. Parents-first sorting preserves cached node
+references and object identities; hidden nodes receive separate synthetic
+identities. Existing animation, rigid effect parenting and GPU skinning
+then use the default closed pose. No shader offsets, hard-coded geometry,
+new dependencies, architecture layers or whitelist changes. Scope is active,
+enabled key terminals; other optimized families are not enabled by this fix.
+
+**Verified:**
+- Purple/orange/blue templates: each 240/240 clip bindings resolved, 0
+  missing, seven mesh palette hashes mapped to seven bones; three distinct
+  face materials selected. Purple now uses the purple material rather than
+  the saved orange one. Original serialized hierarchy 9 nodes, restored 16.
+- Opt-in real-data test: all three default closed poses ran for 60 steps;
+  30 bound pose slots, 1,903 finite body vertices. Glyph centre to nearest
+  body vertex 0.215570 m in each (not a triangle-surface gap or visual oracle).
+- Synthetic tests: restored hidden parent/exposed child, composed placement,
+  cached references after sorting; invalid arrays/parents, ambiguous names
+  and non-finite poses rejected; startup selection and all truncated prefixes
+  return checked errors. `cargo test --workspace`: 563 passed, 48 ignored.
+  `cargo test -p sn-assets` repeated after the unrelated-prefab early return.
+- `cargo fmt --all -- --check`, clippy with `-D warnings`, release client/
+  inspector build and `git diff --check` passed.
+- Final GPU runs: cache door, Gun control room and Tree Cove; each exit 0,
+  300 settled measured frames after 120 warmup frames, 0 WARN/ERROR/panics
+  or object warnings. Door logs a purple effect attached to its rig node.
+  Mean/p95 ms: door 5.099/5.393, Gun 8.818/9.347, Cove 5.053/5.482.
+  Peak memory 1.434/2.331/1.211 GiB. Cached mesh/material counts remain
+  1,835/336, 6,815/857, 1,301/266 respectively. Object despawn-root counts
+  drop by one per restored terminal (door 8,201, Gun 20,667): the body and
+  glyph now share one tracked rig base instead of separate tracked roots.
+  Cove remains 6,335. Raw logs/reports are ignored under `out/m7g4d` and
+  `out/baselines/run-m7g4d-terminal-final-*`.
+
+**Corrections/dead ends:** temporary inspector research print initially
+used the wrong FileRef member; removed all temporary research printing.
+Clippy caught a Copy-type clone in a test; removed. The first real-data
+test compilation used `Animator.pose` instead of its `pose()` accessor;
+corrected. No game data was added to source. Fresh human confirmation,
+original-game visual parity, insertion gameplay and other optimized-avatar
+families are **not tested**. Do not call visual acceptance complete yet.
+
+Verification commands (PowerShell, repository root):
+```powershell
+$env:SUBNAUTICA_DIR = 'D:\SteamLibrary\steamapps\common\Subnautica'
+cargo test --workspace
+cargo test -p sn-assets --test real_data optimized_key_terminals -- --ignored --nocapture
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo build --release -p sn-client -p sn-inspect
+target/release/sn-inspect.exe anim WorldEntities/Environment/Precursor/Precursor_PurpleKeyTerminal.prefab --states
+target/release/sn-client.exe --benchmark 300 --baseline terminal-cache-check --baseline-revision local-terminal-fix --warmup 120 --resolution 1600 900 --start -622 -558 1482 --look -612 -563 1483 --fov 60 --view 400 --lifepod-seed 1 --slot-seed 1 --time 9.6 --time-scale 0 --aurora intact --water-quality high --color-grading off --gpu-timings
+```
+Expected: tests/checks exit 0; inspector reports 240 found, 0 missing;
+GPU log selects `Precursor_Symbol_Purple`, attaches its rigid effect to
+the rig, and has no validation errors. Use a fresh baseline name to repeat.
+Gun/Cove runs retain those flags and use the earlier M7g4d camera table.
+
 ## 2026-10-13 — M7g4d terminal human-test failure
 
 The user's Blood Kelp cache screenshot shows the orange symbol detached

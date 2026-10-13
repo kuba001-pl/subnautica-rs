@@ -192,6 +192,8 @@ pub struct Mesh {
     /// Per bone: mesh space → bone space, column by column (`m[col * 4 +
     /// row]`; the file stores them row by row).
     pub bind_poses: Vec<[f32; 16]>,
+    /// Optimized skin palette: avatar path hashes, in bind-pose order.
+    pub bone_name_hashes: Vec<u32>,
     /// Blend shapes (empty for most meshes; M7f4d), checked against
     /// `vertex_count`.
     pub blend_shapes: BlendShapes,
@@ -250,7 +252,11 @@ impl Mesh {
             bind_poses.push(m);
         }
         r.align(4)?;
-        skip_vector(&mut r, 4)?; // bone name hashes
+        let n = r.count(4)?;
+        let mut bone_name_hashes = Vec::with_capacity(n);
+        for _ in 0..n {
+            bone_name_hashes.push(r.u32()?);
+        }
         r.u32()?; // root bone name hash
         skip_vector(&mut r, 24)?; // bone AABBs
         skip_vector(&mut r, 4)?; // variable bone count weights
@@ -297,6 +303,7 @@ impl Mesh {
             path,
         });
         Ok(Mesh {
+            bone_name_hashes,
             name,
             sub_meshes,
             compression,
@@ -755,6 +762,7 @@ mod tests {
             stream: None,
             aabb: ([0.0; 3], [0.0; 3]),
             bind_poses: Vec::new(),
+            bone_name_hashes: Vec::new(),
             blend_shapes: BlendShapes::default(),
         };
         // 4 vertices × (12 + 4) bytes, already a multiple of 16.
@@ -813,6 +821,7 @@ mod tests {
             stream: None,
             aabb: ([0.0; 3], [0.0; 3]),
             bind_poses: Vec::new(),
+            bone_name_hashes: Vec::new(),
             blend_shapes: BlendShapes::default(),
         };
         let g = mesh.decode(&vertex).unwrap();

@@ -353,6 +353,86 @@ fn expect(object: &ObjectRef, class: i32) -> Result<&[u8]> {
 }
 
 impl Assets<'_> {
+    /// Terminal startup material selection and its optimized generic avatar.
+    /// Scoped to this script until other optimized families are verified.
+    fn prepare_key_terminals(&self, prefab: &mut Building) -> Result<()> {
+        let terminals = std::mem::take(&mut prefab.key_terminals);
+        if terminals.is_empty() {
+            return Ok(());
+        }
+        for (file, terminal, at) in terminals {
+            if !terminal.enabled || !prefab.nodes[at].active {
+                continue;
+            }
+            let material = terminal
+                .selected_material()
+                .map(|p| self.resolve(&file, p))
+                .transpose()?
+                .flatten();
+            if let (Some(material), Some(face)) =
+                (material, self.resolve(&file, terminal.key_face)?)
+            {
+                let renderer = MeshRenderer::parse(face.data()?.1, face.file.file().big_endian)
+                    .map_err(|e| format!("key face {}: {e}", face.path_id))?;
+                if let Some(go) = self.resolve(&face.file, renderer.game_object)?
+                    && let Some(n) = prefab.nodes.iter_mut().find(|n| n.key == go.key())
+                {
+                    if let Some(first) = n.materials.first_mut() {
+                        *first = Some(material);
+                    }
+                }
+            }
+            let animators: Vec<usize> = prefab
+                .nodes
+                .iter()
+                .enumerate()
+                .filter(|(i, n)| {
+                    below(&prefab.nodes, *i, at)
+                        && n.animator
+                            .as_ref()
+                            .is_some_and(|a| !a.component.has_transform_hierarchy)
+                })
+                .map(|(i, _)| i)
+                .collect();
+            for animator in animators {
+                let Some(reference) = prefab.nodes[animator]
+                    .animator
+                    .as_ref()
+                    .and_then(|a| a.avatar.as_ref())
+                else {
+                    continue;
+                };
+                let avatar = self.avatar(reference)?;
+                let mut nodes = prefab.nodes.clone();
+                let map = restore_avatar(&mut nodes, animator, &avatar)?;
+                for i in 0..nodes.len() {
+                    if !below(&nodes, i, animator)
+                        || !nodes[i].skinned
+                        || !nodes[i].bone_keys.is_empty()
+                    {
+                        continue;
+                    }
+                    let Some(mesh) = nodes[i].mesh.as_ref() else {
+                        continue;
+                    };
+                    let mesh = self.mesh_info(mesh)?;
+                    if mesh.bind_poses.len() != mesh.bone_name_hashes.len() {
+                        return Err("optimized terminal: palette/bind-pose count mismatch".into());
+                    }
+                    let keys: Option<Vec<_>> = mesh
+                        .bone_name_hashes
+                        .iter()
+                        .map(|hash| map.get(hash).map(|&index| Some(nodes[index].key.clone())))
+                        .collect();
+                    nodes[i].bone_keys =
+                        keys.ok_or("optimized terminal: unresolved skin palette hash")?;
+                }
+                prefab.nodes = nodes;
+            }
+        }
+        prefab.sort_nodes()
+    }
+
     /// Reads `StreamingAssets/aa/catalog.json`.
     pub fn catalog(&self) -> Result<Catalog> {
         let path = self.game().data_dir.join("StreamingAssets/aa/catalog.json");
@@ -416,6 +496,7 @@ impl Assets<'_> {
         let mut prefab = Building::new(key);
         let mut lods: Vec<(ObjectRef, LodGroup)> = Vec::new();
         self.add_node(root, None, true, &mut prefab, &mut lods, 0)?;
+        self.prepare_key_terminals(&mut prefab)?;
 
         // LOD levels: match each group's renderers to nodes by object.
         let mut lod_groups = Vec::new();
@@ -739,6 +820,11 @@ impl Assets<'_> {
                         .map_err(|e| format!("Light {}: {e}", c.path_id))?,
                 ),
                 MONO_BEHAVIOUR => match script_class(self, &c).as_deref() {
+                    Some("PrecursorKeyTerminal") => {
+                        let terminal = sn_unity::PrecursorKeyTerminal::parse(data, big_endian)
+                            .map_err(|e| format!("PrecursorKeyTerminal {}: {e}", c.path_id))?;
+                        prefab.key_terminals.push((c.file.clone(), terminal, index));
+                    }
                     Some("SkyApplier") => {
                         let a = SkyApplier::parse(data, big_endian)
                             .map_err(|e| format!("SkyApplier {}: {e}", c.path_id))?;
@@ -902,6 +988,7 @@ pub struct NodeAnimator {
 
 /// A node while the hierarchy is being read (keeps the object key for LOD
 /// matching).
+#[derive(Clone)]
 struct BuildingNode {
     key: (std::path::PathBuf, String, i64),
     name: String,
@@ -941,9 +1028,193 @@ struct Building {
     placeholder_groups: Vec<(FileRef, PrefabPlaceholdersGroup, usize)>,
     /// `ShipExteriorCull`s found: their file, enabled, colliders, node.
     exterior_culls: Vec<(FileRef, bool, Vec<PPtr>, usize)>,
+    key_terminals: Vec<(FileRef, sn_unity::PrecursorKeyTerminal, usize)>,
+}
+
+fn below(nodes: &[BuildingNode], node: usize, root: usize) -> bool {
+    let mut at = Some(node);
+    for _ in 0..=nodes.len() {
+        let Some(i) = at else { return false };
+        if i == root {
+            return true;
+        }
+        at = nodes.get(i).and_then(|n| n.parent);
+    }
+    false
+}
+
+/// Reconstruct an optimized avatar's hidden nodes and restore exposed nodes
+/// to their original paths. No game-specific paths or pose values are used.
+fn restore_avatar(
+    nodes: &mut Vec<BuildingNode>,
+    root: usize,
+    avatar: &sn_unity::Avatar,
+) -> Result<std::collections::HashMap<u32, usize>> {
+    use std::collections::{HashMap, HashSet};
+    let count = avatar.skeleton_ids.len();
+    if count == 0
+        || avatar.human_nodes != 0
+        || avatar.skeleton_parents.len() != count
+        || avatar.default_pose.len() != count
+        || nodes.get(root).is_none()
+    {
+        return Err("optimized terminal: invalid generic avatar arrays".into());
+    }
+    let names: HashMap<_, _> = avatar
+        .names
+        .iter()
+        .map(|(id, path)| (*id, path.as_str()))
+        .collect();
+    let original = nodes.len();
+    let template = nodes[root].clone();
+    let mut indices = Vec::with_capacity(count);
+    let mut used = HashSet::new();
+    let mut map = HashMap::new();
+    for (i, (&id, &parent)) in avatar
+        .skeleton_ids
+        .iter()
+        .zip(&avatar.skeleton_parents)
+        .enumerate()
+    {
+        let path = names
+            .get(&id)
+            .ok_or("optimized terminal: missing avatar path")?;
+        if sn_unity::name_hash(path) != id || map.contains_key(&id) {
+            return Err("optimized terminal: duplicate or invalid avatar path hash".into());
+        }
+        if i == 0 {
+            if parent != -1 || !path.is_empty() {
+                return Err("optimized terminal: invalid avatar root".into());
+            }
+            indices.push(root);
+            used.insert(root);
+            map.insert(id, root);
+            continue;
+        }
+        let parent = usize::try_from(parent)
+            .ok()
+            .filter(|p| *p < i)
+            .ok_or("optimized terminal: avatar parents are not topological")?;
+        let name = path
+            .rsplit('/')
+            .next()
+            .filter(|s| !s.is_empty())
+            .ok_or("optimized terminal: empty bone name")?;
+        let parent_path = names
+            .get(&avatar.skeleton_ids[parent])
+            .ok_or("optimized terminal: missing parent path")?;
+        let expected = if parent_path.is_empty() {
+            name.to_string()
+        } else {
+            format!("{parent_path}/{name}")
+        };
+        if expected != *path {
+            return Err("optimized terminal: path/parent mismatch".into());
+        }
+        let candidates: Vec<usize> = (0..original)
+            .filter(|&n| !used.contains(&n) && below(nodes, n, root) && nodes[n].name == name)
+            .collect();
+        if candidates.len() > 1 {
+            return Err("optimized terminal: ambiguous exposed bone name".into());
+        }
+        let index = if let Some(&index) = candidates.first() {
+            index
+        } else {
+            let mut node = template.clone();
+            // Synthetic identity is separate from serialized object identities.
+            node.key.1 = format!("{}#avatar:{}", node.key.1, template.key.2);
+            node.key.2 = i as i64;
+            node.name = name.to_string();
+            node.mesh = None;
+            node.materials.clear();
+            node.renderer_enabled = false;
+            node.cast_shadows = 0;
+            node.skinned = false;
+            node.bone_keys.clear();
+            node.lod = None;
+            node.lod_group = None;
+            node.lights.clear();
+            node.day_night_light = None;
+            node.volumetric_light = None;
+            node.placeholder = None;
+            node.animator = None;
+            node.blend_shape_weights.clear();
+            nodes.push(node);
+            nodes.len() - 1
+        };
+        let pose = &avatar.default_pose[i];
+        if pose
+            .t
+            .iter()
+            .chain(&pose.q)
+            .chain(&pose.s)
+            .any(|v| !v.is_finite())
+        {
+            return Err("optimized terminal: non-finite avatar pose".into());
+        }
+        nodes[index].parent = Some(indices[parent]);
+        nodes[index].local = Transform {
+            position: pose.t,
+            rotation: pose.q,
+            scale: pose.s,
+        };
+        used.insert(index);
+        indices.push(index);
+        map.insert(id, index);
+    }
+    Ok(map)
 }
 
 impl Building {
+    /// Re-parenting exposed avatar nodes can put parents after children.
+    /// Restore parents-first order and update all cached node indices.
+    fn sort_nodes(&mut self) -> Result<()> {
+        let mut remap = vec![usize::MAX; self.nodes.len()];
+        let mut order = Vec::with_capacity(self.nodes.len());
+        while order.len() < self.nodes.len() {
+            let before = order.len();
+            for (i, node) in self.nodes.iter().enumerate() {
+                if remap[i] == usize::MAX
+                    && node
+                        .parent
+                        .is_none_or(|p| remap.get(p).is_some_and(|v| *v != usize::MAX))
+                {
+                    remap[i] = order.len();
+                    order.push(i);
+                }
+            }
+            if before == order.len() {
+                return Err("optimized terminal: cyclic or invalid hierarchy".into());
+            }
+        }
+        let mut sorted = Vec::<BuildingNode>::with_capacity(order.len());
+        for i in order {
+            let mut node = self.nodes[i].clone();
+            node.parent = node.parent.map(|p| remap[p]);
+            if let Some(parent) = node.parent {
+                node.in_prefab = sorted[parent].in_prefab.then(&node.local);
+                node.active = node.active_self && sorted[parent].active;
+            } else {
+                node.in_prefab = Transform::default();
+            }
+            sorted.push(node);
+        }
+        self.nodes = sorted;
+        for (_, _, at) in &mut self.volumetric_lights {
+            *at = remap[*at];
+        }
+        for at in self.placeholder_components.values_mut() {
+            *at = remap[*at];
+        }
+        for (_, _, at) in &mut self.placeholder_groups {
+            *at = remap[*at];
+        }
+        for (_, _, _, at) in &mut self.exterior_culls {
+            *at = remap[*at];
+        }
+        Ok(())
+    }
+
     fn new(key: &str) -> Building {
         Building {
             key: key.to_string(),
@@ -953,6 +1224,104 @@ impl Building {
             placeholder_components: std::collections::HashMap::new(),
             placeholder_groups: Vec::new(),
             exterior_culls: Vec::new(),
+            key_terminals: Vec::new(),
         }
+    }
+}
+
+#[cfg(test)]
+mod optimized_tests {
+    use super::*;
+
+    fn node(name: &str, parent: Option<usize>) -> BuildingNode {
+        BuildingNode {
+            key: (
+                "synthetic".into(),
+                "file".into(),
+                if parent.is_none() { 1 } else { 2 },
+            ),
+            name: name.into(),
+            parent,
+            local: Transform::default(),
+            in_prefab: Transform::default(),
+            active: true,
+            active_self: true,
+            layer: 0,
+            mesh: None,
+            materials: Vec::new(),
+            renderer_enabled: false,
+            cast_shadows: 0,
+            skinned: false,
+            bone_keys: Vec::new(),
+            lod: None,
+            lod_group: None,
+            sky_applier: None,
+            lights: Vec::new(),
+            day_night_light: None,
+            volumetric_light: None,
+            placeholder: None,
+            animator: None,
+            blend_shape_weights: Vec::new(),
+        }
+    }
+
+    fn avatar() -> sn_unity::Avatar {
+        let paths = ["", "Hidden", "Hidden/Face"];
+        let pose = sn_unity::Xform {
+            t: [0.0; 3],
+            q: [0.0, 0.0, 0.0, 1.0],
+            s: [1.0; 3],
+        };
+        sn_unity::Avatar {
+            name: "synthetic".into(),
+            skeleton_parents: vec![-1, 0, 1],
+            skeleton_ids: paths.iter().map(|p| sn_unity::name_hash(p)).collect(),
+            skeleton_pose: vec![pose; 3],
+            default_pose: vec![pose; 3],
+            human_nodes: 0,
+            root_motion_bone: -1,
+            names: paths
+                .iter()
+                .map(|p| (sn_unity::name_hash(p), p.to_string()))
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn hidden_parent_restores_exposed_node_and_preserves_references() {
+        let mut b = Building::new("synthetic");
+        b.nodes = vec![node("Animator", None), node("Face", Some(0))];
+        b.placeholder_components.insert(b.nodes[1].key.clone(), 1);
+        let mut a = avatar();
+        a.default_pose[1].t = [0.0, 2.0, 0.0];
+        a.default_pose[2].t = [0.0, 1.0, 0.0];
+        let map = restore_avatar(&mut b.nodes, 0, &a).unwrap();
+        assert_eq!(map[&sn_unity::name_hash("Hidden/Face")], 1);
+        assert_eq!(b.nodes.len(), 3);
+        b.nodes[1].bone_keys = vec![Some(b.nodes[2].key.clone())];
+        b.sort_nodes().unwrap();
+        assert_eq!(b.nodes[1].name, "Hidden");
+        assert_eq!(b.nodes[2].name, "Face");
+        assert_eq!(b.nodes[2].parent, Some(1));
+        assert_eq!(b.nodes[2].in_prefab.position, [0.0, 3.0, 0.0]);
+        assert_eq!(*b.placeholder_components.values().next().unwrap(), 2);
+        assert_eq!(b.nodes[2].bone_keys[0], Some(b.nodes[1].key.clone()));
+    }
+
+    #[test]
+    fn invalid_avatar_arrays_parents_and_ambiguous_names_are_rejected() {
+        let make = || vec![node("Animator", None), node("Face", Some(0))];
+        let mut a = avatar();
+        a.default_pose.pop();
+        assert!(restore_avatar(&mut make(), 0, &a).is_err());
+        let mut a = avatar();
+        a.skeleton_parents[1] = 2;
+        assert!(restore_avatar(&mut make(), 0, &a).is_err());
+        let mut nodes = make();
+        nodes.push(node("Face", Some(0)));
+        assert!(restore_avatar(&mut nodes, 0, &avatar()).is_err());
+        let mut a = avatar();
+        a.default_pose[1].t[0] = f32::NAN;
+        assert!(restore_avatar(&mut make(), 0, &a).is_err());
     }
 }
