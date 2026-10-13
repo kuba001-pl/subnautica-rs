@@ -16,7 +16,7 @@
 
 mod rebuild;
 
-pub use rebuild::{Driven, LayoutReport, layout};
+pub use rebuild::{Driven, LayoutReport, NoText, TextSizer, layout, layout_with};
 
 /// `[x, y]`.
 pub type V2 = [f32; 2];

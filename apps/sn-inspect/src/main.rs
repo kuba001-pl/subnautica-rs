@@ -31,6 +31,7 @@ mod scene;
 mod skinned;
 mod slots;
 mod swim;
+mod texts;
 mod texture;
 mod ui;
 mod unity;
@@ -236,6 +237,8 @@ Commands:
   ui --meshes            M9u4b: the meshes of every Image and RawImage of
                          the in-scope trees on the laid-out rects; counts
                          per kind, vertices inside rects, UVs inside sprites
+  ui --texts             M9u4c: the in-scope TMP texts' settings and the
+                         rich-text tags of the stored texts and English
   ui --layout <CLASS> [<NAME>]
                          M9u1: a script's layout and, for its first object
                          (named NAME), where each field starts and its value
@@ -449,6 +452,7 @@ fn run(mut args: Vec<String>) -> Result<ExitCode> {
         ["ui", "--scripts", "--all"] => ui::scripts(&game, true),
         ["ui", "--rects"] => rects::run(&game),
         ["ui", "--meshes"] => meshes::run(&game),
+        ["ui", "--texts"] => texts::run(&game),
         ["ui", "--fonts"] => fonts::run(&game, false),
         ["ui", "--fonts", "--atlas"] => fonts::run(&game, true),
         ["ui", "--sprites"] => ui::sprites(&game, false),

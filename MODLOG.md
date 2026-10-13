@@ -2,6 +2,55 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-13 — M9u4c: TMP text layout
+
+**What/why:** M9u4's third part: where TextMesh Pro puts each character,
+and a text's preferred size for the layout system
+(`docs/formats/ui.md` § Text layout). Read from the game's
+`Unity.TextMeshPro.dll` decompiled with `ilspycmd` into `out/` (read
+only, never committed, as in earlier milestones); our own code with the
+same control flow. New:
+- `sn-ui::text` (pure): `input` (processing array, escapes, `<br>` and
+  co., the tag parser), `FontSet` (character lookup through weight
+  tables and fallbacks, synthesized control characters), `generate`
+  (`GenerateTextMesh`'s layout and the auto-size loop), `preferred`
+  (`CalculatePreferredValues`), `Texts` (a `TextSizer`).
+- `sn-ui::layout`: `layout_with` and the `TextSizer` trait (TMP texts as
+  layout elements).
+- `sn-assets`: `Assets::tmp_font_set`, `Assets::ui_texts` (`UiText`).
+- `sn-inspect`: `ui --texts` (census and checks); `ui --rects` sizes
+  texts now; `ui --fonts` prints the weight tables and `TMP Settings`'
+  font-feature flags.
+No new dependencies.
+
+**Found / corrections:**
+- The plan's check ("text-fitted sizes equal the stored within 0.5
+  px") cannot work: those rects are driven and saved as 0 (M9u4a). The
+  oracle used instead is auto-size, whose result TMP stores in
+  `m_fontSize`.
+- Runtime kerning is on in `TMP Settings` (`getFontFeaturesAtRuntime`);
+  3 in-scope texts enable kerning. Not ported yet (logged).
+- My first test expectations used a space of 2.5 instead of 2.25 (250
+  units at 90 px → 22.5); the code was right. I had also first read
+  `<i=15>` as an angle; TMP's angle is the `angle` attribute.
+
+**Verified:**
+- `sn-inspect ui --texts` (exit 0): auto-size 20 of 20 equal the stored
+  sizes (non-trivial ones: 25.3 after 12 and 11 passes, 40 after 11);
+  137 texts laid out in 12.8 ms, 0 non-finite.
+- `sn-inspect ui --rects` (exit 0): 370 of 370 driven values stored as
+  0; unknown 19 (was 168).
+- `SUBNAUTICA_DIR=… cargo test --release -p sn-assets --test real_data
+  -- --ignored auto_sized`: 1 passed.
+- Unit tests (hand-computed on the test font): one line at the top
+  left, alignment, wrapping and new lines, truncation, auto-size,
+  `<size>`, `<b>` (bold spacing), `<color>`, unknown tags and missing
+  characters, kerning and spacing, preferred sizes, a size fitter
+  around a text; tag parsing and escapes.
+- `cargo test --workspace`: 552 passed, 0 failed, 46 ignored. Clippy
+  and fmt: pass.
+- Not drawn yet (M9u5); not compared with the game on screen.
+
 ## 2026-10-13 — M9u4b: Image and RawImage meshes
 
 **What/why:** M9u4's second part, the meshes the game's images build

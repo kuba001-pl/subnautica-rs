@@ -30,6 +30,7 @@ mod skin;
 mod slots;
 mod sprites;
 mod terrain;
+mod texts;
 mod ui;
 mod ui_layout;
 mod water;
@@ -94,6 +95,7 @@ pub use terrain::{
     BlendSettings, BlockSource, GrassLook, GrassShader, SurfaceLayer, TerrainGrass,
     TerrainMaterial, TerrainMaterials, TerrainTexture, terrain_materials,
 };
+pub use texts::UiText;
 pub use ui::{UGUI_PREFAB_KEY, UiComponent, UiNode, UiTree};
 pub use ui_layout::{UiGraphic, UiGraphicKind, UiLayout};
 pub use water::{

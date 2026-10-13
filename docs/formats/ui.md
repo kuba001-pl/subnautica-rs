@@ -418,6 +418,88 @@ every UV inside its sprite's rectangle, every index valid. Not built:
 33 images whose rects wait for text layout, 115 TMP texts (M9u4c), and
 91 of the game's own graphics.
 
+## Text layout (M9u4c)
+
+Our port is `crates/sn-ui/src/text/`. The game's texts are read by
+`crates/sn-assets/src/texts.rs`, and `sn-inspect ui --texts` runs the
+checks. The rules are from the game's `Unity.TextMeshPro.dll`, read
+decompiled with `ilspycmd` into `out/` (never kept in the repository).
+The code is ours and follows the same control flow.
+
+**What the screens use** (`ui --texts`, 141 texts, 115 active):
+alignment left / centre / right (`HorizontalAlignmentOptions` 1, 2, 4)
+and top / middle / bottom / baseline (256, 512, 1024, 2048). 20 texts
+auto-size, 67 wrap, 16 have line spacing, 2 have margins, 20 are bold
+or italic, 3 have kerning on. Overflow is 0 (overflow) or 3 (truncate).
+The stored texts use only `<b>`, `<color>` and `<size>`. The English
+file adds `<b>`, `<color>` and the subtitles' `<delay>` / `<duration>`
+(not TMP tags: TMP shows them as text).
+
+**Input — confirmed (decompiled):**
+- A text stored in a scene has input source `TextInputBox` (the field's
+  default), so its escapes (`\n`, `\t`, `\uXXXX`, …) are parsed. One
+  set from code (`text = …`) is `TextString`, so they are not.
+  `<br>`, `<nbsp>` and `<zwsp>` become characters before layout.
+- Tags (`ValidateHtmlTag`): from `<` to the first `>`, no `<` between,
+  under 128 characters. The name hash is 7h + c, and the table lists each
+  name all lower case and all upper case, so `<size>` and `<SIZE>` are
+  tags but `<Size>` is text. An unknown name is text. `<size=N>` is
+  pixels (`+N` / `-N` relative to the size), `em` ×, `%`. `</size>` pops
+  TMP's stack. `<i angle=N>` sets the slant; `<i=N>` is plain italic.
+- A character's font (`GetTextElement`): the text's font with its weight
+  table (bold = weight 700; `Aller_Rg SDF` → `Aller_W_Bd SDF`, `PTSans
+  SDF` → `PTSans-Bold SDF`, `NotoSansThai-Regular` → `-Bold`), then its
+  fallbacks depth first, then `TMP Settings`' fallbacks and default font
+  (none in the game). A missing character becomes `?` (the settings'
+  missing glyph), then a space, then ETX. Every font asset has empty
+  "synthesized" characters for ETX, tab, LF, VT, CR, U+061C, ZWSP,
+  LRM, RLM, LS, PS and WJ when its font lacks them.
+- Bold from the weight table's face is a real bold: no `boldSpacing`.
+  Without one, TMP adds `boldSpacing` (7) × size / 100 to each advance.
+
+**Layout — confirmed (decompiled):** the scale is size / the asset's
+point size × the face scale. A character advances by its glyph's advance
+(at the sampling size) × scale, plus (spacing offset + character spacing
++ bold spacing) × size / 100, all × (1 − width adjustment); a white
+space adds word spacing × size / 100. Lines advance by −descender of the
+line + the next line's ascender + (line gap + delta) × scale + line
+spacing × size / 100. The line gap is the face's line height less
+ascent − descent. Wrapping, overflow and truncation work by saving the
+whole state at break points and restoring it (`SaveWordWrappingState`).
+Auto-size starts at the base size clamped to the range and steps by
+halves of the remaining range, sizes rounded to 0.05, up to 100 passes
+(`OnPreRenderCanvas`, `GenerateTextMesh`). The vertical anchor is the
+top less the first line's ascender; the middle uses the last visible
+descender. Lines align by their `maxAdvance` (the last visible
+character's advance less its trailing spacing). Preferred sizes
+(`CalculatePreferredValues`) come from a separate, simpler loop: the
+width unwrapped at the maximum size, the height wrapped at the rect's
+width less margins, both rounded up to the hundredth.
+
+**Runtime kerning — confirmed, not ported:** `TMP Settings` has
+`getFontFeaturesAtRuntime` on. So when a glyph is added, the game reads
+the font's pair adjustments (`FontEngine.GetGlyphPairAdjustmentRecords`)
+into the asset's feature table. That matters to the 3 texts with
+kerning on. Our tables are empty (logged); reading the font's kerning
+is a later step.
+
+**The checks** (`ui --texts`): **auto-size, 20 of 20 texts reach the
+size the editor stored** (`m_fontSize`, while `m_fontSizeBase` keeps
+the designer's). Most stay at their base. The non-trivial ones: both
+feedback titles (25.3 in 12 passes), the encyclopedia's controls hint
+(25.3 in 11 passes, in a rect itself sized by text), and the PDA
+toolbar's two labels (40 in 11 passes). 137 texts of the trees lay out
+in 12.8 ms. With text sizes, M9u4a's unknown driven values drop from
+168 to 19 (the unported components); all 370 are still stored as 0.
+
+**Not ported** (logged where met; none in the in-scope stored texts):
+sprites, monospace, right to left, ellipsis, page and linked overflow,
+justified and flush alignment, upper / lower / small caps, underline
+and strikethrough, the CJK line-breaking rules (every CJK character may
+break), `<line-height>` and the other tags. The text's quads and UVs
+(with the material padding, `ShaderUtilities.GetPadding`) are built
+with the drawing in M9u5.
+
 ## Script fields (M9u1) — confirmed
 
 A MonoBehaviour's fields follow its header (game object, enabled,

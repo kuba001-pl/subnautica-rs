@@ -228,7 +228,10 @@ fn tiles_are_quads_or_a_repeating_uv() {
     );
     assert_eq!(kind, MeshKind::TiledQuads);
     let (columns, rows) = (2, 1);
-    assert_eq!(m.vertices.len(), 4 * (columns * rows + 2 * rows + 2 * columns + 4));
+    assert_eq!(
+        m.vertices.len(),
+        4 * (columns * rows + 2 * rows + 2 * columns + 4)
+    );
     assert!(close(area(&m), 1200.0));
 }
 

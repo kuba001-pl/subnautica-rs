@@ -93,8 +93,25 @@ enum Prop {
     Flexible,
 }
 
+/// A TMP text's preferred size as a layout element (M9u4c): node, axis,
+/// and the node's current rect width (`GetPreferredHeight` wraps at it,
+/// less the text's margins).
+pub trait TextSizer {
+    fn preferred(&self, node: usize, axis: usize, rect_width: f32) -> f32;
+}
+
+/// Without text layout: every text size unknown (`NaN`).
+pub struct NoText;
+
+impl TextSizer for NoText {
+    fn preferred(&self, _: usize, _: usize, _: f32) -> f32 {
+        f32::NAN
+    }
+}
+
 struct Run<'t> {
     tree: &'t mut Tree,
+    texts: &'t dyn TextSizer,
     /// Per group node and axis: total min, preferred, flexible.
     totals: HashMap<usize, [[f32; 3]; 2]>,
     /// Per group node: its layout children (`rectChildren`).
@@ -104,9 +121,15 @@ struct Run<'t> {
 
 /// Runs the layout of every root in `tree` and reports what it drove.
 pub fn layout(tree: &mut Tree) -> LayoutReport {
+    layout_with(tree, &NoText)
+}
+
+/// [`layout`] with texts sized by `texts`.
+pub fn layout_with(tree: &mut Tree, texts: &dyn TextSizer) -> LayoutReport {
     let n = tree.nodes.len();
     let mut run = Run {
         tree,
+        texts,
         totals: HashMap::new(),
         children: HashMap::new(),
         report: LayoutReport {
@@ -306,7 +329,7 @@ impl Run<'_> {
                 match p {
                     Prop::Min => 0.0,
                     Prop::Flexible => -1.0,
-                    Prop::Preferred => f32::NAN,
+                    Prop::Preferred => self.texts.preferred(i, axis, self.tree.rect(i).width),
                 },
             ),
             Component::LayoutElement {

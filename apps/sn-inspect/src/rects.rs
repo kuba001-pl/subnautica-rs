@@ -11,7 +11,7 @@ use std::time::Instant;
 
 use sn_assets::{Assets, ScriptAssemblies, UiTree};
 use sn_install::GameData;
-use sn_ui::layout::{RectTransform, layout};
+use sn_ui::layout::{RectTransform, layout_with};
 
 use crate::Result;
 
@@ -49,6 +49,7 @@ impl Tally {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn check_tree(
     assets: &Assets,
     layouts: &sn_assets::Layouts,
@@ -56,14 +57,24 @@ fn check_tree(
     tally: &mut Tally,
     unported: &mut BTreeMap<String, usize>,
     stability: &mut usize,
+    fonts: &sn_assets::FontAssets,
+    set: &sn_ui::text::FontSet,
 ) -> Result<()> {
+    let texts = sn_ui::text::Texts {
+        fonts: set,
+        params: assets
+            .ui_texts(layouts, ui, fonts)?
+            .into_iter()
+            .map(|t| (t.node, t.params))
+            .collect(),
+    };
     let built = assets.ui_layout(layouts, ui)?;
     for n in &built.notes {
         println!("  note: {n}");
     }
     let mut tree = built.tree;
     let stored: Vec<RectTransform> = tree.nodes.iter().map(|n| n.rect).collect();
-    let report = layout(&mut tree);
+    let report = layout_with(&mut tree, &texts);
     for (k, v) in &report.unported {
         *unported.entry(k.clone()).or_default() += v;
     }
@@ -123,7 +134,7 @@ fn check_tree(
     }
     // Once more from our own result: a settled layout does not move.
     let first: Vec<RectTransform> = tree.nodes.iter().map(|n| n.rect).collect();
-    layout(&mut tree);
+    layout_with(&mut tree, &texts);
     let moved = tree
         .nodes
         .iter()
@@ -170,6 +181,8 @@ pub fn run(game: &GameData) -> Result<ExitCode> {
     let mut tally = Tally::default();
     let mut unported = BTreeMap::new();
     let mut stability = 0;
+    let fonts = assets.font_assets(&assemblies)?;
+    let set = assets.tmp_font_set(&fonts)?;
     for t in &trees {
         check_tree(
             &assets,
@@ -178,6 +191,8 @@ pub fn run(game: &GameData) -> Result<ExitCode> {
             &mut tally,
             &mut unported,
             &mut stability,
+            &fonts,
+            &set,
         )?;
     }
     for m in &tally.stored_nonzero {

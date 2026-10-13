@@ -2646,3 +2646,42 @@ fn ui_image_meshes_stay_in_their_rects() {
     // other roots and RawImages are not counted here).
     assert!(built > 200, "{built}");
 }
+
+/// M9u4c: TMP's auto-size, ported, picks the size the editor stored for
+/// every auto-sized text of `uGUI.prefab` and the PDA screen (laid out
+/// in their rects, text sizes included).
+#[test]
+#[ignore = "needs SUBNAUTICA_DIR pointing at a Subnautica install"]
+fn auto_sized_texts_match_the_stored_sizes() {
+    let Some(dir) = std::env::var_os("SUBNAUTICA_DIR") else {
+        eprintln!("SUBNAUTICA_DIR not set; skipping");
+        return;
+    };
+    let game = GameData::locate(Some(PathBuf::from(dir))).unwrap();
+    let assets = Assets::index(&game).unwrap();
+    let assemblies = sn_assets::ScriptAssemblies::load(&game).unwrap();
+    let layouts = assemblies.layouts().unwrap();
+    let fonts = assets.font_assets(&assemblies).unwrap();
+    let set = assets.tmp_font_set(&fonts).unwrap();
+    let catalog = assets.catalog().unwrap();
+    let root = assets.ugui_root(&catalog).unwrap();
+    let main = assets.scene("main").unwrap();
+    let (screen, _) = assets.pda_screen_refs(&main).unwrap();
+    let mut compared = 0;
+    for (key, r) in [("uGUI", &root), ("PDA", &screen)] {
+        let ui = assets.ui_tree(key, r).unwrap();
+        let mut tree = assets.ui_layout(&layouts, &ui).unwrap().tree;
+        let texts = assets.ui_texts(&layouts, &ui, &fonts).unwrap();
+        let sizer = sn_ui::text::Texts {
+            fonts: &set,
+            params: texts.iter().map(|t| (t.node, t.params.clone())).collect(),
+        };
+        sn_ui::layout::layout_with(&mut tree, &sizer);
+        for t in texts.iter().filter(|t| t.params.auto_size) {
+            let l = sn_ui::text::layout_text(&set, &t.params, tree.rect(t.node), 0.0);
+            assert_eq!(l.font_size, t.stored_font_size, "{}", ui.nodes[t.node].path);
+            compared += 1;
+        }
+    }
+    assert_eq!(compared, 20);
+}

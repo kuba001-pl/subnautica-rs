@@ -287,6 +287,37 @@ pub fn run(game: &GameData, write_atlas: bool) -> Result<ExitCode> {
                 println!("    {name}: ours {got}, stored {want} DIFFERS");
             }
         }
+        // The weight table: which asset bold and italic use (index 1–9 =
+        // weight / 100).
+        let mut weights = Vec::new();
+        for (k, pair) in a
+            .fields
+            .get("m_FontWeightTable")
+            .and_then(Value::as_array)
+            .unwrap_or(&[])
+            .iter()
+            .enumerate()
+        {
+            let Some(p) = pair.as_struct() else { continue };
+            for face in ["regularTypeface", "italicTypeface"] {
+                if let Some(o) = p
+                    .get(face)
+                    .and_then(Value::as_pptr)
+                    .filter(|p| !p.is_null())
+                    .map(|p| assets.resolve(&a.object.file, p))
+                    .transpose()?
+                    .flatten()
+                {
+                    let name = fonts
+                        .assets
+                        .iter()
+                        .find(|x| x.object.key() == o.key())
+                        .map_or("(other)".to_string(), |x| x.name.clone());
+                    weights.push(format!("{k}00 {face}: {name}"));
+                }
+            }
+        }
+        println!("    weight table: {weights:?}");
         stored.push((s, file));
     }
     println!(
@@ -483,6 +514,17 @@ pub fn run(game: &GameData, write_atlas: bool) -> Result<ExitCode> {
         usize::from(fonts.settings.is_some()),
         1,
     );
+    if let Some(st) = &fonts.settings {
+        for name in [
+            "m_GetFontFeaturesAtRuntime",
+            "m_enableKerning",
+            "m_enableWordWrapping",
+            "m_enableExtraPadding",
+            "m_useModernHangulLineBreakingRules",
+        ] {
+            println!("  TMP Settings {name}: {:?}", st.fields.get(name));
+        }
+    }
     for a in &fonts.sprite_assets {
         let pua = a
             .unicodes

@@ -95,7 +95,7 @@ fn name_table(names: &[(u16, &str)]) -> Vec<u8> {
 }
 
 /// The test font's bytes.
-pub(super) fn test_font() -> Vec<u8> {
+pub(crate) fn test_font() -> Vec<u8> {
     let ring: [&[(i16, i16, bool)]; 2] = [
         &[
             (250, 0, true),
