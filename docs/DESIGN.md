@@ -2547,6 +2547,26 @@ GPU runs confirm the expected diagnostics without errors. This is the input
 checkpoint, not completed GPU lighting. Next: per-renderer four-light/sky
 feeding, neutral refraction and smoke vertex noise, then exact-set rendering.
 
+**M7g4e2 plan:** connect frame lights and selected sky to effects, then
+enable only entrance water-field program 148/466. Keep the other three
+families gated. Store original game-unit light colours, evaluate direction/
+range/spot attenuation per vertex, preserve pixel-stage normal bias and
+lighting/SH order. Use the existing camera water approximation. Four-light
+ranking will use a deterministic brightness-at-renderer estimate; Unity's
+exact engine ranking remains unconfirmed and must be stated as a limitation.
+Done when synthetic selection/math tests and field GPU validation pass,
+unlit/terminal regressions pass, workspace/fmt/clippy/release pass, and
+commands/counts are recorded. Human comparison remains open.
+
+**M7g4e2 implemented and automatically checked; manual visual testing not tested:** the entrance-field pixel variant receives
+four lights, selected sky and frame water/ambient inputs. Lit/unlit pipelines
+are specialized. Workspace checks passed (594 tests, 50 ignored), and five
+matched GPU pairs passed, including three field sites and brine/terminal
+regressions. Original image parity, exact native ranking/lookup and original
+SH orientation remain open; full details/commands in MODLOG. The other three
+families remain gated. Next: sand's projected pixel program, then smoke noise
+and bubble vertex lighting/neutral refraction.
+
 #### M7g4d unlit UBER remainder plan (2026-10-13)
 
 Resumes the visual track after M9u4d. A whole-game census (`sn-inspect

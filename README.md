@@ -168,9 +168,11 @@ lava falls and orange key symbols use their decoded unlit effect programs
 (M7g4d; GPU validated, original-game visual parity not tested; key terminals
 now select their required symbol material and restore optimized bones for
 the default closed pose, with numerical tests passing; fresh human visual
-confirmation pending); remaining lit sand falls, smoke columns, peeper-pipe
-bubbles and entrance water fields still use stand-ins (M7g4e1 confirms their
-input contracts and common math; light/sky inputs and GPU lighting pending); the
+confirmation pending); entrance water fields use their decoded pixel-lighting
+program with four light inputs and the selected sky (M7g4e2; GPU validated,
+light ranking/range lookup and camera-local water are approximations;
+manual visual testing and original-game parity not tested); lit sand falls, smoke columns and peeper-pipe
+bubbles still use stand-ins (input contracts decoded, GPU lighting pending); the
 objects the game spawns from prefabs' placeholders, e.g. the cache doors,
 key terminals and pedestal crystals; none of these compared with the game
 on screen yet); the game's animators on objects (M7f4: its own

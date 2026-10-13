@@ -352,7 +352,7 @@ All request the blend and depth state already used by our WBOIT pass.
 back faces. The elevator's dots/smoke, control-room inner blocks and orange
 symbol use 2. Our custom effect buffers retain their original indices;
 fragment-facing rejection accounts for reflected model transforms, as in
-brine. Front culling (1) is still rejected. The loader accepts only the
+brine. Front culling (1) is still rejected. The M7g4d loader accepts only the
 14 individually confirmed exact keyword sets; it does not assume arbitrary
 combinations work. The remaining lit sets require their actual light inputs
 to be decoded before selection (M7g4e).
@@ -428,9 +428,52 @@ default still needs to be supplied rather than using the white fallback.
 
 **Implementation status:** input diagnostics and a synthetic pixel-formula
 oracle are present. Per-renderer lights, sky inputs, vertex noise and GPU
-lighting are **not connected**. These four families still use their stand-ins.
+lighting were **not connected** at this checkpoint. M7g4e2 below connects
+the entrance-field pixel variant; the other three families remain stand-ins.
 Original-game visual comparison: **not tested**. The next step is feeding
 the light and sky inputs before enabling the exact sets.
+
+### Entrance water field pixel lighting (M7g4e2) — implemented with limitations
+
+Only the exact 148/466 set is added to the rendering whitelist (15 total).
+Its lighting coefficients reuse the deformation-ST uniform slot because
+this program has no deformation; wrap reuses clip.z because its UVs are
+not triplanar. No previously decoded variant changes its uniform meanings.
+Lit/unlit pipeline specialization keeps lighting varyings and evaluation
+out of previously decoded unlit draws.
+The field retains two scrolling maps, near-camera vertex fade, ordinary
+opacity, its saved refraction map and post-fog colour saturation.
+
+Each extracted draw carries four light records, selected sky SH/exposure,
+day/night and water inputs. Sky keys follow the same biome/global/lifepod
+selection as ordinary objects and are looked up each frame; its affected
+flag overrides the stored default. Light colours are recovered in game
+units from our existing Bevy point/spot representation (intensity divided
+by 4π), while directional colours reuse the existing DayNightLight rule.
+Directions/attenuation are evaluated at vertices and interpolated; the
+compiled normal bias, wrap, self illumination, SH and alpha ordering are
+evaluated at pixels. Top/bottom ambient uses the original object-normal Y,
+as 148/466 does. The shader adds water transmission/emission, colour cast
+and desaturation for participating directional lights before diffuse.
+
+**Confirmed source contract:** Unity 2019.4 documents view-space light
+positions, squared range, spot cosine and reciprocal quarter-angle cosine:
+[Unity built-in variables](https://docs.unity3d.com/2019.4/Documentation/Manual/SL-UnityShaderVariables.html).
+Our shader follows those bindings and the installed program arithmetic.
+
+**Explicit approximations / not tested:** exact Unity native light ranking
+is unknown. We select by luminance and estimated falloff at the renderer's
+bounding sphere, using entity identity for deterministic ties, excluding
+directional slots when the sky is unaffected, and padding unused slots
+black. Range attenuation uses the same analytic `_LightTextureB0`
+approximation as opaque lights; it has not been matched to Unity's lookup
+texels here. Camera-local water parameters substitute for the original
+volume samples. Original-game image parity and per-object SH orientation
+against the original renderer are **not tested**. GPU validation establishes
+that the implementation runs, not that these approximations are 1:1.
+Manual visual testing is **not tested**, deferred at the user's request.
+Sand falls, smoke vertex noise and bubble vertex lighting/default bump
+remain outside this slice.
 
 ### Control-room UV deformation without soft fading (M7g4c) — confirmed
 

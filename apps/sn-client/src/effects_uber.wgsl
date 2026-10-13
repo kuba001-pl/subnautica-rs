@@ -10,6 +10,12 @@
 #import sn_client::water_common::{WaterFog, apply_water_fog, water_fog_length}
 
 // One drawn mesh; must match `ParticlesInstance` in effects.rs.
+struct ParticleLight {
+    position: vec4<f32>,
+    color: vec4<f32>,
+    spot: vec4<f32>,
+    attenuation: vec4<f32>,
+}
 struct Instance {
     world_from_local: mat4x4<f32>,
     local_from_world: mat4x4<f32>,
@@ -31,7 +37,7 @@ struct Instance {
     // _FresnelFade, _FresnelPow, _Cutoff, flags (1 FX_FRESNELCLIP,
     // 2 FX_MULMAP, 4 FX_SOFTEDGES, 8 FX_DEFORM, 16 FX_REFRACTMAP,
     // 32 FX_TRIPLANAR, 64 FX_NEARCLIP, 128 FX_ADDFOG, 256 FX_ALPHAPOW,
-    // 512 back culling)
+    // 512 back culling, 1024 pixel lighting)
     params: vec4<f32>,
     // _InvFade, _DeformStrength, _RefractStrength, deform Z speed
     strengths: vec4<f32>,
@@ -39,6 +45,12 @@ struct Instance {
     clip: vec4<f32>,
     // _AlphaPow, unused ×3
     extra: vec4<f32>,
+    lights: array<ParticleLight, 4>,
+    sh: array<vec4<f32>, 9>,
+    exposure: vec4<f32>,
+    ambient_top: vec4<f32>,
+    ambient_bottom: vec4<f32>,
+    water_lighting: vec4<f32>,
 }
 
 struct Instances {
@@ -92,7 +104,38 @@ struct VertexOutput {
     @location(5) to_camera: vec3<f32>,
     @location(6) @interpolate(flat) instance: u32,
     @location(7) world_normal: vec3<f32>,
+#ifdef PIXEL_LIGHTING
+    @location(8) light0: vec4<f32>,
+    @location(9) light1: vec4<f32>,
+    @location(10) light2: vec4<f32>,
+    @location(11) light3: vec4<f32>,
+#endif
 }
+
+#ifdef PIXEL_LIGHTING
+// Unity's range lookup, the same approximation used by the opaque lights.
+fn particle_attenuation(t: f32) -> f32 {
+    if t >= 1.0 { return 0.0; }
+    var a = 1.0 / (1.0 + 25.0 * t);
+    if t > 0.64 { a *= 1.0 - (t - 0.64) / 0.36; }
+    return a;
+}
+
+fn vertex_light(light: ParticleLight, world: vec3<f32>) -> vec4<f32> {
+    if light.color.w == 0.0 { return vec4<f32>(0.0); }
+    let delta = light.position.xyz - world * light.position.w;
+    let d2 = dot(delta, delta);
+    let direction = delta / max(sqrt(d2), 1e-6);
+    var attenuation = 1.0;
+    if light.position.w != 0.0 {
+        attenuation = particle_attenuation(d2 / max(light.attenuation.z, 1e-6));
+        if light.spot.w != 0.0 {
+            attenuation *= saturate((saturate(dot(direction, light.spot.xyz)) - light.attenuation.x) * light.attenuation.y);
+        }
+    }
+    return vec4<f32>((view.view_from_world * vec4<f32>(direction, 0.0)).xyz, attenuation);
+}
+#endif
 
 @vertex
 fn vertex(in: VertexInput) -> VertexOutput {
@@ -114,8 +157,65 @@ fn vertex(in: VertexInput) -> VertexOutput {
     out.to_camera = normalize(camera - in.position);
     out.instance = in.instance;
     out.world_normal = normalize((transpose(inst.local_from_world) * vec4<f32>(in.normal, 0.0)).xyz);
+#ifdef PIXEL_LIGHTING
+    out.light0 = vertex_light(inst.lights[0], world.xyz);
+    out.light1 = vertex_light(inst.lights[1], world.xyz);
+    out.light2 = vertex_light(inst.lights[2], world.xyz);
+    out.light3 = vertex_light(inst.lights[3], world.xyz);
+#endif
     return out;
 }
+
+#ifdef PIXEL_LIGHTING
+fn lit_particle_colour(inst: Instance, in: VertexOutput, albedo: vec3<f32>) -> vec3<f32> {
+    // The field has no deformation: that uniform slot holds the lighting
+    // coefficients (affected, desaturation, normal sharpness, self illumination).
+    let p = inst.deform_st;
+    let object_normal = normalize(in.normal * vec3<f32>(1.0, 1.0, -1.0));
+    let normal = normalize((view.view_from_world * vec4<f32>(in.world_normal, 0.0)).xyz);
+    let biased = mix(vec3<f32>(0.0, 0.0, 1.0), normal, p.z);
+    let height = in.world.y - fog.misc.y;
+    var transmission = vec3<f32>(1.0);
+    var emission = vec3<f32>(0.0);
+    var water_transmission = 1.0;
+    if fog.misc.z != 0.0 && height <= 0.0 && fog.sun.y > 0.0 {
+        let path = -height / fog.sun.y;
+        let sigma = fog.extinction.rgb * fog.sun.w;
+        let grey = min(min(sigma.x, sigma.y), sigma.z);
+        let cast_factor = exp(-length(in.world - view.world_position) * inst.water_lighting.x - path * inst.water_lighting.y);
+        transmission = exp(-(sigma + cast_factor * (grey - sigma)) * path);
+        emission = (fog.emissive.rgb / max(globals.wboit.z, 1e-6)) * inst.water_lighting.w / max(fog.extinction.rgb, vec3<f32>(1e-6));
+        water_transmission = mix(1.0, inst.water_lighting.z, saturate(-height));
+    }
+    var sum = vec3<f32>(0.0);
+    let directions = array<vec4<f32>, 4>(in.light0, in.light1, in.light2, in.light3);
+    for (var i = 0u; i < 4u; i += 1u) {
+        let light = inst.lights[i];
+        var color = light.color.rgb;
+        if light.position.w == 0.0 {
+            if p.x == 0.0 { continue; }
+            let ambient = mix(inst.ambient_bottom.rgb, inst.ambient_top.rgb, object_normal.y * 0.5 + 0.5);
+            color = (color * transmission + emission) * water_transmission + ambient * transmission;
+            let grey_color = dot(color, vec3<f32>(0.3, 0.59, 0.11));
+            color = mix(color, vec3<f32>(grey_color), p.y);
+        }
+        let diffuse = saturate(dot(directions[i].xyz, biased) * inst.clip.z + 1.0 - inst.clip.z);
+        sum += color * diffuse * directions[i].w;
+    }
+    var color = albedo * mix(sum, vec3<f32>(1.0), p.w);
+    if p.x < 1.0 {
+        let n = object_normal;
+        let sh = inst.sh[0].rgb + inst.sh[1].rgb * n.y + inst.sh[2].rgb * n.z + inst.sh[3].rgb * n.x
+            + inst.sh[4].rgb * n.x * n.y + inst.sh[5].rgb * n.y * n.z
+            + inst.sh[6].rgb * (3.0 * n.z * n.z - 1.0) + inst.sh[7].rgb * n.x * n.z
+            + inst.sh[8].rgb * (n.x * n.x - n.y * n.y);
+        let ambient = abs(sh) * dot(inst.exposure.rgb, vec3<f32>(1.0 / 3.0));
+        let grey = dot(ambient, vec3<f32>(0.3, 0.59, 0.11));
+        color += mix(ambient, vec3<f32>(grey), p.y) * (1.0 - p.x);
+    }
+    return color;
+}
+#endif
 
 struct Targets {
     @location(0) a: vec4<f32>,
@@ -247,7 +347,13 @@ fn fragment(in: VertexOutput, @builtin(front_facing) front: bool) -> Targets {
         offset = n * inst.strengths.z * c.a;
     }
     // `_Color` and the textures are in game light units.
-    var colour = c.rgb * globals.wboit.z;
+    var lit_colour = c.rgb;
+#ifdef PIXEL_LIGHTING
+    if (flags & 1024u) != 0u {
+        lit_colour = lit_particle_colour(inst, in, lit_colour);
+    }
+#endif
+    var colour = lit_colour * globals.wboit.z;
 
     // Every decoded program receives fog, with or without FX_ADDFOG.
     if fog.misc.z != 0.0 {

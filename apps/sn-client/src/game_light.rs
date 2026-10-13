@@ -358,7 +358,7 @@ impl Plugin for GameLightPlugin {
 /// replace fraction), intensity = `IntensityToGamma(I(d) × fade)` =
 /// `LinearToGammaSpace(2 I(d) fade)`) or its stored values, then
 /// `linear(colour × intensity)` (`m_LightsUseLinearIntensity` off).
-fn directional_colour(light: &crate::objects::DirectionalSource, d: f32) -> Vec3 {
+pub(crate) fn directional_colour(light: &crate::objects::DirectionalSource, d: f32) -> Vec3 {
     let (colour, intensity) = match &light.day_night {
         Some(n) => {
             let curves = Vec3::new(

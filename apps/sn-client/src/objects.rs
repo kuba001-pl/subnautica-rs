@@ -174,11 +174,11 @@ pub(crate) struct UberValues {
 /// What a material needs from its Marmoset sky.
 #[derive(Clone, Copy)]
 pub(crate) struct SkyLook {
-    exposure: [f32; 4],
+    pub(crate) exposure: [f32; 4],
     rotation: [f32; 4],
-    affected: bool,
+    pub(crate) affected: bool,
     outdoors: bool,
-    sh: [[f32; 3]; 9],
+    pub(crate) sh: [[f32; 3]; 9],
 }
 
 /// Which sky a material is made with (no sky known: Marmoset's defaults).
@@ -784,6 +784,7 @@ fn effect_values(material: &Material, shader: &ShaderInfo) -> EffectValues {
 /// keyword is one term of the same program.
 #[derive(Clone, Copy, Default)]
 struct ParticlesVariant {
+    pixel_lighting: bool,
     fresnel_clip: bool,
     mul_map: bool,
     soft_edges: bool,
@@ -807,7 +808,8 @@ struct ParticlesVariant {
 /// shader's compiled keyword table; they do not select lighting programs.
 /// Only these exact sets are drawn: a keyword's term is not assumed to
 /// combine with others until its program is read.
-const PARTICLES_SETS: [&str; 14] = [
+const PARTICLES_SETS: [&str; 15] = [
+    "FX_LIGHTMODE_PIXEL FX_MULMAP FX_NEARCLIP FX_REFRACTMAP FX_SCROLL WBOIT",
     "FX_ADDFOG FX_FRESNELCLIP FX_MULMAP FX_SCROLL WBOIT",
     "FX_ADDFOG FX_MULMAP FX_SCROLL WBOIT",
     "FX_ADDFOG FX_SCROLL WBOIT",
@@ -833,6 +835,7 @@ fn particles_variant(keywords: &str) -> Option<ParticlesVariant> {
     let mut v = ParticlesVariant::default();
     for k in keywords.split(' ') {
         match k {
+            "FX_LIGHTMODE_PIXEL" => v.pixel_lighting = true,
             "FX_FRESNELCLIP" => v.fresnel_clip = true,
             "FX_MULMAP" => v.mul_map = true,
             "FX_SOFTEDGES" => v.soft_edges = true,
@@ -917,7 +920,11 @@ fn particles_values(
     keywords.sort_unstable();
     let keywords = keywords.join(" ");
     if let Some(contract) = particles_lighting_contract(material, shader, &keywords) {
-        return Err(contract.unwrap_or_else(|error| error));
+        match contract {
+            Err(error) => return Err(error),
+            Ok(diagnostic) if keywords != PARTICLES_SETS[0] => return Err(diagnostic),
+            Ok(_) => {}
+        }
     }
     let Some(variant) = particles_variant(&keywords) else {
         return Err(format!("keywords [{keywords}] not decoded"));
@@ -974,6 +981,7 @@ fn particles_values(
     let refract_speed = speed("_RefractMap_Speed");
     let speed = speed("_MainTex_Speed");
     Ok(ParticlesValues {
+        pixel_lighting: variant.pixel_lighting,
         color: vector("_Color", [1.0; 4]),
         strength: vector("_ColorStrength", [1.0; 4]),
         strength_night: vector("_ColorStrengthAtNight", [1.0; 4]),
@@ -1004,14 +1012,25 @@ fn particles_values(
         clip: [
             float("_ClipOffset"),
             float("_ClipFade"),
-            speed[2],
+            if variant.pixel_lighting {
+                float("_LightWrapAround")
+            } else {
+                speed[2]
+            },
             speed2[2],
         ],
         deform_speed_z: deform_speed[2],
         inv_fade: float("_InvFade"),
         deform_strength: float("_DeformStrength"),
         refract_strength: float("_RefractStrength"),
-        deform_st: if variant.triplanar {
+        deform_st: if variant.pixel_lighting {
+            [
+                float("_AffectedByDayNightCycle"),
+                float("_LightDesaturation"),
+                float("_NormalSharpness"),
+                float("_SelfIllumination"),
+            ]
+        } else if variant.triplanar {
             vector("_DeformMap_TriplanarUV", [1.0; 4])
         } else {
             st(deform)
@@ -3044,6 +3063,9 @@ pub struct ItemDrawStats {
 }
 
 impl ObjectStreamer {
+    pub(crate) fn effect_sky(&self, key: SkyKey) -> Option<SkyLook> {
+        self.skies.look(key).copied()
+    }
     /// `lights`: spawn the objects' point and spot lights. `slot_seed`: fill
     /// the spawn slots with this world seed (`None`: leave them empty).
     /// `placeholders`: spawn what the objects' placeholders hold.
@@ -4427,6 +4449,7 @@ impl ObjectStreamer {
                     mesh: part.mesh,
                     look,
                     textures,
+                    sky: self.skies.pick(part.biome_sky, biome, inst.pod_sky),
                 };
                 // A rigid animated mesh belongs to its animated node, just
                 // as on the ordinary object path. Its local placement is
@@ -5088,6 +5111,24 @@ mod tests {
         ];
         for (keywords, program) in sets {
             let m = particles_material(keywords, &[]);
+            if program == "148/466" {
+                let v = particles_values(
+                    &m,
+                    &shader,
+                    [None, None, None, Some((42, [1.0, 1.0, 0.0, 0.0]))],
+                )
+                .unwrap();
+                assert!(v.pixel_lighting && v.near_clip && v.refract && v.mul_map);
+                assert!(!v.deform && !v.triplanar && !v.add_fog);
+                assert_eq!(v.deform_st, [1.0, 0.75, 0.35, 0.003]);
+                assert_eq!(v.clip[2], 0.2);
+                assert!(
+                    particles_values(&m, &shader, [None; 4])
+                        .unwrap_err()
+                        .contains("missing _RefractMap")
+                );
+                continue;
+            }
             let diagnostic = particles_values(&m, &shader, [None; 4]).unwrap_err();
             assert!(diagnostic.contains(program));
             assert!(diagnostic.contains("_SelfIllumination=0.003"));
@@ -5100,10 +5141,11 @@ mod tests {
                 .contains("not decoded")
         );
         let mut m = particles_material(sets[2].0, &[("_SelfIllumination", 0.5)]);
-        assert!(
-            particles_values(&m, &shader, [None; 4])
-                .unwrap_err()
-                .contains("_SelfIllumination=0.5")
+        assert_eq!(
+            particles_values(&m, &shader, [None, None, None, Some((42, [1.0; 4]))])
+                .unwrap()
+                .deform_st[3],
+            0.5
         );
         m.floats.push(("_LightDesaturation".into(), f32::NAN));
         assert!(

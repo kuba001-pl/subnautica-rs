@@ -51,7 +51,7 @@ use bevy::render::view::{
 };
 use bevy::render::{Extract, ExtractSchedule, Render, RenderApp, RenderStartup, RenderSystems};
 
-use crate::objects::MeshData;
+use crate::objects::{GameDirectionalLight, MeshData, ObjectStreamer, SkyKey};
 use crate::sky::SkyState;
 use crate::sun_shafts::SunShaftsPass;
 use crate::textures::linear;
@@ -89,6 +89,10 @@ pub(crate) struct EffectValues {
 /// program with the keywords' terms on or off.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct ParticlesValues {
+    /// Confirmed entrance-field pixel lighting. Its otherwise unused
+    /// deformation ST holds affected/desaturation/sharpness/self illumination;
+    /// clip.z holds wrap (this variant is neither deformed nor triplanar).
+    pub pixel_lighting: bool,
     /// `_Color` as stored (sRGB; a Color property, so Unity makes it
     /// linear).
     pub color: [f32; 4],
@@ -163,6 +167,54 @@ pub(crate) struct EffectPart {
     /// [`EffectLook::Particles`] (white where the material has none); unused
     /// by the glows.
     pub textures: [Handle<Image>; PARTICLES_TEXTURES],
+    pub sky: SkyKey,
+}
+
+#[derive(Clone, Copy, Default, ShaderType)]
+struct ParticleLight {
+    position: Vec4,    // world position (w=1) or direction toward light (w=0)
+    color: Vec4,       // original game units; w is enabled
+    spot: Vec4,        // toward source axis, w=1 for a spot
+    attenuation: Vec4, // cos(half cone), reciprocal cos(quarter cone), range squared, unused
+}
+
+fn particle_falloff(t: f32) -> f32 {
+    if t >= 1.0 {
+        return 0.0;
+    }
+    let fade = if t > 0.64 {
+        1.0 - (t - 0.64) / 0.36
+    } else {
+        1.0
+    };
+    fade / (1.0 + 25.0 * t)
+}
+
+/// Deterministic brightness at a renderer's bounding sphere. Unity's exact
+/// native ranking is unconfirmed; this estimate is explicitly a limitation.
+fn pick_particle_lights(
+    candidates: &[(u64, ParticleLight)],
+    centre: Vec3,
+    radius: f32,
+    affected: bool,
+) -> [ParticleLight; 4] {
+    let mut ranked: Vec<_> = candidates
+        .iter()
+        .filter_map(|(id, light)| {
+            let directional = light.position.w == 0.0;
+            if directional && !affected {
+                return None;
+            }
+            let mut score = light.color.truncate().dot(Vec3::new(0.3, 0.59, 0.11));
+            if !directional {
+                let distance = ((light.position.truncate() - centre).length() - radius).max(0.0);
+                score *= particle_falloff(distance * distance / light.attenuation.z);
+            }
+            (score.is_finite() && score > 0.0).then_some((score, *id, *light))
+        })
+        .collect();
+    ranked.sort_unstable_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
+    std::array::from_fn(|i| ranked.get(i).map_or(ParticleLight::default(), |v| v.2))
 }
 
 /// Textures of a `UWE/Particles/UBER` draw.
@@ -213,7 +265,7 @@ struct ParticlesInstance {
     /// `_FresnelFade`, `_FresnelPow`, `_Cutoff`, flags (1 `FX_FRESNELCLIP`,
     /// 2 `FX_MULMAP`, 4 `FX_SOFTEDGES`, 8 `FX_DEFORM`, 16 `FX_REFRACTMAP`,
     /// 32 `FX_TRIPLANAR`, 64 `FX_NEARCLIP`, 128 `FX_ADDFOG`, 256
-    /// `FX_ALPHAPOW`, 512 back culling).
+    /// `FX_ALPHAPOW`, 512 back culling, 1024 pixel lighting).
     params: Vec4,
     /// `_InvFade`, `_DeformStrength`, `_RefractStrength`, deform Z speed.
     strengths: Vec4,
@@ -221,6 +273,12 @@ struct ParticlesInstance {
     clip: Vec4,
     /// `_AlphaPow`, unused ×3.
     extra: Vec4,
+    lights: [ParticleLight; 4],
+    sh: [Vec4; 9],
+    exposure: Vec4,
+    ambient_top: Vec4,
+    ambient_bottom: Vec4,
+    water_lighting: Vec4,
 }
 
 #[derive(Clone, Default, ShaderType)]
@@ -245,7 +303,7 @@ struct ExtractedEffects {
     meshes: Vec<u32>,
     particles: Vec<ParticlesInstance>,
     /// Per particles instance: its mesh and its textures.
-    particle_draws: Vec<(u32, [AssetId<Image>; PARTICLES_TEXTURES])>,
+    particle_draws: Vec<(u32, [AssetId<Image>; PARTICLES_TEXTURES], bool)>,
     light_unit: f32,
     time: f32,
     local_light: f32,
@@ -308,17 +366,95 @@ fn log_effect_count(
     }
 }
 
+type ParticleLightQuery<'w, 's> = Query<
+    'w,
+    's,
+    (
+        Entity,
+        &'static GlobalTransform,
+        Option<&'static PointLight>,
+        Option<&'static SpotLight>,
+        Option<&'static InheritedVisibility>,
+    ),
+    Or<(With<PointLight>, With<SpotLight>)>,
+>;
+
+#[allow(clippy::too_many_arguments)] // Bevy extraction system inputs.
 fn extract_effects(
     mut extracted: ResMut<ExtractedEffects>,
     parts: Extract<Query<(&EffectPart, &GlobalTransform, &InheritedVisibility)>>,
     water: Extract<Option<Res<WaterWorld>>>,
     sky: Extract<Option<Res<SkyState>>>,
     time: Extract<Res<Time>>,
+    objects: Extract<Option<Res<ObjectStreamer>>>,
+    meshes: Extract<Res<EffectMeshes>>,
+    lights: Extract<ParticleLightQuery<'_, '_>>,
+    directional: Extract<Query<(Entity, &GlobalTransform, &GameDirectionalLight)>>,
+    mut last_lighting: Local<Option<(usize, usize, usize)>>,
 ) {
     extracted.instances.clear();
     extracted.meshes.clear();
     extracted.particles.clear();
     extracted.particle_draws.clear();
+    let mut lighting_summary = (0, 0, 0);
+    let mut candidates = Vec::new();
+    if parts.iter().any(|(part, _, visible)| {
+        visible.get() && matches!(part.look, EffectLook::Particles(v) if v.pixel_lighting)
+    }) {
+        if let Some(sky) = sky.as_ref() {
+            candidates.push((
+                0,
+                ParticleLight {
+                    position: sky.to_sun.extend(0.0),
+                    color: sky.sun_light.extend(1.0),
+                    ..default()
+                },
+            ));
+        }
+        for (entity, transform, light) in &directional {
+            let d = sky.as_ref().map_or(1.0, |s| s.day_scalar);
+            candidates.push((
+                entity.to_bits(),
+                ParticleLight {
+                    position: (-*transform.forward()).extend(0.0),
+                    color: crate::game_light::directional_colour(&light.0, d).extend(1.0),
+                    ..default()
+                },
+            ));
+        }
+        for (entity, transform, point, spot, visibility) in &lights {
+            if visibility.is_some_and(|v| !v.get()) {
+                continue;
+            }
+            let (color, intensity, range, cone) = if let Some(l) = point {
+                (l.color, l.intensity, l.range, None)
+            } else if let Some(l) = spot {
+                (l.color, l.intensity, l.range, Some(l.outer_angle))
+            } else {
+                continue;
+            };
+            if range <= 0.0 || !range.is_finite() {
+                continue;
+            }
+            let color =
+                color.to_linear().to_vec4().truncate() * intensity / (4.0 * std::f32::consts::PI);
+            let half = cone.map_or(-1.0, f32::cos);
+            candidates.push((
+                entity.to_bits(),
+                ParticleLight {
+                    position: transform.translation().extend(1.0),
+                    color: color.extend(1.0),
+                    spot: (-*transform.forward()).extend(f32::from(u8::from(cone.is_some()))),
+                    attenuation: Vec4::new(
+                        half,
+                        cone.map_or(1.0, |a| 1.0 / (a * 0.5).cos().max(1e-6)),
+                        range * range,
+                        0.0,
+                    ),
+                },
+            ));
+        }
+    }
     for (part, transform, visible) in &parts {
         if !visible.get() {
             continue;
@@ -337,6 +473,51 @@ fn extract_effects(
                 extracted.meshes.push(part.mesh);
             }
             EffectLook::Particles(v) => {
+                let look = objects.as_ref().and_then(|o| o.effect_sky(part.sky));
+                let affected = look
+                    .as_ref()
+                    .map_or(v.deform_st[0], |s| f32::from(u8::from(s.affected)));
+                let mut lighting = v.deform_st;
+                if v.pixel_lighting {
+                    lighting[0] = affected;
+                }
+                let data = meshes.0.get(&part.mesh);
+                let radius = if v.pixel_lighting {
+                    data.map_or(0.0, |d| {
+                        d.positions
+                            .iter()
+                            .map(|p| Vec3::from(*p).length())
+                            .fold(0.0, f32::max)
+                    }) * transform
+                        .to_scale_rotation_translation()
+                        .0
+                        .abs()
+                        .max_element()
+                } else {
+                    0.0
+                };
+                let selected = if v.pixel_lighting {
+                    pick_particle_lights(
+                        &candidates,
+                        transform.translation(),
+                        radius,
+                        affected != 0.0,
+                    )
+                } else {
+                    [ParticleLight::default(); 4]
+                };
+                if v.pixel_lighting {
+                    lighting_summary.0 += 1;
+                    for light in &selected {
+                        if light.color.w != 0.0 {
+                            if light.position.w == 0.0 {
+                                lighting_summary.1 += 1;
+                            } else {
+                                lighting_summary.2 += 1;
+                            }
+                        }
+                    }
+                }
                 let flags = u32::from(v.fresnel_clip)
                     | (u32::from(v.mul_map) << 1)
                     | (u32::from(v.soft_edges) << 2)
@@ -346,7 +527,8 @@ fn extract_effects(
                     | (u32::from(v.near_clip) << 6)
                     | (u32::from(v.add_fog) << 7)
                     | (u32::from(v.alpha_pow.is_some()) << 8)
-                    | (u32::from(v.back_cull) << 9);
+                    | (u32::from(v.back_cull) << 9)
+                    | (u32::from(v.pixel_lighting) << 10);
                 extracted.particles.push(ParticlesInstance {
                     world_from_local,
                     local_from_world,
@@ -355,7 +537,7 @@ fn extract_effects(
                     strength_night: Vec4::from(v.strength_night),
                     main_st: Vec4::from(v.main_st),
                     main2_st: Vec4::from(v.main2_st),
-                    deform_st: Vec4::from(v.deform_st),
+                    deform_st: Vec4::from(lighting),
                     refract_st: Vec4::from(v.refract_st),
                     speed: Vec4::from(v.speed),
                     speed2: Vec4::from(v.speed2),
@@ -368,9 +550,32 @@ fn extract_effects(
                     ),
                     clip: Vec4::from(v.clip),
                     extra: Vec4::new(v.alpha_pow.unwrap_or(1.0), 0.0, 0.0, 0.0),
+                    lights: selected,
+                    sh: look
+                        .as_ref()
+                        .map_or([Vec4::ZERO; 9], |s| s.sh.map(|v| Vec3::from(v).extend(0.0))),
+                    exposure: look.as_ref().map_or(Vec4::ONE, |s| Vec4::from(s.exposure)),
+                    ambient_top: sky
+                        .as_ref()
+                        .map_or(Vec3::ZERO, |s| s.top_ambient)
+                        .extend(0.0),
+                    ambient_bottom: sky
+                        .as_ref()
+                        .map_or(Vec3::ZERO, |s| s.bottom_ambient)
+                        .extend(0.0),
+                    water_lighting: water.as_ref().map_or(Vec4::ZERO, |w| {
+                        Vec4::new(
+                            w.volume.color_cast_distance_factor,
+                            w.volume.color_cast_depth_factor,
+                            w.volume.water_transmission,
+                            w.volume.emission_ambient_scale,
+                        )
+                    }),
                 });
                 let ids = part.textures.each_ref().map(Handle::id);
-                extracted.particle_draws.push((part.mesh, ids));
+                extracted
+                    .particle_draws
+                    .push((part.mesh, ids, v.pixel_lighting));
             }
         }
     }
@@ -380,6 +585,13 @@ fn extract_effects(
     extracted.time = time.elapsed_secs();
     // By day when the sky is unknown.
     extracted.local_light = sky.as_ref().map_or(1.0, |s| s.local_light);
+    if *last_lighting != Some(lighting_summary) {
+        info!(
+            "effects: pixel lighting: {} parts, {} directional slots, {} local slots; ranking uses brightness estimate",
+            lighting_summary.0, lighting_summary.1, lighting_summary.2
+        );
+        *last_lighting = Some(lighting_summary);
+    }
 }
 
 struct GpuEffectMesh {
@@ -449,7 +661,7 @@ struct EffectBuffers {
     /// Per glow instance: its mesh id.
     meshes: Vec<u32>,
     /// Per particles instance: its mesh id and textures.
-    particle_draws: Vec<(u32, [AssetId<Image>; PARTICLES_TEXTURES])>,
+    particle_draws: Vec<(u32, [AssetId<Image>; PARTICLES_TEXTURES], bool)>,
 }
 
 fn prepare_buffers(
@@ -558,7 +770,7 @@ struct EffectPipelines {
     composite_shader: Handle<Shader>,
     fullscreen: FullscreenShader,
     accumulate: HashMap<bool, CachedRenderPipelineId>,
-    particles: HashMap<bool, CachedRenderPipelineId>,
+    particles: HashMap<(bool, bool), CachedRenderPipelineId>,
     composite: HashMap<TextureFormat, CachedRenderPipelineId>,
 }
 
@@ -661,7 +873,7 @@ fn init_gpu(
 #[derive(Component)]
 struct EffectPipelineIds {
     accumulate: CachedRenderPipelineId,
-    particles: CachedRenderPipelineId,
+    particles: [CachedRenderPipelineId; 2],
     composite: CachedRenderPipelineId,
     multisampled: bool,
 }
@@ -764,23 +976,33 @@ fn prepare_pipelines(
                 id
             }
         };
-        let particles = match pipelines.particles.get(&multisampled) {
-            Some(id) => *id,
-            None => {
-                let descriptor = accumulate_descriptor(
-                    "effects_particles_pipeline",
-                    vec![
-                        pipelines.particles_layouts[ms].clone(),
-                        pipelines.particles_textures_layout.clone(),
-                    ],
-                    &pipelines.particles_shader,
-                    multisampled,
-                );
-                let id = pipeline_cache.queue_render_pipeline(descriptor);
-                pipelines.particles.insert(multisampled, id);
-                id
+        let particles = std::array::from_fn(|i| {
+            let pixel_lighting = i == 1;
+            let key = (multisampled, pixel_lighting);
+            match pipelines.particles.get(&key).copied() {
+                Some(id) => id,
+                None => {
+                    let mut descriptor = accumulate_descriptor(
+                        "effects_particles_pipeline",
+                        vec![
+                            pipelines.particles_layouts[ms].clone(),
+                            pipelines.particles_textures_layout.clone(),
+                        ],
+                        &pipelines.particles_shader,
+                        multisampled,
+                    );
+                    if pixel_lighting {
+                        descriptor.vertex.shader_defs.push("PIXEL_LIGHTING".into());
+                        if let Some(fragment) = &mut descriptor.fragment {
+                            fragment.shader_defs.push("PIXEL_LIGHTING".into());
+                        }
+                    }
+                    let id = pipeline_cache.queue_render_pipeline(descriptor);
+                    pipelines.particles.insert(key, id);
+                    id
+                }
             }
-        };
+        });
         let composite = match pipelines.composite.get(&view.target_format) {
             Some(id) => *id,
             None => {
@@ -840,9 +1062,10 @@ fn effects_pass(
     if buffers.meshes.is_empty() && buffers.particle_draws.is_empty() {
         return;
     }
-    let (Some(accumulate), Some(particles), Some(composite)) = (
+    let (Some(accumulate), Some(unlit), Some(lit), Some(composite)) = (
         pipeline_cache.get_render_pipeline(ids.accumulate),
-        pipeline_cache.get_render_pipeline(ids.particles),
+        pipeline_cache.get_render_pipeline(ids.particles[0]),
+        pipeline_cache.get_render_pipeline(ids.particles[1]),
         pipeline_cache.get_render_pipeline(ids.composite),
     ) else {
         return;
@@ -900,7 +1123,7 @@ fn effects_pass(
         pipeline_cache.get_bind_group_layout(&pipelines.particles_textures_layout);
     let mut texture_groups: HashMap<[AssetId<Image>; PARTICLES_TEXTURES], Option<BindGroup>> =
         HashMap::new();
-    for (_, set) in &buffers.particle_draws {
+    for (_, set, _) in &buffers.particle_draws {
         texture_groups.entry(*set).or_insert_with(|| {
             let [Some(a), Some(b), Some(c), Some(d)] = set.map(|id| images.get(id)) else {
                 return None;
@@ -962,15 +1185,15 @@ fn effects_pass(
             }
         }
         if let Some(group) = &particles_group {
-            pass.set_pipeline(particles);
             pass.set_bind_group(0, group, &offsets);
-            for (i, (id, set)) in buffers.particle_draws.iter().enumerate() {
+            for (i, (id, set, pixel_lighting)) in buffers.particle_draws.iter().enumerate() {
                 let (Some(mesh), Some(Some(textures))) =
                     (meshes.0.get(id), texture_groups.get(set))
                 else {
                     continue;
                 };
                 let i = i as u32;
+                pass.set_pipeline(if *pixel_lighting { lit } else { unlit });
                 pass.set_bind_group(1, textures, &[]);
                 pass.set_vertex_buffer(0, (*mesh.vertices).slice(..));
                 pass.set_index_buffer((*mesh.indices).slice(..), IndexFormat::Uint32);
@@ -1016,6 +1239,47 @@ fn effects_pass(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn particle_light_selection_is_bounded_stable_and_respects_range_and_affected() {
+        let light = |position: Vec4, color: f32, range: f32| ParticleLight {
+            position,
+            color: Vec3::splat(color).extend(1.0),
+            attenuation: Vec4::new(-1.0, 1.0, range * range, 0.0),
+            ..default()
+        };
+        let mut candidates = vec![
+            (99, light(Vec3::Y.extend(0.0), 10.0, 1.0)),
+            (1, light(Vec3::splat(100.0).extend(1.0), 100.0, 1.0)),
+        ];
+        for i in (2..8).rev() {
+            candidates.push((i, light(Vec3::ZERO.extend(1.0), 1.0, 5.0)));
+        }
+        let selected = pick_particle_lights(&candidates, Vec3::ZERO, 0.0, true);
+        assert_eq!(selected[0].position.w, 0.0);
+        assert_eq!(selected.iter().filter(|l| l.color.w != 0.0).count(), 4);
+        candidates.reverse();
+        let again = pick_particle_lights(&candidates, Vec3::ZERO, 0.0, true);
+        for i in 0..4 {
+            assert_eq!(selected[i].color, again[i].color);
+        }
+        let indoor = pick_particle_lights(&candidates, Vec3::ZERO, 0.0, false);
+        assert!(
+            indoor
+                .iter()
+                .all(|l| l.position.w == 1.0 && l.color.x == 1.0)
+        );
+        let padded = pick_particle_lights(&candidates[..1], Vec3::ZERO, 0.0, false);
+        assert!(padded.iter().skip(1).all(|l| l.color == Vec4::ZERO));
+    }
+
+    #[test]
+    fn particle_range_lookup_is_continuous_and_zero_at_range() {
+        assert_eq!(particle_falloff(0.0), 1.0);
+        assert!((particle_falloff(0.64) - 1.0 / 17.0).abs() < 1e-6);
+        assert!(particle_falloff(0.64 + 1e-6) < particle_falloff(0.64));
+        assert_eq!(particle_falloff(1.0), 0.0);
+        assert_eq!(particle_falloff(4.0), 0.0);
+    }
     // Numerical oracle for the decoded pixel-lit programs, before their light
     // inputs are connected to the GPU. Directional water terms and vertex
     // attenuation must be applied to `direct` before this final combine.
@@ -1241,6 +1505,7 @@ mod tests {
 
     /// The console halo's values (logged by the client, M7g4).
     const HALO: ParticlesValues = ParticlesValues {
+        pixel_lighting: false,
         color: [0.227_941_17, 0.911_764_7, 0.260_953_25, 1.0],
         strength: [1.0, 1.0, 1.0, 0.25],
         strength_night: [1.0, 1.0, 1.0, 0.25],
@@ -1274,6 +1539,7 @@ mod tests {
     /// The door force field's values (`precursor_doorway_portal`, read
     /// with `sn-inspect prefab … --props`, M7g4).
     const PORTAL: ParticlesValues = ParticlesValues {
+        pixel_lighting: false,
         color: [0.403_921_54, 1.0, 0.546_234, 1.0],
         strength: [4.0, 4.0, 4.0, 0.1],
         strength_night: [4.0, 4.0, 4.0, 0.1],

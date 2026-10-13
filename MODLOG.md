@@ -2,6 +2,87 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-13 — M7g4e2: entrance water-field pixel lighting
+
+**Checkpoint:** user authorized committing/pushing M7g4e1; `37872c2`
+pushed to `origin/main`. The user subsequently authorized committing and
+pushing this follow-up, with manual visual testing explicitly **not tested**.
+
+**What/why:** connected light and sky inputs to the existing effect pass
+and enabled only the exact entrance-field 148/466 program. Each draw receives
+four game-unit lights, selected sky SH/exposure and frame ambient/water
+parameters. Range/spot attenuation and directions are calculated at vertices,
+then interpolated into pixel lighting. The decoded biased normal/wrap,
+self illumination, conditional SH and alpha/fog/refraction order are retained.
+Unused deformation-ST/clip.z slots carry this non-deformed UV variant's
+coefficients. Global/lifepod sky changes are read each frame. Separate lit
+and unlit shader variants avoid extra lighting varyings for existing effects.
+No dependencies, whitelist or architecture changes.
+
+**Limits:** Unity's exact native renderer-light ranking remains unknown;
+we use deterministic estimated brightness at a bounding sphere. Range
+lookup is the existing opaque-light analytic approximation. Water inputs
+are camera-local, and original per-object SH orientation/image parity is
+**not tested**. These are explicit limitations, not a 1:1 claim. Sand,
+smoke noise and bubble vertex lighting/default bump remain gated.
+
+**Verified:** workspace 594 passed, 50 opt-in ignored; fmt/clippy
+`-D warnings` passed, release build passed in an isolated target directory.
+Updated contract tests validate exact field selection, coefficient packing,
+default/override handling and missing refraction rejection. Two added tests
+check bounded/stable light selection, range/affected filtering, black padding
+and range falloff endpoints/continuity. Existing crash/culling/animation tests
+remain passing. Final five before/after GPU pairs each exit 0 with 300 settled
+frames after 120 warmup at 1600 × 900. No shader errors or panics; all object
+warning counts 0. Terrain and object stats match exactly except expected
+material sky classifications. Field logs select the effect and receive
+four local slots per draw (Lost River 1 draw, Lava Castle 2, prison 1);
+brine/door regressions receive 0 lit draws. The prison scene emits the same
+Bevy clustering resize advisory in both control and new runs; it is not a
+shader validation failure and transient scene lighting during resize is
+not visually tested.
+
+| Scene | Mean ms before → after | p95 ms before → after | Objects / cached meshes | Final peak GiB |
+|---|---|---|---|---:|
+| Lost River entrance | 6.000 → 5.800 | 6.816 → 6.222 | 2,736 / 1,866 | 1.292 |
+| Lava Castle entrance | 7.794 → 7.604 | 8.450 → 8.313 | 6,119 / 5,392 | 1.989 |
+| Prison entrance | 8.885 → 8.939 | 9.511 → 9.646 | 13,032 / 6,837 | 1.744 |
+| Tree Cove | 5.571 → 6.421 | 6.393 → 8.264 | 6,335 / 1,301 | 1.212 |
+| Cache door/terminal | 5.671 → 5.640 | 6.096 → 6.095 | 8,201 / 1,835 | 1.242 |
+
+One pair per camera, live animation and another user client running: these
+are not isolated performance measurements. Cove's recent effects GPU scope
+was 0.061781 → 0.062234 ms despite its higher total frame time; no speedup
+or definitive total-frame regression attribution is claimed. Raw results
+stay ignored under `out/m7g4e` and `out/baselines/run-m7g4e2-final-*`.
+
+**Dead ends/corrections:** the ordinary release build could not replace the
+user's running exe (Windows access denied). Left that client running and
+copied our build cache into ignored `out/m7g4e/e2-target`, excluding the exe.
+Clippy requested a query type alias; added it. First GPU comparisons prompted
+separate lit/unlit pipelines rather than passing the extra varyings everywhere.
+Unity 2019.4's documented spot reciprocal-quarter-angle cosine replaced the
+initial fade-width estimate. Readiness remains numerical/GPU; manual visual
+testing is **not tested** (deferred at the user's request). Default `target/release/sn-client.exe` still contains
+the prior build while the user's process holds it open; use the isolated exe.
+
+Reproduction (PowerShell):
+```powershell
+$env:SUBNAUTICA_DIR = 'D:\SteamLibrary\steamapps\common\Subnautica'
+cargo test --workspace
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo build --release -p sn-client --target-dir out/m7g4e/e2-target
+out/m7g4e/e2-target/release/sn-client.exe --benchmark 300 --baseline field-lighting-check --baseline-revision local-M7g4e2 --warmup 120 --resolution 1600 900 --start -950 -616 1018 --look -942 -621 1026 --view 400 --lifepod-seed 1 --slot-seed 1 --time 9.6 --time-scale 0 --aurora intact --water-quality high --color-grading off --gpu-timings
+```
+Expected: checks exit 0, field logs `pixel_lighting: true` as an effect
+material and `1 parts ... 4 local slots`, with no shader errors/panics.
+Use a fresh baseline name to repeat. Other camera arguments:
+Lava Castle `--start -35 -1198 70 --look -31.68 -1200.82 77.63`, prison
+`--start 208 -1445 -251 --look 215 -1448 -257`; brine and terminal use
+the previous milestone's reproduction table. The control exe was copied
+from the successful M7g4e1 release build before editing M7g4e2.
+
 ## 2026-10-13 — M7g4e1: lit particle input contract and reference terms
 
 **What/why:** started the next visual milestone. Read the installed
