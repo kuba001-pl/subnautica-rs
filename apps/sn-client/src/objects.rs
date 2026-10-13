@@ -854,6 +854,53 @@ fn particles_variant(keywords: &str) -> Option<ParticlesVariant> {
 /// The game's mesh-effect shader; ported per material (`particles_values`).
 const PARTICLES_UBER: &str = "UWE/Particles/UBER";
 
+/// Confirmed lit programs. Recognition is an input diagnostic, not yet
+/// permission to draw them: their four per-renderer lights are still missing.
+fn particles_lighting_contract(
+    material: &Material,
+    shader: &ShaderInfo,
+    keywords: &str,
+) -> Option<Result<String, String>> {
+    let (stage, program) = match keywords {
+        "FX_FRESNELCLIP FX_LIGHTMODE_OFF FX_LIGHTMODE_VERTEX FX_MULMAP FX_REFRACTMAP FX_SCROLL FX_SOFTEDGES WBOIT" => {
+            ("vertex", "119/437")
+        }
+        "FX_DEFORM FX_FRESNELCLIP FX_LIGHTMODE_PIXEL FX_MULMAP FX_NEARCLIP FX_SCROLL FX_SOFTEDGES FX_TRAILNOISE WBOIT" => {
+            ("pixel", "142/460")
+        }
+        "FX_LIGHTMODE_PIXEL FX_MULMAP FX_NEARCLIP FX_REFRACTMAP FX_SCROLL WBOIT" => {
+            ("pixel", "148/466")
+        }
+        "FX_DEFORM FX_ISMESH FX_LIGHTMODE_PIXEL FX_LIGHT_2SIDED FX_MULMAP FX_QUALITY_HIGH FX_SCROLL FX_TRIPLANAR WBOIT" => {
+            ("pixel", "154/472")
+        }
+        _ => return None,
+    };
+    let mut values = Vec::new();
+    for name in [
+        "_AffectedByDayNightCycle",
+        "_LightDesaturation",
+        "_NormalSharpness",
+        "_SelfIllumination",
+        "_LightWrapAround",
+    ] {
+        let Some(value) = material
+            .float(name)
+            .or_else(|| shader.defaults.get(name).map(|v| v[0]))
+        else {
+            return Some(Err(format!("lit program {program}: missing {name}")));
+        };
+        if !value.is_finite() {
+            return Some(Err(format!("lit program {program}: non-finite {name}")));
+        }
+        values.push(format!("{name}={value}"));
+    }
+    Some(Ok(format!(
+        "lit program {program} ({stage}), {}; renderer light inputs not connected (M7g4e)",
+        values.join(", ")
+    )))
+}
+
 /// A `UWE/Particles/UBER` material's values if our effect pass draws it as
 /// the game does: one of the decoded keyword sets, and the render state the
 /// pass implements (blend `_SrcBlend` 1 `_DstBlend` 1 `_SrcBlend2` 0
@@ -869,6 +916,9 @@ fn particles_values(
     let mut keywords: Vec<&str> = material.keywords.split_whitespace().collect();
     keywords.sort_unstable();
     let keywords = keywords.join(" ");
+    if let Some(contract) = particles_lighting_contract(material, shader, &keywords) {
+        return Err(contract.unwrap_or_else(|error| error));
+    }
     let Some(variant) = particles_variant(&keywords) else {
         return Err(format!("keywords [{keywords}] not decoded"));
     };
@@ -5004,6 +5054,70 @@ mod tests {
             assert_eq!(sorted.join(" "), set);
             assert!(particles_variant(set).is_some());
         }
+    }
+
+    #[test]
+    fn lit_particle_contract_requires_exact_sets_and_finite_input_defaults() {
+        let mut shader = uber_shader();
+        for (name, value) in [
+            ("_AffectedByDayNightCycle", 1.0),
+            ("_LightDesaturation", 0.75),
+            ("_NormalSharpness", 0.35),
+            ("_SelfIllumination", 0.003),
+            ("_LightWrapAround", 0.2),
+        ] {
+            shader.defaults.insert(name.into(), [value; 4]);
+        }
+        let sets = [
+            (
+                "FX_FRESNELCLIP FX_LIGHTMODE_OFF FX_LIGHTMODE_VERTEX FX_MULMAP FX_REFRACTMAP FX_SCROLL FX_SOFTEDGES WBOIT",
+                "119/437",
+            ),
+            (
+                "FX_DEFORM FX_FRESNELCLIP FX_LIGHTMODE_PIXEL FX_MULMAP FX_NEARCLIP FX_SCROLL FX_SOFTEDGES FX_TRAILNOISE WBOIT",
+                "142/460",
+            ),
+            (
+                "FX_LIGHTMODE_PIXEL FX_MULMAP FX_NEARCLIP FX_REFRACTMAP FX_SCROLL WBOIT",
+                "148/466",
+            ),
+            (
+                "FX_DEFORM FX_ISMESH FX_LIGHTMODE_PIXEL FX_LIGHT_2SIDED FX_MULMAP FX_QUALITY_HIGH FX_SCROLL FX_TRIPLANAR WBOIT",
+                "154/472",
+            ),
+        ];
+        for (keywords, program) in sets {
+            let m = particles_material(keywords, &[]);
+            let diagnostic = particles_values(&m, &shader, [None; 4]).unwrap_err();
+            assert!(diagnostic.contains(program));
+            assert!(diagnostic.contains("_SelfIllumination=0.003"));
+            assert!(diagnostic.contains("not connected"));
+        }
+        let m = particles_material("FX_LIGHTMODE_PIXEL WBOIT", &[]);
+        assert!(
+            particles_values(&m, &shader, [None; 4])
+                .unwrap_err()
+                .contains("not decoded")
+        );
+        let mut m = particles_material(sets[2].0, &[("_SelfIllumination", 0.5)]);
+        assert!(
+            particles_values(&m, &shader, [None; 4])
+                .unwrap_err()
+                .contains("_SelfIllumination=0.5")
+        );
+        m.floats.push(("_LightDesaturation".into(), f32::NAN));
+        assert!(
+            particles_values(&m, &shader, [None; 4])
+                .unwrap_err()
+                .contains("non-finite")
+        );
+        shader.defaults.remove("_NormalSharpness");
+        let m = particles_material(sets[2].0, &[]);
+        assert!(
+            particles_values(&m, &shader, [None; 4])
+                .unwrap_err()
+                .contains("missing _NormalSharpness")
+        );
     }
 
     #[test]

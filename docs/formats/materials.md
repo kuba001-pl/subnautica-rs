@@ -374,6 +374,64 @@ fields are not consumed. A human screenshot at the Blood Kelp cache showed
 the symbol detached before optimized-avatar support was added (animation.md);
 fresh human confirmation of the corrected placement remains pending.
 
+### Lit UBER input contract (M7g4e1) — confirmed; rendering not enabled
+
+Confirmed from installed D3D11 metadata/arithmetic and current prefab
+properties, inspected read-only into ignored `out/m7g4e`. Exact pairs:
+peeper-pipe bubbles 119/437 (vertex lighting), Lava Castle smoke 142/460,
+entrance water field 148/466 and sand fall 154/472 (pixel lighting).
+Bubbles' saved `FX_LIGHTMODE_OFF` and sand's `FX_LIGHT_2SIDED`/
+`FX_QUALITY_HIGH` are absent from the compiled keyword table. Sand's saved
+`_NormalMap` is not bound by 154/472. These facts do not justify dropping
+the active lighting terms.
+
+These passes read the first four Unity vertex-pass light slots:
+`unity_LightColor`, `unity_LightPosition`, `unity_LightAtten`, and
+`unity_SpotDirection`. Positions/directions are in view space. The vertex
+stage computes per-light normalized direction and attenuation from squared
+distance, the range/spot constants and `_LightTextureB0`; pixel variants
+interpolate these values and evaluate colour later. This differs from
+recomputing an arbitrary clustered-light sum at every pixel. Unity documents
+vertex-pass lights as ordered brightest first, but the exact engine ranking
+at a renderer is **not yet confirmed**:
+[Unity built-in shader variables](https://docs.unity3d.com/cn/2021.3/Manual/SL-UnityShaderVariables.html).
+
+Confirmed material coefficients (order: affected by day/night,
+desaturation, normal sharpness, self illumination, wrap): smoke
+`1 / 0 / 0.25 / 0.003 / 0.2`; bubbles
+`1 / 0.8 / 0.25 / 0.2 / 0.2`; water field
+`1 / 0 / 0.075 / 0.003 / 0.025`; sand
+`1 / 0.75 / 0.35 / 0.003 / 0.2`. Material values override declared
+shader defaults. Missing/non-finite inputs are rejected by the diagnostic.
+
+Confirmed shared terms: blend the view-space normal toward positive Z by
+normal sharpness, without normalizing again after that blend. Pixel mode
+normalizes the view normal before blending; vertex mode uses the transformed
+vertex normal directly. The diffuse factor is
+`saturate(dot(light, biasedNormal) * wrap + 1 - wrap)`; it is not ordinary
+Lambert. Thus wrap 0.2 gives 0.8 at a perpendicular unit normal and 0.6
+when facing away. Self illumination blends the accumulated light colour
+toward white, multiplying the surface colour rather than adding emission.
+Directional light participation/water attenuation additionally depends on
+the affected-by-day/night input; point/spot inputs follow their own path.
+
+Pixel-lighting sky term: evaluate nine object-normal SH terms, take the
+absolute result, multiply by mean RGB `_ExposureIBL`, desaturate with
+luma weights `(0.3, 0.59, 0.11)`, then add it independently of textured
+albedo only when `_AffectedByDayNightCycle < 1`, scaled by `1 - affected`.
+Lighting preserves alpha. The bubble vertex program adds its SH term to
+vertex RGB **before** fragment textures/colour/strength; the pixel formula
+must not be reused for that stage ordering. Smoke also has vertex noise
+inputs `_Scale`, `_Frequency`, `_Speed` and `_RandPhase`. The bubble material
+has no saved refraction texture despite `FX_REFRACTMAP`; its neutral bump
+default still needs to be supplied rather than using the white fallback.
+
+**Implementation status:** input diagnostics and a synthetic pixel-formula
+oracle are present. Per-renderer lights, sky inputs, vertex noise and GPU
+lighting are **not connected**. These four families still use their stand-ins.
+Original-game visual comparison: **not tested**. The next step is feeding
+the light and sky inputs before enabling the exact sets.
+
 ### Control-room UV deformation without soft fading (M7g4c) — confirmed
 
 Confirmed from the installed shader's D3D11 vertex/fragment metadata and

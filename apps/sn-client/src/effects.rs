@@ -1016,6 +1016,78 @@ fn effects_pass(
 
 #[cfg(test)]
 mod tests {
+    // Numerical oracle for the decoded pixel-lit programs, before their light
+    // inputs are connected to the GPU. Directional water terms and vertex
+    // attenuation must be applied to `direct` before this final combine.
+    fn lit_particle_reference(
+        albedo: Vec4,
+        direct: Vec3,
+        sh: Vec3,
+        exposure: Vec3,
+        affected: f32,
+        desaturation: f32,
+        self_illumination: f32,
+    ) -> Vec4 {
+        let illumination = direct.lerp(Vec3::ONE, self_illumination);
+        let mut color = albedo.truncate() * illumination;
+        if affected < 1.0 {
+            let ambient = sh.abs() * (exposure.element_sum() / 3.0);
+            let grey = ambient.dot(Vec3::new(0.3, 0.59, 0.11));
+            color += ambient.lerp(Vec3::splat(grey), desaturation) * (1.0 - affected);
+        }
+        color.extend(albedo.w)
+    }
+
+    #[test]
+    fn lit_particle_self_illumination_preserves_alpha_and_does_not_add_emission() {
+        let albedo = Vec4::new(0.2, 0.4, 0.6, 0.7);
+        assert_eq!(
+            lit_particle_reference(albedo, Vec3::ZERO, Vec3::ONE, Vec3::ONE, 1.0, 0.0, 1.0),
+            albedo
+        );
+        let dark =
+            lit_particle_reference(albedo, Vec3::ZERO, Vec3::ZERO, Vec3::ONE, 1.0, 0.0, 0.25);
+        assert!((dark.truncate() - albedo.truncate() * 0.25).length() < 1e-6);
+        assert_eq!(dark.w, albedo.w);
+    }
+
+    #[test]
+    fn pixel_lit_particle_sh_is_absolute_desaturated_additive_and_conditionally_enabled() {
+        let albedo = Vec4::new(0.0, 0.0, 0.0, 0.42);
+        let sh = Vec3::new(-1.0, 2.0, -3.0);
+        let result = lit_particle_reference(
+            albedo,
+            Vec3::ZERO,
+            sh,
+            Vec3::new(1.0, 2.0, 3.0),
+            0.5,
+            1.0,
+            0.0,
+        );
+        // Mean exposure 2; absolute SH gives [2,4,6]; luma 3.62;
+        // affected=0.5 leaves half that additive sky contribution.
+        assert!((result.truncate() - Vec3::splat(1.81)).length() < 1e-6);
+        assert_eq!(result.w, albedo.w);
+        for affected in [1.0, 2.0] {
+            assert_eq!(
+                lit_particle_reference(albedo, Vec3::ZERO, sh, Vec3::ONE, affected, 1.0, 0.0),
+                albedo
+            );
+        }
+    }
+
+    #[test]
+    fn lit_particle_wrap_is_the_compiled_biased_dot_without_normalizing_again() {
+        let normal = Vec3::new(0.0, 0.0, 1.0);
+        let sharp = 0.25;
+        let facing = Vec3::Z.lerp(normal, sharp);
+        let diffuse = |light: Vec3| ((light.dot(facing) * 0.2 + 1.0) - 0.2).clamp(0.0, 1.0);
+        assert!((diffuse(-Vec3::Z) - 0.6).abs() < 1e-6);
+        assert!((diffuse(Vec3::X) - 0.8).abs() < 1e-6);
+        assert_eq!(diffuse(Vec3::Z), 1.0);
+        let biased = Vec3::Z.lerp(-Vec3::Z, sharp);
+        assert_eq!(biased.length(), 0.5); // normal sharpness does not renormalize.
+    }
     use super::*;
 
     // The decoded formulas (`docs/formats/materials.md` § Fake volumetric

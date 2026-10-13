@@ -2,6 +2,57 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-13 — M7g4e1: lit particle input contract and reference terms
+
+**What/why:** started the next visual milestone. Read the installed
+119/437, 142/460, 148/466 and 154/472 programs and all four target materials;
+documented exact saved/compiled mappings, scalar inputs, vertex attenuation,
+stage order, biased normal/wrap, self illumination and conditional SH.
+Added exact-set diagnostics so logs distinguish recognized lighting from
+missing renderer inputs, plus a synthetic pixel-lighting numerical oracle.
+Four families remain on stand-ins: **GPU lighting is not implemented yet**.
+No dependencies, architecture or whitelist changes. No commit or push.
+
+**Findings/dead ends:** opaque clustered lighting cannot simply replace
+the four renderer-specific Unity vertex-pass light slots: attenuation is
+computed per vertex even in the pixel variants. Saved sand normal-map/
+two-sided/quality keywords and bubble light-mode-off do not identify active
+compiled terms. Pixel SH is added after textured albedo; bubble SH enters
+vertex colour before textures, so one shared combine would be wrong.
+Smoke needs vertex noise and bubbles need a neutral refraction default.
+Exact engine brightest-light ranking remains unconfirmed. Initial searches
+used shell wildcards with rg on Windows; explicit files resolved them.
+
+**Verified:** 592 workspace tests passed, 50 opt-in tests ignored on current
+HEAD `3c07188`; four new tests cover exact mapping/default overrides,
+missing/non-finite inputs, self-illumination endpoints/alpha, SH absolute
+value/exposure/desaturation/gating, and wrap/normal-bias behaviour. Fmt,
+clippy `-D warnings`, release build and diff checks passed. Four GPU runs
+(120 settled frames, 60 warmup, 1600 × 900) exited 0 with no WARN/ERROR,
+shader errors or panics; all expected target contracts logged. Mean/p95 ms:
+water field 5.639/6.164, sand 6.468/6.928, smoke 7.423/7.875, bubbles
+8.875/9.531. These validate loading/diagnostics, not the future lit shader.
+Original-game comparison and new lit GPU output are **not tested**.
+
+Reproduce (PowerShell):
+```powershell
+$env:SUBNAUTICA_DIR = 'D:\SteamLibrary\steamapps\common\Subnautica'
+cargo test --workspace
+cargo test -p sn-client lit_particle
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo build --release -p sn-client
+target/release/sn-client.exe --benchmark 120 --baseline lit-input-field-check --baseline-revision local-M7g4e1 --warmup 60 --resolution 1600 900 --start -950 -616 1018 --look -942 -621 1026 --view 400 --lifepod-seed 1 --slot-seed 1 --time 9.6 --time-scale 0 --aurora intact --water-quality high --color-grading off
+```
+Expected: checks exit 0, four targeted tests pass; field logs `lit program
+148/466 (pixel)` with five coefficients and `renderer light inputs not
+connected`. A fresh baseline name is needed when repeating. Other diagnostic
+camera arguments: sand `--start -290 -175 958 --look -293 -177 971`, smoke
+`--start -140 -1140 10 --look -143 -1148 28`, bubbles
+`--start 350 -1452 -280 --look 357 -1456 -286`. Logs/reports stay ignored in
+`out/m7g4e` and `out/baselines/run-m7g4e1-input-*`. Continue by feeding light/
+sky data to the effect pass before enabling any of these exact sets.
+
 ## 2026-10-13 — M9u5d: the client draws the game's UI text (M9u5 done)
 
 **What/why:** the last step of M9u5. With `--game-ui`, TMP texts now

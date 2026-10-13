@@ -2505,6 +2505,48 @@ The variant cache grew from the initial area's 244 to 251. Peak sampled
 process memory was 1.73 GiB along this route; no isolated memory delta
 is established. User interactive replay and visual acceptance remain open.
 
+#### M7g4e lit UBER plan (2026-10-13)
+
+Port the remaining placed sand falls, Lava Castle smoke, peeper-pipe
+bubbles and Precursor entrance water fields. Start with their input
+contract and numerical reference math, then connect the effect pass. Do
+not select a lit set merely because its keywords have been recognized.
+
+1. Decode exact installed vertex/fragment pairs (119/437 bubbles,
+   142/460 smoke, 148/466 water field, 154/472 sand). Separate inactive
+   saved keywords from compiled terms. Record material coefficients,
+   stage boundaries, four-light inputs, sky SH/exposure, underwater
+   light attenuation and alpha/fog order in `docs/formats/materials.md`.
+2. Add exact-set input diagnostics and synthetic numerical checks before
+   enabling rendering. Preserve stand-ins until all required inputs have
+   a source; do not silently reuse opaque clustered lighting or ordinary
+   Lambert diffuse. This first checkpoint is M7g4e1.
+3. Feed per-renderer four-light data, the selected sky and frame water/day
+   inputs to the existing effect pass. Port the shared lighting formula
+   and preserve vertex versus pixel evaluation and vertex attenuation.
+   Finish the smoke/triplanar terms and neutral refraction defaults.
+4. Validate all four families at their placed locations, plus unlit
+   brine, door and key-terminal regressions. Record timings/counts and
+   exact commands. Original-game comparisons remain a human acceptance
+   item. No new dependencies or unrelated animation/terrain changes.
+
+**Done when:**
+- [x] Exact compiled mappings and input/arithmetic findings documented.
+- [x] Synthetic tests cover keyword mapping, scalar defaults, wrap,
+  desaturation, self illumination, conditional SH and preserved alpha.
+- [ ] Required renderer/sky/light inputs reach both shader stages.
+- [ ] All four materials select decoded effects with no unsupported terms.
+- [ ] Workspace tests, fmt, clippy, release build and GPU regressions pass.
+- [ ] Original-game visual comparison (**not tested** until available).
+
+**M7g4e1 checked:** exact-set diagnostics report the program/stage and five
+lighting coefficients while retaining stand-ins. Four synthetic tests
+exercise contracts and pixel-lighting reference terms. Workspace checks
+passed (592 tests, 50 ignored on the current repository); four placed-scene
+GPU runs confirm the expected diagnostics without errors. This is the input
+checkpoint, not completed GPU lighting. Next: per-renderer four-light/sky
+feeding, neutral refraction and smoke vertex noise, then exact-set rendering.
+
 #### M7g4d unlit UBER remainder plan (2026-10-13)
 
 Resumes the visual track after M9u4d. A whole-game census (`sn-inspect
