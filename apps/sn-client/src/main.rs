@@ -9,6 +9,7 @@ mod baseline;
 mod body;
 mod effects;
 mod game_light;
+mod game_ui;
 mod grass_look;
 mod hud;
 mod inventory;
@@ -130,6 +131,9 @@ Usage: sn-client [--game-dir <PATH>] [--start <X> <Y> <Z>] [--look <X> <Y> <Z>]
                  the head (the player's body is drawn in either view)
   --look-down    the player's starting pitch, degrees (negative looks up;
                  clamped to the game's limits)
+  --game-ui      draw the game's own HUD from its UI files (M9u5c: images
+                 in their stored state; texts not yet) instead of our bars
+                 and depth (our hand text and fade stay)
   --shot         --shot <SECONDS> <NAME>: after SECONDS of play, save
                  out/NAME.png and exit (a check for the human)
   --use-item     --use-item <SECONDS[,SECONDS…]>: at each time, turn to the
@@ -216,6 +220,8 @@ struct Args {
     no_water_surface: bool,
     water_quality: WaterQuality,
     gpu_timings: bool,
+    /// `--game-ui`: the game's UI drawn (M9u5c).
+    game_ui: bool,
     /// Game clock, hours.
     time: f32,
     /// `--time-scale`: the clock's speed.
@@ -300,6 +306,7 @@ fn parse_args_from(raw: &[String]) -> Result<Args, String> {
         no_water_surface: false,
         water_quality: WaterQuality::High,
         gpu_timings: false,
+        game_ui: false,
         time: sky::NEW_GAME_HOURS,
         time_scale: 1.0,
         log_sky: false,
@@ -437,6 +444,7 @@ fn parse_args_from(raw: &[String]) -> Result<Args, String> {
                 }
             }
             "--gpu-timings" => args.gpu_timings = true,
+            "--game-ui" => args.game_ui = true,
             "--free-cam" => args.free_cam = true,
             "--third-person" => args.third_person = true,
             "--look-down" => args.look_down = number(it.next(), "--look-down")?,
@@ -947,6 +955,9 @@ fn main() -> AppExit {
     } else {
         PresentMode::AutoVsync
     };
+    let setup_fov = args
+        .fov
+        .unwrap_or_else(|| camera_fov(args.game_dir.clone()));
     let mut app = App::new();
     let mut resolution =
         bevy::window::WindowResolution::new(args.resolution[0], args.resolution[1]);
@@ -991,9 +1002,7 @@ fn main() -> AppExit {
             args.look
                 .unwrap_or(args.start + Vec3::new(60.0, -30.0, 60.0)),
         ),
-        fov: args
-            .fov
-            .unwrap_or_else(|| camera_fov(args.game_dir.clone())),
+        fov: setup_fov,
         fog_end: args.view,
         free_camera: !play,
     })
@@ -1016,6 +1025,13 @@ fn main() -> AppExit {
             log_stats,
         ),
     );
+    let game_ui = args.game_ui;
+    if game_ui {
+        app.add_plugins(game_ui::GameUiPlugin {
+            game_dir: args.game_dir.clone(),
+            field_of_view: setup_fov,
+        });
+    }
     if args.gpu_timings {
         app.add_plugins(bevy::render::diagnostic::RenderDiagnosticsPlugin);
     }
@@ -1169,6 +1185,10 @@ fn main() -> AppExit {
                     .add_systems(Update, inventory::hover)
                     .add_systems(Update, player::update.before(terrain::stream))
                     .add_systems(Update, hud::update.after(player::update))
+                    .add_systems(
+                        Update,
+                        hud::hide_bars.after(hud::update).run_if(move || game_ui),
+                    )
                     .add_systems(Update, hud::update_hand.after(player::update))
                     .insert_resource(items::Text(text.clone()))
                     .insert_resource(items::ItemsView::new(

@@ -58,7 +58,11 @@ pub struct UiLayout {
 }
 
 impl Assets<'_> {
-    fn script_fields(&self, layouts: &Layouts, c: &UiComponent) -> Result<(bool, Fields)> {
+    pub(crate) fn script_fields(
+        &self,
+        layouts: &Layouts,
+        c: &UiComponent,
+    ) -> Result<(bool, Fields)> {
         let script = self
             .mono_script(&c.object)
             .ok_or("MonoBehaviour without its script")?;

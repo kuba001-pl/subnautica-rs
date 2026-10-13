@@ -25,6 +25,8 @@ sn-protocol.workspace = true
 sn-session.workspace = true
 # The player's rules and collision (M9b).
 sn-sim.workspace = true
+# The game's UI, headless: canvas placement and draw lists (M9u5c).
+sn-ui.workspace = true
 sn-terrain.workspace = true
 sn-world.workspace = true
 

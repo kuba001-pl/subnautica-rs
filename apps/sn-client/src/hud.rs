@@ -244,3 +244,13 @@ pub fn update(
         c.0 = Color::srgba(0.0, 0.0, 0.0, a);
     }
 }
+
+/// `--game-ui` (M9u5c): the game's own HUD is drawn, so our bars and depth
+/// are hidden; the hand's text and the fade stay ours until M9u6.
+pub fn hide_bars(mut root: Query<&mut Visibility, With<HudRoot>>) {
+    for mut v in &mut root {
+        if *v != Visibility::Hidden {
+            *v = Visibility::Hidden;
+        }
+    }
+}

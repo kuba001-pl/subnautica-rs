@@ -147,6 +147,8 @@ pub struct DrawItem {
     /// The draw group's canvas node (a root canvas or an
     /// override-sorting one).
     pub canvas: usize,
+    /// The root canvas, whose space the vertices are in (M9u5c).
+    pub root: usize,
     /// Vertices in the root canvas's space, alpha already multiplied in.
     pub vertices: Vec<Vertex>,
     pub z: Vec<f32>,
@@ -186,6 +188,7 @@ impl DrawList {
         for it in &self.items {
             eat(it.node as u32);
             eat(it.canvas as u32);
+            eat(it.root as u32);
             eat(it.texture as u32);
             eat(it.material as u32);
             eat(it.alpha.to_bits());
@@ -449,6 +452,7 @@ pub fn draw_list(tree: &Tree, input: &DrawInput) -> DrawList {
             DrawItem {
                 node: i,
                 canvas: group,
+                root,
                 vertices,
                 z,
                 indices: g.mesh.indices.clone(),

@@ -2,6 +2,72 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-13 — M9u5c: the client draws the game's UI images
+
+**What/why:** the first step of M9u that draws on screen. With
+`--game-ui` (off by default), the client draws `uGUI`'s images as the
+game does.
+- `apps/sn-client/src/game_ui.rs`:
+  - a worker thread reads the install, places the canvases for the
+    window's size, applies the start-up state and builds the draw list,
+    again on resize. Textures are decoded once, bottom row first.
+  - the main world turns textures into images.
+  - a render pass of our own after tonemapping draws in the list's
+    order, with per-item values in a storage buffer and one pipeline per
+    blend state.
+- `game_ui.wgsl` ports `UI/Default` (soft clip) and `UI/Simple` (hard
+  clip, premultiply) from their D3D11 programs.
+- `--game-ui` also hides our bars and depth; our hand text and fade
+  stay.
+- `sn-assets::ui_start` (new) ports the first-frame state of
+  `uGUI_Fader`, `uGUI_SceneIntro`, `uGUI_Overlays` and
+  `uGUI_HardcoreGameOver`.
+- Smaller additions: `DrawItem::root`, `UiDraw::textures` and
+  `UiNode::game_object`; `ui_draw_placed` now takes a `UiStartState`.
+
+New dependency: `sn-client` now uses `sn-ui` (canvas placement; our
+own crate). Decompiled `uGUI_Fader`, `uGUI_SceneIntro`,
+`uGUI_SceneRespawning`, `uGUI_Overlays`, `uGUI_HardcoreGameOver` and
+`Sequence` into the ignored `out/decompiled/full/` (read only).
+
+**Verified (2026-10-13, Lifepod start, `--game-ui --shot 25`):**
+- 1920×1080 and 2560×1440 each give 96 of 96 draws, 1,024 vertices, 69
+  textures and 54 textures on `ScreenCanvas`.
+- By shader: `UI/Default` 84, `UI/Simple` 10, `UI/Bar` 2 (drawn as
+  `UI/Default` and logged).
+- Skipped and counted: 77 texts (M9u5d), 1 `DepthClear` and 1 draw
+  without a placed canvas.
+- The pass costs 0.206 ms (1080) and 0.209 ms (1440) CPU per frame,
+  mean of 600. Item values take 0.07–0.09 ms per size change, and a
+  worker build about 1.05 s.
+- 0 WARN or ERROR lines and no panics. Screenshots: `out/m9u5c-1080.png`
+  and `out/m9u5c-1440.png`.
+- Without `--game-ui`: no game-UI work in the log, 0 warnings, our HUD as
+  before (`out/m9u5c-off.png`).
+- 4 new unit tests: the soft-clip formula, a canvas corner landing on
+  the clip-space corner, Unity's blend modes, and a curve's value at 0.
+- `cargo test --workspace`: 586 passed, 50 ignored. fmt and clippy
+  (`-D warnings`) pass.
+
+**Dead ends / corrections:**
+- The first run's screenshot was entirely black. A log of full-canvas
+  draws showed four active, opaque full-screen black panels in the
+  stored prefab. That led to porting the scripts' start-up state
+  instead of drawing the stored state as the plan said.
+- Bevy's `BufferSlice` is not wgpu's: the buffers are dereferenced
+  first, as `effects.rs` does.
+
+**Not tested / not 1:1:**
+- The other screens' stored state still shows (feedback smileys, the
+  red confirmation dialog, pop-ups; their scripts show them only when
+  asked; M9u6, M9u7).
+- Texts are not drawn (M9u5d).
+- Unconfirmed hypotheses: vertex colours made linear,
+  `_TextureSampleAdd`, `UI/Simple`'s unclipped `_ClipRect`.
+- `_Cull` is not applied, there are no mips, and the `Tooltip` canvas
+  (no scaler) is not placed.
+- Not compared against the original game's screen.
+
 ## 2026-10-13 — M9u5b: the UI camera and canvas placement
 
 **What/why:** the client must place the game's canvases as the game

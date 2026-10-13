@@ -2908,7 +2908,10 @@ fn the_hud_canvases_fill_the_screen() {
         let c = p.corners([0.5, 0.5]);
         let tr = cam.project(c[2], [2560, 1440]).unwrap();
         let bl = cam.project(c[0], [2560, 1440]).unwrap();
-        assert!((tr[0] - 2560.0).abs() < 0.5 && (tr[1] - 1440.0).abs() < 0.5, "{tr:?}");
+        assert!(
+            (tr[0] - 2560.0).abs() < 0.5 && (tr[1] - 1440.0).abs() < 0.5,
+            "{tr:?}"
+        );
         assert!(bl[0].abs() < 0.5 && bl[1].abs() < 0.5, "{bl:?}");
     }
 }

@@ -150,6 +150,7 @@ pub fn run(game: &GameData) -> Result<ExitCode> {
                 &mut atlases,
                 &tags.sorting_layers,
                 &by_screen[k],
+                &sn_assets::UiStartState::default(),
             )?;
             let vertices: usize = d.list.items.iter().map(|i| i.vertices.len()).sum();
             let not_finite = d

@@ -45,6 +45,8 @@ pub struct UiNode {
     pub active: bool,
     pub layer: u32,
     pub components: Vec<UiComponent>,
+    /// The node's GameObject (M9u5c: scripts reference nodes by it).
+    pub game_object: ObjectRef,
 }
 
 /// A UI hierarchy, nodes in depth-first order (a parent before its
@@ -164,6 +166,7 @@ impl Assets<'_> {
             active,
             layer: go.layer,
             components,
+            game_object: game_object.clone(),
         });
         for child in &transform.children {
             let Some(t) = self.resolve(&game_object.file, *child)? else {

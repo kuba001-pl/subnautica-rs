@@ -4798,6 +4798,7 @@ dependencies = [
  "sn-session",
  "sn-sim",
  "sn-terrain",
+ "sn-ui",
  "sn-unity",
  "sn-world",
 ]

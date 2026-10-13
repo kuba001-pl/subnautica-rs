@@ -34,7 +34,7 @@ use sn_ui::text::{
 };
 use sn_unity::Value;
 
-use crate::{Assets, FontAssets, Layouts, ObjectRef, Result, UiGraphicKind, UiTree};
+use crate::{Assets, FontAssets, Layouts, ObjectRef, Result, UiGraphicKind, UiStartState, UiTree};
 
 /// A texture's key in draw items and materials: a hash of its object.
 pub fn texture_key(o: &ObjectRef) -> u64 {
@@ -120,6 +120,8 @@ pub struct UiDraw {
     /// Texts drawn, and their sub-meshes (fallback fonts).
     pub texts: usize,
     pub sub_meshes: usize,
+    /// The image textures by key (font atlases are in [`GlyphAtlases`]).
+    pub textures: HashMap<u64, ObjectRef>,
 }
 
 /// Materials by object, interned.
@@ -259,12 +261,14 @@ impl Assets<'_> {
             atlases,
             sorting_layers,
             &HashMap::new(),
+            &UiStartState::default(),
         )
     }
 
     /// [`Assets::ui_draw`] with canvases sized and scaled as their scalers
     /// place them (`placements` by node, from `sn_ui::scaler::place`)
-    /// before the layout.
+    /// before the layout, and the scripts' first-frame changes (`start`,
+    /// from [`Assets::ui_start_state`]; empty for the stored state).
     #[allow(clippy::too_many_arguments)]
     pub fn ui_draw_placed(
         &self,
@@ -275,9 +279,20 @@ impl Assets<'_> {
         atlases: &mut GlyphAtlases,
         sorting_layers: &[(String, u32)],
         placements: &HashMap<usize, Placement>,
+        start: &UiStartState,
     ) -> Result<UiDraw> {
-        let parts = self.ui_draw_parts(layouts, tree_in, sorting_layers)?;
+        let mut parts = self.ui_draw_parts(layouts, tree_in, sorting_layers)?;
         let mut tree = self.ui_layout(layouts, tree_in)?.tree;
+        for (node, alpha) in &start.group_alpha {
+            if let Some(g) = parts.groups.get_mut(node) {
+                g.alpha = *alpha;
+            }
+        }
+        for node in &start.inactive {
+            if let Some(n) = tree.nodes.get_mut(*node) {
+                n.active_self = false;
+            }
+        }
         // Parents first, so a nested canvas sees its parent's new size.
         let mut placed: Vec<(&usize, &Placement)> = placements.iter().collect();
         placed.sort_by_key(|(n, _)| **n);
@@ -292,16 +307,26 @@ impl Assets<'_> {
         layout_with(&mut tree, &sizer);
         let mut materials = MaterialTable::new();
         let mut graphics = Vec::new();
+        let mut textures = HashMap::new();
         let finite = |r: sn_ui::layout::Rect| r.width.is_finite() && r.height.is_finite();
         let maskable = |n: usize| parts.maskable.get(&n).copied().unwrap_or(true);
         let cull = |n: usize| parts.cull_transparent.get(&n).copied().unwrap_or(false);
         for g in self.ui_graphics(layouts, tree_in)? {
-            if !g.enabled {
+            if !g.enabled || start.disabled.contains(&g.node) {
                 continue;
             }
             let rect = tree.rect(g.node);
             if !finite(rect) {
                 continue;
+            }
+            let object = match &g.kind {
+                UiGraphicKind::Image { texture, .. } | UiGraphicKind::RawImage { texture, .. } => {
+                    texture.clone()
+                }
+                _ => None,
+            };
+            if let Some(o) = object {
+                textures.insert(texture_key(&o), o);
             }
             let (mesh, texture, kind) = match &g.kind {
                 UiGraphicKind::Image { params, texture } => {
@@ -483,6 +508,7 @@ impl Assets<'_> {
             unported,
             texts: text_count,
             sub_meshes,
+            textures,
         })
     }
 }

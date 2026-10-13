@@ -767,6 +767,78 @@ draws right after its text. In the game it is a child object
 (`TMP_SubMeshUI`) after the text's other children; none of the in-scope
 texts with sub-meshes has children (*not checked one by one*).
 
+## Drawing in the client (M9u5c)
+
+Our port: `apps/sn-client/src/game_ui.rs` and `game_ui.wgsl`, behind
+`--game-ui`.
+- **The pass.** It runs after tonemapping, onto the view's main texture
+  (load, no clear, no depth), in the draw list's order, one draw call per
+  item. This matches the game's UI camera: depth 2, clear flags
+  "nothing", drawn after the main camera (§ Canvas placement).
+- **Projection.** The UI camera at the origin with Unity's axes and the
+  main camera's field of view. Each item's root canvas is mapped by its
+  scaler's placement.
+- **Textures.** Decoded to RGBA8 and stored bottom row first, so
+  Unity's UVs sample them as they are. They are uploaded sRGB when the
+  texture's colour space is 1, with its filter and wrap, without mips.
+  `_TextureSampleAdd` is (1, 1, 1, 0) for `Alpha8` textures
+  (*hypothesis*), else 0.
+- **Colours.** Vertex colours are made linear from their stored bytes,
+  and `_Color` likewise (*hypothesis*, as in § UI shaders).
+- **Shaders.** `UI/Default` (soft clip with `UNITY_UI_CLIP_RECT`) and
+  `UI/Simple` (hard clip always, `ALPHA_PREMULTIPLY`, blend factors from
+  the material) are ported. `uGUI/DepthClear` is skipped: it only writes
+  depth, which our pass does not use. `UI/Bar` is drawn as `UI/Default`
+  and named in the log. Texts wait for M9u5d.
+
+### Start-up state (M9u5c) — confirmed (decompiled code)
+
+The stored `uGUI.prefab` is not what the game shows: four full-screen
+opaque black panels are active and opaque in it (`Intro/Fader`,
+`Respawning/RespawningScreen`, `HardcoreGameOver/InputBlocker`,
+`OverlayCanvas/Overlays/OutOfOxygen`), and the first client run drew a
+black screen. The game's scripts hide them as it starts. Our port is
+`crates/sn-assets/src/ui_start.rs` (their start only; their animations
+and later calls are M9u6):
+- `uGUI_Fader.Awake` calls `SetState(initialState)`, and
+  `Sequence.ForceState` makes the sequence active. Its first `Update`
+  (`ApplyState`) sets `canvasGroup.alpha = 0.5 (1 − cos π t)`, so 1 or 0.
+- `uGUI_SceneIntro.Start` calls `fader.SetState(enabled)` then
+  `fader.FadeOut()`. Settled after the fader's `fadeInTime`: alpha 0.
+- `uGUI_Overlays.Awake` calls `SetAlpha(overlay, 0)` on each overlay:
+  the graphic is disabled when its curve at 0 is not above 0.
+- `uGUI_HardcoreGameOver.Awake` makes `inputBlocker` and `message`
+  inactive.
+
+Run: 3 faders to alpha 0 (intro, loading screen, respawning), the
+out-of-oxygen overlay disabled, the game-over blocker and message
+inactive. Afterwards, no full-canvas draw has alpha above 0.
+
+**Still visible, and not shown by the game at start** (seen in the
+screenshots; the ones over 5 % of the canvas are logged):
+`FeedbackCollector` (its panel and the four smileys), `Confirmation/Panel`
+(the red dialog), the radiation and notification pop-ups, and others.
+Their scripts show them only when asked. Hiding them follows each screen's
+own rules (M9u6, M9u7).
+
+**The runs** (2026-10-13, Lifepod start, `--game-ui --shot 25`):
+- 1920×1080 and 2560×1440 each give 96 draws, 1,024 vertices and 1,536
+  indices. By shader: `UI/Default` 84, `UI/Simple` 10, `UI/Bar` 2 (drawn
+  as `UI/Default`).
+- Skipped: 77 texts, 1 `DepthClear`, and 1 draw without a placed canvas
+  (the `Tooltip` canvas has no scaler).
+- `ScreenCanvas` makes 96 draw calls with 54 textures; 69 textures are
+  uploaded in all.
+- The build takes about 1.05 s on the worker, after reading the install
+  for 0.87–1.21 s. The item values take 0.07–0.09 ms each time the size
+  changes.
+- The pass costs 0.21 ms CPU per frame (mean of 600 frames). Every draw
+  is made (96 of 96). There are no warnings, errors or panics in the
+  logs.
+- Screenshots: `out/m9u5c-1080.png` and `out/m9u5c-1440.png` (same
+  layout, scaled).
+- Without `--game-ui`, the client is unchanged (`out/m9u5c-off.png`).
+
 ## Script fields (M9u1) — confirmed
 
 A MonoBehaviour's fields follow its header (game object, enabled,

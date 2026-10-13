@@ -34,6 +34,7 @@ mod texts;
 mod ui;
 mod ui_draw;
 mod ui_layout;
+mod ui_start;
 mod water;
 
 use std::collections::HashMap;
@@ -100,6 +101,7 @@ pub use texts::UiText;
 pub use ui::{UGUI_PREFAB_KEY, UiComponent, UiNode, UiTree};
 pub use ui_draw::{GlyphAtlases, UiDraw, font_texture_key, texture_key};
 pub use ui_layout::{UiDrawParts, UiGraphic, UiGraphicKind, UiLayout};
+pub use ui_start::UiStartState;
 pub use water::{
     SkyTextures, WaterSurfaceData, builtin_texture, resource_bytes, resource_texture, sky,
     sky_textures, water_biomes, water_caustics, water_surface, water_volume,
