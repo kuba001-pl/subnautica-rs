@@ -6,11 +6,11 @@
 //!
 //! Units are TMP's: the rect's own space (pivot at the origin), pixels of
 //! the canvas. Positions are each character's quad before the mesh step
-//! adds the material padding (`padding` here is that padding, 0 until the
-//! text mesh is built).
+//! adds the material padding ([`Pads`]: none for layout; the materials'
+//! when the text mesh is built, M9u5a).
 
 use super::input::{Tag, Unit, parse_tag, processing_array};
-use super::{Element, FontSet, SYNTHESIZED, TextParams, style};
+use super::{Element, FontSet, Pads, SYNTHESIZED, TextParams, style};
 use crate::font::GlyphMetrics;
 use crate::layout::{Rect, V2};
 
@@ -63,6 +63,10 @@ pub struct CharInfo {
     pub baseline: f32,
     pub visible: bool,
     pub line: usize,
+    /// The material padding and style padding its quad was made with
+    /// (`num6`, `num7` in `GenerateTextMesh`; the UVs reach as far).
+    pub padding: f32,
+    pub style_padding: f32,
 }
 
 /// One line (`TMP_LineInfo`, the fields kept).
@@ -121,6 +125,8 @@ pub struct TextLayout {
     pub lines: Vec<LineInfo>,
     pub truncated: bool,
     pub first_overflow: Option<usize>,
+    /// `m_charWidthAdjDelta` of the last pass.
+    pub char_width_adj: f32,
     /// Rich-text tags and options met that are not ported.
     pub unported: Vec<String>,
 }
@@ -362,7 +368,7 @@ struct Gen<'f, 'p> {
     chars: &'p [u32],
     prepared: &'p [Prepared],
     rect: Rect,
-    padding: f32,
+    pads: &'p Pads,
     // Across passes (auto-size).
     font_size: f32,
     min_font_size: f32,
@@ -758,8 +764,7 @@ impl Gen<'_, '_> {
                 self.glyph_adjustment = adv_adjust;
             }
             let bold = !element.alternate && self.st.style & style::BOLD != 0;
-            let style_padding = 0.0f32;
-            let pad = self.padding;
+            let (pad, style_padding) = self.pads.of(font_i, font, bold);
             bold_spacing = if bold { font.bold_spacing } else { 0.0 };
             let s = element_scale;
             let cw = 1.0 - self.char_width_adj;
@@ -797,6 +802,8 @@ impl Gen<'_, '_> {
                 c.bottom_right = br;
                 c.origin = x_advance;
                 c.baseline = baseline_y - line_offset;
+                c.padding = pad;
+                c.style_padding = style_padding;
             }
             if first_of_line || !white {
                 self.max_line_ascender = self.max_line_ascender.max(ascender);
@@ -1304,8 +1311,15 @@ impl Gen<'_, '_> {
 
 /// Lays out `p` in `rect` as `OnPreRenderCanvas` does: auto-size from
 /// `fontSizeBase` clamped to the range, `GenerateTextMesh` until the size
-/// settles. `padding` moves the quads (0 for layout).
+/// settles. `padding` moves the quads (0 for layout), the same for every
+/// font and without style padding; [`layout_text_with`] takes the
+/// materials' paddings.
 pub fn layout_text(fonts: &FontSet, p: &TextParams, rect: Rect, padding: f32) -> TextLayout {
+    layout_text_with(fonts, p, rect, &Pads::uniform(padding))
+}
+
+/// [`layout_text`] with each font's material padding and style padding.
+pub fn layout_text_with(fonts: &FontSet, p: &TextParams, rect: Rect, pads: &Pads) -> TextLayout {
     let mut unported = Vec::new();
     if p.font >= fonts.fonts.len() {
         return TextLayout::default();
@@ -1335,7 +1349,7 @@ pub fn layout_text(fonts: &FontSet, p: &TextParams, rect: Rect, padding: f32) ->
         chars: &chars,
         prepared: &prepared,
         rect,
-        padding,
+        pads,
         font_size,
         min_font_size: p.font_size_min,
         max_font_size: p.font_size_max,
@@ -1393,6 +1407,7 @@ pub fn layout_text(fonts: &FontSet, p: &TextParams, rect: Rect, padding: f32) ->
         lines,
         truncated: g.truncated,
         first_overflow: g.first_overflow,
+        char_width_adj: g.char_width_adj,
         unported,
     }
 }

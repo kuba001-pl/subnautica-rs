@@ -123,6 +123,8 @@ pub struct Graphic {
     pub mesh: MeshData,
     /// Which texture (the caller's key; 0 the white texture).
     pub texture: u64,
+    /// Which material (the caller's index, M9u5a).
+    pub material: usize,
     pub maskable: bool,
     pub cull_transparent: bool,
     /// What it is, for the logs.
@@ -150,6 +152,7 @@ pub struct DrawItem {
     pub z: Vec<f32>,
     pub indices: Vec<u32>,
     pub texture: u64,
+    pub material: usize,
     pub alpha: f32,
     /// In the root canvas's space.
     pub clip: Option<Rect>,
@@ -184,12 +187,15 @@ impl DrawList {
             eat(it.node as u32);
             eat(it.canvas as u32);
             eat(it.texture as u32);
+            eat(it.material as u32);
             eat(it.alpha.to_bits());
             for v in &it.vertices {
                 eat(v.pos[0].to_bits());
                 eat(v.pos[1].to_bits());
                 eat(v.uv[0].to_bits());
                 eat(v.uv[1].to_bits());
+                eat(v.uv1[0].to_bits());
+                eat(v.uv1[1].to_bits());
                 eat(u32::from_le_bytes(v.color));
             }
             for &i in &it.indices {
@@ -239,6 +245,29 @@ fn to_ancestor(tree: &Tree, i: usize, to: usize) -> Affine {
         guard += 1;
     }
     m
+}
+
+/// A node's `|lossyScale.y|` in its root canvas's space (M9u5a: TMP's
+/// SDF scale): the length of the node's y axis there, its own scale
+/// included and the root canvas's excluded (that one is set when the game
+/// runs and multiplies in when drawn). Without a canvas above, in its
+/// tree root's space.
+pub fn scale_y_in_root_canvas(tree: &Tree, canvases: &HashMap<usize, CanvasInfo>, i: usize) -> f32 {
+    if i >= tree.nodes.len() {
+        return 1.0;
+    }
+    let chain: Vec<usize> = std::iter::once(i).chain(ancestors(tree, i)).collect();
+    let root = chain
+        .iter()
+        .rev()
+        .copied()
+        .find(|k| canvases.contains_key(k))
+        .unwrap_or(chain[chain.len() - 1]);
+    if root == i {
+        return 1.0;
+    }
+    let m = to_ancestor(tree, i, root);
+    (m[0][1] * m[0][1] + m[1][1] * m[1][1] + m[2][1] * m[2][1]).sqrt()
 }
 
 /// A rect's corners 0 and 2 mapped by `m`, as Unity's canvas rects.
@@ -403,6 +432,7 @@ pub fn draw_list(tree: &Tree, input: &DrawInput) -> DrawList {
                 pos: [p[0], p[1]] as V2,
                 color,
                 uv: v.uv,
+                uv1: v.uv1,
             });
             z.push(p[2]);
         }
@@ -423,6 +453,7 @@ pub fn draw_list(tree: &Tree, input: &DrawInput) -> DrawList {
                 z,
                 indices: g.mesh.indices.clone(),
                 texture: g.texture,
+                material: g.material,
                 alpha,
                 clip,
                 softness,

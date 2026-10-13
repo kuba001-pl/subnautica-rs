@@ -311,6 +311,8 @@ pub struct UiGraphic {
     pub node: usize,
     pub enabled: bool,
     pub kind: UiGraphicKind,
+    /// `m_Material` (none: the canvas's default, `UI/Default`).
+    pub material: Option<ObjectRef>,
 }
 
 /// The game's own graphics: its classes that extend `Graphic` or
@@ -468,10 +470,15 @@ impl Assets<'_> {
                 "TextMeshProUGUI" => UiGraphicKind::Text,
                 other => UiGraphicKind::Other(other.to_string()),
             };
+            let material = match f.get("m_Material").and_then(Value::as_pptr) {
+                Some(p) if !p.is_null() => self.resolve(&c.object.file, p)?,
+                _ => None,
+            };
             out.push(UiGraphic {
                 node,
                 enabled,
                 kind,
+                material,
             });
         }
         Ok(out)

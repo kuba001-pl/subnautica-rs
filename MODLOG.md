@@ -2,6 +2,71 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-13 — M9u5a: materials and text vertices
+
+**What/why:** the first step of M9u5. The client needs each UI draw's
+material and real text vertices before it can draw them (M9u5c–d).
+- `sn-ui::material`: `UiMaterial` and TMP's material rules, ported from
+  the decompiled `TMPro.ShaderUtilities` and `TMP_MaterialManager`
+  (`UpdateShaderRatios`, `GetPadding`, `GetFallbackMaterial`,
+  `PackUV`).
+- `sn-ui::text::mesh`: each character's atlas UVs (`SaveGlyphVertexInfo`)
+  and `uv2` (packed face UV and SDF scale), with sub-meshes per font.
+  Layout takes each font's material padding and style padding
+  (`Pads`, `layout_text_with`). `layout_text` with one padding is
+  unchanged.
+- `DynamicAtlas::add_glyph` (by glyph index; `add_character` uses it),
+  `draw::scale_y_in_root_canvas`, a `uv1` on `mesh::Vertex`, and a
+  `material` on `draw::Graphic` and `DrawItem` (both in the hash).
+- `sn-assets::ui_draw`: the draw-list builder, moved from `sn-inspect`
+  so the client can use it. It now reads `m_Material`,
+  `m_sharedMaterial` and the font assets' materials, and makes the
+  texts' glyphs into per-font atlases (`GlyphAtlases`).
+- `sn-inspect ui --draw` now also logs the census per shader and
+  keyword set, the shaders M9u5c–d won't port, the text UV checks and
+  the glyph cost.
+
+No new dependencies, no architecture change, no whitelist change.
+Decompiled `TMPro.ShaderUtilities` and `TMP_MaterialManager` with
+`ilspycmd` into the ignored `out/decompiled/tmp/` (read only).
+
+**Verified:**
+- `sn-inspect ui --draw` (exit 0, 2.6 s; `out/m9u5/draw-final.txt`):
+  - every draw item has a material, 372 of 372;
+  - census: `UI/Default` 208, TMP SDF 105 (7 `UNDERLAY_ON`, 2 clipped),
+    `UI/Simple` 12, `UI/Bar` 2, `uGUI/WorldCursor` 1, `UI/Circle` 43,
+    `uGUI/DepthClear` 1;
+  - 817 text quads: 0 UVs outside the atlas, 0 centres outside a packed
+    glyph, 0 reaching past their packed rect;
+  - 110 glyphs made in 0.325 s, against a target of ≤ 1 s written into
+    DESIGN.md before the run;
+  - two runs from scratch: 12 of 12 hashes equal.
+- `ui --texts` unchanged: 20 of 20 auto-sizes equal.
+- 12 new unit tests (hand-computed): ratios, padding (plain, outlined,
+  extra, underlay, bitmap), fallback material, `PackUV`, the clip
+  keyword, quad padding, the bold style padding and its clamp, text
+  UVs and `uv2`, bold and non-SDF UVs, the colour cap, missing glyphs,
+  and the root-canvas scale.
+- 1 new opt-in real-data test, `the_hud_draws_with_materials_and_glyphs`
+  (passes with `SUBNAUTICA_DIR`; `the_pda_screen_draw_list_is_stable`
+  still passes).
+- `cargo test --workspace`: 575 passed, 49 ignored. `cargo fmt --all`
+  and `cargo clippy --workspace --all-targets -- -D warnings` pass.
+
+**Found:** `UI/Circle` (PDA equipment slots and intro circles) and
+`uGUI/DepthClear` were missing from the research. Both are now in
+`docs/formats/ui.md`; `UI/Circle` moves to M9u8b, and M9u5c skips
+`DepthClear` and logs it. The clip keyword is set by native code (not in
+the IL), so it stays a hypothesis.
+
+**Dead ends:** an inline Python heredoc that rewrote the inspector
+broke the shell's quoting (nothing was written); the file was written
+directly instead.
+
+**Not tested:** anything on screen (M9u5c–d); the game's own atlas
+order (ours differs, by design); the sub-mesh order against text
+children.
+
 ## 2026-10-13 — M9u5 research and split
 
 **What/why:** M9u5 (drawing the game's UI in the client) is too large

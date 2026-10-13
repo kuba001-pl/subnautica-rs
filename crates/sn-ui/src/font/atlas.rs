@@ -202,8 +202,18 @@ impl DynamicAtlas {
         let Some(index) = font.glyph_index(c) else {
             return Added::Missing;
         };
-        if let Some(g) = self.glyphs.get(&index).copied() {
+        let added = self.add_glyph(font, index);
+        if matches!(added, Added::Cached(_) | Added::New(_)) {
             self.characters.insert(u32::from(c), index);
+        }
+        added
+    }
+
+    /// `TMP_FontAsset.TryAddGlyphInternal`: a glyph by its index (the
+    /// text layout has already chosen the font and glyph), rendered and
+    /// packed if it is new.
+    pub fn add_glyph(&mut self, font: &FontFile, index: u32) -> Added {
+        if let Some(g) = self.glyphs.get(&index).copied() {
             return Added::Cached(g);
         }
         let Ok(scaled) = font.glyph(index, self.point_size) else {
@@ -230,7 +240,6 @@ impl DynamicAtlas {
             atlas_index: 0,
         };
         self.glyphs.insert(index, glyph);
-        self.characters.insert(u32::from(c), index);
         Added::New(glyph)
     }
 

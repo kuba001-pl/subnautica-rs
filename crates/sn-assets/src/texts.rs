@@ -29,6 +29,12 @@ pub struct UiText {
     pub params: TextParams,
     /// `m_fontSize` as stored: with auto-size, the size TMP last chose.
     pub stored_font_size: f32,
+    /// `m_sharedMaterial` (M9u5a).
+    pub material: Option<ObjectRef>,
+    pub extra_padding: bool,
+    /// `m_horizontalMapping`, `m_verticalMapping`.
+    pub mapping: [i32; 2],
+    pub vertex_gradient: bool,
 }
 
 impl Assets<'_> {
@@ -139,10 +145,21 @@ impl Assets<'_> {
                 .ok_or("no m_fontColor32")?;
             let c8 = |n: &str| num(color, n).map(|v| v as u8);
             let size = num(&f, "m_fontSize")? as f32;
+            let material = match f.get("m_sharedMaterial").and_then(Value::as_pptr) {
+                Some(p) if !p.is_null() => self.resolve(&c.object.file, p)?,
+                _ => None,
+            };
             out.push(UiText {
                 node,
                 enabled: h.enabled,
                 stored_font_size: size,
+                material,
+                extra_padding: flag(&f, "m_enableExtraPadding")?,
+                mapping: [
+                    num(&f, "m_horizontalMapping")? as i32,
+                    num(&f, "m_verticalMapping")? as i32,
+                ],
+                vertex_gradient: flag(&f, "m_enableVertexGradient")?,
                 params: TextParams {
                     text: f
                         .get("m_text")

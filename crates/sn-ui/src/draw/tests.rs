@@ -52,6 +52,7 @@ fn quad(t: &Tree, i: usize, texture: u64) -> Graphic {
         node: i,
         mesh,
         texture,
+        material: 0,
         maskable: true,
         cull_transparent: false,
         kind: format!("{kind:?}"),
@@ -229,4 +230,25 @@ fn the_hash_is_stable_and_sensitive() {
     let mut t2 = scene();
     t2.nodes[3].rect.anchored_position[0] += 0.5;
     assert_ne!(a, draw_list(&t2, &input(&t2)).hash());
+}
+
+#[test]
+fn scale_in_the_root_canvas_leaves_the_canvas_out() {
+    let mut t = scene();
+    let canvases: HashMap<usize, CanvasInfo> = [(0, canvas(false, 0))].into_iter().collect();
+    t.nodes[0].rect.scale = [0.001, 0.001, 0.001];
+    t.nodes[1].rect.scale = [2.0, 3.0, 1.0];
+    t.nodes[2].rect.scale = [1.0, 0.5, 1.0];
+    // b: 3 × 0.5 (a's, its own); a rotation about z keeps the y axis's
+    // length.
+    t.nodes[1].rect.rotation = [
+        0.0,
+        0.0,
+        std::f32::consts::FRAC_1_SQRT_2,
+        std::f32::consts::FRAC_1_SQRT_2,
+    ];
+    assert!((scale_y_in_root_canvas(&t, &canvases, 2) - 1.5).abs() < 1e-5);
+    assert_eq!(scale_y_in_root_canvas(&t, &canvases, 0), 1.0);
+    // Without canvases: up to the tree root (its scale left out too).
+    assert!((scale_y_in_root_canvas(&t, &HashMap::new(), 2) - 1.5).abs() < 1e-5);
 }

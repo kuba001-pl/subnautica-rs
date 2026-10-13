@@ -2810,6 +2810,7 @@ fn the_pda_screen_draw_list_is_stable() {
                 node: g.node,
                 mesh,
                 texture: 0,
+                material: 0,
                 maskable: parts.maskable.get(&g.node).copied().unwrap_or(true),
                 cull_transparent: false,
                 kind: "Image".into(),
@@ -2828,4 +2829,58 @@ fn the_pda_screen_draw_list_is_stable() {
     assert_eq!(a.hash(), b.hash());
     assert!(a.items.len() > 100, "{}", a.items.len());
     assert!(a.items.iter().any(|i| i.clip.is_some()));
+}
+
+/// M9u5a: the HUD's draw list with materials and text vertices: every
+/// item has a material, every text quad's UVs lie in its font atlas, and
+/// two builds from scratch are the same.
+#[test]
+#[ignore = "needs SUBNAUTICA_DIR pointing at a Subnautica install"]
+fn the_hud_draws_with_materials_and_glyphs() {
+    let Some(dir) = std::env::var_os("SUBNAUTICA_DIR") else {
+        eprintln!("SUBNAUTICA_DIR not set; skipping");
+        return;
+    };
+    let game = GameData::locate(Some(PathBuf::from(dir))).unwrap();
+    let build = || {
+        let assets = Assets::index(&game).unwrap();
+        let tags = sn_assets::physics_settings(&assets).unwrap().tags;
+        let assemblies = sn_assets::ScriptAssemblies::load(&game).unwrap();
+        let layouts = assemblies.layouts().unwrap();
+        let fonts = assets.font_assets(&assemblies).unwrap();
+        let set = assets.tmp_font_set(&fonts).unwrap();
+        let mut atlases = sn_assets::GlyphAtlases::new(&fonts).unwrap();
+        let catalog = assets.catalog().unwrap();
+        let root = assets.ugui_root(&catalog).unwrap();
+        let ui = assets.ui_tree("uGUI.prefab", &root).unwrap();
+        let d = assets
+            .ui_draw(
+                &layouts,
+                &ui,
+                &fonts,
+                &set,
+                &mut atlases,
+                &tags.sorting_layers,
+            )
+            .unwrap();
+        (d, atlases.made, atlases.full)
+    };
+    let (a, made, full) = build();
+    let (b, _, _) = build();
+    assert_eq!(a.list.hash(), b.list.hash());
+    assert!(made > 50, "{made}");
+    assert_eq!(full, 0);
+    assert!(a.list.items.iter().all(|i| i.material < a.materials.len()));
+    let mut quads = 0;
+    for it in a.list.items.iter().filter(|i| i.kind.starts_with("Text")) {
+        assert_eq!(it.texture >> 40, 1, "{}", it.kind);
+        for v in &it.vertices {
+            assert!((0.0..=1.0).contains(&v.uv[0]) && (0.0..=1.0).contains(&v.uv[1]));
+            assert!(v.uv1[1].is_finite() && v.uv1[1] != 0.0);
+        }
+        quads += it.vertices.len() / 4;
+        let m = &a.materials[it.material];
+        assert_eq!(m.shader, "TextMeshPro/Distance Field");
+    }
+    assert!(quads > 300, "{quads}");
 }

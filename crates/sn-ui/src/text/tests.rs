@@ -289,3 +289,146 @@ fn a_fitter_takes_the_text_s_preferred_size() {
     // Width first (20.26), then the height wrapped at that width: one line.
     assert_eq!(tree.nodes[1].rect.size_delta, [20.26, 9.01]);
 }
+
+/// Font 0 with a material padding of `pad`, gradient scale `g` and ratio
+/// A 0.9 (M9u5a).
+fn pads(pad: f32, g: f32) -> Pads {
+    let mut p = Pads::default();
+    p.fonts.insert(
+        0,
+        FontPad {
+            padding: pad,
+            gradient_scale: Some(g),
+            scale_ratio_a: Some(0.9),
+        },
+    );
+    p
+}
+
+#[test]
+fn material_padding_grows_the_quads() {
+    let bytes = crate::font::tests::test_font();
+    let fonts = set(&bytes);
+    let l = layout_text_with(
+        &fonts,
+        &TextParams::new("Hx", 0, 9.0),
+        rect(200.0, 100.0),
+        &pads(2.0, 10.0),
+    );
+    let v = visible(&l);
+    // Normal style 0: no style padding. H: (9 − 2) · 0.1 from the left,
+    // its top (63 + 2) · 0.1 above the baseline 92.8.
+    assert!(close(v[0].bottom_left[0], 0.7));
+    assert!(close(v[0].top_left[1], 92.8 + 6.5));
+    assert!(close(v[0].padding, 2.0) && v[0].style_padding == 0.0);
+    // The advance does not change.
+    assert!(close(v[1].origin, 6.3));
+}
+
+#[test]
+fn bold_style_padding_and_its_clamp() {
+    let bytes = crate::font::tests::test_font();
+    let fonts = set(&bytes);
+    let mut p = TextParams::new("H", 0, 9.0);
+    p.style = style::BOLD;
+    let l = layout_text_with(&fonts, &p, rect(200.0, 100.0), &pads(2.0, 10.0));
+    let c = visible(&l)[0];
+    // Bold style 0.75 / 4 · 10 · 0.9 = 1.6875; padding stays 2.
+    assert!(close(c.style_padding, 1.6875));
+    assert!(close(c.padding, 2.0));
+    assert!(close(c.bottom_left[0], (9.0 - 2.0 - 1.6875) * 0.1));
+    // Gradient 3: style 0.50625, and 2.8 + 0.50625 > 3 shrinks the
+    // padding to 3 − 0.50625.
+    let l = layout_text_with(&fonts, &p, rect(200.0, 100.0), &pads(2.8, 3.0));
+    let c = visible(&l)[0];
+    assert!(close(c.style_padding, 0.50625));
+    assert!(close(c.padding, 2.49375));
+}
+
+fn atlas_glyph(_font: usize, _glyph: u32) -> Option<AtlasGlyph> {
+    Some(AtlasGlyph {
+        rect: crate::font::GlyphRect::new(10, 20, 7, 8),
+        atlas_width: 100,
+        atlas_height: 200,
+    })
+}
+
+#[test]
+fn text_vertices_uvs_and_scale() {
+    let bytes = crate::font::tests::test_font();
+    let fonts = set(&bytes);
+    let p = TextParams::new("H", 0, 9.0);
+    let l = layout_text_with(&fonts, &p, rect(200.0, 100.0), &pads(2.0, 10.0));
+    let options = MeshOptions {
+        horizontal_mapping: 0,
+        vertical_mapping: 0,
+        sdf_shader: true,
+        lossy_scale_y: -2.0,
+    };
+    let (meshes, unported) = text_meshes(&l, &p, &options, atlas_glyph);
+    assert!(unported.is_empty());
+    assert_eq!(meshes.len(), 1);
+    let v = &meshes[0].mesh.vertices;
+    assert_eq!(v.len(), 4);
+    assert_eq!(meshes[0].mesh.indices, vec![0, 1, 2, 2, 3, 0]);
+    // Rect (10, 20, 7, 8) in 100 × 200, grown by the padding 2.
+    let uv = |i: usize| v[i].uv;
+    assert!(close(uv(0)[0], 0.08) && close(uv(0)[1], 0.09));
+    assert!(close(uv(1)[0], 0.08) && close(uv(1)[1], 0.15));
+    assert!(close(uv(2)[0], 0.19) && close(uv(2)[1], 0.15));
+    assert!(close(uv(3)[0], 0.19) && close(uv(3)[1], 0.09));
+    // Scale 0.1 × |−2|; packed corners (0, 0), (0, 1), (1, 1), (1, 0).
+    assert!(v.iter().all(|x| close(x.uv1[1], 0.2)));
+    assert_eq!(v[0].uv1[0], 0.0);
+    assert_eq!(v[1].uv1[0], 511.0);
+    assert_eq!(v[2].uv1[0], 511.0 * 4096.0 + 511.0);
+    assert_eq!(v[3].uv1[0], 511.0 * 4096.0);
+    // Positions are the layout's quad.
+    assert_eq!(v[0].pos, l.characters[0].bottom_left);
+}
+
+#[test]
+fn bold_text_vertices_and_non_sdf_uvs() {
+    let bytes = crate::font::tests::test_font();
+    let fonts = set(&bytes);
+    let mut p = TextParams::new("H", 0, 9.0);
+    p.style = style::BOLD;
+    p.color = [255, 255, 255, 100];
+    let l = layout_text_with(&fonts, &p, rect(200.0, 100.0), &pads(2.0, 10.0));
+    let mut options = MeshOptions {
+        horizontal_mapping: 0,
+        vertical_mapping: 0,
+        sdf_shader: true,
+        lossy_scale_y: 1.0,
+    };
+    let (m, _) = text_meshes(&l, &p, &options, atlas_glyph);
+    let v = &m[0].mesh.vertices;
+    // Bold: the scale is negative; the UVs reach the style padding too.
+    assert!(close(v[0].uv1[1], -0.1));
+    assert!(close(v[0].uv[0], (10.0 - 3.6875) / 100.0));
+    // The text colour's alpha caps the vertices'.
+    assert_eq!(v[0].color[3], 100);
+    options.sdf_shader = false;
+    let (m, _) = text_meshes(&l, &p, &options, atlas_glyph);
+    assert!(close(m[0].mesh.vertices[0].uv[0], 0.08));
+}
+
+#[test]
+fn characters_without_glyphs_and_other_mappings_are_counted() {
+    let bytes = crate::font::tests::test_font();
+    let fonts = set(&bytes);
+    let p = TextParams::new("Hx", 0, 9.0);
+    let l = layout_text(&fonts, &p, rect(200.0, 100.0), 0.0);
+    let options = MeshOptions {
+        horizontal_mapping: 1,
+        vertical_mapping: 0,
+        sdf_shader: true,
+        lossy_scale_y: 1.0,
+    };
+    let x = l.characters[1].glyph;
+    let (m, unported) = text_meshes(&l, &p, &options, |f, g| {
+        if g == x { None } else { atlas_glyph(f, g) }
+    });
+    assert_eq!(m[0].mesh.vertices.len(), 4);
+    assert_eq!(unported.len(), 2, "{unported:?}");
+}

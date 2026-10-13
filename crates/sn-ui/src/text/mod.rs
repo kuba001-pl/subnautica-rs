@@ -19,6 +19,7 @@
 
 pub mod generate;
 pub mod input;
+pub mod mesh;
 pub mod preferred;
 
 use std::cell::RefCell;
@@ -26,8 +27,9 @@ use std::collections::HashMap;
 
 use crate::font::{FaceInfo, FontFile, GlyphMetrics};
 
-pub use generate::{CharInfo, LineInfo, TextLayout, layout_text};
+pub use generate::{CharInfo, LineInfo, TextLayout, layout_text, layout_text_with};
 pub use input::{Source, Tag, parse_tag, processing_array};
+pub use mesh::{AtlasGlyph, MeshOptions, TextMesh, text_meshes};
 pub use preferred::preferred_values;
 
 /// `FontStyles` bits.
@@ -73,6 +75,63 @@ pub struct FontSet<'a> {
     /// `TMP_Settings.missingGlyphCharacter` (0: U+25A1).
     pub missing_glyph: u32,
     metrics: RefCell<HashMap<(usize, u32), GlyphMetrics>>,
+}
+
+/// One font's padding inputs for a text (M9u5a): the padding of the
+/// material its characters draw with (`GetPaddingForMaterial`; the
+/// text's own for its font, a fallback material's for a fallback font)
+/// and that material's `_GradientScale` and `_ScaleRatioA` for the style
+/// padding.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct FontPad {
+    pub padding: f32,
+    pub gradient_scale: Option<f32>,
+    pub scale_ratio_a: Option<f32>,
+}
+
+/// Each font's [`FontPad`]; fonts not listed use `default`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Pads {
+    pub default: FontPad,
+    pub fonts: HashMap<usize, FontPad>,
+}
+
+impl Pads {
+    /// The same padding for every font and no style padding.
+    pub fn uniform(padding: f32) -> Pads {
+        Pads {
+            default: FontPad {
+                padding,
+                ..FontPad::default()
+            },
+            fonts: HashMap::new(),
+        }
+    }
+
+    /// `GenerateTextMesh`'s `num6` (padding) and `num7` (style padding)
+    /// for a character of font `index`: a bold character (not from a
+    /// bold typeface) takes `boldStyle / 4 · gradient · ratio A` with a
+    /// gradient scale, any other `normalStyle / 4 · gradient · ratio A`
+    /// with both; the padding shrinks so the two stay within the
+    /// gradient scale.
+    pub fn of(&self, index: usize, font: &TmpFont, bold: bool) -> (f32, f32) {
+        let p = self.fonts.get(&index).copied().unwrap_or(self.default);
+        let mut pad = p.padding;
+        let style = match (p.gradient_scale, p.scale_ratio_a) {
+            (Some(g), a) if bold => Some((g, font.bold_style / 4.0 * g * a.unwrap_or(0.0))),
+            (Some(g), Some(a)) => Some((g, font.normal_style / 4.0 * g * a)),
+            _ => None,
+        };
+        match style {
+            Some((g, s)) => {
+                if s + pad > g {
+                    pad = g - s;
+                }
+                (pad, s)
+            }
+            None => (pad, 0.0),
+        }
+    }
 }
 
 /// The glyph index of a synthesized (empty) character.

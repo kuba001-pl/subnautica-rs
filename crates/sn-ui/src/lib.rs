@@ -10,11 +10,13 @@
 //!   (layout groups, fitters, layout elements).
 //! - [`mesh`] (M9u4b): the meshes `Image` and `RawImage` build.
 //! - [`draw`] (M9u4d): the draw list: order, canvas space, alpha, clipping.
+//! - [`material`] (M9u5a): UI materials and TextMesh Pro's material rules.
 //! - [`text`] (M9u4c): TextMesh Pro's text layout, auto-size and
 //!   preferred sizes.
 
 pub mod draw;
 pub mod font;
 pub mod layout;
+pub mod material;
 pub mod mesh;
 pub mod text;

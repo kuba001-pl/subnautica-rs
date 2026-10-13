@@ -13,12 +13,15 @@
 
 use crate::layout::{Rect, V2};
 
-/// A UI vertex: position in the node's space, colour, texture coordinate.
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// A UI vertex: position in the node's space, colour, texture coordinate
+/// and the second texture coordinate (`uv1`, 0 for images; TMP's packed
+/// face UV and scale for text, M9u5a).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Vertex {
     pub pos: V2,
     pub color: [u8; 4],
     pub uv: V2,
+    pub uv1: V2,
 }
 
 /// A graphic's mesh: triangles as index triples.
@@ -36,6 +39,7 @@ impl MeshData {
                 pos: pos[k],
                 color,
                 uv: uv[k],
+                uv1: [0.0, 0.0],
             });
         }
         self.indices

@@ -637,6 +637,84 @@ the IL); `_TextureSampleAdd` is (1, 1, 1, 0) for alpha-only textures and
 the UI's own order decides what is in front, since no UI pass writes
 depth except `DepthClear`; vertex colours reach the shader converted to
 linear (the project is linear, `docs/formats/terrain-materials.md`).
+**Read in M9u5a:** the clip keyword is not in the IL.
+`MaskableGraphic.UpdateClipParent` calls the native
+`CanvasRenderer.EnableRectClipping(rect)` and sets `clippingSoftness`, so
+the keyword, `_ClipRect` and the softness constants are set natively. It
+stays a *hypothesis* (Unity's documented behaviour). The same holds for
+`_ClipRect` on graphics with no mask: `UI/Simple` always tests it, and
+those graphics show in the game, so it must then cover everything.
+
+**`UI/Circle`** (found by M9u5a's census; in `main.unity`'s bundle,
+path id 648; dumped the same way). It is used by the PDA screen's
+equipment slots (`Equipment99`, `…124`, `…174`, `ExosuitEquipment99`,
+keyword `BORDER`, which is not a keyword of its programs) and
+`PDAIntroCircle1–3`. One pass: `SrcAlpha OneMinusSrcAlpha`, no z write,
+`unity_GUIZTestMode`, no culling, 2 + 2 variants (`UNITY_UI_ALPHACLIP`).
+Its fragment maps the UV to polar coordinates about the centre: u = the
+angle ÷ 2π × `_TileX`, and v = `saturate((r − (_Size − 2 ×
+_MainTex_TexelSize.w) ÷ _Size) ÷ (1 − that))` × `_TileY`. It samples
+`_MainTex` (+ `_TextureSampleAdd`) × colour, and applies the hard clip.
+
+## Materials and text vertices (M9u5a)
+
+Our port: `crates/sn-ui/src/material.rs`, `crates/sn-ui/src/text/mesh.rs`
+and `crates/sn-assets/src/ui_draw.rs` (the draw list built with them;
+`sn-inspect ui --draw` checks it). Rules ported from the decompiled
+`TextMeshProUGUI`, `TMP_Text`, `TMPro.ShaderUtilities` and
+`TMP_MaterialManager` (read only, in `out/`):
+
+- **Which material.** An `Image` or `RawImage` uses `m_Material`, or
+  `UI/Default` without one. A text uses `m_sharedMaterial` when its
+  `_MainTex` is the font asset's atlas, else the font asset's
+  `material` (`LoadFontAsset`). Characters from another font asset (a
+  fallback, or a weight table's bold face) draw in a sub-mesh. Its
+  material is a copy of the text's, with that font's `_MainTex`,
+  `_GradientScale`, `_TextureWidth/Height` and `_WeightNormal/Bold`
+  (`GetFallbackMaterial`).
+- **Padding** (`GetPadding`, after `UpdateShaderRatios` sets
+  `_ScaleRatioA/B/C` on the material): the widest reach of dilate +
+  outline (+ glow, + underlay per side with `UNDERLAY_ON`), plus 4 with
+  `m_enableExtraPadding`, capped at 1, × `_GradientScale`, + 1.25. A
+  non-SDF material gives `_Padding` (truncated) + 1 (+ 4 extra).
+- **Style padding** per character (`GenerateTextMesh`'s `num7`): bold
+  (not from a bold typeface) `boldStyle ÷ 4 × gradient × ratio A`,
+  otherwise `normalStyle ÷ 4 × gradient × ratio A`. If the padding and
+  style padding together exceed the gradient scale, the padding shrinks
+  to fit. The quad grows by the padding on every side and by the style
+  padding on the left and right.
+- **UVs** (`SaveGlyphVertexInfo`): the glyph rect grown by padding +
+  style padding (style padding only for an SDF material, `_WeightNormal`
+  present), ÷ the atlas size. Vertex alpha is at most the text colour's.
+- **`uv2`** (the alignment pass): x = `PackUV` of the face-texture UV
+  (9 bits each, `x · 4096 + y`; `Character` mapping: corners (0, 0),
+  (0, 1), (1, 1), (1, 0)), y = the character's scale × `(1 −
+  charWidthAdjDelta)`, negative for bold, × `|lossyScale.y|`. Ours
+  holds the scale up to the root canvas. The canvas's own scale (set
+  when the game runs) is multiplied in when drawn.
+
+**The run** (`ui --draw`, 2026-10-13). Every draw item has a material:
+372 of 372. Draws per shader (keywords, with the clip keyword):
+`UI/Default` 208, `TextMeshPro/Distance Field` 96 + 7 `UNDERLAY_ON`
+(`Aller_Rg Outline` and `Shadow`) + 2 `UNITY_UI_CLIP_RECT`, `UI/Simple`
+3 + 9 `ALPHA_PREMULTIPLY`, `UI/Bar` 2 (`ExosuitThrust`, `LoadingBar`),
+`uGUI/WorldCursor` 1, `UI/Circle` 43 (PDA screen only), `uGUI/DepthClear`
+1. The 4 TMP materials save every property the programs read. Their
+ratio A is 0.9 (gradient 10), so their padding is 1.25 texels, below the
+atlas padding of 9. Texts: `uGUI` 97 with 7 sub-meshes, the PDA screen 31
+with 1. Every sub-mesh is `Aller_W_Bd` inside an `Aller_Rg` text (bold).
+817 text quads: 0 UVs outside the atlas, 0 centres outside a packed
+glyph, 0 reaching past their packed rect. **Glyphs: 110 made in 0.325 s**
+(2.96 ms each; target ≤ 1 s): `Aller_Rg SDF` 69, `Aller_W_Bd SDF` 41.
+No atlas filled up. Two runs from scratch: 12 of 12 hashes equal.
+Nothing unported was met (texture mappings other than `Character`, and
+vertex gradients).
+
+**Differences from the game:** glyphs are added in tree order, so their
+atlas places differ from the game's (the UVs follow ours). A sub-mesh
+draws right after its text. In the game it is a child object
+(`TMP_SubMeshUI`) after the text's other children; none of the in-scope
+texts with sub-meshes has children (*not checked one by one*).
 
 ## Script fields (M9u1) — confirmed
 
