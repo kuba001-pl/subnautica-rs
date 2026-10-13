@@ -2,6 +2,38 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-13 — M9u4b: Image and RawImage meshes
+
+**What/why:** M9u4's second part, the meshes the game's images build
+(`docs/DESIGN.md`, `docs/formats/ui.md` § Graphic meshes). New:
+- `sn-ui::mesh` (pure): `image_mesh` (simple, sliced, tiled, filled,
+  each radial fill, preserve aspect, trimmed margins, pixels per unit
+  multiplier), `raw_image_mesh`, `SpriteInfo`, `color32`. Written from
+  the IL of `UnityEngine.UI.dll`.
+- `sn-assets`: `Assets::ui_graphics` (images, raw images, texts, the
+  game's own graphics), `Assets::sprite_info` (own texture or atlas
+  render data).
+- `sn-inspect`: `ui --meshes`; `code --extends <BASE> [<ASSEMBLY>]`.
+No new dependencies.
+
+**Corrections:** I had first listed `uGUI_TextGradient` as a graphic.
+`code --extends Graphic` shows it is not (it is a mesh modifier); the
+list of the game's own graphics now comes from the DLL (8 classes).
+
+**Verified:**
+- `sn-inspect ui --meshes` (exit 0): 243 meshes, 2,028 vertices (counts
+  per kind in `ui.md`), 0 fail the checks.
+- `SUBNAUTICA_DIR=… cargo test --release -p sn-assets --test real_data
+  -- --ignored ui_image_meshes`: 1 passed.
+- 8 unit tests worked out by hand: no sprite, a trimmed sprite's
+  margin, preserve aspect around the pivot, sliced (9 parts, no centre,
+  squeezed borders, pixels per unit multiplier, without borders),
+  tiled (repeat UVs, cut tiles, bordered), horizontal and vertical
+  fills, radial fills (90/180/360 × 4 origins × both directions cover
+  half and all at fill 0.5 and 1; 360 at 0.25 and 0.75), raw images and
+  colours.
+- Not drawn yet (M9u5); not compared with the game on screen.
+
 ## 2026-10-13 — M9u4a: RectTransform rects and uGUI's layout system
 
 **What/why:** M9u4 is split into a–d in `docs/DESIGN.md` (one concern

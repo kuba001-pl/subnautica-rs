@@ -265,3 +265,195 @@ impl Assets<'_> {
         })
     }
 }
+
+/// A graphic of a UI node, as its mesh needs it (M9u4b).
+#[derive(Clone)]
+pub enum UiGraphicKind {
+    Image {
+        params: sn_ui::mesh::ImageParams,
+        /// The texture its sprite is drawn from (its own or the atlas
+        /// page).
+        texture: Option<ObjectRef>,
+    },
+    RawImage {
+        color: [f32; 4],
+        uv_rect: [f32; 4],
+        texture: Option<ObjectRef>,
+    },
+    /// A TMP text (its mesh is M9u4c's).
+    Text,
+    /// Another graphic (the game's own `Graphic` subclasses), by script.
+    Other(String),
+}
+
+#[derive(Clone)]
+pub struct UiGraphic {
+    pub node: usize,
+    pub enabled: bool,
+    pub kind: UiGraphicKind,
+}
+
+/// The game's own graphics: its classes that extend `Graphic` or
+/// `MaskableGraphic` (`sn-inspect code --extends Graphic`), drawn by their
+/// own code (M9u6, M9u8b).
+const OTHER_GRAPHICS: [&str; 8] = [
+    "uGUI_Block",
+    "uGUI_CircularBar",
+    "uGUI_Compass",
+    "uGUI_EquipmentSlot",
+    "uGUI_ItemIcon",
+    "uGUI_ListItem",
+    "uGUI_Logo",
+    "uGUI_Icon",
+];
+
+fn color_of(f: &Fields, name: &str) -> Result<[f32; 4]> {
+    let c = f
+        .get(name)
+        .and_then(Value::as_struct)
+        .ok_or_else(|| format!("no colour {name}"))?;
+    Ok([
+        f32_of(c, "r")?,
+        f32_of(c, "g")?,
+        f32_of(c, "b")?,
+        f32_of(c, "a")?,
+    ])
+}
+
+impl Assets<'_> {
+    /// A sprite's mesh data and the texture it is drawn from: its own
+    /// render data, or (for a sprite packed late, whose own texture is
+    /// null) its atlas's render data for it.
+    pub fn sprite_info(
+        &self,
+        sprite: &ObjectRef,
+    ) -> Result<(sn_ui::mesh::SpriteInfo, Option<ObjectRef>)> {
+        let (info, d) = sprite.data()?;
+        if info.class_id != SPRITE {
+            return Err(format!("class {} is not a Sprite", info.class_id));
+        }
+        let s =
+            Sprite::parse(d, sprite.file.file().big_endian).map_err(|e| format!("Sprite: {e}"))?;
+        let mut rd = s.rd.clone();
+        if rd.texture.is_null() && !s.sprite_atlas.is_null() {
+            if let Some(a) = self.resolve(&sprite.file, s.sprite_atlas)? {
+                let (_, ad) = a.data()?;
+                let atlas = sn_unity::SpriteAtlas::parse(ad, a.file.file().big_endian)
+                    .map_err(|e| format!("SpriteAtlas: {e}"))?;
+                if let Some(packed) = atlas.render_data_of(&s.render_data_key) {
+                    rd = packed.clone();
+                    let page = self.resolve(&a.file, rd.texture)?;
+                    return self.sprite_info_with(&s, &rd, page);
+                }
+            }
+        }
+        let page = self.resolve(&sprite.file, rd.texture)?;
+        self.sprite_info_with(&s, &rd, page)
+    }
+
+    fn sprite_info_with(
+        &self,
+        s: &Sprite,
+        rd: &sn_unity::SpriteRenderData,
+        page: Option<ObjectRef>,
+    ) -> Result<(sn_ui::mesh::SpriteInfo, Option<ObjectRef>)> {
+        let (size, repeat) = match &page {
+            Some(p) => {
+                let (_, td) = p.data()?;
+                let t = sn_unity::Texture2D::parse(td, p.file.file().big_endian)
+                    .map_err(|e| format!("Texture2D: {e}"))?;
+                ([t.width as f32, t.height as f32], t.wrap[0] == 0)
+            }
+            None => ([1.0, 1.0], false),
+        };
+        Ok((
+            sn_ui::mesh::SpriteInfo::new(
+                [s.rect[2], s.rect[3]],
+                s.border,
+                s.pixels_to_units,
+                rd.texture_rect,
+                rd.texture_rect_offset,
+                size,
+                rd.packed(),
+                repeat,
+            ),
+            page,
+        ))
+    }
+
+    /// Every graphic of a UI tree, in node order.
+    pub fn ui_graphics(&self, layouts: &Layouts, tree: &UiTree) -> Result<Vec<UiGraphic>> {
+        let mut out = Vec::new();
+        for (node, c) in tree.components() {
+            let Some(script) = c.script.as_deref() else {
+                continue;
+            };
+            let known = matches!(script, "Image" | "RawImage" | "TextMeshProUGUI")
+                || OTHER_GRAPHICS.contains(&script);
+            if !known {
+                continue;
+            }
+            let (enabled, f) = self.script_fields(layouts, c)?;
+            let path = &tree.nodes[node].path;
+            let kind = match script {
+                "Image" => {
+                    let (sprite, texture) = match f.get("m_Sprite").and_then(Value::as_pptr) {
+                        Some(p) => match self.resolve(&c.object.file, p)? {
+                            Some(o) => {
+                                let (s, t) =
+                                    self.sprite_info(&o).map_err(|e| format!("{path}: {e}"))?;
+                                (Some(s), t)
+                            }
+                            None => (None, None),
+                        },
+                        None => (None, None),
+                    };
+                    UiGraphicKind::Image {
+                        params: sn_ui::mesh::ImageParams {
+                            sprite,
+                            kind: i32_of(&f, "m_Type")?,
+                            preserve_aspect: bool_of(&f, "m_PreserveAspect")?,
+                            fill_center: bool_of(&f, "m_FillCenter")?,
+                            fill_method: i32_of(&f, "m_FillMethod")?,
+                            fill_amount: f32_of(&f, "m_FillAmount")?,
+                            fill_clockwise: bool_of(&f, "m_FillClockwise")?,
+                            fill_origin: i32_of(&f, "m_FillOrigin")?,
+                            use_sprite_mesh: bool_of(&f, "m_UseSpriteMesh")?,
+                            pixels_per_unit_multiplier: f32_of(&f, "m_PixelsPerUnitMultiplier")?,
+                            color: color_of(&f, "m_Color")?,
+                        },
+                        texture,
+                    }
+                }
+                "RawImage" => {
+                    let uv = f
+                        .get("m_UVRect")
+                        .and_then(Value::as_struct)
+                        .ok_or("no m_UVRect")?;
+                    let texture = match f.get("m_Texture").and_then(Value::as_pptr) {
+                        Some(p) => self.resolve(&c.object.file, p)?,
+                        None => None,
+                    };
+                    UiGraphicKind::RawImage {
+                        color: color_of(&f, "m_Color")?,
+                        uv_rect: [
+                            f32_of(uv, "x")?,
+                            f32_of(uv, "y")?,
+                            f32_of(uv, "width")?,
+                            f32_of(uv, "height")?,
+                        ],
+                        texture,
+                    }
+                }
+                "TextMeshProUGUI" => UiGraphicKind::Text,
+                other => UiGraphicKind::Other(other.to_string()),
+            };
+            out.push(UiGraphic {
+                node,
+                enabled,
+                kind,
+            });
+        }
+        Ok(out)
+    }
+}

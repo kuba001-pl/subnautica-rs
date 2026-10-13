@@ -8,6 +8,8 @@
 //!   into, made from the game's font files as the game makes them.
 //! - [`layout`] (M9u4a): RectTransform rects and uGUI's layout system
 //!   (layout groups, fitters, layout elements).
+//! - [`mesh`] (M9u4b): the meshes `Image` and `RawImage` build.
 
 pub mod font;
 pub mod layout;
+pub mod mesh;

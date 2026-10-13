@@ -2588,3 +2588,61 @@ fn layout_drives_only_values_saved_as_zero() {
     // uGUI 198 + PDA 129 of the 370 (the other roots hold the rest).
     assert_eq!(driven, 327);
 }
+
+/// M9u4b: the meshes of `uGUI.prefab`'s and the PDA screen's images, on
+/// their laid-out rects: every vertex inside its rect, indices valid.
+#[test]
+#[ignore = "needs SUBNAUTICA_DIR pointing at a Subnautica install"]
+fn ui_image_meshes_stay_in_their_rects() {
+    use sn_assets::UiGraphicKind;
+    let Some(dir) = std::env::var_os("SUBNAUTICA_DIR") else {
+        eprintln!("SUBNAUTICA_DIR not set; skipping");
+        return;
+    };
+    let game = GameData::locate(Some(PathBuf::from(dir))).unwrap();
+    let assets = Assets::index(&game).unwrap();
+    let assemblies = sn_assets::ScriptAssemblies::load(&game).unwrap();
+    let layouts = assemblies.layouts().unwrap();
+    let catalog = assets.catalog().unwrap();
+    let root = assets.ugui_root(&catalog).unwrap();
+    let main = assets.scene("main").unwrap();
+    let (screen, _) = assets.pda_screen_refs(&main).unwrap();
+    let mut built = 0;
+    for (key, r) in [("uGUI", &root), ("PDA", &screen)] {
+        let ui = assets.ui_tree(key, r).unwrap();
+        let mut tree = assets.ui_layout(&layouts, &ui).unwrap().tree;
+        sn_ui::layout::layout(&mut tree);
+        for g in assets.ui_graphics(&layouts, &ui).unwrap() {
+            let UiGraphicKind::Image { params, .. } = &g.kind else {
+                continue;
+            };
+            let rect = tree.rect(g.node);
+            if !g.enabled
+                || !tree.active(g.node)
+                || !rect.width.is_finite()
+                || !rect.height.is_finite()
+            {
+                continue;
+            }
+            let pivot = tree.nodes[g.node].rect.pivot;
+            let (_, m) = sn_ui::mesh::image_mesh(rect, pivot, params, 100.0);
+            for v in &m.vertices {
+                assert!(
+                    v.pos[0] >= rect.x - 1e-3 && v.pos[0] <= rect.x + rect.width + 1e-3,
+                    "{}",
+                    ui.nodes[g.node].path
+                );
+                assert!(
+                    v.pos[1] >= rect.y - 1e-3 && v.pos[1] <= rect.y + rect.height + 1e-3,
+                    "{}",
+                    ui.nodes[g.node].path
+                );
+            }
+            assert!(m.indices.iter().all(|&i| (i as usize) < m.vertices.len()));
+            built += 1;
+        }
+    }
+    // Images of the two trees whose rects do not wait for text (the
+    // other roots and RawImages are not counted here).
+    assert!(built > 200, "{built}");
+}

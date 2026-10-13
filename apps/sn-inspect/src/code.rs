@@ -241,6 +241,21 @@ fn resolve_type(asm: &Assembly, type_name: &str) -> Result<u32> {
 /// assembly (or `Managed/ASSEMBLY.dll`) that declares an interface of
 /// that name.
 pub fn implements(game: &GameData, interface: &str, assembly: Option<&str>) -> Result<ExitCode> {
+    types_matching(game, interface, assembly, false)
+}
+
+/// `code --extends <BASE> [<ASSEMBLY>]`: every type whose base type is
+/// named `BASE` (one level).
+pub fn extends(game: &GameData, base: &str, assembly: Option<&str>) -> Result<ExitCode> {
+    types_matching(game, base, assembly, true)
+}
+
+fn types_matching(
+    game: &GameData,
+    interface: &str,
+    assembly: Option<&str>,
+    by_base: bool,
+) -> Result<ExitCode> {
     let bytes = match assembly {
         Some(a) => game.read_file(&game.data_dir.join("Managed").join(format!("{a}.dll")))?,
         None => sn_assets::read_assembly(game)?,
@@ -249,12 +264,17 @@ pub fn implements(game: &GameData, interface: &str, assembly: Option<&str>) -> R
     let e = |e: sn_dotnet::Error| e.to_string();
     let mut found = 0;
     for row in 1..=asm.rows(sn_dotnet::Table::TYPE_DEF) {
-        if !asm
-            .interfaces(row)
-            .map_err(e)?
-            .iter()
-            .any(|(_, n)| n == interface)
-        {
+        let matched = if by_base {
+            asm.base_type(row)
+                .map_err(e)?
+                .is_some_and(|(_, n)| n == interface)
+        } else {
+            asm.interfaces(row)
+                .map_err(e)?
+                .iter()
+                .any(|(_, n)| n == interface)
+        };
+        if !matched {
             continue;
         }
         let (ns, n) = asm.type_name(row).map_err(e)?;
@@ -265,7 +285,8 @@ pub fn implements(game: &GameData, interface: &str, assembly: Option<&str>) -> R
         println!("{ns}.{n} extends {base}");
         found += 1;
     }
-    println!("{found} types declare {interface}");
+    let what = if by_base { "extend" } else { "declare" };
+    println!("{found} types {what} {interface}");
     Ok(ExitCode::SUCCESS)
 }
 

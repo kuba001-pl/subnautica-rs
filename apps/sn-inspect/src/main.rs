@@ -19,6 +19,7 @@ mod grass;
 mod lods;
 mod materials;
 mod mesh;
+mod meshes;
 mod octree;
 mod orient;
 mod pickup;
@@ -180,6 +181,8 @@ Commands:
   code --implements <INTERFACE> [<ASSEMBLY>]
                          The types that declare an interface (by name, any
                          namespace), with the type each extends
+  code --extends <BASE> [<ASSEMBLY>]
+                         The types whose base type is named BASE
   techdata               Recipes and item data (Balance/TechData) and the
                          prefab → tech type map (EntTechData), with checks
   player                 The player's numbers from the main scene (oxygen,
@@ -230,6 +233,9 @@ Commands:
   ui --rects             M9u4a: the in-scope UI trees laid out by our port
                          of uGUI's layout system; every value it drives
                          compared with the stored one
+  ui --meshes            M9u4b: the meshes of every Image and RawImage of
+                         the in-scope trees on the laid-out rects; counts
+                         per kind, vertices inside rects, UVs inside sprites
   ui --layout <CLASS> [<NAME>]
                          M9u1: a script's layout and, for its first object
                          (named NAME), where each field starts and its value
@@ -431,6 +437,8 @@ fn run(mut args: Vec<String>) -> Result<ExitCode> {
         ["code", "--enum", ty] => code::enum_values(&game, ty),
         ["code", "--nested", ty] => code::nested(&game, ty),
         ["code", "--fields", ty] => code::fields(&game, ty),
+        ["code", "--extends", name] => code::extends(&game, name, None),
+        ["code", "--extends", name, asm] => code::extends(&game, name, Some(asm)),
         ["code", "--implements", name] => code::implements(&game, name, None),
         ["code", "--implements", name, asm] => code::implements(&game, name, Some(asm)),
         ["techdata"] => gameplay::techdata(&game),
@@ -440,6 +448,7 @@ fn run(mut args: Vec<String>) -> Result<ExitCode> {
         ["ui", "--scripts"] => ui::scripts(&game, false),
         ["ui", "--scripts", "--all"] => ui::scripts(&game, true),
         ["ui", "--rects"] => rects::run(&game),
+        ["ui", "--meshes"] => meshes::run(&game),
         ["ui", "--fonts"] => fonts::run(&game, false),
         ["ui", "--fonts", "--atlas"] => fonts::run(&game, true),
         ["ui", "--sprites"] => ui::sprites(&game, false),

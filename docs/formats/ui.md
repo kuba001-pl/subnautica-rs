@@ -363,6 +363,61 @@ sum instead (`DataUtility.GetMinSize`).
 run from our own result moves nothing. 168 of the 370 values need a
 text size or an unported component, so they are unknown until M9u4c.
 
+## Graphic meshes (M9u4b)
+
+Our port is `crates/sn-ui/src/mesh.rs`. The images' fields and sprites
+come from `crates/sn-assets/src/ui_layout.rs` (`ui_graphics`,
+`sprite_info`), and `sn-inspect ui --meshes` runs the check. The rules
+are from the IL of `UnityEngine.UI.dll`:
+- **`Image.OnPopulateMesh`**: without a sprite, `Graphic`'s quad (UV
+  0–1, the white texture). Otherwise by `type`: simple (the sprite's own
+  mesh if `useSpriteMesh`), sliced, tiled, filled.
+- **`GetDrawingDimensions`**: the sprite's size is rounded to whole
+  pixels (`RoundToInt`), and the rect is inset by the sprite's trimmed
+  margin (`DataUtility.GetPadding`) as a share of that size.
+  `PreserveSpriteAspectRatio` shrinks the rect around its pivot.
+- **Sliced**: 4 × 4 grid points from the padding and the borders
+  (divided by `pixelsPerUnit × pixelsPerUnitMultiplier`; pixels per unit
+  = the sprite's / 100), 9 quads, the centre left out without
+  `fillCenter`. `GetAdjustedBorders` scales both borders of an axis down
+  when the rect is smaller than they are together. A sliced image whose
+  sprite has no border is drawn simple.
+- **Tiled**: a mesh of tiles (the last row and column cut, their UVs
+  cut to match) when the sprite has a border, is packed, or its
+  texture does not repeat. Otherwise one quad whose UVs are scaled by the
+  tile count. The vertex count is capped at 65,000 (tiles enlarged).
+- **Filled**: horizontal and vertical fills cut the quad and its UVs.
+  Radial 90/180/360 cut 1, 2 or 4 parts with `RadialCut`: fill under
+  0.001 draws nothing, and over 0.999 uninverted draws whole. The angle
+  is fill × 90°, and odd corners invert the direction.
+- **`RawImage`**: one quad with `uvRect`, if it has a texture (without
+  one it is the white texture).
+- Colours: `Color` → `Color32`, clamped and rounded.
+
+**Sprite data** (`SpriteInfo`): the outer UV is the sprite's
+`textureRect` in its texture. That is its own texture, or for a
+late-packed sprite (null texture) its atlas's render data. The padding
+is `textureRectOffset` and the rest of `rect` around `textureRect`.
+*Hypothesis:* the inner UV is the texture rect inset by each border less
+the trimmed margin. The game does not test it: no in-scope image uses an
+atlas-packed sprite; all draw from their own textures.
+
+**The game's own graphics** (`sn-inspect code --extends Graphic`):
+`uGUI_Block`, `uGUI_CircularBar`, `uGUI_Compass`, `uGUI_EquipmentSlot`,
+`uGUI_ItemIcon`, `uGUI_ListItem`, `uGUI_Logo` and, extending
+`MaskableGraphic`, `uGUI_Icon`. They build their own meshes (M9u6,
+M9u8b). `uGUI_TextGradient` is a mesh modifier (`IMeshModifier`), not
+a graphic.
+
+**The run** (`ui --meshes`, active and enabled graphics of `uGUI`, its
+other roots and the PDA screen): 243 meshes, 2,028 vertices. 174 simple
+(696 vertices), 34 sliced (1,192), 16 without a sprite (64), 11 tiled by
+texture repeat (44), 1 tiled as quads (24), 1 filled (4), 10 RawImages
+(40). They draw from 98 textures. Every vertex is inside its rect,
+every UV inside its sprite's rectangle, every index valid. Not built:
+33 images whose rects wait for text layout, 115 TMP texts (M9u4c), and
+91 of the game's own graphics.
+
 ## Script fields (M9u1) — confirmed
 
 A MonoBehaviour's fields follow its header (game object, enabled,
