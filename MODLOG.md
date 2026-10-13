@@ -2,6 +2,37 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-13 — M9u5 research and split
+
+**What/why:** M9u5 (drawing the game's UI in the client) is too large
+for one change. It is split into M9u5a (materials and text vertices,
+headless), M9u5b (UI camera and canvas placement, pure), M9u5c (the
+client draws images) and M9u5d (the client draws text) in
+`docs/DESIGN.md`. The facts found are in `docs/formats/ui.md` § UI
+shaders and materials. Docs only. No code, dependencies or whitelist
+changes.
+
+**Found** (UnityPy 1.25.4 reinstalled into a fresh system-temp folder
+`snrs-oracle3`, because `snrs-oracle2` had lost its package files again;
+D3D11 programs disassembled with `d3dcompiler_47`; scripts and dumps in
+the ignored `out/m9u5/`): where each UI shader is (`UI/Default` is in
+`unity_builtin_extra`, path id 10770); each pass's blend, depth, cull and
+keyword variants; the materials of `uGUI`'s bundle and the fonts bundle
+with their keywords; what each program computes and which constants it
+reads. Notable: `UI/Simple` clips with `_ClipRect` in every variant;
+`UI/Default` and TMP draw `RectMask2D` softness; TMP's output is
+premultiplied; `WorldCursor`'s `_ALPHAPREMULTIPLY_ON` keyword selects no
+program.
+
+**Dead ends:** the first dump used 8-byte blob entries (they are 12:
+offset, length, segment) and passed bytes after the `DXBC` container to
+the disassembler, which returned nothing; fixed in the script.
+`UI/Default` is not in `unity default resources`.
+
+**Not tested:** everything marked *hypothesis* in the new section (the
+clip keyword rule, `_TextureSampleAdd`, the UI z test, vertex colour
+space). M9u5a–b check them.
+
 ## 2026-10-13 — key-terminal material and optimized skeleton correction
 
 **Checkpoint:** user authorized committing/pushing the prior M7g4d work;

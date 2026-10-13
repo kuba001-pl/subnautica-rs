@@ -549,6 +549,95 @@ fade (kept with the item for the shader, M9u5), world-space canvases'
 distance sorting between root canvases (they sort by layer and order
 here).
 
+## UI shaders and materials (M9u5 research)
+
+Read on 2026-10-13 with UnityPy (dev-time oracle in system temp, not a
+dependency) and `D3DDisassemble` on the D3D11 programs; throwaway
+scripts and disassembly in the ignored `out/m9u5/`. *Confirmed* by those
+reads unless marked otherwise.
+
+**Where the shaders are.** `uGUI.prefab`'s bundle holds `UI/Simple`,
+`UI/Bar`, `uGUI/WorldCursor`, `uGUI/Compass`, `uGUI/DepthClear`,
+`UI/ResourcesBlip` and `uGUI/IntroLogo`. The fonts bundle holds
+`TextMeshPro/Distance Field` and `…/Mobile/Distance Field`. `UI/Default`
+is in `Resources/unity_builtin_extra` (path id 10770), not in `unity
+default resources`. Each shader has one sub-shader with one pass.
+
+**Materials in `uGUI.prefab`'s bundle** (name: shader, keywords):
+`HUDBackground` and `OxygenBarPulse`: `UI/Simple`, `ALPHA_PREMULTIPLY`;
+`UIBarIcon`: `UI/Simple`, none; `LoadingBar`: `UI/Bar`,
+`_FILL_HORIZONTAL`; `ExosuitThrust`: `UI/Bar`, `SHEAR _FILL_HORIZONTAL`;
+`WorldCursor` and `Selector`: `uGUI/WorldCursor`, `_ALPHAPREMULTIPLY_ON`
+(not a keyword of that shader's programs); `compass`: `uGUI/Compass`;
+`UIResourcesBlip`: `UI/ResourcesBlip`; `LoadingLogo` and `SavingLogo`:
+`uGUI/IntroLogo`. The fonts bundle has one `… Atlas Material` per font
+asset (`TextMeshPro/Distance Field`, no keywords), `InputSymbols Outline`
+and `InputSymbols Shadow` (`UNDERLAY_ON`), and 9 `Font Material`s on the
+built-in font shader (`1:10101`, legacy `Font`s, not TMP). Which graphics
+use which material is not counted yet (M9u5a).
+
+**Render state** (the pass's; names are material properties):
+
+| Shader | Blend (colour / alpha) | Z write, test | Cull | Variants (vertex + fragment) |
+|---|---|---|---|---|
+| `UI/Default` | `SrcAlpha OneMinusSrcAlpha` both | off, `unity_GUIZTestMode` | off | 4 + 4: `UNITY_UI_ALPHACLIP`, `UNITY_UI_CLIP_RECT` |
+| `UI/Simple` | `_SrcFactor _DstFactor` / `_SrcFactorA _DstFactorA` (defaults 5, 10) | off, `unity_GUIZTestMode` | `_Cull` | 4 + 4: `ALPHA_PREMULTIPLY`, `UNITY_UI_ALPHACLIP` |
+| `UI/Bar` | `SrcAlpha OneMinusSrcAlpha` | off, `unity_GUIZTestMode` | off | 32 + 32: `_FILL_HORIZONTAL`/`_VERTICAL`, `SHEAR`, `SUBDIVIDE`, `USE_BACKGROUND`, `UNITY_UI_ALPHACLIP` |
+| `uGUI/WorldCursor` | `SrcAlpha OneMinusSrcAlpha` | off, `unity_GUIZTestMode` | off | 2 + 2: `UNITY_UI_ALPHACLIP` |
+| `uGUI/Compass` | `SrcAlpha OneMinusSrcAlpha` | off, `unity_GUIZTestMode` | back | 2 + 2: `UNITY_UI_ALPHACLIP` |
+| `TextMeshPro/Distance Field` | `One OneMinusSrcAlpha` (premultiplied) | off, `unity_GUIZTestMode` | `_CullMode` | 8 + 8: `UNDERLAY_ON`, `UNITY_UI_ALPHACLIP`, `UNITY_UI_CLIP_RECT` |
+| `uGUI/DepthClear` | colour mask 0 | **on**, always | off | 1 + 1 |
+
+All but `DepthClear` also take the stencil from `_Stencil…` properties
+(the stencil `Mask`, none in scope) and the colour mask from
+`_ColorMask`.
+
+**What the programs do** (from the disassembly; constant names from the
+programs' binding data):
+- **`UI/Default`.** Vertex: `unity_ObjectToWorld` then
+  `unity_MatrixVP`; colour = vertex colour × `_Color`; UV through
+  `_MainTex_ST`; with `UNITY_UI_CLIP_RECT` it passes the vertex position
+  ×2 minus the clip rect's corners and the mask softness factor
+  `0.25 / (0.25 × _UIMaskSoftness + |pixel size|)`, the pixel size from
+  `glstate_matrix_projection` and `_ScreenParams`. Fragment:
+  (`_MainTex` + `_TextureSampleAdd`) × colour; with the keyword alpha ×=
+  the soft clip factor `saturate((half size − |offset|) × softness)` on
+  both axes. So `RectMask2D`'s softness is drawn here.
+- **`UI/Simple`.** The same vertex part without UV transform or soft
+  clip. Fragment: the hard clip `UnityGet2DClipping` (`_ClipRect`)
+  **always**, no keyword; with `ALPHA_PREMULTIPLY` the colour is ×
+  alpha.
+- **`uGUI/WorldCursor`.** As `UI/Simple`'s fragment without
+  premultiplying (its materials' `_ALPHAPREMULTIPLY_ON` selects no
+  program).
+- **`UI/Bar`** (`_FILL_HORIZONTAL`): discards where the UV's x, rescaled
+  by `_TopBorder` and `_BottomBorder`, is above `_Amount`; samples
+  `_BarTex`; hard clip. The other variants are not read yet.
+- **`uGUI/Compass`.** Samples `_MainTex` at the UV rotated by `_Angle`
+  about the centre; alpha × a `sin` window of the UV's polar angle
+  between `_AlphaFrom` and `_AlphaTo`; hard clip.
+- **`TextMeshPro/Distance Field`.** Vertex: the SDF scale from the
+  vertex's `uv2.y` (TMP's per-character scale), `_GradientScale`,
+  `_ScaleX/Y`, `_Sharpness`, the screen's pixel size (projection and
+  `_ScreenParams`) and `_PerspectiveFilter` (with the view direction and
+  the vertex normal); the face and outline thresholds from
+  `_FaceDilate`, `_OutlineWidth`, `_OutlineSoftness`, `_WeightNormal` /
+  `_WeightBold` (bold when `uv2.y` ≤ 0), `_ScaleRatioA`; `uv2.x` unpacks
+  to the face/outline texture UV (÷ 4096, × 1/512). With `UNDERLAY_ON`
+  the underlay's UV offset, scale and bias from `_Underlay…` and
+  `_ScaleRatioC`. Fragment: the atlas's alpha against the thresholds
+  gives face and outline (both textures sampled, scrolled by `_Time`),
+  the underlay behind, the soft clip as `UI/Default`'s (keyword
+  `UNITY_UI_CLIP_RECT`), × vertex alpha; output premultiplied.
+
+**Hypotheses for M9u5:** uGUI enables `UNITY_UI_CLIP_RECT` only on
+graphics under a `RectMask2D` (`MaskableGraphic`'s clip path, to read in
+the IL); `_TextureSampleAdd` is (1, 1, 1, 0) for alpha-only textures and
+0 otherwise; the UI camera's `unity_GUIZTestMode` is `LessEqual` and
+the UI's own order decides what is in front, since no UI pass writes
+depth except `DepthClear`; vertex colours reach the shader converted to
+linear (the project is linear, `docs/formats/terrain-materials.md`).
+
 ## Script fields (M9u1) — confirmed
 
 A MonoBehaviour's fields follow its header (game object, enabled,
