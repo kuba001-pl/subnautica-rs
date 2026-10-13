@@ -2,6 +2,60 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-13 — M9u5d: the client draws the game's UI text (M9u5 done)
+
+**What/why:** the last step of M9u5. With `--game-ui`, TMP texts now
+draw with the game's own shader.
+- `game_ui_text.wgsl` ports `TextMeshPro/Distance Field` from its D3D11
+  programs: the vertex's SDF scale, perspective filter, weight, bias and
+  underlay terms, the uv2 unpacking and the clip mask; the fragment's
+  face, outline, softness, underlay and soft clip. The output is
+  premultiplied.
+- In `game_ui.rs`: TMP draws carry their material values; a second item
+  buffer and pipeline kind draw them; the worker sends each font atlas
+  (R8, from `GlyphAtlases`) and sends it again when glyphs are added; the
+  main world replaces the atlas image in place.
+- `README.md` now lists the drawn HUD (tested claims only).
+
+No new dependencies.
+
+**Verified (2026-10-13, Lifepod start, `--game-ui --shot 25`):**
+- 1920×1080 and 2560×1440 each give 171 of 171 draws: TMP 75,
+  `UI/Default` 84, `UI/Simple` 10, `UI/Bar` 2 (drawn as `UI/Default`).
+  That is 3,720 vertices.
+- Glyphs: 101 (64 in `Aller_Rg SDF`, 37 in `Aller_W_Bd SDF`) in
+  0.69–0.74 s on the worker. No atlas filled up.
+- The pass costs 0.232 ms and 0.228 ms CPU per frame, mean of 600,
+  against M9u5's target of 0.5 ms. 0 WARN or ERROR lines, no panics.
+- Screenshots `out/m9u5d-1080.png` and `-1440.png`: sharp text, both
+  faces, the shadowed underlay style, the same layout scaled.
+- 2 new unit tests: the face alpha crossing 0.5 at the outline (weight
+  and outline widen it), and the text normal facing the camera.
+- `cargo test --workspace`: 588 passed, 50 ignored. fmt and clippy
+  (`-D warnings`) pass.
+- M9u5's own list: draw calls, vertices and textures per canvas logged;
+  CPU < 0.5 ms for the HUD; screenshots at both sizes; 0 GPU errors.
+  All met.
+
+**Dead ends:**
+- A Python heredoc tripped the shell's quoting again (nothing was
+  written); the edit script was written as a file in `out/m9u5/`.
+- A field set but never read (`underlay_on`) was removed; the flag
+  carries it.
+- One new test failed on my own hand-computed case: weight 0.05 puts the
+  edge exactly at 0.45, giving 0.5, not more. I fixed the test value,
+  not the formula.
+
+**Not tested / not 1:1:**
+- The strings are the prefab's stored ones: placeholders and
+  untranslated keys. Translation and each screen's text are M9u6 and
+  M9u7.
+- `_FaceTex` and `_OutlineTex` are drawn white (none is set in scope).
+- The glow and bevel terms are not in this shader, and
+  `UNITY_UI_ALPHACLIP` is used by no material.
+- The 2 texts under the unplaced `Tooltip` canvas are not drawn.
+- Not compared against the original game's screen.
+
 ## 2026-10-13 — M9u5c: the client draws the game's UI images
 
 **What/why:** the first step of M9u that draws on screen. With

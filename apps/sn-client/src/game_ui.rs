@@ -21,8 +21,9 @@
 //! ui_start_state`: faders, overlays, the game-over blocker), not its
 //! stored one, which is black.
 //!
-//! Shaders: `UI/Default` and `UI/Simple` (`game_ui.wgsl`). Texts wait for
-//! M9u5d and are skipped (counted). `uGUI/DepthClear` writes only depth,
+//! Shaders: `UI/Default` and `UI/Simple` (`game_ui.wgsl`), and TMP's
+//! `TextMeshPro/Distance Field` (`game_ui_text.wgsl`, M9u5d) with the
+//! font atlases the worker fills (sent again when glyphs are added). `uGUI/DepthClear` writes only depth,
 //! which our pass does not use: skipped (counted). Other shaders (`UI/Bar`,
 //! `uGUI/WorldCursor`, `UI/Circle`) are drawn as `UI/Default` and named in
 //! the log until their steps port them.
@@ -116,6 +117,45 @@ pub(crate) struct UiDrawCmd {
     pub clip: [f32; 4],
     pub softness: [f32; 2],
     pub flags: u32,
+    /// A TMP text's material values (`game_ui_text.wgsl`); `None` for an
+    /// image.
+    pub text: Option<TextValues>,
+}
+
+/// A `TextMeshPro/Distance Field` material's values (colours linear).
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct TextValues {
+    pub face_color: [f32; 4],
+    pub outline_color: [f32; 4],
+    pub underlay_color: [f32; 4],
+    /// `_FaceDilate`, `_OutlineWidth`, `_OutlineSoftness`, `_ScaleRatioA`.
+    pub face: [f32; 4],
+    /// `_WeightNormal`, `_WeightBold`, `_GradientScale`, `_Sharpness`.
+    pub weight: [f32; 4],
+    /// `_ScaleX`, `_ScaleY`, `_PerspectiveFilter`.
+    pub scale: [f32; 3],
+    /// `_UnderlayOffsetX/Y`, `_UnderlayDilate`, `_UnderlaySoftness`.
+    pub underlay: [f32; 4],
+    /// `_ScaleRatioC`, `_TextureWidth`, `_TextureHeight`.
+    pub atlas: [f32; 3],
+    /// `_VertexOffsetX/Y`, `_MaskSoftnessX/Y`.
+    pub offset: [f32; 4],
+}
+
+/// Text item flags (`game_ui_text.wgsl`).
+const TEXT_CLIP: u32 = 1;
+const TEXT_UNDERLAY: u32 = 2;
+/// TMP's blend: premultiplied (`One OneMinusSrcAlpha`).
+const PREMULTIPLIED_BLEND: BlendKey = [1, 10, 1, 10];
+
+/// How a texture's bytes are laid out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TexelFormat {
+    Rgba,
+    RgbaSrgb,
+    /// One byte per texel (a font atlas's distance field; TMP samples its
+    /// `Alpha8` texture's alpha, our shader the red channel).
+    R8,
 }
 
 /// A texture as the GPU takes it.
@@ -123,9 +163,9 @@ pub(crate) struct UiTexture {
     pub key: u64,
     pub width: u32,
     pub height: u32,
-    /// RGBA8, bottom row first.
-    pub rgba: Vec<u8>,
-    pub srgb: bool,
+    /// Bottom row first.
+    pub data: Vec<u8>,
+    pub format: TexelFormat,
     pub repeat: bool,
     pub point: bool,
     /// Alpha only (`_TextureSampleAdd` (1, 1, 1, 0)).
@@ -180,6 +220,7 @@ pub(crate) struct GameUiPlugin {
 impl Plugin for GameUiPlugin {
     fn build(&self, app: &mut App) {
         bevy::asset::embedded_asset!(app, "game_ui.wgsl");
+        bevy::asset::embedded_asset!(app, "game_ui_text.wgsl");
         let (requests, worker_requests) = channel::<Request>();
         let (worker_builds, builds) = channel();
         let game_dir = self.game_dir.clone();
@@ -288,6 +329,8 @@ fn run_worker(
     );
     let camera = UiCamera::game(fov, NEAR, FAR);
     let mut sent: std::collections::HashSet<u64> = std::collections::HashSet::new();
+    // Glyphs per font atlas when it was last sent.
+    let mut sent_glyphs: HashMap<usize, usize> = HashMap::new();
     while let Ok(mut request) = requests.recv() {
         // Only the latest size matters.
         while let Ok(r) = requests.try_recv() {
@@ -326,6 +369,35 @@ fn run_worker(
                 Err(e) => warn!("game UI: texture {key:x}: {e}"),
             }
         }
+        // Font atlases with new glyphs (sent whole; their texels are
+        // already bottom row first).
+        for (font, a) in atlases.atlases.iter().enumerate() {
+            if a.glyphs.is_empty() || sent_glyphs.get(&font) == Some(&a.glyphs.len()) {
+                continue;
+            }
+            sent_glyphs.insert(font, a.glyphs.len());
+            info!(
+                "game UI: font atlas {} sent: {} glyphs, {}×{}",
+                fonts.assets[font].name,
+                a.glyphs.len(),
+                a.width,
+                a.height
+            );
+            build.textures.push(UiTexture {
+                key: sn_assets::font_texture_key(font),
+                width: a.width.max(0) as u32,
+                height: a.height.max(0) as u32,
+                data: a.texels.clone(),
+                format: TexelFormat::R8,
+                repeat: false,
+                point: false,
+                alpha_only: true,
+            });
+        }
+        info!(
+            "game UI: {} glyphs made so far in {:.3} s; atlas full {}",
+            atlases.made, atlases.seconds, atlases.full
+        );
         build.seconds = begin.elapsed().as_secs_f64();
         if builds.send(Ok(build)).is_err() {
             break;
@@ -357,8 +429,12 @@ fn load_texture(
         key,
         width: w as u32,
         height: h as u32,
-        rgba: flipped,
-        srgb: tex.color_space == 1,
+        data: flipped,
+        format: if tex.color_space == 1 {
+            TexelFormat::RgbaSrgb
+        } else {
+            TexelFormat::Rgba
+        },
         repeat: tex.wrap[0] == 0,
         point: tex.filter_mode == 0,
         alpha_only: tex.format == 1,
@@ -394,10 +470,6 @@ fn convert(
         let Some(m) = d.materials.get(it.material) else {
             continue;
         };
-        if it.kind.starts_with("Text") {
-            census.texts += 1;
-            continue;
-        }
         if m.shader == "uGUI/DepthClear" {
             census.depth_clear += 1;
             continue;
@@ -409,7 +481,61 @@ fn convert(
         let mut flags = 0;
         let mut blend = ALPHA_BLEND;
         let clip = it.clip.map(|r| [r.x, r.y, r.x + r.width, r.y + r.height]);
+        let mut text = None;
         match m.shader.as_str() {
+            "TextMeshPro/Distance Field" => {
+                census.texts += 1;
+                blend = PREMULTIPLIED_BLEND;
+                if clip.is_some() {
+                    flags |= TEXT_CLIP;
+                }
+                if m.has_keyword("UNDERLAY_ON") {
+                    flags |= TEXT_UNDERLAY;
+                }
+                for t in ["_FaceTex", "_OutlineTex"] {
+                    if m.textures.get(t).is_some_and(|k| *k != 0) {
+                        *census
+                            .as_default
+                            .entry(format!("{} {t} (drawn white)", m.name))
+                            .or_default() += 1;
+                    }
+                }
+                let f = |k: &str| m.float(k);
+                let c =
+                    |k: &str, d: [f32; 4]| linear(m.colors.get(k).copied().unwrap_or(d)).to_array();
+                text = Some(TextValues {
+                    face_color: c("_FaceColor", [1.0; 4]),
+                    outline_color: c("_OutlineColor", [0.0, 0.0, 0.0, 1.0]),
+                    underlay_color: c("_UnderlayColor", [0.0, 0.0, 0.0, 0.5]),
+                    face: [
+                        f("_FaceDilate"),
+                        f("_OutlineWidth"),
+                        f("_OutlineSoftness"),
+                        f("_ScaleRatioA"),
+                    ],
+                    weight: [
+                        f("_WeightNormal"),
+                        f("_WeightBold"),
+                        f("_GradientScale"),
+                        f("_Sharpness"),
+                    ],
+                    scale: [f("_ScaleX"), f("_ScaleY"), f("_PerspectiveFilter")],
+                    underlay: [
+                        f("_UnderlayOffsetX"),
+                        f("_UnderlayOffsetY"),
+                        f("_UnderlayDilate"),
+                        f("_UnderlaySoftness"),
+                    ],
+                    atlas: [f("_ScaleRatioC"), f("_TextureWidth"), f("_TextureHeight")],
+                    offset: [
+                        f("_VertexOffsetX"),
+                        f("_VertexOffsetY"),
+                        f("_MaskSoftnessX"),
+                        f("_MaskSoftnessY"),
+                    ],
+                });
+                *census.drawn.entry(m.shader.clone()).or_default() += 1;
+            }
             "UI/Simple" => {
                 flags |= HARD_CLIP;
                 if m.has_keyword("ALPHA_PREMULTIPLY") {
@@ -470,6 +596,7 @@ fn convert(
             clip: clip.unwrap_or(NO_CLIP),
             softness: [it.softness[0] as f32, it.softness[1] as f32],
             flags,
+            text,
         });
         // Draws that cover their whole canvas (a full-screen panel hides
         // everything behind it): logged with their colour.
@@ -510,7 +637,7 @@ fn convert(
         g.2.insert(it.texture);
     }
     info!(
-        "game UI {}×{}: {} draws, {} vertices, {} indices; by shader {:?}; drawn as UI/Default (not ported yet) {:?}; skipped: {} texts (M9u5d), {} DepthClear (depth only), {} without a placed canvas",
+        "game UI {}×{}: {} draws, {} vertices, {} indices; by shader {:?}; drawn as UI/Default (not ported yet) {:?}; texts {} (TextMeshPro/Distance Field); skipped: {} DepthClear (depth only), {} without a placed canvas",
         screen[0],
         screen[1],
         draws.len(),
@@ -577,10 +704,10 @@ fn receive_build(
     };
     let mut map = (*frame.images).clone();
     for t in build.textures.drain(..) {
-        let format = if t.srgb {
-            TextureFormat::Rgba8UnormSrgb
-        } else {
-            TextureFormat::Rgba8Unorm
+        let format = match t.format {
+            TexelFormat::RgbaSrgb => TextureFormat::Rgba8UnormSrgb,
+            TexelFormat::Rgba => TextureFormat::Rgba8Unorm,
+            TexelFormat::R8 => TextureFormat::R8Unorm,
         };
         let mut image = Image::new(
             Extent3d {
@@ -589,7 +716,7 @@ fn receive_build(
                 depth_or_array_layers: 1,
             },
             TextureDimension::D2,
-            t.rgba,
+            t.data,
             format,
             RenderAssetUsages::RENDER_WORLD,
         );
@@ -606,7 +733,15 @@ fn receive_build(
         descriptor.set_address_mode(mode);
         descriptor.mipmap_filter = ImageFilterMode::Nearest;
         image.sampler = ImageSampler::Descriptor(descriptor);
-        map.insert(t.key, (images.add(image), t.alpha_only));
+        // A font atlas that grew replaces its image in place.
+        match map.get(&t.key) {
+            Some((handle, _)) => {
+                let _ = images.insert(handle.id(), image);
+            }
+            None => {
+                map.insert(t.key, (images.add(image), t.alpha_only));
+            }
+        }
     }
     info!(
         "game UI: built for {}×{} in {:.3} s; {} textures on the GPU",
@@ -640,12 +775,40 @@ struct GpuItems {
     items: Vec<GpuItem>,
 }
 
+/// One text item's values; must match `TextItem` in `game_ui_text.wgsl`.
+#[derive(Clone, Copy, Default, ShaderType)]
+struct GpuTextItem {
+    clip_from_canvas: Mat4,
+    world_from_canvas: Mat4,
+    face_color: Vec4,
+    outline_color: Vec4,
+    underlay_color: Vec4,
+    face: Vec4,
+    weight: Vec4,
+    scale: Vec4,
+    underlay: Vec4,
+    atlas: Vec4,
+    offset: Vec4,
+    clip_rect: Vec4,
+    normal: Vec4,
+    pixel: Vec4,
+}
+
+#[derive(Clone, Default, ShaderType)]
+struct GpuTextItems {
+    #[shader(size(runtime))]
+    items: Vec<GpuTextItem>,
+}
+
 #[derive(Resource)]
 struct UiPipelines {
     items_layout: BindGroupLayoutDescriptor,
+    text_items_layout: BindGroupLayoutDescriptor,
     texture_layout: BindGroupLayoutDescriptor,
     shader: Handle<Shader>,
-    by_key: HashMap<(TextureFormat, BlendKey), CachedRenderPipelineId>,
+    text_shader: Handle<Shader>,
+    /// By target format, blend and whether it draws text.
+    by_key: HashMap<(TextureFormat, BlendKey, bool), CachedRenderPipelineId>,
 }
 
 /// This frame's GPU data.
@@ -657,6 +820,9 @@ struct GpuUi {
     /// The values the items were made for: screen, generation.
     made_for: Option<([u32; 2], u64)>,
     items: StorageBuffer<GpuItems>,
+    text_items: StorageBuffer<GpuTextItems>,
+    /// Each draw's instance in its kind's buffer.
+    instances: Vec<u32>,
     /// CPU time of preparing, summed over the frames since the last log.
     cpu: (f64, u32),
 }
@@ -667,6 +833,13 @@ fn init_gpu(mut commands: Commands, asset_server: Res<AssetServer>) {
         &BindGroupLayoutEntries::sequential(
             ShaderStages::VERTEX_FRAGMENT,
             (storage_buffer_read_only::<GpuItems>(false),),
+        ),
+    );
+    let text_items_layout = BindGroupLayoutDescriptor::new(
+        "game_ui_text_items_layout",
+        &BindGroupLayoutEntries::sequential(
+            ShaderStages::VERTEX_FRAGMENT,
+            (storage_buffer_read_only::<GpuTextItems>(false),),
         ),
     );
     let texture_layout = BindGroupLayoutDescriptor::new(
@@ -681,21 +854,30 @@ fn init_gpu(mut commands: Commands, asset_server: Res<AssetServer>) {
     );
     commands.insert_resource(UiPipelines {
         items_layout,
+        text_items_layout,
         texture_layout,
         shader: asset_server.load("embedded://sn_client/game_ui.wgsl"),
+        text_shader: asset_server.load("embedded://sn_client/game_ui_text.wgsl"),
         by_key: HashMap::new(),
     });
 }
 
-/// The pipelines each view needs: one per blend state in the build.
+/// The pipelines each view needs: one per blend state and kind (image or
+/// text) in the build.
 #[derive(Component)]
-struct UiPipelineIds(HashMap<BlendKey, CachedRenderPipelineId>);
+struct UiPipelineIds(HashMap<(BlendKey, bool), CachedRenderPipelineId>);
 
 fn pipeline_descriptor(
     p: &UiPipelines,
     format: TextureFormat,
     blend: BlendKey,
+    text: bool,
 ) -> RenderPipelineDescriptor {
+    let (items_layout, shader) = if text {
+        (&p.text_items_layout, &p.text_shader)
+    } else {
+        (&p.items_layout, &p.shader)
+    };
     let attribute = |format, offset, shader_location| VertexAttribute {
         format,
         offset,
@@ -716,9 +898,9 @@ fn pipeline_descriptor(
     };
     RenderPipelineDescriptor {
         label: Some("game_ui_pipeline".into()),
-        layout: vec![p.items_layout.clone(), p.texture_layout.clone()],
+        layout: vec![items_layout.clone(), p.texture_layout.clone()],
         vertex: VertexState {
-            shader: p.shader.clone(),
+            shader: shader.clone(),
             shader_defs: Vec::new(),
             entry_point: Some("vertex".into()),
             buffers: vec![VertexBufferLayout {
@@ -740,7 +922,7 @@ fn pipeline_descriptor(
         },
         depth_stencil: None,
         fragment: Some(FragmentState {
-            shader: p.shader.clone(),
+            shader: shader.clone(),
             shader_defs: Vec::new(),
             entry_point: Some("fragment".into()),
             targets: vec![Some(ColorTargetState {
@@ -763,17 +945,21 @@ fn prepare_pipelines(
     let Some(build) = frame.as_ref().and_then(|f| f.build.clone()) else {
         return;
     };
-    let mut blends: Vec<BlendKey> = build.draws.iter().map(|d| d.blend).collect();
+    let mut blends: Vec<(BlendKey, bool)> = build
+        .draws
+        .iter()
+        .map(|d| (d.blend, d.text.is_some()))
+        .collect();
     blends.sort();
     blends.dedup();
     for (entity, view) in &views {
         let mut ids = HashMap::new();
         for b in &blends {
-            let key = (view.target_format, *b);
+            let key = (view.target_format, b.0, b.1);
             let id = match pipelines.by_key.get(&key) {
                 Some(id) => *id,
                 None => {
-                    let d = pipeline_descriptor(&pipelines, view.target_format, *b);
+                    let d = pipeline_descriptor(&pipelines, view.target_format, b.0, b.1);
                     let id = pipeline_cache.queue_render_pipeline(d);
                     pipelines.by_key.insert(key, id);
                     id
@@ -789,14 +975,25 @@ fn prepare_pipelines(
 /// (at the origin, Unity's axes: +z forward), for a screen's aspect: the
 /// game's perspective, depth halfway (our pass has no depth buffer).
 pub(crate) fn clip_from_canvas(p: &Placement, field_of_view: f32, aspect: f32) -> Mat4 {
+    clip_from_world(field_of_view, aspect) * world_from_canvas(p)
+}
+
+/// A placed canvas's transform to the world (Unity's axes).
+fn world_from_canvas(p: &Placement) -> Mat4 {
     let w = p.world_from_canvas();
-    let world_from_canvas = Mat4::from_cols(
+    Mat4::from_cols(
         Vec4::new(w[0][0], w[1][0], w[2][0], 0.0),
         Vec4::new(w[0][1], w[1][1], w[2][1], 0.0),
         Vec4::new(w[0][2], w[1][2], w[2][2], 0.0),
         Vec4::new(w[0][3], w[1][3], w[2][3], 1.0),
-    );
-    clip_from_world(field_of_view, aspect) * world_from_canvas
+    )
+}
+
+/// TMP's mesh normal (0, 0, -1) in the world: `mul(normal,
+/// (float3x3)unity_WorldToObject)`, normalized.
+fn text_normal(world_from_canvas: &Mat4) -> Vec3 {
+    let m = Mat3::from_mat4(*world_from_canvas);
+    (m.inverse().transpose() * Vec3::NEG_Z).normalize_or_zero()
 }
 
 /// The UI camera's projection (at the origin, no rotation).
@@ -853,11 +1050,41 @@ fn prepare_buffers(
     let aspect = screen[0] as f32 / screen[1].max(1) as f32;
     let projection = clip_from_world(build.field_of_view, aspect);
     let mut items = Vec::with_capacity(build.draws.len());
+    let mut text_items = Vec::new();
+    let mut instances = Vec::with_capacity(build.draws.len());
+    let pixel = Vec4::new(
+        screen[0] as f32,
+        screen[1] as f32,
+        projection.x_axis.x,
+        projection.y_axis.y,
+    );
     for d in &build.draws {
         let Some(p) = build.placements.get(&d.root) else {
-            items.push(GpuItem::default());
+            instances.push(u32::MAX);
             continue;
         };
+        if let Some(t) = &d.text {
+            instances.push(text_items.len() as u32);
+            let world = world_from_canvas(p);
+            text_items.push(GpuTextItem {
+                clip_from_canvas: clip_from_canvas(p, build.field_of_view, aspect),
+                world_from_canvas: world,
+                face_color: Vec4::from_array(t.face_color),
+                outline_color: Vec4::from_array(t.outline_color),
+                underlay_color: Vec4::from_array(t.underlay_color),
+                face: Vec4::from_array(t.face),
+                weight: Vec4::from_array(t.weight),
+                scale: Vec4::new(t.scale[0], t.scale[1], t.scale[2], p.scale[1].abs()),
+                underlay: Vec4::from_array(t.underlay),
+                atlas: Vec4::new(t.atlas[0], t.atlas[1], t.atlas[2], d.flags as f32),
+                offset: Vec4::from_array(t.offset),
+                clip_rect: Vec4::from_array(d.clip),
+                normal: text_normal(&world).extend(0.0),
+                pixel,
+            });
+            continue;
+        }
+        instances.push(items.len() as u32);
         let alpha_only = frame.images.get(&d.texture).is_some_and(|(_, a)| *a);
         items.push(GpuItem {
             clip_from_canvas: clip_from_canvas(p, build.field_of_view, aspect),
@@ -870,16 +1097,21 @@ fn prepare_buffers(
             },
             clip_rect: Vec4::from_array(d.clip),
             softness: Vec4::new(d.softness[0], d.softness[1], d.flags as f32, 0.0),
-            pixel: Vec4::new(
-                screen[0] as f32,
-                screen[1] as f32,
-                projection.x_axis.x,
-                projection.y_axis.y,
-            ),
+            pixel,
         });
+    }
+    // Storage buffers may not be empty.
+    if items.is_empty() {
+        items.push(GpuItem::default());
+    }
+    if text_items.is_empty() {
+        text_items.push(GpuTextItem::default());
     }
     gpu.items.set(GpuItems { items });
     gpu.items.write_buffer(&device, &queue);
+    gpu.text_items.set(GpuTextItems { items: text_items });
+    gpu.text_items.write_buffer(&device, &queue);
+    gpu.instances = instances;
     let spent = begin.elapsed().as_secs_f64();
     gpu.cpu.0 += spent;
     gpu.cpu.1 += 1;
@@ -920,15 +1152,23 @@ fn game_ui_pass(
     let Some(build) = frame.build.clone() else {
         return;
     };
-    let (Some(vertices), Some(indices), Some(items)) =
-        (&gpu.vertices, &gpu.indices, gpu.items.binding())
-    else {
+    let (Some(vertices), Some(indices), Some(items), Some(text_items)) = (
+        &gpu.vertices,
+        &gpu.indices,
+        gpu.items.binding(),
+        gpu.text_items.binding(),
+    ) else {
         return;
     };
     let items_group = device.create_bind_group(
         "game_ui_items",
         &pipeline_cache.get_bind_group_layout(&pipelines.items_layout),
         &BindGroupEntries::sequential((items,)),
+    );
+    let text_items_group = device.create_bind_group(
+        "game_ui_text_items",
+        &pipeline_cache.get_bind_group_layout(&pipelines.text_items_layout),
+        &BindGroupEntries::sequential((text_items,)),
     );
     let texture_layout = pipeline_cache.get_bind_group_layout(&pipelines.texture_layout);
     let mut texture_groups = HashMap::new();
@@ -967,14 +1207,21 @@ fn game_ui_pass(
         });
     pass.set_vertex_buffer(0, (**vertices).slice(..));
     pass.set_index_buffer((**indices).slice(..), IndexFormat::Uint32);
-    pass.set_bind_group(0, &items_group, &[]);
     let mut current = None;
+    let mut current_kind = None;
     let mut drawn = 0;
-    for (i, d) in build.draws.iter().enumerate() {
-        let (Some(id), Some(Some(group))) = (ids.0.get(&d.blend), texture_groups.get(&d.texture))
-        else {
+    for (k, d) in build.draws.iter().enumerate() {
+        let text = d.text.is_some();
+        let (Some(id), Some(Some(group)), Some(&i)) = (
+            ids.0.get(&(d.blend, text)),
+            texture_groups.get(&d.texture),
+            gpu.instances.get(k),
+        ) else {
             continue;
         };
+        if i == u32::MAX {
+            continue;
+        }
         let Some(pipeline) = pipeline_cache.get_render_pipeline(*id) else {
             continue;
         };
@@ -982,8 +1229,16 @@ fn game_ui_pass(
             pass.set_pipeline(pipeline);
             current = Some(*id);
         }
+        if current_kind != Some(text) {
+            let items = if text {
+                &text_items_group
+            } else {
+                &items_group
+            };
+            pass.set_bind_group(0, items, &[]);
+            current_kind = Some(text);
+        }
         pass.set_bind_group(1, group, &[]);
-        let i = i as u32;
         pass.draw_indexed(d.first_index..d.first_index + d.index_count, 0, i..i + 1);
         drawn += 1;
     }
@@ -1050,6 +1305,45 @@ mod tests {
         assert!(c.w > 0.0 && c.z >= 0.0 && c.z <= c.w);
         let b = m * Vec4::new(-p.size[0] / 2.0, -p.size[1] / 2.0, 0.0, 1.0);
         assert!((b.x / b.w + 1.0).abs() < 1e-5 && (b.y / b.w + 1.0).abs() < 1e-5);
+    }
+
+    /// TMP's face alpha factor (`game_ui_text.wgsl`'s fragment) for a
+    /// distance `sd` (the atlas's 0–1 value, 0.5 on the outline), SDF
+    /// scale, weight, outline width and softness (× ratio A already).
+    fn text_alpha(sd: f32, scale: f32, weight: f32, width: f32, softness: f32) -> f32 {
+        let bias = (0.5 - weight) + 0.5 / scale;
+        let d = bias - sd;
+        let w = width * scale;
+        let s = softness * scale;
+        1.0 - ((d * scale - w * 0.5 + s * 0.5) / (1.0 + s)).clamp(0.0, 1.0)
+    }
+
+    #[test]
+    fn text_alpha_crosses_half_at_the_outline() {
+        // Plain text: half at the glyph's edge, whole inside, none outside.
+        assert!((text_alpha(0.5, 8.0, 0.0, 0.0, 0.0) - 0.5).abs() < 1e-6);
+        assert_eq!(text_alpha(0.9, 8.0, 0.0, 0.0, 0.0), 1.0);
+        assert_eq!(text_alpha(0.1, 8.0, 0.0, 0.0, 0.0), 0.0);
+        // Weight (bold, dilate) moves the edge outwards.
+        assert!(text_alpha(0.45, 8.0, 0.1, 0.0, 0.0) > 0.5);
+        // An outline reaches further out.
+        assert!(text_alpha(0.45, 8.0, 0.0, 0.2, 0.0) > text_alpha(0.45, 8.0, 0.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn a_canvas_facing_the_camera_has_its_normal_towards_it() {
+        let s = sn_ui::scaler::ScalerSettings {
+            reference_resolution: [1920.0, 1080.0],
+            mode: 0,
+            distance: 1.0,
+            scale_mode: 1,
+        };
+        let cam = UiCamera::game(60.0, NEAR, FAR);
+        let p = place(&s, &cam, 60.0, [1920, 1080], 1.0).unwrap();
+        let n = text_normal(&world_from_canvas(&p));
+        // TMP's (0, 0, −1) stays −z (towards the camera at the origin),
+        // unit length despite the canvas's tiny scale.
+        assert!((n - Vec3::NEG_Z).length() < 1e-5, "{n:?}");
     }
 
     #[test]

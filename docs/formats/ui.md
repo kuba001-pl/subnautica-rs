@@ -839,6 +839,61 @@ own rules (M9u6, M9u7).
   layout, scaled).
 - Without `--game-ui`, the client is unchanged (`out/m9u5c-off.png`).
 
+### Text (M9u5d)
+
+`game_ui_text.wgsl` ports `TextMeshPro/Distance Field` from vertex
+program 5 and fragment program 13 (`UNDERLAY_ON` with
+`UNITY_UI_CLIP_RECT`, the variant that covers every term). The other
+variants are the same terms switched off by flags.
+- **Vertex.** The vertex is offset by `_VertexOffsetX/Y`. The pixel size
+  is `w ÷ (|P · screen| × _ScaleX/Y)`, and the SDF scale is
+  `rsqrt(|pixel size|²) × |uv2.y| × _GradientScale × (_Sharpness + 1)`.
+  With a perspective projection (`P[3][3] = 0`), the scale is mixed with
+  `|scale| × (1 − _PerspectiveFilter)` by `|n · view|`, where `n` is
+  `mul((0, 0, −1), (float3x3)WorldToObject)` normalized and `view` is the
+  normalized direction from the vertex to the camera.
+  - weight = `(lerp(_WeightNormal, _WeightBold, uv2.y ≤ 0) ÷ 4 +
+    _FaceDilate) × _ScaleRatioA ÷ 2`;
+  - bias = `0.5 − weight + 0.5 ÷ scale`;
+  - underlay scale = `scale ÷ (1 + softness × scale)`, its bias =
+    `(0.5 − weight) × layer scale − 0.5 − dilate × layer scale ÷ 2`
+    (softness and dilate × `_ScaleRatioC`);
+  - underlay UV = UV − offset × `_ScaleRatioC` × `_GradientScale` ÷ the
+    atlas size;
+  - `uv2.x` unpacks to the face/outline UV as `(⌊x ÷ 4096⌋, x mod 4096)
+    ÷ 512`.
+- **Fragment.** Face = vertex colour × `_FaceColor` × `_FaceTex`;
+  outline = `_OutlineColor` × `_OutlineTex`; both premultiplied. With
+  `d = bias − atlas.a` and outline width `w = _OutlineWidth × ratio A ×
+  scale`, colour = `lerp(face, outline, sqrt(min(1, w)) × saturate(d ×
+  scale + w ÷ 2))`. That is × `1 − saturate((d × scale − w ÷ 2 + s ÷ 2) ÷
+  (1 + s))`, with `s` = softness × ratio A × scale. The underlay is
+  `saturate(atlas.a(underlay UV) × layer scale − layer bias)` × its
+  premultiplied colour, added × `(1 − alpha)`. Then the soft clip, then ×
+  the vertex alpha. The output is premultiplied (`One OneMinusSrcAlpha`).
+- **Our data.** `uv2.y` holds the scale up to the root canvas, and the
+  shader multiplies it by the canvas's world scale (`Placement.scale.y`)
+  to get TMP's `|lossyScale.y|`. The font atlases are R8 textures from
+  `GlyphAtlases`, sent again whole when glyphs are added. `_FaceTex` and
+  `_OutlineTex` are white: no in-scope material sets them, and the client
+  logs any that does.
+
+**The runs** (2026-10-13, Lifepod start, `--game-ui --shot 25`):
+1920×1080 and 2560×1440 each give 171 of 171 draws, 3,720 vertices and
+5,580 indices. By shader: TMP 75, `UI/Default` 84, `UI/Simple` 10,
+`UI/Bar` 2 (drawn as `UI/Default`). 2 texts sit under the `Tooltip`
+canvas, which has no scaler, and are not placed. Glyphs: `Aller_Rg SDF`
+64 and `Aller_W_Bd SDF` 37, made in 0.69–0.74 s on the worker (slower
+than `ui --draw`'s 0.33 s while the world loads beside it); no atlas
+filled up. The pass costs 0.232 ms (1080) and 0.228 ms (1440) CPU per
+frame, mean of 600, against M9u5's target of 0.5 ms. The item values
+take 0.6–2.0 ms once per build. There are no warnings, errors or panics.
+Screenshots: `out/m9u5d-1080.png` and `out/m9u5d-1440.png`: sharp text
+in both faces, with the shadowed underlay style, and the same layout
+scaled. The strings are the prefab's stored ones (placeholders and
+untranslated keys); translation is `TranslateOnStart` and each screen's
+rules (M9u6, M9u7).
+
 ## Script fields (M9u1) — confirmed
 
 A MonoBehaviour's fields follow its header (game object, enabled,

@@ -92,14 +92,24 @@ Tested on Windows 11 with game build 10 (Steam):
   carry but one item (as the game does), inside it nothing. Playing it
   with keyboard and mouse is not tested by the agent; dropped items do
   not fall yet.
-- Reading the game's UI, headless (not drawn yet): where `uGUI.prefab`
+- Reading the game's UI, headless: where `uGUI.prefab`
   and the PDA screen come from and what they hold (`sn-inspect ui`),
   every MonoBehaviour's fields from the game's own assemblies (`ui
   --scripts --all`: 45,137 of 45,137), every sprite and atlas and each
   item's icon (`ui --sprites --icons`), and TextMesh Pro's fonts made from
   the game's font files: face metrics equal the stored ones, the two
   stored glyphs equal ours, distance texels within 1.04/255 on average
-  (`ui --fonts`).
+  (`ui --fonts`). Layout, image and text meshes, materials and the draw
+  order (`ui --draw`), and the canvases placed as the game places them
+  (`ui --canvas`).
+- Drawing the game's HUD (`sn-client --game-ui`, off by default): the
+  images and TextMesh Pro texts of `uGUI.prefab`, with the game's own
+  shaders ported (`UI/Default`, `UI/Simple`, `TextMeshPro/Distance
+  Field` with outline and shadow), at any window size. It shows the
+  prefab's stored state, every screen at once and untranslated, not yet
+  the game's live HUD (bars, reticle and messages follow in M9u6–M9u7).
+  Checked by numbers and screenshots at 1920×1080 and 2560×1440; not
+  compared against the original game on screen.
 - Oxygen, suffocation, health, death and respawn in the lifepod, with
   the game's numbers (45 units, 1 / 1.5 / 2 per second by depth, refill
   30 per second at the surface, 8 s to pass out). `sn-inspect dive` runs
