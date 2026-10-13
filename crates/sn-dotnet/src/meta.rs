@@ -96,6 +96,21 @@ impl<'a> Assembly<'a> {
             .map(Some)
     }
 
+    /// The interfaces a TypeDef declares it implements (InterfaceImpl
+    /// rows, not those of its base types), as (namespace, name); a generic
+    /// interface by its generic type's name.
+    pub fn interfaces(&self, type_row: u32) -> Result<Vec<(String, String)>> {
+        let mut out = Vec::new();
+        for r in 1..=self.rows(Table::INTERFACE_IMPL) {
+            if self.tables().cell(Table::INTERFACE_IMPL, r, 0)? != type_row {
+                continue;
+            }
+            let (table, row) = self.tables().coded(Table::INTERFACE_IMPL, r, 1)?;
+            out.push(self.type_def_or_ref_name(table, row)?);
+        }
+        Ok(out)
+    }
+
     /// Every custom attribute, with the names of its type (the type that
     /// declares its constructor).
     pub fn attributes(&self) -> Result<Vec<Attribute>> {
@@ -120,6 +135,27 @@ impl<'a> Assembly<'a> {
 mod tests {
     use super::*;
     use crate::encode::Builder;
+
+    #[test]
+    fn reads_declared_interfaces() {
+        let mut b = Builder::new();
+        let element = b.type_ref("UnityEngine.UI", "ILayoutElement");
+        let a = b.type_def("G", "A");
+        let own = b.type_def("G", "IOwn");
+        let c = b.type_def("G", "C");
+        b.implements(a, (Table::TYPE_REF, element));
+        b.implements(a, (Table::TYPE_DEF, own));
+        let bytes = b.build();
+        let asm = Assembly::parse(&bytes).unwrap();
+        assert_eq!(
+            asm.interfaces(a).unwrap(),
+            [
+                ("UnityEngine.UI".to_string(), "ILayoutElement".to_string()),
+                ("G".to_string(), "IOwn".to_string())
+            ]
+        );
+        assert!(asm.interfaces(c).unwrap().is_empty());
+    }
 
     #[test]
     fn reads_flags_scopes_nesting_and_attributes() {

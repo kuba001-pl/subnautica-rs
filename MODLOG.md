@@ -2,6 +2,50 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-13 — M9u4a: RectTransform rects and uGUI's layout system
+
+**What/why:** M9u4 is split into a–d in `docs/DESIGN.md` (one concern
+per change); this is the first part. New:
+- `sn-ui::layout` (pure): `Tree` (rects from anchors, pivot and size
+  delta; `local_position`; `SetSizeWithCurrentAnchors`) and `layout`
+  (`LayoutRebuilder`'s roots and four passes, `LayoutUtility`'s priority
+  rule, horizontal and vertical groups, `ContentSizeFitter`,
+  `LayoutElement`, `AspectRatioFitter`, `uGUI_CircularBar`, `Image` as an
+  element). Unknown text sizes are `NaN` and stay so.
+- `sn-assets::ui_layout` (`Assets::ui_layout`): a `UiTree` as a layout
+  tree, its fields read through M9u1's layouts.
+- `sn-dotnet`: `Assembly::interfaces` (InterfaceImpl), and
+  `Builder::implements` for tests.
+- `sn-inspect`: `ui --rects`, `code --implements <INTERFACE>
+  [<ASSEMBLY>]`, and `code --fields` taking `ASSEMBLY:TYPE` and listing
+  interfaces.
+No new dependencies.
+
+**Dead ends / corrections:**
+- The plan's oracle hypothesis was wrong. The first run showed 118
+  "differences", nearly all with the stored value 0. Unity zeroes
+  driven values when it saves. The check now tests that instead:
+  370 of 370 driven values are stored as 0. So no stored value can
+  check our numbers; that is left to unit tests and M9u5's screenshots.
+- One unit test of mine was wrong, not the code: a child with one
+  ignoring and one non-ignoring `LayoutElement` stays in its group
+  (Unity keeps it if any ignorer does not ignore).
+
+**Verified:**
+- `sn-inspect ui --rects` (exit 0): driven values 370, all stored as 0;
+  168 unknown (text or unported); a second run moves 0 nodes; 97 active
+  zero-size rects that we do not drive are listed (see `ui.md`).
+- `SUBNAUTICA_DIR=… cargo test --release -p sn-assets --test real_data
+  -- --ignored layout_drives`: 1 passed (327 values in `uGUI` and the
+  PDA screen, all stored as 0).
+- Unit tests: 12 layout tests on synthetic trees, values worked out by
+  hand (rects and anchors, a row's placement, alignment, force expand
+  and shrinking, uncontrolled children and child scale, ignored and
+  inactive children, a fitter around a group, priority and the largest
+  value with images sliced and simple, unknown text, layout roots,
+  aspect fitters, unported components); 1 for `interfaces`.
+- Not compared with the game on screen (M9u5).
+
 ## 2026-10-13 — M9u3: TMP fonts made from the game's font files
 
 **What/why:** the M9u plan's fourth step. Every TextMesh Pro font asset

@@ -25,6 +25,7 @@ mod pickup;
 mod pickups;
 mod png;
 mod prefab;
+mod rects;
 mod scene;
 mod skinned;
 mod slots;
@@ -174,7 +175,11 @@ Commands:
                          and their methods
   code --fields <TYPE>   A type's fields in declaration order: declared
                          type, public/static/readonly/const/[NonSerialized],
-                         the type it extends and its methods
+                         the type it extends, the interfaces it declares
+                         and its methods (ASSEMBLY:TYPE as for --il)
+  code --implements <INTERFACE> [<ASSEMBLY>]
+                         The types that declare an interface (by name, any
+                         namespace), with the type each extends
   techdata               Recipes and item data (Balance/TechData) and the
                          prefab → tech type map (EntTechData), with checks
   player                 The player's numbers from the main scene (oxygen,
@@ -222,6 +227,9 @@ Commands:
                          the English text's characters in each text's
                          font chain, glyph cost (--atlas: the made atlases
                          as PNGs in out/ui/fonts/)
+  ui --rects             M9u4a: the in-scope UI trees laid out by our port
+                         of uGUI's layout system; every value it drives
+                         compared with the stored one
   ui --layout <CLASS> [<NAME>]
                          M9u1: a script's layout and, for its first object
                          (named NAME), where each field starts and its value
@@ -423,12 +431,15 @@ fn run(mut args: Vec<String>) -> Result<ExitCode> {
         ["code", "--enum", ty] => code::enum_values(&game, ty),
         ["code", "--nested", ty] => code::nested(&game, ty),
         ["code", "--fields", ty] => code::fields(&game, ty),
+        ["code", "--implements", name] => code::implements(&game, name, None),
+        ["code", "--implements", name, asm] => code::implements(&game, name, Some(asm)),
         ["techdata"] => gameplay::techdata(&game),
         ["player"] => gameplay::player(&game),
         ["pickups"] => pickups::run(&game),
         ["ui"] => ui::run(&game),
         ["ui", "--scripts"] => ui::scripts(&game, false),
         ["ui", "--scripts", "--all"] => ui::scripts(&game, true),
+        ["ui", "--rects"] => rects::run(&game),
         ["ui", "--fonts"] => fonts::run(&game, false),
         ["ui", "--fonts", "--atlas"] => fonts::run(&game, true),
         ["ui", "--sprites"] => ui::sprites(&game, false),

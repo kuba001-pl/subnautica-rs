@@ -312,6 +312,57 @@ characters (U+E005, U+E019, U+E03B) that no font or sprite asset has.
 262 ms), with the brute-force distance to every outline segment. The
 English glyphs fill 42% of `Aller_Rg SDF`'s atlas.
 
+## Layout (M9u4a)
+
+Our port is `crates/sn-ui/src/layout/`. Inputs are built by
+`crates/sn-assets/src/ui_layout.rs`, and `sn-inspect ui --rects` runs
+the check. The rules come from the IL of the game's `UnityEngine.UI.dll`
+(`code --il UnityEngine.UI:UnityEngine.UI.<TYPE> <METHOD>`), summarised
+in `rebuild.rs`; the code is ours.
+
+**Driven values are saved as 0 — confirmed.** The M9u plan's hypothesis
+was that the editor saves the values the layout last computed. It does
+not: of the 370 values our layout drives in the in-scope trees (`uGUI`,
+its 10 other roots, the PDA screen), **370 are stored as exactly 0**
+(anchors (0, 0)–(0, 0), anchored position 0, size delta 0). So the
+stored rects confirm *which* values are driven: every one we drive is
+zeroed. They say nothing about the values themselves. Those are checked
+by hand-computed unit tests, and by eye in M9u5. The other direction is
+weaker: 97 active zero-size rects (equal anchors, size 0) are driven by
+nothing we port. Many are deliberate zero-size anchors (the bars'
+containers, the compass points); others belong to scripts outside the
+layout system (Scrollbar handles, `ScrollRect` content). They are listed
+by `ui --rects`.
+
+**Who takes part** (confirmed from the DLLs' InterfaceImpl tables,
+`sn-inspect code --implements <INTERFACE> [<ASSEMBLY>]`). Unity's
+classes: `Image`, TMP text, `LayoutElement`, the layout groups,
+`ScrollRect` and the input fields are elements. The groups,
+`ContentSizeFitter`, `AspectRatioFitter` and `ScrollRect` are
+controllers. In the game's DLL: `uGUI_CircularBar` is a self-controller
+(it sets its size to `_size` on both axes;
+`HandleLayoutAlongAxis`). `AspectRatioLayoutElement`,
+`uGUI_BlueprintEntry`, `uGUI_IconGrid` and `uGUI_TooltipIcon` are
+elements; `uGUI_BlueprintProgress` and `uGUI_NotificationLabel` are
+ignorers. `FlexibleGridLayout` extends `LayoutGroup`. No game class
+declares `ILayoutGroup` directly. Met, enabled and active, but not
+ported: `FlexibleGridLayout`, `TMP_InputField` ×2, `uGUI_IconGrid`,
+`uGUI_NotificationLabel` and `uGUI_TooltipIcon` (1 each). Their values
+count as unknown.
+
+**TMP text as a layout element** (IL of `TMP_Text`): min width and
+height 0 (`m_minWidth`, not serialized), flexible −1 (set in `.ctor`),
+priority 0, preferred from the text layout (`GetPreferredWidth`, M9u4c).
+`ScrollRect`: every value −1, priority −1. `Image`: min 0, flexible −1,
+priority 0. Its preferred size is the sprite's rect divided by
+`pixelsPerUnit` = sprite pixels per unit / the canvas's reference
+pixels per unit (100). For sliced and tiled images it is the borders'
+sum instead (`DataUtility.GetMinSize`).
+
+**The run:** 23 layout roots in `uGUI`, 27 in the PDA screen. A second
+run from our own result moves nothing. 168 of the 370 values need a
+text size or an unported component, so they are unknown until M9u4c.
+
 ## Script fields (M9u1) — confirmed
 
 A MonoBehaviour's fields follow its header (game object, enabled,

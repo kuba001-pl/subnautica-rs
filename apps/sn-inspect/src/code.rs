@@ -237,11 +237,55 @@ fn resolve_type(asm: &Assembly, type_name: &str) -> Result<u32> {
     Ok(ty)
 }
 
+/// `code --implements <INTERFACE> [<ASSEMBLY>]`: every type of the game's
+/// assembly (or `Managed/ASSEMBLY.dll`) that declares an interface of
+/// that name.
+pub fn implements(game: &GameData, interface: &str, assembly: Option<&str>) -> Result<ExitCode> {
+    let bytes = match assembly {
+        Some(a) => game.read_file(&game.data_dir.join("Managed").join(format!("{a}.dll")))?,
+        None => sn_assets::read_assembly(game)?,
+    };
+    let asm = Assembly::parse(&bytes).map_err(|e| e.to_string())?;
+    let e = |e: sn_dotnet::Error| e.to_string();
+    let mut found = 0;
+    for row in 1..=asm.rows(sn_dotnet::Table::TYPE_DEF) {
+        if !asm
+            .interfaces(row)
+            .map_err(e)?
+            .iter()
+            .any(|(_, n)| n == interface)
+        {
+            continue;
+        }
+        let (ns, n) = asm.type_name(row).map_err(e)?;
+        let base = asm
+            .base_type(row)
+            .map_err(e)?
+            .map_or("nothing".to_string(), |(bns, bn)| format!("{bns}.{bn}"));
+        println!("{ns}.{n} extends {base}");
+        found += 1;
+    }
+    println!("{found} types declare {interface}");
+    Ok(ExitCode::SUCCESS)
+}
+
 /// `code --fields <TYPE>`: a type's fields in declaration order with
 /// their flags and declared types, the type it extends (M9u0), and its
 /// methods' names.
 pub fn fields(game: &GameData, type_name: &str) -> Result<ExitCode> {
-    let bytes = sn_assets::read_assembly(game)?;
+    // `ASSEMBLY:TYPE` reads `Managed/ASSEMBLY.dll` instead of the game's.
+    let (bytes, type_name) = match type_name.split_once(':') {
+        Some((assembly, ty)) => (
+            game.read_file(
+                &game
+                    .data_dir
+                    .join("Managed")
+                    .join(format!("{assembly}.dll")),
+            )?,
+            ty,
+        ),
+        None => (sn_assets::read_assembly(game)?, type_name),
+    };
     let asm = Assembly::parse(&bytes).map_err(|e| e.to_string())?;
     let ty = resolve_type(&asm, type_name)?;
     let e = |e: sn_dotnet::Error| e.to_string();
@@ -249,6 +293,20 @@ pub fn fields(game: &GameData, type_name: &str) -> Result<ExitCode> {
         Some((ns, n)) if ns.is_empty() => println!("{type_name} extends {n}"),
         Some((ns, n)) => println!("{type_name} extends {ns}.{n}"),
         None => println!("{type_name} extends nothing"),
+    }
+    let interfaces = asm.interfaces(ty).map_err(|e| e.to_string())?;
+    if !interfaces.is_empty() {
+        let names: Vec<String> = interfaces
+            .iter()
+            .map(|(ns, n)| {
+                if ns.is_empty() {
+                    n.clone()
+                } else {
+                    format!("{ns}.{n}")
+                }
+            })
+            .collect();
+        println!("implements {}", names.join(", "));
     }
     for row in asm.fields(ty).map_err(e)? {
         let flags = asm.field_flags(row).map_err(e)?;

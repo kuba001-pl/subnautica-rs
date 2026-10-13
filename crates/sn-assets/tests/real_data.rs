@@ -2530,3 +2530,61 @@ fn fonts_remade_from_the_font_files() {
         .count();
     assert_eq!(missing, 0);
 }
+
+/// M9u4a: Unity saves driven RectTransform values as 0. Every value our
+/// layout drives in `uGUI.prefab` and the PDA screen is stored as 0 (so
+/// our driven sets are the game's), and a second run moves nothing.
+#[test]
+#[ignore = "needs SUBNAUTICA_DIR pointing at a Subnautica install"]
+fn layout_drives_only_values_saved_as_zero() {
+    let Some(dir) = std::env::var_os("SUBNAUTICA_DIR") else {
+        eprintln!("SUBNAUTICA_DIR not set; skipping");
+        return;
+    };
+    let game = GameData::locate(Some(PathBuf::from(dir))).unwrap();
+    let assets = Assets::index(&game).unwrap();
+    let assemblies = sn_assets::ScriptAssemblies::load(&game).unwrap();
+    let layouts = assemblies.layouts().unwrap();
+    let catalog = assets.catalog().unwrap();
+    let root = assets.ugui_root(&catalog).unwrap();
+    let main = assets.scene("main").unwrap();
+    let (screen, _) = assets.pda_screen_refs(&main).unwrap();
+    let mut driven = 0;
+    for (key, r) in [("uGUI", &root), ("PDA", &screen)] {
+        let ui = assets.ui_tree(key, r).unwrap();
+        let mut tree = assets.ui_layout(&layouts, &ui).unwrap().tree;
+        let stored: Vec<_> = tree.nodes.iter().map(|n| n.rect).collect();
+        let report = sn_ui::layout::layout(&mut tree);
+        for (i, d) in report.driven.iter().enumerate() {
+            let s = &stored[i];
+            if d.anchors {
+                driven += 4;
+                assert_eq!(
+                    (s.anchor_min, s.anchor_max),
+                    ([0.0; 2], [0.0; 2]),
+                    "{}",
+                    ui.nodes[i].path
+                );
+            }
+            for a in 0..2 {
+                if d.position[a] {
+                    driven += 1;
+                    assert_eq!(s.anchored_position[a], 0.0, "{}", ui.nodes[i].path);
+                }
+                if d.size[a] {
+                    driven += 1;
+                    assert_eq!(s.size_delta[a], 0.0, "{}", ui.nodes[i].path);
+                }
+            }
+        }
+        let first: Vec<_> = tree.nodes.iter().map(|n| n.rect).collect();
+        sn_ui::layout::layout(&mut tree);
+        for (n, f) in tree.nodes.iter().zip(&first) {
+            for (a, b) in n.rect.size_delta.iter().zip(&f.size_delta) {
+                assert!(a.to_bits() == b.to_bits() || (a - b).abs() < 0.01);
+            }
+        }
+    }
+    // uGUI 198 + PDA 129 of the 370 (the other roots hold the rest).
+    assert_eq!(driven, 327);
+}

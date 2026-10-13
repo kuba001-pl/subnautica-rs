@@ -6,5 +6,8 @@
 //! - [`font`] (M9u3): TextMesh Pro's dynamic font assets: face metrics,
 //!   glyph metrics, glyph distance fields and the atlas they are packed
 //!   into, made from the game's font files as the game makes them.
+//! - [`layout`] (M9u4a): RectTransform rects and uGUI's layout system
+//!   (layout groups, fitters, layout elements).
 
 pub mod font;
+pub mod layout;

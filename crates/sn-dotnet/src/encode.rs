@@ -159,6 +159,13 @@ impl Builder {
         self.row(Table::NESTED_CLASS, vec![inner, outer]);
     }
 
+    /// TypeDef `class` implements `interface` (a TypeDef, TypeRef or
+    /// TypeSpec row).
+    pub fn implements(&mut self, class: u32, interface: (TableId, u32)) {
+        let i = coded(TYPE_DEF_OR_REF, interface.0, interface.1);
+        self.row(Table::INTERFACE_IMPL, vec![class, i]);
+    }
+
     /// A custom attribute on `parent`, made by constructor `ctor` (a
     /// MethodDef or MemberRef row).
     pub fn attribute(&mut self, parent: (TableId, u32), ctor: (TableId, u32)) {
