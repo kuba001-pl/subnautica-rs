@@ -2451,6 +2451,88 @@ The variant cache grew from the initial area's 244 to 251. Peak sampled
 process memory was 1.73 GiB along this route; no isolated memory delta
 is established. User interactive replay and visual acceptance remain open.
 
+#### M7g4d unlit UBER remainder plan (2026-10-13)
+
+Resumes the visual track after M9u4d. A whole-game census (`sn-inspect
+prefab --materials`) lists 32 `UWE/Particles/UBER` materials on placed
+prefabs. This slice takes the **unlit** ones still on the stand-in look.
+Each program below was read from the installed shader's D3D11 dump (ignored
+`out/m7g4-brine/fresh-programs`). Each is a combination of terms we have
+already decoded, plus one new term:
+
+| Material (placements) | Keyword set | Program (vertex/fragment) | What it adds |
+|---|---|---|---|
+| `x_TechLight_Cone` (7) | `FX_ADDFOG FX_FRESNELCLIP FX_NEARCLIP FX_SCROLL FX_SOFTEDGES WBOIT` | 67/385 | halo chain without `_MainTex2`, door soft edges, brine near-clip vertex fade |
+| `x_Gun_Elevator_TubeSmk` (1) | `FX_DEFORM FX_FRESNELCLIP FX_MULMAP FX_NEARCLIP FX_SCROLL FX_SOFTEDGES WBOIT` | 68/386 | UV deformation; no `FX_ADDFOG`: ordinary alpha, colour saturated after fog (as brine) |
+| `x_Precursor_ThermalReactor_TowerElec` (8) | `FX_ADDFOG FX_DEFORM FX_FRESNELCLIP FX_MULMAP FX_SCROLL WBOIT` | 57/375 | M7g4c's control-room program plus the Fresnel term |
+| `x_LavaFall` (11) | `FX_ADDFOG FX_ALPHAPOW FX_DEFORM FX_MULMAP FX_SCROLL FX_SOFTEDGES FX_TRIPLANAR WBOIT` | 34/352 | brine's projection, no near clip, brightness opacity; **new:** `FX_ALPHAPOW` |
+| `x_Gun_Elevator_TubeDots`, `…InnerBlock`, `…InnerBlock2` (3) | already decoded sets | as M7g4/M7g4c | `_MyCullVariable` 2 (back culling) |
+| `Precursor_Symbol_Orange` | `FX_ADDFOG WBOIT` | 5/323 | one texture without scrolling; stored speeds are unread |
+
+`FX_ALPHAPOW`: the starting alpha (soft edge × vertex alpha × 2 ×
+`_Color.a`) is raised to `_AlphaPow` with `log`/`exp`, before any texture.
+All of these request the blend/depth state the pass already draws; culling is
+pass state, so back culling applies to any confirmed set, not only brine.
+
+**Design:** replace the `brine` switch by the keywords' own terms
+(`FX_TRIPLANAR`, `FX_NEARCLIP`, `FX_ADDFOG`, `FX_ALPHAPOW`) plus a back-cull
+flag, so every confirmed program is the same shader with terms on or off.
+Selection stays an exact list of confirmed keyword sets; anything else is
+rejected and logged as now. No new dependencies, no architecture change.
+
+**Not in this slice:** the lit sets (`FX_LIGHTMODE_PIXEL`/`_VERTEX`: sand
+falls 120, Lava Castle smoke 21, peeper bubbles 14, water force field 8),
+which need the game's light inputs decoded first (M7g4e), and the
+flashlight cone (no `WBOIT`, layer 8, the player's tool).
+
+**Done when:**
+- [x] Confirmed program terms and render states in `docs/formats/materials.md`.
+- [x] Synthetic tests: exact selection of the new sets, flags per keyword,
+  back culling accepted for any confirmed set, front culling and
+  undecoded sets rejected, alpha power in the reference formula.
+- [x] Workspace tests, fmt, clippy and release build pass.
+- [x] GPU runs at a tech light wreck, the Gun elevator/control room, the
+  thermal reactor and a lava fall: the new materials log as effect
+  materials, no shader validation errors, counts and timings in MODLOG,
+  with a Tree Cove brine and Precursor door regression.
+- [ ] Original-game visual comparison: **not tested** until available.
+
+**Implemented and numerically checked (2026-10-13):** five added exact
+sets, including the non-scrolling orange symbol, and general back-cull
+pass-state handling. Workspace checks passed (560 tests, 47 ignored).
+Seven matched before/after GPU pairs exited 0, each with 300 settled
+measurement frames and zero warnings, shader errors or panics. Scene
+geometry counts match; commands, counts and timings are in MODLOG.
+**Human test failed (2026-10-13):** the Blood Kelp cache screenshot shows
+the symbol detached from the terminal body. The shader checks above did
+not verify terminal startup material selection or optimized-avatar skinning.
+The purple terminal's animator has `has_transform_hierarchy = false`,
+12 avatar skeleton nodes and 0/240 bound clip properties; its renderer has
+no serialized bones/root bone. `PrecursorKeyTerminal.Start` selects
+`keyMats[acceptKeyType]` for `keyFace`, replacing the saved orange material.
+Do not call terminal symbols visually ready until these are handled.
+
+**Proposed correction (requires approval for the larger animation change):**
+1. Decode the terminal script's stored material references and key type;
+   apply its startup material selection through the existing material loader.
+2. Extend the existing avatar/rig loader to reconstruct optimized skeleton
+   transforms, map mesh bone identities to the avatar, bind clip properties
+   and skin the terminal in its default closed pose. Keep ordinary rigs on
+   their existing path; no hard-coded symbol offsets or game geometry.
+3. Add synthetic coverage for optimized binding/skinning and material
+   selection. Numerically verify terminal body and symbol transforms at
+   the cache, then request a fresh human comparison at the same location.
+
+**Done when:** the required material is selected, all required optimized
+bindings resolve, body vertices use the reconstructed skin palette, default
+closed pose is applied, workspace/GPU regressions pass, and the user confirms
+the symbol/body placement. Optimized skeleton support is not implemented yet.
+
+After this correction, next visual slice: M7g4e,
+decode actual light inputs for the remaining lit particle variants before
+enabling their programs. Shadow rendering remains a separate planned
+lighting task; this unlit slice does not implement it.
+
 #### M7g5 implementation plan (2026-10-11)
 
 1. Decode the installed `UWE/SIG` and `UWE/SIG Triplanar with Capping`

@@ -1,5 +1,19 @@
 # Animation: clips, controllers, avatars, animators
 
+## Optimized key terminal — confirmed missing support (2026-10-13)
+
+Read-only prefab inspection with our Rust tools and UnityPy confirms the
+purple key terminal has an enabled animator with `m_HasTransformHierarchy`
+false, a 12-node avatar skeleton, and a skinned renderer with empty `m_Bones`
+and null `m_RootBone`. Our current hierarchy-only binding finds 0 of its
+240 clip bindings (10 missing path hashes). The missing serialized bone
+list does not establish that this renderer is a rigid mesh: its optimized
+avatar must be accounted for. A human screenshot shows the body and symbol
+disconnected in the cache. Reconstructing the hidden skeleton, mapping its
+mesh palette and applying its closed pose remain **not implemented**;
+the exact palette mapping is **not yet confirmed**. Research logs stay in
+ignored `out/m7g4d`.
+
 Described build: game build `10` (Unity 2019.4.36f1). Reader:
 `crates/sn-unity/src/anim.rs` (M7f4a); runtime: `crates/sn-anim` (M7f4b).
 Inspector: `sn-inspect anim <prefab key | scene:NAME> [--states]`.

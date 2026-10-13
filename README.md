@@ -152,7 +152,12 @@ regression passed; user visual confirmation pending); Tree Cove's
 brine and the Ghost Tree/Bones Field lakes with world-space scrolling,
 deformation, near fading and weighted transparency (M7g4a/b; GPU validated,
 saved lake lighting keywords are inactive in the installed shader;
-original-game visual parity not tested); the
+original-game visual parity not tested); tech light cones, Gun elevator
+smoke/dots and control-room inner blocks, thermal reactor electricity,
+lava falls and orange key symbols use their decoded unlit effect programs
+(M7g4d; GPU validated, original-game visual parity not tested; key-terminal
+symbols are visibly broken: startup material selection and optimized-avatar
+skinning are missing); the
 objects the game spawns from prefabs' placeholders, e.g. the cache doors,
 key terminals and pedestal crystals; none of these compared with the game
 on screen yet); the game's animators on objects (M7f4: its own

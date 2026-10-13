@@ -2,6 +2,116 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-13 — M7g4d terminal human-test failure
+
+The user's Blood Kelp cache screenshot shows the orange symbol detached
+from the terminal. Earlier numerical shader checks did not prove correct
+terminal appearance. Confirmed with `sn-inspect prefab` and `anim --states`:
+purple terminal, 9 serialized nodes, 12 avatar skeleton nodes, 0/240 clip
+bindings resolved. Read-only UnityPy inspection confirms an optimized
+animator (`m_HasTransformHierarchy` false), empty renderer bone references
+and null root bone. `sn-inspect code --il PrecursorKeyTerminal Start`
+confirms startup replaces the stored orange material using
+`keyMats[acceptKeyType]`. The mesh palette mapping remains unconfirmed.
+
+Dead end: initial basename-only prefab queries did not resolve catalog
+keys; using the full `WorldEntities/Environment/Precursor/…` key worked.
+Moving the symbol alone would not address missing body skinning or material
+selection. No rendering fix is claimed here; documented a bounded proposal
+in DESIGN and corrected README's readiness caveat. The larger animation
+loader extension needs approval under AGENTS.md. No commit/push.
+
+Reproduce the diagnosis (set `SUBNAUTICA_DIR` as below):
+```powershell
+$env:SUBNAUTICA_DIR = 'D:\SteamLibrary\steamapps\common\Subnautica'
+target/release/sn-inspect.exe prefab WorldEntities/Environment/Precursor/Precursor_PurpleKeyTerminal.prefab
+target/release/sn-inspect.exe anim WorldEntities/Environment/Precursor/Precursor_PurpleKeyTerminal.prefab --states
+target/release/sn-inspect.exe code --il PrecursorKeyTerminal Start
+```
+Expected: the saved face material is orange, renderer lists 0 bones,
+animation reports 0 bindings found/240 missing, startup IL references
+`keyFace`, `keyMats`, `acceptKeyType` and `Renderer.set_material`.
+This follow-up changed docs only; no new code tests were needed.
+
+## 2026-10-13 — M7g4d: remaining unlit UBER mesh effects
+
+**What/why:** resumed the visual track and finished the interrupted slice.
+Tech light cones, Gun elevator smoke/dots, control-room inner blocks,
+thermal reactor electricity, lava falls and orange key symbols now use
+their individually decoded programs rather than the stand-in material.
+The effect shader separates projection, near fading, brightness opacity,
+alpha power and back culling into independent confirmed terms. Selection
+still requires an exact decoded keyword set (14 sets). No dependencies,
+architecture changes or whitelist changes; no commit or push.
+
+**Findings/corrections:** `_MyCullVariable` 2 is pass state and also applies
+to the elevator/control-room layers, not just brine. The lava alpha power
+acts before texture multiplication. The orange symbol has saved speeds
+but its program has no `FX_SCROLL`: zero all speeds for this set. The
+interrupted session's first release executable preceded that last loader
+edit; rebuilt before final verification. No original-game visual oracle
+was available: visual parity, refraction Y sign and mesh-local fog remain
+**not tested**. Lit sand/smoke/bubble/water-field variants and kelp
+billboards remain unsupported; next visual slice is M7g4e's light inputs.
+
+**Code checks:** `cargo test --workspace` passed (560 tests, 47 opt-in
+tests ignored); `cargo fmt --all -- --check`,
+`cargo clippy --workspace --all-targets -- -D warnings`,
+`cargo build --release -p sn-client` and `git diff --check` passed.
+Synthetic checks cover exact selection/rejection, keyword terms, render
+state, saved-speed gating and alpha-power order/ordinary opacity. Existing
+late-reflection and already-extracted-mesh crash tests passed too.
+
+**GPU verification:** matched sequential runs against a freshly built
+detached `e3a1bf1` control in `out/m7g4d/head`, using its own build directory.
+Raw logs and reports are ignored under `out/m7g4d` and `out/baselines`.
+All 14 runs exited 0, each measured 300 settled frames after 120 settled
+warmup frames at 1600 × 900. All seven final runs had zero WARN/ERROR
+lines, shader validation errors or panics and zero object warnings. The
+target materials logged as `effect material`. Terrain stats and object
+stats except material `per_sky` classifications match each control exactly;
+`per_sky` shrinks where a material moves into the custom effect pass.
+
+| Scene | Mean ms before → after | p95 ms before → after | Terrain triangles | Object entities / meshes | Final effect materials |
+|---|---|---|---:|---|---:|
+| Tech wreck | 12.266 → 11.927 | 13.423 → 12.786 | 3,752,060 | 11,686 / 3,587 | 14 |
+| Gun elevator | 6.694 → 6.663 | 7.166 → 7.188 | 1,305,866 | 18,419 / 6,790 | 19 |
+| Gun control room | 9.122 → 9.303 | 9.727 → 10.215 | 3,637,338 | 20,672 / 6,815 | 19 |
+| Thermal reactor | 7.041 → 6.358 | 8.752 → 6.881 | 3,995,040 | 6,114 / 5,326 | 22 |
+| Lava fall | 4.474 → 4.408 | 4.940 → 4.881 | 1,873,002 | 524 / 1,267 | 5 |
+| Tree Cove | 5.202 → 5.168 | 5.612 → 5.589 | 3,948,704 | 6,335 / 1,301 | 5 |
+| Precursor door | 5.623 → 5.622 | 6.106 → 6.105 | 1,485,976 | 8,202 / 1,835 | 12 |
+
+Peak final process memory ranged from 1.096 to 2.283 GiB. These are one
+pair per camera with live effect animation, not proof of a speedup or
+deterministic image equality. Original-game visual comparison: **not tested**.
+
+Reproduction (PowerShell, from the repository root):
+
+```powershell
+$env:SUBNAUTICA_DIR = 'D:\SteamLibrary\steamapps\common\Subnautica'
+cargo test --workspace
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo build --release -p sn-client
+target/release/sn-client.exe --benchmark 300 --baseline m7g4d-elevator-check --baseline-revision local-M7g4d --warmup 120 --resolution 1600 900 --start 420 -76 1222 --look 428 -79 1229 --fov 60 --view 400 --lifepod-seed 1 --slot-seed 1 --time 9.6 --time-scale 0 --aurora intact --water-quality high --color-grading off --gpu-timings
+```
+
+Expected: exit 0, `x_Gun_Elevator_TubeSmk` and
+`x_Gun_Elevator_TubeDots` log as `effect material`, no shader validation
+errors/panics, report has 300 measured frames and 0 unsettled frames.
+Use a fresh baseline name when repeating. For other matched runs retain
+all common flags, change the baseline name and use these camera arguments:
+
+| Scene | Camera arguments |
+|---|---|
+| Tech light wreck | `--start -1222 -348 -373 --look -1229 -351 -380` |
+| Gun control room | `--start 356 -68 1075 --look 360 -71 1083` |
+| Thermal reactor | `--start -30 -1225 104 --look -40 -1230 112` |
+| Lava fall | `--start -845 -1200 80 --look -859 -1207 87` |
+| Tree Cove regression | `--start -931.2 -931.6 326.6 --look -931.2 -941.6 346.6` |
+| Precursor door regression | `--start -622 -558 1482 --look -608 -561 1483` |
+
 ## 2026-10-13 — M9u4d: the draw list
 
 **What/why:** M9u4's last part. Each graphic is placed in uGUI's order,

@@ -311,14 +311,63 @@ come out flat `_Color`, which is white for all of the ones above.
   (keywords not decoded, or a blend/depth/cull value the pass does not
   draw) and keeps it on the old look: alpha-blended `_MainTex` × `_Color`,
   with no scrolling, second texture, deformation or refraction. M7g4a/b also
-  support Tree Cove and Lost River brine described below. Not decoded yet:
-  the actual lighting modes and the other combinations (
-  sand and lava falls, the Gun's elevator and deactivation column, the
-  water force field, the tech light cones). Differences: the fog uses the
+  support Tree Cove and Lost River brine described below. M7g4c/d add the
+  control-room fields, tech light cones, Gun elevator, reactor electricity,
+  lava falls and the orange key symbol. Not decoded yet: the actual
+  lighting modes (sand falls, Lava Castle smoke, peeper bubbles and the
+  water force field), kelp billboard variants and the tool flashlight.
+  Differences: the fog uses the
   camera's water settings, not the fog volume at the mesh (as for the
   glows); the refraction offset's sign in y is **not checked** (Unity's
   render-texture uv may run the other way; the force fields' maps are
   noise, so it does not show).
+
+### Remaining unlit mesh combinations (M7g4d) — confirmed
+
+Confirmed by reading the installed D3D11 program bindings and arithmetic,
+cross-checking saved material properties with `sn-inspect prefab --props`.
+The research dumps remain in ignored `out/m7g4-brine/fresh-programs` and
+`out/m7g4d`. These combine previously decoded terms:
+
+- Tech light cones: vertex/fragment blobs 67/385, Fresnel, near-camera
+  vertex fade and soft depth intersections, one scrolling texture,
+  brightness-based opacity (`FX_ADDFOG`).
+- Gun elevator smoke: 68/386, two scrolling textures and UV deformation,
+  Fresnel, near-camera fade and soft intersections. No `FX_ADDFOG`:
+  opacity uses alpha directly and colour is saturated after fog, as brine.
+- Thermal reactor electricity: 57/375, the control-room two-texture UV
+  deformation program with Fresnel, no near or soft fade.
+- Lava falls: 34/352, world-space triplanar projection/deformation and
+  soft intersections, brightness-based opacity, no near-camera fade.
+  The additional `FX_ALPHAPOW` term raises the starting alpha (soft fade
+  × vertex alpha × 2 × `_Color.a`) to `_AlphaPow`, using log/exp, before
+  texture multiplication and day/night strength. The saved lava material
+  has `_AlphaPow = 6`.
+- Orange key symbol: 5/323, the one-texture brightness-opacity program
+  without scrolling. `_MainTex_Speed` is stored but absent from the
+  program's bindings: without `FX_SCROLL`, saved speeds are not read.
+
+All request the blend and depth state already used by our WBOIT pass.
+`_MyCullVariable` is independent pass state: 0 draws both faces, 2 culls
+back faces. The elevator's dots/smoke, control-room inner blocks and orange
+symbol use 2. Our custom effect buffers retain their original indices;
+fragment-facing rejection accounts for reflected model transforms, as in
+brine. Front culling (1) is still rejected. The loader accepts only the
+14 individually confirmed exact keyword sets; it does not assume arbitrary
+combinations work. The remaining lit sets require their actual light inputs
+to be decoded before selection (M7g4e).
+
+Original-game visual comparison: **not tested**. Existing camera-local fog
+and refraction-sign limitations above still apply.
+
+**Terminal startup selection — confirmed (2026-10-13):** the installed
+`PrecursorKeyTerminal.Start` IL assigns `keyMats[acceptKeyType]` to
+`keyFace.material`. A purple-key terminal can therefore store the material
+named `Precursor_Symbol_Orange` in its prefab and replace it on startup.
+Rendering the stored material alone does not reproduce its runtime appearance.
+Our loader does not implement this selection yet. A human screenshot at
+the Blood Kelp cache also shows the symbol detached from the terminal body;
+optimized-avatar handling is an additional missing requirement (animation.md).
 
 ### Control-room UV deformation without soft fading (M7g4c) — confirmed
 

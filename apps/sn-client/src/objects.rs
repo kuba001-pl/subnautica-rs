@@ -780,82 +780,76 @@ fn effect_values(material: &Material, shader: &ShaderInfo) -> EffectValues {
     }
 }
 
-/// What a decoded `UWE/Particles/UBER` keyword set switches on.
-#[derive(Clone, Copy)]
+/// What a decoded `UWE/Particles/UBER` keyword set switches on: each
+/// keyword is one term of the same program.
+#[derive(Clone, Copy, Default)]
 struct ParticlesVariant {
     fresnel_clip: bool,
     mul_map: bool,
     soft_edges: bool,
     deform: bool,
     refract: bool,
-    brine: bool,
+    triplanar: bool,
+    near_clip: bool,
+    add_fog: bool,
+    alpha_pow: bool,
+    scroll: bool,
 }
 
-/// The `UWE/Particles/UBER` keyword sets our effect pass draws, decoded
+/// The `UWE/Particles/UBER` keyword sets our effect pass draws, each read
 /// from the game's compiled programs (`docs/formats/materials.md`
-/// § `UWE/Particles/UBER` meshes): the consoles' holograms and the doors'
-/// force fields, plus Tree Cove and Lost River brine. The latter's saved
+/// § `UWE/Particles/UBER` meshes): the consoles' holograms, the doors' and
+/// control room's force fields, Tree Cove and Lost River brine (M7g4–c),
+/// the tech light cones, the Gun elevator's smoke, the thermal reactor's
+/// electricity, the lava falls and the orange key terminal's unscrolled
+/// symbol (M7g4d). Lost River's saved
 /// FX_LIGHT_2SIDED/FX_LIGHT_NORMALMAP keywords are absent from the installed
 /// shader's compiled keyword table; they do not select lighting programs.
-const PARTICLES_VARIANTS: [(&str, ParticlesVariant); 9] = {
-    const fn v(fresnel_clip: bool, mul_map: bool, rest: bool, refract: bool) -> ParticlesVariant {
-        ParticlesVariant {
-            fresnel_clip,
-            mul_map,
-            soft_edges: rest,
-            deform: rest,
-            refract,
-            brine: false,
+/// Only these exact sets are drawn: a keyword's term is not assumed to
+/// combine with others until its program is read.
+const PARTICLES_SETS: [&str; 14] = [
+    "FX_ADDFOG FX_FRESNELCLIP FX_MULMAP FX_SCROLL WBOIT",
+    "FX_ADDFOG FX_MULMAP FX_SCROLL WBOIT",
+    "FX_ADDFOG FX_SCROLL WBOIT",
+    "FX_ADDFOG FX_DEFORM FX_MULMAP FX_REFRACTMAP FX_SCROLL FX_SOFTEDGES WBOIT",
+    "FX_ADDFOG FX_DEFORM FX_MULMAP FX_SCROLL FX_SOFTEDGES WBOIT",
+    "FX_ADDFOG FX_DEFORM FX_MULMAP FX_REFRACTMAP FX_SCROLL WBOIT",
+    "FX_ADDFOG FX_DEFORM FX_MULMAP FX_SCROLL WBOIT",
+    "FX_DEFORM FX_MULMAP FX_NEARCLIP FX_SCROLL FX_SOFTEDGES FX_TRIPLANAR WBOIT",
+    "FX_DEFORM FX_LIGHT_2SIDED FX_LIGHT_NORMALMAP FX_MULMAP FX_NEARCLIP FX_SCROLL FX_SOFTEDGES FX_TRIPLANAR WBOIT",
+    "FX_ADDFOG FX_FRESNELCLIP FX_NEARCLIP FX_SCROLL FX_SOFTEDGES WBOIT",
+    "FX_DEFORM FX_FRESNELCLIP FX_MULMAP FX_NEARCLIP FX_SCROLL FX_SOFTEDGES WBOIT",
+    "FX_ADDFOG FX_DEFORM FX_FRESNELCLIP FX_MULMAP FX_SCROLL WBOIT",
+    "FX_ADDFOG FX_ALPHAPOW FX_DEFORM FX_MULMAP FX_SCROLL FX_SOFTEDGES FX_TRIPLANAR WBOIT",
+    "FX_ADDFOG WBOIT",
+];
+
+/// The terms of `keywords` (sorted, space-separated) if it is one of
+/// [`PARTICLES_SETS`].
+fn particles_variant(keywords: &str) -> Option<ParticlesVariant> {
+    if !PARTICLES_SETS.contains(&keywords) {
+        return None;
+    }
+    let mut v = ParticlesVariant::default();
+    for k in keywords.split(' ') {
+        match k {
+            "FX_FRESNELCLIP" => v.fresnel_clip = true,
+            "FX_MULMAP" => v.mul_map = true,
+            "FX_SOFTEDGES" => v.soft_edges = true,
+            "FX_DEFORM" => v.deform = true,
+            "FX_REFRACTMAP" => v.refract = true,
+            "FX_TRIPLANAR" => v.triplanar = true,
+            "FX_NEARCLIP" => v.near_clip = true,
+            "FX_ADDFOG" => v.add_fog = true,
+            "FX_ALPHAPOW" => v.alpha_pow = true,
+            "FX_SCROLL" => v.scroll = true,
+            // On in every set; inactive saved keywords (see above).
+            "WBOIT" | "FX_LIGHT_2SIDED" | "FX_LIGHT_NORMALMAP" => {}
+            _ => return None,
         }
     }
-    [
-        (
-            "FX_ADDFOG FX_FRESNELCLIP FX_MULMAP FX_SCROLL WBOIT",
-            v(true, true, false, false),
-        ),
-        (
-            "FX_ADDFOG FX_MULMAP FX_SCROLL WBOIT",
-            v(false, true, false, false),
-        ),
-        ("FX_ADDFOG FX_SCROLL WBOIT", v(false, false, false, false)),
-        (
-            "FX_ADDFOG FX_DEFORM FX_MULMAP FX_REFRACTMAP FX_SCROLL FX_SOFTEDGES WBOIT",
-            v(false, true, true, true),
-        ),
-        (
-            "FX_ADDFOG FX_DEFORM FX_MULMAP FX_SCROLL FX_SOFTEDGES WBOIT",
-            v(false, true, true, false),
-        ),
-        (
-            "FX_ADDFOG FX_DEFORM FX_MULMAP FX_REFRACTMAP FX_SCROLL WBOIT",
-            ParticlesVariant {
-                soft_edges: false,
-                ..v(false, true, true, true)
-            },
-        ),
-        (
-            "FX_ADDFOG FX_DEFORM FX_MULMAP FX_SCROLL WBOIT",
-            ParticlesVariant {
-                soft_edges: false,
-                ..v(false, true, true, false)
-            },
-        ),
-        (
-            "FX_DEFORM FX_MULMAP FX_NEARCLIP FX_SCROLL FX_SOFTEDGES FX_TRIPLANAR WBOIT",
-            ParticlesVariant {
-                brine: true,
-                ..v(false, true, true, false)
-            },
-        ),
-        (
-            "FX_DEFORM FX_LIGHT_2SIDED FX_LIGHT_NORMALMAP FX_MULMAP FX_NEARCLIP FX_SCROLL FX_SOFTEDGES FX_TRIPLANAR WBOIT",
-            ParticlesVariant {
-                brine: true,
-                ..v(false, true, true, false)
-            },
-        ),
-    ]
-};
+    Some(v)
+}
 
 /// The game's mesh-effect shader; ported per material (`particles_values`).
 const PARTICLES_UBER: &str = "UWE/Particles/UBER";
@@ -863,8 +857,8 @@ const PARTICLES_UBER: &str = "UWE/Particles/UBER";
 /// A `UWE/Particles/UBER` material's values if our effect pass draws it as
 /// the game does: one of the decoded keyword sets, and the render state the
 /// pass implements (blend `_SrcBlend` 1 `_DstBlend` 1 `_SrcBlend2` 0
-/// `_DstBlend2` 10, `_Ztest` 2 = Less, `_MyCullVariable` 0 = both sides
-/// for holograms/doors or 2 = back culling for brine).
+/// `_DstBlend2` 10, `_Ztest` 2 = Less, `_MyCullVariable` 0 = both sides or
+/// 2 = back culling; culling is pass state, so any decoded set takes either).
 /// Else why not. `textures`: the ids of `_MainTex`, `_MainTex2`,
 /// `_DeformMap`, `_RefractMap` with their scale/offset.
 fn particles_values(
@@ -875,7 +869,7 @@ fn particles_values(
     let mut keywords: Vec<&str> = material.keywords.split_whitespace().collect();
     keywords.sort_unstable();
     let keywords = keywords.join(" ");
-    let Some(&(_, variant)) = PARTICLES_VARIANTS.iter().find(|(k, _)| *k == keywords) else {
+    let Some(variant) = particles_variant(&keywords) else {
         return Err(format!("keywords [{keywords}] not decoded"));
     };
     let float = |name: &str| {
@@ -890,7 +884,6 @@ fn particles_values(
         ("_SrcBlend2", 0.0),
         ("_DstBlend2", 10.0),
         ("_Ztest", 2.0),
-        ("_MyCullVariable", if variant.brine { 2.0 } else { 0.0 }),
     ];
     for (name, wanted) in state {
         let v = float(name);
@@ -898,6 +891,11 @@ fn particles_values(
             return Err(format!("{name} {v} (the pass draws {wanted})"));
         }
     }
+    let back_cull = match float("_MyCullVariable") {
+        0.0 => false,
+        2.0 => true,
+        v => return Err(format!("_MyCullVariable {v} (the pass draws 0 or 2)")),
+    };
     // The pass's missing-texture fallback is white, while this shader
     // declares a neutral bump for refraction. Do not invent an offset when
     // an active refraction map is absent or failed to load.
@@ -912,20 +910,29 @@ fn particles_values(
     };
     let st = |t: Option<(u32, [f32; 4])>| t.map_or([1.0, 1.0, 0.0, 0.0], |(_, st)| st);
     let [main, main2, deform, refract] = textures;
-    let speed = vector("_MainTex_Speed", [0.0; 4]);
-    let speed2 = vector("_MainTex2_Speed", [0.0; 4]);
-    let deform_speed = vector("_DeformMap_Speed", [0.0; 4]);
-    let refract_speed = vector("_RefractMap_Speed", [0.0; 4]);
+    // Without FX_SCROLL the program has no `frac(t × speed)` term: the
+    // saved speeds are not read.
+    let speed = |name: &str| {
+        if variant.scroll {
+            vector(name, [0.0; 4])
+        } else {
+            [0.0; 4]
+        }
+    };
+    let speed2 = speed("_MainTex2_Speed");
+    let deform_speed = speed("_DeformMap_Speed");
+    let refract_speed = speed("_RefractMap_Speed");
+    let speed = speed("_MainTex_Speed");
     Ok(ParticlesValues {
         color: vector("_Color", [1.0; 4]),
         strength: vector("_ColorStrength", [1.0; 4]),
         strength_night: vector("_ColorStrengthAtNight", [1.0; 4]),
-        main_st: if variant.brine {
+        main_st: if variant.triplanar {
             vector("_MainTex_TriplanarUV", [1.0; 4])
         } else {
             st(main)
         },
-        main2_st: if variant.brine {
+        main2_st: if variant.triplanar {
             vector("_MainTex2_TriplanarUV", [1.0; 4])
         } else {
             st(main2)
@@ -939,7 +946,11 @@ fn particles_values(
         soft_edges: variant.soft_edges,
         deform: variant.deform,
         refract: variant.refract,
-        brine: variant.brine,
+        triplanar: variant.triplanar,
+        near_clip: variant.near_clip,
+        add_fog: variant.add_fog,
+        alpha_pow: variant.alpha_pow.then(|| float("_AlphaPow")),
+        back_cull,
         clip: [
             float("_ClipOffset"),
             float("_ClipFade"),
@@ -950,7 +961,7 @@ fn particles_values(
         inv_fade: float("_InvFade"),
         deform_strength: float("_DeformStrength"),
         refract_strength: float("_RefractStrength"),
-        deform_st: if variant.brine {
+        deform_st: if variant.triplanar {
             vector("_DeformMap_TriplanarUV", [1.0; 4])
         } else {
             st(deform)
@@ -4805,7 +4816,8 @@ mod tests {
             material.colors.push(("_RefractStrength".into(), [9.0; 4]));
             let values = particles_values(&material, &shader, textures).unwrap();
             assert!(values.deform && values.mul_map);
-            assert!(!values.soft_edges && !values.brine && !values.fresnel_clip);
+            assert!(!values.soft_edges && !values.triplanar && !values.fresnel_clip);
+            assert!(values.add_fog && !values.near_clip && !values.back_cull);
             assert_eq!(values.refract, refract);
             assert_eq!(
                 (values.deform_strength, values.refract_strength),
@@ -4831,14 +4843,16 @@ mod tests {
                 assert!(particles_values(&material, &shader, textures).is_err());
             }
             material.keywords = keywords;
+            // Culling is pass state: the column's back-culled inner layer
+            // uses the same program.
             material.floats.push(("_MyCullVariable".into(), 2.0));
             material
                 .floats
                 .retain(|(name, value)| name != "_MyCullVariable" || *value == 2.0);
             assert!(
                 particles_values(&material, &shader, textures)
-                    .unwrap_err()
-                    .starts_with("_MyCullVariable")
+                    .unwrap()
+                    .back_cull
             );
         }
     }
@@ -4863,8 +4877,9 @@ mod tests {
             .defaults
             .insert("_MainTex2_TriplanarUV".into(), [0.5, 0.6, 0.7, 1.0]);
         let v = particles_values(&m, &shader, [None; 4]).unwrap();
-        assert!(v.brine && v.deform && v.soft_edges && v.mul_map);
-        assert!(!v.refract && !v.fresnel_clip);
+        assert!(v.triplanar && v.near_clip && v.back_cull);
+        assert!(v.deform && v.soft_edges && v.mul_map);
+        assert!(!v.refract && !v.fresnel_clip && !v.add_fog && v.alpha_pow.is_none());
         assert_eq!(v.main_st, [0.2, 0.3, 0.4, 7.0]);
         assert_eq!(v.main2_st, [0.5, 0.6, 0.7, 1.0]);
         assert_eq!(
@@ -4872,14 +4887,18 @@ mod tests {
             (-0.2, 0.1, 0.6)
         );
         assert_eq!(v.clip, [0.0, 3.0, -0.7, 0.8]);
-        for cull in [0.0, 1.0] {
-            let wrong = particles_material(keywords, &[("_MyCullVariable", cull)]);
-            assert!(
-                particles_values(&wrong, &shader, [None; 4])
-                    .unwrap_err()
-                    .starts_with("_MyCullVariable")
-            );
-        }
+        let both = particles_material(keywords, &[("_MyCullVariable", 0.0)]);
+        assert!(
+            !particles_values(&both, &shader, [None; 4])
+                .unwrap()
+                .back_cull
+        );
+        let front = particles_material(keywords, &[("_MyCullVariable", 1.0)]);
+        assert!(
+            particles_values(&front, &shader, [None; 4])
+                .unwrap_err()
+                .starts_with("_MyCullVariable")
+        );
     }
 
     #[test]
@@ -4921,15 +4940,69 @@ mod tests {
             wrong.keywords = format!("{base} {only}");
             assert!(particles_values(&wrong, &shader, textures).is_err());
         }
-        for cull in [0.0, 1.0] {
-            let mut wrong = m.clone();
-            wrong.floats.retain(|(name, _)| name != "_MyCullVariable");
-            wrong.floats.push(("_MyCullVariable".into(), cull));
-            assert!(
-                particles_values(&wrong, &shader, textures)
-                    .unwrap_err()
-                    .starts_with("_MyCullVariable")
-            );
+        let mut wrong = m.clone();
+        wrong.floats.retain(|(name, _)| name != "_MyCullVariable");
+        wrong.floats.push(("_MyCullVariable".into(), 1.0));
+        assert!(
+            particles_values(&wrong, &shader, textures)
+                .unwrap_err()
+                .starts_with("_MyCullVariable")
+        );
+    }
+
+    #[test]
+    fn m7g4d_sets_switch_on_their_programs_terms() {
+        let shader = uber_shader();
+        let values = |keywords: &str, floats: &[(&str, f32)]| {
+            particles_values(&particles_material(keywords, floats), &shader, [None; 4]).unwrap()
+        };
+        // Tech light cone: the halo without _MainTex2, soft edges and the
+        // near-clip fade.
+        let cone = values(
+            "FX_ADDFOG FX_FRESNELCLIP FX_NEARCLIP FX_SCROLL FX_SOFTEDGES WBOIT",
+            &[("_ClipOffset", 0.5), ("_ClipFade", 3.0), ("_InvFade", 0.4)],
+        );
+        assert!(cone.fresnel_clip && cone.soft_edges && cone.near_clip && cone.add_fog);
+        assert!(!cone.mul_map && !cone.deform && !cone.triplanar && !cone.back_cull);
+        assert_eq!((cone.clip[0], cone.clip[1], cone.inv_fade), (0.5, 3.0, 0.4));
+        // Gun elevator smoke: UV deformation without FX_ADDFOG, back culled.
+        let smoke = values(
+            "FX_DEFORM FX_FRESNELCLIP FX_MULMAP FX_NEARCLIP FX_SCROLL FX_SOFTEDGES WBOIT",
+            &[("_MyCullVariable", 2.0)],
+        );
+        assert!(smoke.deform && smoke.near_clip && !smoke.add_fog && !smoke.triplanar);
+        assert!(smoke.back_cull);
+        // Thermal reactor electricity: the control-room program with Fresnel.
+        let elec = values(
+            "FX_ADDFOG FX_DEFORM FX_FRESNELCLIP FX_MULMAP FX_SCROLL WBOIT",
+            &[],
+        );
+        assert!(elec.fresnel_clip && elec.deform && !elec.soft_edges && !elec.near_clip);
+        // Lava fall: projected, brightness opacity, alpha power, no near clip.
+        let lava = values(
+            "FX_ADDFOG FX_ALPHAPOW FX_DEFORM FX_MULMAP FX_SCROLL FX_SOFTEDGES FX_TRIPLANAR WBOIT",
+            &[("_AlphaPow", 6.0)],
+        );
+        assert!(lava.triplanar && lava.add_fog && lava.soft_edges && !lava.near_clip);
+        assert_eq!(lava.alpha_pow, Some(6.0));
+        // FX_ALPHAPOW is not assumed to combine with other sets.
+        let m = particles_material("FX_ADDFOG FX_ALPHAPOW FX_SCROLL WBOIT", &[]);
+        assert!(
+            particles_values(&m, &shader, [None; 4])
+                .unwrap_err()
+                .contains("not decoded")
+        );
+        // The orange key symbol: no FX_SCROLL, so its saved speed is unread.
+        let symbol = values("FX_ADDFOG WBOIT", &[("_MyCullVariable", 2.0)]);
+        assert_eq!((symbol.speed, symbol.speed2), ([0.0; 4], [0.0; 4]));
+        assert!(symbol.back_cull && symbol.add_fog && !symbol.mul_map);
+        assert_ne!(cone.speed, [0.0; 4]);
+        // Every listed set is sorted, as the lookup expects.
+        for set in PARTICLES_SETS {
+            let mut sorted: Vec<&str> = set.split(' ').collect();
+            sorted.sort_unstable();
+            assert_eq!(sorted.join(" "), set);
+            assert!(particles_variant(set).is_some());
         }
     }
 
@@ -4940,7 +5013,7 @@ mod tests {
         assert!(particles_values(&m, &uber_shader(), [None; 4]).is_err());
         // Render state the pass does not implement.
         for (name, v) in [
-            ("_MyCullVariable", 2.0),
+            ("_MyCullVariable", 1.0),
             ("_Ztest", 4.0),
             ("_DstBlend", 10.0),
             ("_SrcBlend2", 1.0),

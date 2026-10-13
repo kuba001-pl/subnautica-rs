@@ -84,11 +84,9 @@ pub(crate) struct EffectValues {
 }
 
 /// A `UWE/Particles/UBER` material's values in the variants we draw
-/// (`docs/formats/materials.md` § `UWE/Particles/UBER` meshes): keywords
-/// `FX_ADDFOG FX_SCROLL WBOIT`, with or without `FX_MULMAP` and
-/// `FX_FRESNELCLIP` (the consoles' holograms), or with `FX_DEFORM FX_MULMAP
-/// FX_SOFTEDGES` and with or without `FX_REFRACTMAP` (the doors' force
-/// fields).
+/// (`docs/formats/materials.md` § `UWE/Particles/UBER` meshes): the exact
+/// keyword sets decoded from the game's compiled programs, each the same
+/// program with the keywords' terms on or off.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct ParticlesValues {
     /// `_Color` as stored (sRGB; a Color property, so Unity makes it
@@ -99,7 +97,7 @@ pub(crate) struct ParticlesValues {
     pub strength: [f32; 4],
     pub strength_night: [f32; 4],
     /// `_MainTex_ST`, `_MainTex2_ST` (scale x, y, offset x, y), or
-    /// their `_TriplanarUV` xyz scales for brine.
+    /// their `_TriplanarUV` xyz scales with `FX_TRIPLANAR`.
     pub main_st: [f32; 4],
     pub main2_st: [f32; 4],
     /// `_MainTex_Speed.xy`, `_MainTex2_Speed.xy`.
@@ -114,10 +112,18 @@ pub(crate) struct ParticlesValues {
     pub soft_edges: bool,
     pub deform: bool,
     pub refract: bool,
-    /// Exact unlit Tree Cove variant (projection, near fade, back culling,
-    /// ordinary opacity and clamped colour); not a generic lighting mode.
-    pub brine: bool,
-    /// Clip offset/fade, main/main2 Z scroll speeds; brine only.
+    /// `FX_TRIPLANAR`: world-space projection (and projected deformation).
+    pub triplanar: bool,
+    /// `FX_NEARCLIP`: the vertex alpha fades near the camera.
+    pub near_clip: bool,
+    /// `FX_ADDFOG`: opacity follows brightness; without it, ordinary alpha
+    /// and colour saturated after fog.
+    pub add_fog: bool,
+    /// `FX_ALPHAPOW`: `_AlphaPow`, the power on the starting alpha.
+    pub alpha_pow: Option<f32>,
+    /// `_MyCullVariable` 2: back faces are not drawn (else both sides).
+    pub back_cull: bool,
+    /// `_ClipOffset`, `_ClipFade`, main/main2 Z scroll speeds.
     pub clip: [f32; 4],
     pub deform_speed_z: f32,
     /// `_InvFade`, `_DeformStrength`, `_RefractStrength` (the float; the
@@ -126,7 +132,8 @@ pub(crate) struct ParticlesValues {
     pub inv_fade: f32,
     pub deform_strength: f32,
     pub refract_strength: f32,
-    /// `_DeformMap_ST` (brine: `_DeformMap_TriplanarUV`), `_RefractMap_ST`.
+    /// `_DeformMap_ST` (`FX_TRIPLANAR`: `_DeformMap_TriplanarUV`),
+    /// `_RefractMap_ST`.
     pub deform_st: [f32; 4],
     pub refract_st: [f32; 4],
     /// `_DeformMap_Speed.xy`, `_RefractMap_Speed.xy`.
@@ -204,11 +211,16 @@ struct ParticlesInstance {
     /// `_DeformMap_Speed.xy`, `_RefractMap_Speed.xy`.
     speed2: Vec4,
     /// `_FresnelFade`, `_FresnelPow`, `_Cutoff`, flags (1 `FX_FRESNELCLIP`,
-    /// 2 `FX_MULMAP`, 4 `FX_SOFTEDGES`, 8 `FX_DEFORM`, 16 `FX_REFRACTMAP`).
+    /// 2 `FX_MULMAP`, 4 `FX_SOFTEDGES`, 8 `FX_DEFORM`, 16 `FX_REFRACTMAP`,
+    /// 32 `FX_TRIPLANAR`, 64 `FX_NEARCLIP`, 128 `FX_ADDFOG`, 256
+    /// `FX_ALPHAPOW`, 512 back culling).
     params: Vec4,
     /// `_InvFade`, `_DeformStrength`, `_RefractStrength`, deform Z speed.
     strengths: Vec4,
+    /// `_ClipOffset`, `_ClipFade`, main/main2 Z scroll speeds.
     clip: Vec4,
+    /// `_AlphaPow`, unused ×3.
+    extra: Vec4,
 }
 
 #[derive(Clone, Default, ShaderType)]
@@ -330,7 +342,11 @@ fn extract_effects(
                     | (u32::from(v.soft_edges) << 2)
                     | (u32::from(v.deform) << 3)
                     | (u32::from(v.refract) << 4)
-                    | (u32::from(v.brine) << 5);
+                    | (u32::from(v.triplanar) << 5)
+                    | (u32::from(v.near_clip) << 6)
+                    | (u32::from(v.add_fog) << 7)
+                    | (u32::from(v.alpha_pow.is_some()) << 8)
+                    | (u32::from(v.back_cull) << 9);
                 extracted.particles.push(ParticlesInstance {
                     world_from_local,
                     local_from_world,
@@ -351,6 +367,7 @@ fn extract_effects(
                         v.deform_speed_z,
                     ),
                     clip: Vec4::from(v.clip),
+                    extra: Vec4::new(v.alpha_pow.unwrap_or(1.0), 0.0, 0.0, 0.0),
                 });
                 let ids = part.textures.each_ref().map(Handle::id);
                 extracted.particle_draws.push((part.mesh, ids));
@@ -1125,7 +1142,14 @@ mod tests {
             c[3] *= f.min(1.0);
         }
         for i in 0..4 {
-            c[i] *= vertex[i] * tex[i];
+            c[i] *= vertex[i];
+        }
+        if let Some(p) = v.alpha_pow {
+            // FX_ALPHAPOW: on the starting alpha, before any texture.
+            c[3] = c[3].powf(p);
+        }
+        for i in 0..4 {
+            c[i] *= tex[i];
             if v.mul_map {
                 c[i] *= tex2[i];
             }
@@ -1134,7 +1158,12 @@ mod tests {
         if c[3] - v.cutoff < 0.0 {
             return None;
         }
-        let alpha = ((c[0] + c[1] + c[2]) / 3.0).clamp(0.0, 1.0) * c[3];
+        // FX_ADDFOG: opacity follows brightness; else ordinary alpha.
+        let alpha = if v.add_fog {
+            ((c[0] + c[1] + c[2]) / 3.0).clamp(0.0, 1.0) * c[3]
+        } else {
+            c[3]
+        };
         Some(([c[0], c[1], c[2]], alpha))
     }
 
@@ -1154,7 +1183,11 @@ mod tests {
         soft_edges: false,
         deform: false,
         refract: false,
-        brine: false,
+        triplanar: false,
+        near_clip: false,
+        add_fog: true,
+        alpha_pow: None,
+        back_cull: false,
         clip: [0.0; 4],
         deform_speed_z: 0.0,
         inv_fade: 0.0,
@@ -1183,7 +1216,11 @@ mod tests {
         soft_edges: true,
         deform: true,
         refract: true,
-        brine: false,
+        triplanar: false,
+        near_clip: false,
+        add_fog: true,
+        alpha_pow: None,
+        back_cull: false,
         clip: [0.0; 4],
         deform_speed_z: 0.0,
         inv_fade: 1.6,
@@ -1292,6 +1329,38 @@ mod tests {
             ..HALO
         };
         assert!(particles(&night, 1.0, one, one, one, 1.0).is_none_or(|(_, a)| a == 0.0));
+    }
+
+    #[test]
+    fn alpha_power_and_ordinary_opacity_follow_the_decoded_terms() {
+        let one = [1.0; 4];
+        // The lava fall's _AlphaPow 6 acts on 2 × _Color.a × vertex α
+        // before the textures: 0.5 → 0.5^6 at the start.
+        let lava = ParticlesValues {
+            color: [0.5, 0.5, 0.5, 0.25],
+            strength: [1.0; 4],
+            strength_night: [1.0; 4],
+            fresnel_clip: false,
+            alpha_pow: Some(6.0),
+            ..HALO
+        };
+        let (_, a) = particles(&lava, 1.0, one, one, one, 0.0).unwrap();
+        assert!((a - 0.5_f32.powi(6)).abs() < 1e-7);
+        // A texel's α multiplies after the power, not inside it.
+        let half_alpha = [1.0, 1.0, 1.0, 0.5];
+        let (_, b) = particles(&lava, 1.0, one, half_alpha, one, 0.0).unwrap();
+        assert!((b - 0.5 * 0.5_f32.powi(6)).abs() < 1e-7);
+        // Without FX_ADDFOG, opacity is the alpha itself: a dark texel
+        // stays opaque (the elevator smoke, brine).
+        let ordinary = ParticlesValues {
+            add_fog: false,
+            fresnel_clip: false,
+            ..HALO
+        };
+        let dark = [0.0, 0.0, 0.0, 1.0];
+        let (_, d) = particles(&ordinary, 1.0, one, dark, one, 0.0).unwrap();
+        assert!((d - 2.0 * 0.25).abs() < 1e-6);
+        assert_eq!(particles(&HALO, 1.0, one, dark, one, 0.0).unwrap().1, 0.0);
     }
 
     #[test]

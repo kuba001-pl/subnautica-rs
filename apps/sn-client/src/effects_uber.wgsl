@@ -1,10 +1,10 @@
-// The game's `UWE/Particles/UBER` in the variants we decoded
-// (docs/formats/materials.md § `UWE/Particles/UBER` meshes): keywords
-// FX_ADDFOG FX_SCROLL WBOIT, with or without FX_MULMAP (a second texture)
-// and FX_FRESNELCLIP (the Precursor consoles' holograms), or with FX_DEFORM
-// FX_MULMAP FX_SOFTEDGES and with or without FX_REFRACTMAP (the doors' force
-// fields); accumulated into the WBOIT targets A and B like the fake light
-// glows. Written for subnautica-rs from the decoded compiled programs.
+// The game's `UWE/Particles/UBER` in the keyword sets we decoded
+// (docs/formats/materials.md § `UWE/Particles/UBER` meshes): one program
+// whose terms the keywords switch on (FX_FRESNELCLIP, FX_MULMAP,
+// FX_SOFTEDGES, FX_DEFORM, FX_REFRACTMAP, FX_TRIPLANAR, FX_NEARCLIP,
+// FX_ADDFOG, FX_ALPHAPOW), accumulated into the WBOIT targets A and B like
+// the fake light glows. Written for subnautica-rs from the decoded compiled
+// programs.
 
 #import bevy_render::view::View
 #import sn_client::water_common::{WaterFog, apply_water_fog, water_fog_length}
@@ -29,12 +29,16 @@ struct Instance {
     // _DeformMap_Speed.xy, _RefractMap_Speed.xy
     speed2: vec4<f32>,
     // _FresnelFade, _FresnelPow, _Cutoff, flags (1 FX_FRESNELCLIP,
-    // 2 FX_MULMAP, 4 FX_SOFTEDGES, 8 FX_DEFORM, 16 FX_REFRACTMAP)
+    // 2 FX_MULMAP, 4 FX_SOFTEDGES, 8 FX_DEFORM, 16 FX_REFRACTMAP,
+    // 32 FX_TRIPLANAR, 64 FX_NEARCLIP, 128 FX_ADDFOG, 256 FX_ALPHAPOW,
+    // 512 back culling)
     params: vec4<f32>,
     // _InvFade, _DeformStrength, _RefractStrength, deform Z speed
     strengths: vec4<f32>,
-    // Bit 32 in params.w selects the exact unlit Tree Cove variant.
+    // _ClipOffset, _ClipFade, main/main2 Z scroll speeds
     clip: vec4<f32>,
+    // _AlphaPow, unused ×3
+    extra: vec4<f32>,
 }
 
 struct Instances {
@@ -100,8 +104,8 @@ fn vertex(in: VertexInput) -> VertexOutput {
     out.world = world.xyz;
     out.eye = -(view.view_from_world * world).z;
     out.color = in.color;
-    if (u32(inst.params.w) & 32u) != 0u {
-        // The compiled brine vertex program fades alpha before interpolation.
+    if (u32(inst.params.w) & 64u) != 0u {
+        // FX_NEARCLIP: the vertex program fades alpha before interpolation.
         let near = view.clip_from_view[3][2];
         out.color.a *= saturate((out.eye - inst.clip.x - near) / (inst.clip.x + inst.clip.y));
     }
@@ -144,12 +148,13 @@ fn fragment(in: VertexOutput, @builtin(front_facing) front: bool) -> Targets {
     let fresnel_pow = inst.params.y;
     let cutoff = inst.params.z;
     let flags = u32(inst.params.w);
-    let brine = (flags & 32u) != 0u;
+    let triplanar = (flags & 32u) != 0u;
+    let add_fog = (flags & 128u) != 0u;
     // The custom effect buffer keeps its original indices. A reflection
     // reverses raster facing, so apply back culling in model-space facing.
     let reflected = determinant(mat3x3<f32>(inst.world_from_local[0].xyz,
         inst.world_from_local[1].xyz, inst.world_from_local[2].xyz)) < 0.0;
-    if brine && front == reflected {
+    if (flags & 512u) != 0u && front == reflected {
         discard;
     }
 
@@ -173,6 +178,10 @@ fn fragment(in: VertexOutput, @builtin(front_facing) front: bool) -> Targets {
         c.a *= min(f, 1.0);
     }
     c *= in.color;
+    if (flags & 256u) != 0u {
+        // FX_ALPHAPOW: on the starting alpha, before any texture.
+        c.a = exp2(log2(c.a) * inst.extra.x);
+    }
     // FX_DEFORM: a scrolling map shifts the uv of every other texture by
     // (map.xy − 1) × _DeformStrength.
     let deform_uv = in.uv * inst.deform_st.xy + inst.deform_st.zw + fract(t * inst.speed2.xy);
@@ -199,7 +208,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) front: bool) -> Targets {
     let deform_dx = dpdx(deform_p);
     let deform_dy = dpdy(deform_p);
     var displaced = world;
-    if brine {
+    if triplanar && (flags & 8u) != 0u {
         let d = projected(deform_map, deform_sampler, deform_p, deform_dx, deform_dy, weights);
         displaced += (d.xyz - 1.0) * inst.strengths.y;
     }
@@ -209,7 +218,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) front: bool) -> Targets {
     let main_dy = dpdy(main_p);
     let main2_dx = dpdx(main2_p);
     let main2_dy = dpdy(main2_p);
-    if brine {
+    if triplanar {
         c *= projected(main_tex, main_sampler, main_p, main_dx, main_dy, weights);
         c *= projected(main_tex2, main_sampler2, main2_p, main2_dx, main2_dy, weights);
     } else {
@@ -224,10 +233,11 @@ fn fragment(in: VertexOutput, @builtin(front_facing) front: bool) -> Targets {
     if c.a - cutoff < 0.0 {
         discard;
     }
-    // Opacity follows brightness: dark texels are transparent.
-    var alpha = saturate((c.r + c.g + c.b) / 3.0) * c.a;
-    if brine {
-        alpha = c.a;
+    // FX_ADDFOG: opacity follows brightness (dark texels are transparent);
+    // without it, ordinary alpha.
+    var alpha = c.a;
+    if add_fog {
+        alpha = saturate((c.r + c.g + c.b) / 3.0) * c.a;
     }
     // FX_REFRACTMAP: a screen offset for the composite (B.yz), unpacked like
     // a normal map, × _RefractStrength × the unclamped alpha above.
@@ -239,7 +249,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) front: bool) -> Targets {
     // `_Color` and the textures are in game light units.
     var colour = c.rgb * globals.wboit.z;
 
-    // Both decoded families receive fog, including brine without FX_ADDFOG.
+    // Every decoded program receives fog, with or without FX_ADDFOG.
     if fog.misc.z != 0.0 {
         let camera = view.world_position;
         let towards = in.world - camera;
@@ -252,8 +262,8 @@ fn fragment(in: VertexOutput, @builtin(front_facing) front: bool) -> Targets {
         offset *= exp(-fog.extinction.b * water);
     }
     alpha = saturate(alpha);
-    if brine {
-        // The ordinary-colour variant saturates in game light units after fog.
+    if !add_fog {
+        // Without FX_ADDFOG colour saturates in game light units after fog.
         colour = clamp(colour, vec3<f32>(0.0), vec3<f32>(globals.wboit.z));
     }
 
