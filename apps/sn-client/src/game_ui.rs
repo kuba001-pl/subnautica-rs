@@ -854,10 +854,21 @@ fn receive_build(
     let Ok(rx) = worker.builds.lock() else {
         return;
     };
-    let mut latest = None;
+    // The latest build's draws; every build's textures (the worker sends
+    // each texture once, so a build skipped here must not lose them) and
+    // its resize.
+    let mut latest: Option<UiBuild> = None;
     while let Ok(b) = rx.try_recv() {
         match b {
-            Ok(b) => latest = Some(b),
+            Ok(mut b) => {
+                if let Some(old) = latest.take() {
+                    let mut textures = old.textures;
+                    textures.append(&mut b.textures);
+                    b.textures = textures;
+                    b.resized |= old.resized;
+                }
+                latest = Some(b);
+            }
             Err(e) => error!("game UI: {e}"),
         }
     }

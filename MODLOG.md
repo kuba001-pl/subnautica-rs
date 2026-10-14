@@ -2,6 +2,62 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-14 — M9u6s: the other screens' start rules
+
+**What/why:** the stored `uGUI.prefab` drew screens the game hides at
+start (the feedback panel, the "Loading failed" dialog, pop-ups, the
+vehicles' and cameras' screens, every reticle icon), and they covered
+the HUD in every screenshot. Each script's start was ported from the
+decompiled code (read only):
+- `sn-assets::ui_start`: `UiStartState` now holds a full `UiState` (the
+  new rules also set a colour, renderer alphas and a material value).
+  The start rules are in a table (`RULES`: script, fields, effect, the
+  method and condition), plus the intro's texts and skip bar, the
+  compass and the hand reticle's icons. A rule whose script's node is
+  inactive is not applied, and that is logged. The rules assume a new
+  game's start: no vehicle, camera, compass or radiation; those systems
+  are not ported.
+- `sn-inspect ui --start` (new): the start state's draws by screen,
+  visible or not, each with the scripts above it. Each visible draw is
+  named with the rule that shows it, and the run fails if one isn't.
+  Draws over 5 % of their canvas are listed.
+- **Client fix (found by the screenshot):** `receive_build` kept only
+  the newest build each frame. The worker sends each texture once, so
+  textures in a superseded build were lost, and every image drew as a
+  flat square. The resize log line was missing as well, because the
+  resize build was the one superseded. This started now because fewer
+  draws made the worker fast enough to send two builds in one frame. Now
+  every received build's textures and resize are kept.
+- Unit tests: colour reading and the rule table; the start-state test
+  was updated. Opt-in test `the_start_state_hides_what_the_game_hides`.
+
+**Verified** (`SUBNAUTICA_DIR` set):
+- `ui --start`: 151 visible draws in 8 screens before; after, 66 draws,
+  23 visible, 23 of 23 named. Those are the bars and their background
+  (12), the player depth (4), the reticle's `Default` icon (1),
+  `DepthClear` (1, not drawn by our pass) and the bars' pulse halos and
+  wave (5, stored state until M9u6b2). The only large draw is
+  `DepthClear`.
+- `ui --live`: every change kind returns to the start hash. The start
+  state is now 66 draws, hash `7f52d63da4ad1e96`. The stored-state
+  hashes (`c976ea767c630cd5` unplaced, `9ce107c885f3a955` placed) don't
+  go through the start rules. M9u6b1 didn't record them, so they are
+  not compared. 120 frames: mean 2.0 ms.
+- `ui --bars`: 300 bar checks, 0 differ.
+- Client dive (`--game-ui --shot 30 m9u6s-dive`): 72 textures on the
+  GPU, 62 of 62 draws, 0.12 ms CPU per frame, 0 warnings or errors.
+  `out/m9u6s-dive.png` shows the bars with their icons, the depth with
+  its half moon and the reticle. It is not compared with the game.
+- `cargo test --workspace`: 616 passed, 0 failed, 53 ignored. M9u6b1's
+  entry said 51, but that was counted before its new test; its commit
+  has 52. `cargo test -p sn-assets --test real_data -- --ignored`: 48 of
+  48 pass. fmt and clippy are clean.
+
+**Not done:** the pulse halos and wave (M9u6b2). The rules' game-state
+conditions (vehicle, radiation, compass) are fixed at their new-game
+values until those systems exist. The feedback hint that the game shows
+after 70 s (`hintDelay`) is not ported.
+
 ## 2026-10-14 — M9u6b1: the HUD's bars drawn and driven
 
 **Plan:** M9u6b was split in `docs/DESIGN.md` into b1 (shader, values,

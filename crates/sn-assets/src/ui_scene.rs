@@ -49,12 +49,7 @@ type Key = (PathBuf, String, i64);
 
 impl From<&UiStartState> for UiState {
     fn from(s: &UiStartState) -> UiState {
-        let mut out = UiState::default();
-        out.group_alpha
-            .extend(s.group_alpha.iter().map(|(n, a)| (*n, *a)));
-        out.active.extend(s.inactive.iter().map(|n| (*n, false)));
-        out.enabled.extend(s.disabled.iter().map(|n| (*n, false)));
-        out
+        s.state.clone()
     }
 }
 
@@ -907,13 +902,15 @@ mod tests {
     #[test]
     fn the_start_state_becomes_a_state() {
         let mut s = UiStartState::default();
-        s.group_alpha.insert(4, 0.0);
-        s.inactive.insert(5);
-        s.disabled.insert(6);
+        s.state.group_alpha.insert(4, 0.0);
+        s.state.active.insert(5, false);
+        s.state.enabled.insert(6, false);
+        s.state.renderer_alpha.insert(7, 0.0);
         let u = UiState::from(&s);
         assert_eq!(u.group_alpha[&4], 0.0);
         assert!(!u.active[&5]);
         assert!(!u.enabled[&6]);
+        assert_eq!(u.renderer_alpha[&7], 0.0);
         assert!(u.text.is_empty());
     }
 }

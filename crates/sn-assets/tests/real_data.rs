@@ -3011,3 +3011,70 @@ fn the_hud_bars_are_read() {
     let code = sn_assets::read_assembly(&game).unwrap();
     assert_eq!(sn_assets::survival_start(&code).unwrap(), (50.5, 90.5));
 }
+
+/// M9u6s: the start rules hide the screens the game hides at start (the
+/// feedback panel, the confirmation dialog, pop-ups, the vehicles' and
+/// cameras' screens), and the HUD's bars, player depth and the reticle's
+/// `Default` icon stay drawn.
+#[test]
+#[ignore = "needs SUBNAUTICA_DIR pointing at a Subnautica install"]
+fn the_start_state_hides_what_the_game_hides() {
+    let Some(dir) = std::env::var_os("SUBNAUTICA_DIR") else {
+        eprintln!("SUBNAUTICA_DIR not set; skipping");
+        return;
+    };
+    let game = GameData::locate(Some(PathBuf::from(dir))).unwrap();
+    let assets = Assets::index(&game).unwrap();
+    let tags = sn_assets::physics_settings(&assets).unwrap().tags;
+    let assemblies = sn_assets::ScriptAssemblies::load(&game).unwrap();
+    let layouts = assemblies.layouts().unwrap();
+    let fonts = assets.font_assets(&assemblies).unwrap();
+    let set = assets.tmp_font_set(&fonts).unwrap();
+    let catalog = assets.catalog().unwrap();
+    let root = assets.ugui_root(&catalog).unwrap();
+    let ui = assets.ui_tree("uGUI.prefab", &root).unwrap();
+    let start = assets.ui_start_state(&layouts, &ui).unwrap();
+    let mut atlases = sn_assets::GlyphAtlases::new(&fonts).unwrap();
+    let d = assets
+        .ui_draw_placed(
+            &layouts,
+            &ui,
+            &fonts,
+            &set,
+            &mut atlases,
+            &tags.sorting_layers,
+            &std::collections::HashMap::new(),
+            &start,
+        )
+        .unwrap();
+    let visible: Vec<&str> = d
+        .list
+        .items
+        .iter()
+        .filter(|i| i.alpha > 0.0 && i.vertices.iter().any(|v| v.color[3] > 0))
+        .map(|i| ui.nodes[i.node].path.as_str())
+        .collect();
+    for hidden in [
+        "uGUI/ScreenCanvas/FeedbackCollector/",
+        "uGUI/ScreenCanvas/Confirmation/",
+        "uGUI/ScreenCanvas/CriticalWarning/",
+        "uGUI/ScreenCanvas/HUD/Content/PopupNotification/",
+        "uGUI/ScreenCanvas/HUD/Content/CameraCyclops/",
+        "uGUI/ScreenCanvas/HUD/Content/Seamoth/",
+        "uGUI/ScreenCanvas/HUD/Content/HandReticle/IconCanvas/Hand",
+        "uGUI/Tooltip/",
+        "uGUI/OverlayCanvas/BuildWatermark",
+    ] {
+        assert!(
+            !visible.iter().any(|p| p.starts_with(hidden)),
+            "{hidden} drawn at start"
+        );
+    }
+    for shown in [
+        "uGUI/ScreenCanvas/HUD/Content/BarsPanel/OxygenBar/Bar",
+        "uGUI/ScreenCanvas/HUD/Content/DepthCompass/PlayerDepth/HalfMoon",
+        "uGUI/ScreenCanvas/HUD/Content/HandReticle/IconCanvas/Default",
+    ] {
+        assert!(visible.contains(&shown), "{shown} not drawn at start");
+    }
+}

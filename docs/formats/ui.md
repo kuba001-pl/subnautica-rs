@@ -814,12 +814,76 @@ Run: 3 faders to alpha 0 (intro, loading screen, respawning), the
 out-of-oxygen overlay disabled, the game-over blocker and message
 inactive. Afterwards, no full-canvas draw has alpha above 0.
 
-**Still visible, and not shown by the game at start** (seen in the
-screenshots; the ones over 5 % of the canvas are logged):
-`FeedbackCollector` (its panel and the four smileys), `Confirmation/Panel`
-(the red dialog), the radiation and notification pop-ups, and others.
-Their scripts show them only when asked. Hiding them follows each screen's
-own rules (M9u6, M9u7).
+**The other screens (M9u6s) — confirmed (decompiled code, `ui --start`).**
+With only the rules above, the start state still drew 151 visible draws
+in 8 screens: the feedback panel and its smileys, the confirmation
+dialog, the radiation and notification pop-ups, the vehicles' and
+cameras' screens, every hand reticle icon and text at once, the compass,
+the build watermark, the tooltip. Each one's script hides it at start.
+The rules are in `RULES` in `ui_start.rs`, plus four special cases. All
+of them assume a new game's start in our client: in the main level, no
+vehicle, no camera, the PDA closed, no messages.
+- Made inactive in `Awake`: `uGUI_FeedbackCollector`'s `inputBlocker`,
+  `root` and `repliesPanel`; `uGUI_PopupMessage`'s `root` (the critical
+  warning, the HUD's message hint, the feedback hint and status);
+  `uGUI_CameraCyclops`'s and `uGUI_CameraDrone`'s `content`.
+- Made inactive in `Start`: `uGUI_SceneConfirmation` itself.
+  `uGUI_BuildWatermark` hides itself once the main level is loaded and no
+  wait screen is showing.
+- Made inactive in the first `Update`: `uGUI_SeamothHUD`'s and
+  `uGUI_ExosuitHUD`'s `root` (no vehicle) and `uGUI_RadiationWarning`'s
+  `warning` (not radiated). Vehicles and radiation are not ported, so
+  these are their start values.
+- `CanvasGroup` alpha 0: `uGUI_Tooltip.Awake`,
+  `uGUI_PopupNotification.Awake`, and `uGUI_MessageQueue` (the
+  subtitles). For the queue, `OnEnable` sets `time = timeFadeOut`, so
+  with no messages its first `Update` gives alpha 0.
+- Graphics disabled: `uGUI_PowerIndicator.text` (no power outside a base
+  or sub), and `uGUI_DepthCompass`'s four submersible graphics. In
+  `DepthMode.Player`, `UpdateDepth` sets `submersibleDepth`, its suffix,
+  `submersibleCrushDepth` and `submersibleBackground` to
+  `enabled = false`.
+- The compass: `uGUI_DepthCompass.LateUpdate` calls
+  `compass.SetVisible(false)` when no compass is equipped. `uGUI_Compass`
+  then builds an empty mesh (we draw it disabled) and disables its 8
+  labels' texts.
+- The intro (`uGUI_SceneIntro.Start`): `mainText.SetState(false)`
+  disables the text on its own GameObject (`uGUI_Text.Awake` finds it
+  with `GetComponent`). `skipText.SetAlpha(0)` sets TMP's `alpha`, which
+  is its font colour's alpha. `skipProgress.value = 0` gives `_Value` 0,
+  and the bar shader draws nothing at 0.
+- `HandReticle`: `Awake` hides every icon (`uGUI_HandReticleIcon.SetActive
+  (false, 0)`: its `go` inactive, its graphics' `CanvasRenderer` alpha 0
+  on the first `UpdateIcon`). On the first `LateUpdate`, `desiredIconType`
+  is still `None` (0), and the method ends by setting it to `Default`.
+  On the second, the `Default` icon fades in over 0.1 s. Settled: 1 icon
+  shown, 9 hidden. `Start` empties the four texts, and `UpdateText`
+  makes an empty text's object inactive.
+
+Unity runs `Awake` only once an object is active, so a rule whose
+script's node is inactive at start is not applied, and that is logged.
+None of these rules hit that case.
+
+**Run** (2026-10-14, `sn-inspect ui --start`, 1920×1080): 37 start
+notes. 66 draws remain, 23 of them visible, and 23 of 23 are named with
+the rule that shows them:
+- the four bars and their quad background (`uGUI_SceneHUD`, 12);
+- the player depth (`DepthMode.Player`, 4);
+- the reticle's `Default` icon (1);
+- `DepthClear`, which our pass doesn't draw (1);
+- the bars' pulse halos and wave (5): their pulse animation clips are not
+  ported (M9u6b2), so these are still their stored state.
+
+The only draw larger than 5 % of its canvas is `DepthClear`.
+
+**Found along the way, client:** the main world kept only the newest UI
+build each frame. The worker sends each texture only once, so when two
+builds arrived in one frame, the first one's textures were lost. With
+fewer draws the worker got fast enough for this to happen at start, and
+every image drew as a flat square (the resize log line was missing too).
+Now each frame keeps every received build's textures and its resize.
+After the fix, 72 textures are on the GPU, 62 of 62 draws are made, and
+the pass costs 0.12 ms CPU per frame.
 
 **The runs** (2026-10-13, Lifepod start, `--game-ui --shot 25`):
 - 1920×1080 and 2560×1440 each give 96 draws, 1,024 vertices and 1,536
