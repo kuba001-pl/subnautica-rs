@@ -3125,3 +3125,63 @@ fn the_hud_bars_pulses_are_read() {
         assert!(b.pulse.delay.evaluate(0.0) + b.pulse.time.evaluate(0.0) <= 0.0);
     }
 }
+
+#[test]
+#[ignore = "needs SUBNAUTICA_DIR pointing at a Subnautica install"]
+fn waterfall_caps_resolve_and_keep_their_height() {
+    let Some(dir) = std::env::var_os("SUBNAUTICA_DIR") else {
+        return;
+    };
+    let game = GameData::locate(Some(PathBuf::from(dir))).unwrap();
+    let assets = Assets::index(&game).unwrap();
+    let catalog = assets.catalog().unwrap();
+    let database = game.read_prefab_database().unwrap();
+    let mut families = 0;
+    for path in database.values() {
+        if !path.to_lowercase().contains("waterfall") {
+            continue;
+        }
+        let prefab = assets.prefab(&catalog, path).unwrap();
+        let caps: Vec<_> = prefab
+            .nodes
+            .iter()
+            .filter(|n| n.waterfall_cap_height.is_some())
+            .collect();
+        assert_eq!(caps.len(), 2, "{}", path);
+        families += 1;
+        for node in caps {
+            let height = node.waterfall_cap_height.unwrap();
+            let (_, geometry) = assets.mesh(node.mesh.as_ref().unwrap()).unwrap();
+            let min = geometry
+                .positions
+                .iter()
+                .map(|p| p[1])
+                .fold(f32::INFINITY, f32::min);
+            let max = geometry
+                .positions
+                .iter()
+                .map(|p| p[1])
+                .fold(f32::NEG_INFINITY, f32::max);
+            for y in [0.25, 1.0, 12.0] {
+                let root = sn_world::Transform {
+                    scale: [1.0, y, 1.0],
+                    ..Default::default()
+                };
+                let local = sn_assets::waterfall_local(node.in_prefab, Some(height), y);
+                let world = root.then(&local);
+                assert!((world.scale[1] - height).abs() < 1e-5);
+                assert_eq!(world.position[1], node.in_prefab.position[1] * y);
+                let thickness = (max - min) * world.scale[1];
+                assert!((thickness - (max - min) * height).abs() < 1e-5);
+            }
+            eprintln!(
+                "waterfall {} cap height={height}, mesh y extent={}, fixed thickness={}",
+                path,
+                max - min,
+                (max - min) * height
+            );
+        }
+    }
+    assert!(families >= 3);
+    eprintln!("waterfall families checked: {families}");
+}

@@ -13,6 +13,17 @@ use sn_world::Transform;
 use crate::terrain::script_class;
 use crate::{Assets, FileRef, ObjectRef, Result};
 
+/// Apply the startup rule before composing the placement: positions and the
+/// middle remain stretched, while cap thickness uses its configured height.
+pub fn waterfall_local(mut local: Transform, height: Option<f32>, root_y: f32) -> Transform {
+    if let Some(height) = height {
+        // A collapsed placement cannot produce a useful inverse scale.
+        // Keep it collapsed instead of sending infinities to the renderer.
+        local.scale = [1.0, if root_y != 0.0 { height / root_y } else { 0.0 }, 1.0];
+    }
+    local
+}
+
 const GAME_OBJECT: i32 = 1;
 const TRANSFORM: i32 = 4;
 /// A `RectTransform` starts with a Transform's fields.
@@ -83,6 +94,8 @@ pub struct PrefabNode {
     pub day_night_light: Option<DayNightLight>,
     /// The `VFXVolumetricLight` whose glow this node's renderer draws.
     pub volumetric_light: Option<VolumetricGlow>,
+    /// Root waterfall cap height; divide by each placement's local Y scale.
+    pub waterfall_cap_height: Option<f32>,
     /// The `prefabClassId` of a `PrefabPlaceholder` on this node: the game
     /// spawns that prefab here (`PlaceholderGroup`).
     pub placeholder: Option<String>,
@@ -498,6 +511,37 @@ impl Assets<'_> {
         self.add_node(root, None, true, &mut prefab, &mut lods, 0)?;
         self.prepare_key_terminals(&mut prefab)?;
 
+        for (file, script, owner) in std::mem::take(&mut prefab.waterfalls) {
+            for (reference, height) in [
+                (script.top, script.top_height),
+                (script.bottom, script.bottom_height),
+            ] {
+                let transform = self
+                    .resolve(&file, reference)?
+                    .ok_or_else(|| format!("{key}: missing waterfall cap Transform"))?;
+                let (_, bytes) = transform.data()?;
+                let t = TransformNode::parse(bytes, transform.file.file().big_endian)
+                    .map_err(|e| format!("{key}: waterfall cap: {e}"))?;
+                let go = self
+                    .resolve(&transform.file, t.game_object)?
+                    .ok_or_else(|| format!("{key}: missing waterfall cap GameObject"))?;
+                let cap = prefab
+                    .nodes
+                    .iter()
+                    .position(|n| n.key == go.key())
+                    .ok_or_else(|| format!("{key}: waterfall cap outside hierarchy"))?;
+                // Current waterfall prefabs have direct children of their root.
+                // Reject other layouts rather than silently applying a wrong divisor.
+                if owner != 0 || prefab.nodes[cap].parent != Some(owner) {
+                    return Err(format!("{key}: unsupported nested waterfall cap"));
+                }
+                if !height.is_finite() {
+                    return Err(format!("{key}: non-finite waterfall height"));
+                }
+                prefab.nodes[cap].waterfall_cap_height = Some(height);
+            }
+        }
+
         // LOD levels: match each group's renderers to nodes by object.
         let mut lod_groups = Vec::new();
         let mut lod_conflicts = 0;
@@ -696,6 +740,7 @@ impl Assets<'_> {
                     lights: n.lights,
                     day_night_light: n.day_night_light,
                     volumetric_light: n.volumetric_light,
+                    waterfall_cap_height: n.waterfall_cap_height,
                     placeholder: n.placeholder,
                     animator: n.animator,
                     blend_shape_weights: n.blend_shape_weights,
@@ -836,6 +881,11 @@ impl Assets<'_> {
                                 .map_err(|e| format!("DayNightLight {}: {e}", c.path_id))?,
                         );
                     }
+                    Some("VFXWaterFall") => {
+                        let v = sn_unity::VfxWaterFall::parse(data, big_endian)
+                            .map_err(|e| format!("VFXWaterFall {}: {e}", c.path_id))?;
+                        prefab.waterfalls.push((c.file.clone(), v, index));
+                    }
                     Some("VFXVolumetricLight") => {
                         let v = VfxVolumetricLight::parse(data, big_endian)
                             .map_err(|e| format!("VFXVolumetricLight {}: {e}", c.path_id))?;
@@ -918,6 +968,7 @@ impl Assets<'_> {
             lights,
             day_night_light,
             volumetric_light: None,
+            waterfall_cap_height: None,
             placeholder,
             animator,
             blend_shape_weights,
@@ -1010,6 +1061,7 @@ struct BuildingNode {
     lights: Vec<Light>,
     day_night_light: Option<DayNightLight>,
     volumetric_light: Option<VolumetricGlow>,
+    waterfall_cap_height: Option<f32>,
     placeholder: Option<String>,
     animator: Option<NodeAnimator>,
     blend_shape_weights: Vec<f32>,
@@ -1028,6 +1080,7 @@ struct Building {
     placeholder_groups: Vec<(FileRef, PrefabPlaceholdersGroup, usize)>,
     /// `ShipExteriorCull`s found: their file, enabled, colliders, node.
     exterior_culls: Vec<(FileRef, bool, Vec<PPtr>, usize)>,
+    waterfalls: Vec<(FileRef, sn_unity::VfxWaterFall, usize)>,
     key_terminals: Vec<(FileRef, sn_unity::PrecursorKeyTerminal, usize)>,
 }
 
@@ -1225,6 +1278,7 @@ impl Building {
             placeholder_groups: Vec::new(),
             exterior_culls: Vec::new(),
             key_terminals: Vec::new(),
+            waterfalls: Vec::new(),
         }
     }
 }
@@ -1232,6 +1286,32 @@ impl Building {
 #[cfg(test)]
 mod optimized_tests {
     use super::*;
+
+    #[test]
+    fn waterfall_caps_keep_thickness_and_stretch_their_positions() {
+        let cap = Transform {
+            position: [0.0, -10.0, 0.0],
+            ..Transform::default()
+        };
+        for y in [0.25, 1.0, 12.0, -3.0] {
+            let root = Transform {
+                scale: [2.0, y, 0.5],
+                ..Transform::default()
+            };
+            let world = root.then(&waterfall_local(cap, Some(2.5), y));
+            assert!((world.scale[1] - 2.5).abs() < 1e-6);
+            assert_eq!(world.scale[0], 2.0);
+            assert_eq!(world.scale[2], 0.5);
+            assert_eq!(world.position[1], -10.0 * y);
+            assert_eq!(waterfall_local(cap, None, y), cap);
+        }
+        assert!(
+            waterfall_local(cap, Some(2.5), 0.0)
+                .scale
+                .iter()
+                .all(|v| v.is_finite())
+        );
+    }
 
     fn node(name: &str, parent: Option<usize>) -> BuildingNode {
         BuildingNode {
@@ -1259,6 +1339,7 @@ mod optimized_tests {
             lights: Vec::new(),
             day_night_light: None,
             volumetric_light: None,
+            waterfall_cap_height: None,
             placeholder: None,
             animator: None,
             blend_shape_weights: Vec::new(),

@@ -173,7 +173,10 @@ regression passed; user visual confirmation pending); Tree Cove's
 brine and the Ghost Tree/Bones Field lakes with world-space scrolling,
 deformation, near fading and weighted transparency (M7g4a/b; GPU validated,
 saved lake lighting keywords are inactive in the installed shader;
-original-game visual parity not tested); tech light cones, Gun elevator
+original-game visual parity not tested); green and blue Lost River waterfalls
+keep their top/bottom cap thickness at the configured height when their
+placements are stretched (startup rule restored; numerical tests passed,
+human visual confirmation pending); tech light cones, Gun elevator
 smoke/dots and control-room inner blocks, thermal reactor electricity,
 lava falls and orange key symbols use their decoded unlit effect programs
 (M7g4d; GPU validated, original-game visual parity not tested; key terminals

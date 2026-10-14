@@ -296,6 +296,7 @@ struct Part {
     mesh: u32,
     material: u32,
     local: Placement,
+    waterfall_cap_height: Option<f32>,
     /// Lit with the sky of the biome it stands in (a `SkyApplier` lists
     /// it); else with the global sky.
     biome_sky: bool,
@@ -1987,6 +1988,7 @@ impl Library {
                     *sub_mesh
                 };
                 parts.push(Part {
+                    waterfall_cap_height: node.waterfall_cap_height,
                     mesh: mesh_id,
                     material,
                     local,
@@ -2164,7 +2166,12 @@ impl Library {
                             ..*p
                         },
                         None => Part {
-                            local: at.then(&p.local),
+                            local: at.then(&sn_assets::waterfall_local(
+                                p.local,
+                                p.waterfall_cap_height,
+                                at.scale[1],
+                            )),
+                            waterfall_cap_height: None,
                             lod,
                             ..*p
                         },
@@ -4444,7 +4451,17 @@ impl ObjectStreamer {
                     EffectLook::Particles(v) => v.textures.map(&texture),
                     EffectLook::Glow(_) => std::array::from_fn(|_| s.defaults.white.clone()),
                 };
-                let world = inst.transform.then(&part.local);
+                let world = inst.transform.then(&sn_assets::waterfall_local(
+                    part.local,
+                    part.waterfall_cap_height,
+                    inst.transform.scale[1],
+                ));
+                if let Some(height) = part.waterfall_cap_height {
+                    info!(
+                        "objects: waterfall cap root_y={} configured_height={} world_y_scale={}",
+                        inst.transform.scale[1], height, world.scale[1]
+                    );
+                }
                 let marker = EffectPart {
                     mesh: part.mesh,
                     look,
@@ -4571,7 +4588,11 @@ impl ObjectStreamer {
                 drawn.push(entity);
                 continue;
             }
-            let world = inst.transform.then(&part.local);
+            let world = inst.transform.then(&sn_assets::waterfall_local(
+                part.local,
+                part.waterfall_cap_height,
+                inst.transform.scale[1],
+            ));
             let entity = s
                 .commands
                 .spawn((

@@ -81,6 +81,7 @@ pub use player_body::{
     EquipmentSlot, FIXED_PARAMETERS, PlayerAnimation, PlayerBody, RULE_PARAMETERS, TECH_TYPE_NONE,
     equipment_changes,
 };
+pub use prefab::waterfall_local;
 pub use prefab::{
     CullBox, ExteriorCull, NodeAnimator, PlaceholderGroup, Prefab, PrefabLodGroup, PrefabNode,
     SHADOWS_OFF, SHADOWS_ON, SHADOWS_ONLY, SHADOWS_TWO_SIDED, VolumetricGlow, WorldBox,

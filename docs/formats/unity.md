@@ -507,3 +507,32 @@ cull as UnityPy (`docs/formats/materials.md`).
 - Creature animation (the creatures are not placed yet).
 - `StreamingAssets/AssetBundles/` (`logos`, `waterdisplacement`): legacy bundles,
   not yet looked at.
+
+### Lost River waterfall cap scaling (2026-10-14)
+
+**Confirmed:** the waterfall component stores two float heights followed by
+three Transform references (top, middle, bottom), after the normal
+MonoBehaviour header. Our checked reader resolves both caps on all three
+installed waterfall prefabs (Tree Cove, Bones Field and Ghost Tree). Each
+cap is a direct child of the waterfall root; both configured heights are 1.
+
+**Confirmed from read-only script inspection:** startup replaces the top
+and bottom local scales with `(1, configured height / root local Y scale,
+1)`. It does not change their positions or the middle section. Consequently,
+world placement stretch changes the waterfall length and bottom position,
+while each cap keeps its thickness. This is a per-instance operation;
+changing shared mesh vertices or baking a single scale into the template
+would be incorrect when placements have different scales.
+
+**Confirmed numerically:** the top mesh extends approximately 3.2 m above
+its local join. Previously a root Y scale of 11.9215 made that extension
+approximately 38.15 m; applying the configured inverse scale makes it
+approximately 3.2 m. Synthetic tests cover positive, reflected and collapsed
+placements; opt-in installed-data tests resolve six caps and check invariant
+thickness at three placement scales. Zero Y placements are kept collapsed
+rather than producing non-finite render matrices (a defensive deviation).
+
+**Hypothesis pending human comparison:** this missing startup rule explains
+the reported green/blue falls starting too high. Original-game visual parity
+is not tested. Nested waterfall component layouts are explicitly rejected;
+none occur in the three installed waterfall families checked here.

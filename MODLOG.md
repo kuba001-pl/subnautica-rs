@@ -2,6 +2,68 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-14 ? Lost River green/blue waterfall cap height correction
+
+**What/why:** the user reports waterfall starting points extending too high.
+Read-only research found an unported waterfall startup rule: top/bottom
+local Y scale equals configured height divided by root local Y scale.
+The previous shared template stretched these sections with the middle.
+A Tree Cove placement with Y scale 11.9215 therefore extended its top
+approximately 38.15 m above the join instead of 3.2 m.
+
+- `sn-unity`: checked waterfall component reader, both heights and three
+  Transform references, synthetic truncation coverage.
+- `sn-assets`: resolve configured caps to their nodes; expose per-placement
+  scaling without changing shared geometry. Synthetic positive, reflected,
+  collapsed and middle/position invariants. Unexpected nested layouts fail
+  explicitly; all three installed families use direct root children.
+- Client: apply the rule on effect and ordinary mesh paths, and when a
+  placeholder instantiates a waterfall. Log cap scale invariants.
+- Inspector: print configured heights and apply the rule to prefab exports
+  in ignored `out/`. Format findings and README updated.
+
+No dependencies, architecture changes or whitelist changes. Game install
+read-only; no commits or pushes.
+
+**Verified:**
+- `cargo test --workspace`: 630 passed, 0 failed, 55 ignored; no game needed.
+- `cargo clippy --workspace --all-targets -- -D warnings`,
+  `cargo fmt --all -- --check`, `git diff --check`: pass.
+- `cargo build --release -p sn-client -p sn-inspect`: pass.
+- `$env:SUBNAUTICA_DIR='<INSTALL>'; cargo test -p sn-assets --test real_data waterfall_caps -- --ignored --nocapture`:
+  1 passed. Three families, six resolved caps; top/bottom configured heights
+  1; thickness constant at placement Y scales 0.25, 1 and 12.
+- Matched before/after blue and green GPU runs: 120 measured frames after
+  60 settled warm-up frames, 960?540, view 400, fixed clock and seeds.
+  After runs exit 0; zero loader warnings or shader validation errors.
+  Object and terrain stats equal before/after. Blue: 8 corrected caps,
+  root Y 1.886?11.922; green: 42 caps, root Y 0.221?4.66. All resulting cap
+  world Y scales equal 1 within float rounding (worst 0.99999994).
+  Mean frames before/after: blue 10.87/5.38 ms, green 10.48/5.28 ms.
+  Build/check workloads overlapped the earlier runs: these pairs do not
+  establish a performance improvement.
+- Logs: `out/waterfall-fix/`; reports/captures:
+  `out/baselines/run-waterfall-{blue,green}-{before,after}/` (all ignored).
+
+**Exact client verification commands** (set SUBNAUTICA_DIR as above):
+```powershell
+target/release/sn-client.exe --benchmark 120 --warmup 60 --start -1244 -920 430 --look -1244 -930 397 --view 400 --resolution 960 540 --time-scale 0 --slot-seed 1 --lifepod-seed 1 --aurora intact
+target/release/sn-client.exe --benchmark 120 --warmup 60 --start -1190 -630 -65 --look -1187 -643 -109 --view 400 --resolution 960 540 --time-scale 0 --slot-seed 1 --lifepod-seed 1 --aurora intact
+```
+Expect a completed 120-frame benchmark, zero loader warnings and waterfall
+cap log lines with configured height/world Y scale approximately 1.
+For a human comparison, replace `--benchmark 120 --warmup 60` with
+`--free-cam` to stay in each scene.
+
+**Dead ends/corrections:** the first test compile assumed the prefab database
+had struct entries; it is a map, so the test now reads its path values.
+The automated first log summary missed cap records because PowerShell
+wrapped the output; corrected it to accept whitespace across lines.
+
+**Not tested:** original-game visual parity and user confirmation that both
+starting heights now look right. Zero-root-Y handling deliberately keeps
+geometry collapsed instead of generating invalid render matrices.
+
 ## 2026-10-14 — M9u6b2: the bars' animations
 
 **What/why:** the HUD bars' pulse, and the health, food and water

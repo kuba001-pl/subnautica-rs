@@ -88,6 +88,9 @@ pub fn one(game: &GameData, key: &str) -> Result<ExitCode> {
             t.rotation.map(|v| (v * 1000.0).round() / 1000.0),
             t.scale.map(|v| (v * 1000.0).round() / 1000.0)
         );
+        if let Some(height) = node.waterfall_cap_height {
+            let _ = write!(line, "[waterfall cap height {height}] ");
+        }
         if !node.active {
             line.push_str("[inactive] ");
         }
@@ -127,7 +130,16 @@ pub fn one(game: &GameData, key: &str) -> Result<ExitCode> {
                 match prefab.skinned_geometry(i, &m, &g) {
                     // Already in the prefab root's space.
                     Some(skinned) => append_obj(&mut obj, &skinned, &root, &mut base),
-                    None => append_obj(&mut obj, &g, &root.then(&node.in_prefab), &mut base),
+                    None => append_obj(
+                        &mut obj,
+                        &g,
+                        &root.then(&sn_assets::waterfall_local(
+                            node.in_prefab,
+                            node.waterfall_cap_height,
+                            root.scale[1],
+                        )),
+                        &mut base,
+                    ),
                 }
             }
         }

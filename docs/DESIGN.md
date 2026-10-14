@@ -3174,3 +3174,25 @@ Decided 2026-10-11 (the user took the M10 plan's recommendations):
    replayed on every machine; random draws travel as results; the client
    names the object it acts on (key and class id); slot fillers are keyed
    by placeholder id, slot and copy.
+
+#### Lost River waterfall cap correction (2026-10-14)
+
+The user reports green and blue waterfall tops extending too high. Research
+found an unported `VFXWaterFall` startup scaling rule: the top and bottom
+local Y scales divide their configured heights by the waterfall root's
+local Y scale. Keep the middle and cap positions unchanged. Decode the
+stored fields/references and apply the rule per placement, not to a shared
+mesh or template. No architecture changes or dependencies.
+
+Done when:
+- [x] Checked parser and synthetic scale tests pass, including malformed input.
+- [x] Both waterfall families resolve their cap references from the install;
+      cap heights remain constant across different placement Y scales.
+- [x] Workspace tests, fmt, clippy and client GPU regression pass.
+- [ ] Human comparison confirms green and blue starting heights (not tested).
+
+Implemented and numerically checked: three installed families/six caps,
+630 workspace tests passed. Both matched GPU scenes retain identical
+terrain/object counts and no loader warnings; 50 cap instances retain
+configured thickness. Details and commands in MODLOG. Human visual
+confirmation remains open.

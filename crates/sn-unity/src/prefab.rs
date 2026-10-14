@@ -6,6 +6,31 @@ use crate::Result;
 use crate::objects::PPtr;
 use crate::reader::Reader;
 
+/// Serialized configuration of the waterfall's startup cap scaling.
+#[derive(Clone, Debug)]
+pub struct VfxWaterFall {
+    pub top_height: f32,
+    pub bottom_height: f32,
+    pub top: PPtr,
+    pub middle: PPtr,
+    pub bottom: PPtr,
+}
+
+impl VfxWaterFall {
+    pub fn parse(data: &[u8], big_endian: bool) -> Result<Self> {
+        let header = crate::MonoBehaviourHeader::parse(data, big_endian)?;
+        let mut r = Reader::new(data, big_endian);
+        r.seek(header.fields_offset)?;
+        Ok(Self {
+            top_height: r.f32()?,
+            bottom_height: r.f32()?,
+            top: PPtr::read(&mut r)?,
+            middle: PPtr::read(&mut r)?,
+            bottom: PPtr::read(&mut r)?,
+        })
+    }
+}
+
 fn pptr_vector(r: &mut Reader) -> Result<Vec<PPtr>> {
     let n = r.count(12)?;
     let mut out = Vec::with_capacity(n);
@@ -332,6 +357,33 @@ impl PrecursorKeyTerminal {
 #[cfg(test)]
 mod terminal_tests {
     use super::*;
+
+    #[test]
+    fn waterfall_fields_reject_every_truncation() {
+        let mut bytes = Vec::new();
+        let ptr = |b: &mut Vec<u8>, id: i64| {
+            b.extend_from_slice(&0i32.to_le_bytes());
+            b.extend_from_slice(&id.to_le_bytes());
+        };
+        ptr(&mut bytes, 1);
+        bytes.extend_from_slice(&[1, 0, 0, 0]);
+        ptr(&mut bytes, 2);
+        bytes.extend_from_slice(&0i32.to_le_bytes());
+        bytes.extend_from_slice(&2.5f32.to_le_bytes());
+        bytes.extend_from_slice(&0.75f32.to_le_bytes());
+        for id in [3, 4, 5] {
+            ptr(&mut bytes, id);
+        }
+        let v = VfxWaterFall::parse(&bytes, false).unwrap();
+        assert_eq!((v.top_height, v.bottom_height), (2.5, 0.75));
+        assert_eq!(
+            (v.top.path_id, v.middle.path_id, v.bottom.path_id),
+            (3, 4, 5)
+        );
+        for len in 0..bytes.len() {
+            assert!(VfxWaterFall::parse(&bytes[..len], false).is_err());
+        }
+    }
 
     #[test]
     fn terminal_startup_fields_are_checked_and_select_by_key_type() {
