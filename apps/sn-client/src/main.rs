@@ -1023,6 +1023,9 @@ fn main() -> AppExit {
             objects::stream_objects
                 .after(terrain::stream)
                 .run_if(resource_exists::<ObjectStreamer>),
+            objects::update_atmosphere_skies
+                .after(objects::stream_objects)
+                .run_if(resource_exists::<ObjectStreamer>),
             log_stats,
         ),
     );

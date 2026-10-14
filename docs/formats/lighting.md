@@ -180,13 +180,53 @@ grand reef master 3, diffuse 0, specular 0.38; safe-shallows caves master
 **Ours (M8c7):** `object.wgsl` computes these G-buffer values and feeds
 them to our port of the light pass (skipped where the alpha says unlit),
 then adds the emission and SH terms. Each material is made once per sky
-it's used with; the sky is picked per placed object from our biome lookup
-(batch override, then map). **Not done:** the specular cube reflection;
-atmosphere volumes in the biome lookup (so cave skies are rarely picked);
+it's used with. M8c7b1 (2026-10-14) adds streamed atmosphere point queries
+for Auto appliers at the owning component's placement, before the batch/map
+fallback. Meshes and effects are rebound when volumes enter or leave the
+streamed scene; materials remain cached separately per sky. **Not done:**
+the specular cube reflection; native equal-priority tie order;
 anchors other than Auto (taken as the global sky); `_UwePowerLoss` (bases);
 the non-`MARMO_SPECMAP` variant is assumed to use a white map
 (**hypothesis**); the SH rotation by the sky's frame assumes `_SkyMatrix ×
 n` (**hypothesis**, only matters for the wreck sky).
+
+### Atmosphere point queries (M8c7b1, 2026-10-14)
+
+**Confirmed from the installed managed methods:**
+`WaterBiomeManager.GetBiomeEnvironment` asks `GetBiome` for the position of
+the SkyApplier component, not the prefab root. The manager's enclosing-volume
+query uses a zero-radius collider overlap on the Trigger layer, includes
+triggers, and filters `affectsVisuals` for visual queries. The greatest
+`AtmosphereVolume.GetSortKey` wins: priority occupies the high 32 bits and
+the unsigned runtime instance ID the low 32 bits. Its override is returned
+even when empty; no enclosing volume falls back to LargeWorld's biome.
+The component's enabled flag is not part of this point-query filter.
+
+**Confirmed by the checked installed-data reader:** the existing assembly
+layout builder and `sn_unity::read_script` consume the stored AtmosphereVolume
+fields exactly, including the obsolete inline settings before overrideBiome.
+Its shape comes from the collider on the same GameObject. An opt-in audit of
+all 1,369 placed prefab families found 151 visual-volume families with 2,409
+placements: 1,425 boxes, 984 spheres, no capsules, and no rejected placement
+transforms. Inactive nodes, nonvisual volumes and disabled colliders are
+excluded. Invisible volume-only prefabs participate in the client stream.
+Reconstructed terminal bones have synthetic identities and no serialized
+components; they contribute transforms but are not read as GameObjects.
+
+**Implementation and limits:** boxes use the affine hierarchy's orthogonal
+axes and per-axis dimensions; spheres scale by the largest axis; capsules
+scale height on their direction and radius by the larger cross axis. The
+sphere/capsule scaling conventions remain a **hypothesis** with respect to
+the native PhysX runtime (synthetic checks and installed bounds, not a native
+physics measurement). Sheared boxes, collapsed/nonfinite transforms and mesh
+colliders fail explicitly. Volume lifetimes follow the existing streaming
+rules. Auto binding positions are recorded at spawn; moving appliers/volumes
+and script-driven activation remain animation follow-ups. The local tie key
+is the entity's lifetime identity; it does not reproduce native instance IDs
+or guarantee identical selections across peers/reloads. Equal-priority
+different-biome overlap ambiguities are counted in the log. Fog rasterization
+and AtmosphereDirector's transition/fade rules are not implemented here.
+Matched original-game visual comparison: **not tested**.
 
 ## Local lights — confirmed from the data (M8e1)
 

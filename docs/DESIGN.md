@@ -11,6 +11,8 @@ row's own mark says what is done; everything else is a plan, not code.
 
 Visual fidelity backlog and the missing comparison/terrain plans are collected
 in § 4.5 (2026-10-11). Implemented first passes are not claims of a 1:1 match.
+M8c7b1's static object atmosphere selection was implemented and checked on
+2026-10-14; native tie ordering and original-game comparison remain open.
 
 ## 1. Goal
 
@@ -211,7 +213,7 @@ reach them — expect the far end of this list to change.
 | **M8c4** (first pass) | Water "High" quality (the user's setting): port of `WaterDisplacementGenerator` (Phillips spectrum + FFT compute shaders, the scene's wind/amplitude/choppiness) replacing the baked frames; `--water-quality medium|high`. Then the water's screen-space reflections (`ENABLE_SCREEN_SPACE_REFLECTION`, if the scene enables it). | Side-by-side screenshot of the open sea with the game; GPU time logged. |
 | **M8c5** ✅ (first pass) | Light shafts under water (`WaterSunShaftsOnCamera` and its shaders), stars (`StarField`). | Screenshots with the game at the lifepod by day and at night. |
 | **M8c6** (first pass) | Sun shadows: the game's cascades (4 over 50 m, `QualitySettings` High), soft; only the nearest level of detail casts; the light shafts read the shadow map. Remaining: the game's bias (0.45) and normal bias (0.4), Unity's soft-shadow filter instead of Bevy's Gaussian. | Matched screenshot of a shadow edge; frame time logged. |
-| **M8c7** (first pass) | The object shader, MarmosetUBER (`docs/formats/lighting.md` § Objects): specular maps, gloss, fresnel, glow with day/night strengths, each biome's Marmoset sky (exposures, SH ambient, unlit flag), `SkyApplier`. Remaining: the sky's specular cube reflections, atmosphere volumes in the biome lookup (cave skies), anchors other than Auto. | Real-data test of the 37 skies; materials with specular/glow maps counted in the log; matched screenshots. |
+| **M8c7** (first pass) | The object shader, MarmosetUBER (`docs/formats/lighting.md` § Objects): specular maps, gloss, fresnel, glow with day/night strengths, each biome's Marmoset sky (exposures, SH ambient, unlit flag), `SkyApplier`. Remaining: the sky's specular cube reflections, atmosphere rasterization/fades and native ties (static object point selection built in M8c7b1), anchors other than Auto. | Real-data test of the 37 skies; materials with specular/glow maps counted in the log; matched screenshots. |
 | **M8e** | Local lights (point and spot), the game's light sources: see § 4.1. | See § 4.1. |
 | **M8d** | The game's camera post-processing (Unity Post Processing Stack v1 with `default_Post-FXProfile`, per the user's options): bloom + lens dirt, ambient occlusion, screen-space reflections, depth of field, motion blur, FXAA, dithering, colour grading (off/neutral/ACES exactly as the stack does it). | Matched screenshots (same place and time) with the game; GPU time per effect logged. |
 | **M9** | Player: swim controller, terrain collision, surfacing/air, first-person camera. Split into M9a–M9f in § 4.3 (Phase E). | Can swim from the Lifepod to the Kelp Forest without clipping through terrain (logged collision checks). |
@@ -254,7 +256,7 @@ and a MODLOG entry; nothing is pushed without the user's OK):
 | **M4b** | The game's own streaming distances: the terrain clipmap of `clipmaps-high.json` (the user's "Detail" High; 5 levels, `chunksPerSide` 7/7/7/8/1 of 16-voxel chunks, level scale and ring placement to read from the Voxeland clipmap code), entity cell level *n* awake with clipmap level *n* (`entities` on for levels 0–3), terrain casting sun shadows at levels 0–1 only (`castShadows`), `maxBlockTypes` 32/8/2/1/1. Replaces our own LOD ranges (100/260/600/1200 m). This decides which objects and lights exist around the camera, so it comes before the shadowed lights. | Ring extents per level logged and equal to the game's formula; entity and light counts at the lifepod logged before/after; frame time A/B. |
 | **M8e4** | The 24 shadowed lights (cube/spot shadow maps, the game's resolution and bias), and the one placed spot light with its own cookie (it is also shadowed; drawn with the default cookie for now). | Screenshot of a shadowed local light; GPU time logged. |
 | **M8d1** | Bloom and lens dirt as the game's post stack does them (`default_Post-FXProfile`: intensity 0.2, threshold 0.9, soft knee 0.55, radius 5.5, dirt 5); ambient occlusion with the profile's settings. | Matched screenshots by night (glowing coral) and day; GPU time per effect. |
-| **M8c7b** | Specular cube reflections (load the skies' cube maps), atmosphere volumes in the biome lookup (cave and wreck skies), other `SkyApplier` anchors, `_UwePowerLoss` (bases' and the lifepod's `emissiveFromPower` appliers, from M7f4g). | Cube maps loaded and counted; skies per object in a cave logged; matched screenshot of a shiny object. |
+| **M8c7b** | Specular cube reflections (load the skies' cube maps), atmosphere selection/fades (static object point queries built in M8c7b1), other `SkyApplier` anchors, `_UwePowerLoss` (bases' and the lifepod's `emissiveFromPower` appliers, from M7f4g). | Cube maps loaded and counted; skies per object in a cave logged; matched screenshot of a shiny object. |
 | **M8c6b** | Sun shadows of terrain, rocks, coral and plants exactly as the game: read each renderer's `m_CastShadows`/`m_ReceiveShadows` (`MeshRenderer`) and honour them (`m_CastShadows` off: done in M7f4e; shadows-only and `m_ReceiveShadows` open); find whether and how the game's terrain (Voxeland chunks) casts and receives; alpha-clipped leaves cast cut-out shadows; the game's bias/normal bias (0.45/0.4) and Unity's soft-shadow filter; the 50 m shadow distance and cascade splits (done). | Counts of casting/non-casting renderers logged and equal to UnityPy on a sample of prefabs; terrain shadow settings documented; matched screenshots of a rock's shadow and a kelp shadow; GPU/CPU cost logged. |
 | **M8f** | Per-pixel water settings (the game's volume around the camera) for fog and lighting; the water clip map. | Screenshot across a biome border; numbers logged. |
 | **M8g** | Calibration: matched screenshots (same place, time, settings) with the game at the lifepod, a glowing-coral spot at night, the Kelp Forest, a cave, a wreck; differences measured (mean colour per region) and listed. | Every listed difference explained or fixed. |
@@ -2776,6 +2778,57 @@ had elevated unrelated GPU costs; it is not the final comparison set.
 Verification commands: `cargo test --workspace`,
 `cargo clippy --workspace --all-targets -- -D warnings`,
 `cargo fmt --all -- --check`, and `git diff --check`; expect success.
+
+#### M8c7b1 — Streamed atmosphere volumes for object sky selection (2026-10-14)
+
+Read the installed AtmosphereVolume fields using the existing checked script
+layout reader and its attached collider. Retain active, enabled colliders
+that affect visuals; support boxes, spheres and capsules. Preserve the full
+prefab transform chain, reject unsupported/sheared box shapes explicitly,
+and keep volume lifetimes tied to the existing object streaming instances,
+including objects with no drawable mesh. Query enclosing volumes before the
+batch/map biome fallback at the owning Auto SkyApplier's position. Reassign ordinary and effect
+material sky bindings when volumes stream in/out; do not modify shared sky
+materials in ways that relight objects outside the volume.
+
+The installed point query chooses the greatest priority, breaking ties by
+runtime instance ID. Use an explicit local lifetime tie key and log
+overlapping equal-priority different-biome selections; native instance-ID
+parity remains unverified. This slice does not implement fog-volume
+rasterization, custom/fixed anchors, reflections or AtmosphereDirector fades.
+Moving applier/volume transforms and script-driven activation remain animation
+follow-ups; this slice records their static placement at spawn.
+
+Done when: synthetic primitive/boundary/priority/tie/fallback and streaming
+rebinding tests pass; an opt-in installed-prefab audit checks all placed
+volume families and records supported/unsupported shapes; outdoor/interior
+GPU runs record selected skies, volume counts and timings with no new shader
+errors; workspace tests, clippy, fmt and diff checks pass. Matched original-game
+visual comparison remains explicitly not tested until a reference is available.
+
+**Implemented and verified (2026-10-14):** all checklist implementation checks
+passed. Workspace: 637 passed, 0 failed, 57 ignored; clippy, fmt and diff checks
+pass. The installed-data audit checked 1,369 placed prefab families, finding
+151 visual-volume families and 2,409 supported placements (1,425 boxes,
+984 spheres, no capsules), with no rejected transforms. The terminal regression
+also checks the reader after hidden avatar bones have been reconstructed.
+
+Three final GPU runs per case (960×540, 400 m view, 60 settled warm-up frames,
+120 measured frames) exit successfully with zero loader warnings and zero
+unsettled measurement frames. The Shallows case has 132 active volumes,
+461 enclosed query positions and no different-biome equal-priority ambiguities;
+the thermal-room case has 67 active volumes, 410 enclosed positions and 18
+ambiguities. Cave and Precursor-interior sky materials are selected. Terrain,
+loaded mesh/texture counts and light counts match the corresponding before
+cases; tracked entity counts increase for volume metadata. Final mean frame
+times are 10.22–11.48 ms outdoors and 6.91–7.38 ms indoors. Before runs and
+the full provenance/performance limitations are in MODLOG; no speedup or
+full-resolution 60 fps claim is made. Captures/reports stay in ignored out/.
+
+M8c7b1's implementation slice is complete. Full M8c7b and 1:1 visual acceptance
+remain open: native overlap tie order, moving appliers/volumes, script activation,
+fog rasterization/fades, other anchors, cube reflections and power state.
+Matched original-game visual comparison: **not tested**.
 
 #### Proposed order for visual work
 

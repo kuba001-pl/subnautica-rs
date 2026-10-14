@@ -2,6 +2,102 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-14 — M8c7b1: atmosphere volumes select object skies
+
+**What/why:** the user authorized the next visual work and reiterated that
+commits/pushes require explicit permission. Implemented the first proposed
+slice: static atmosphere-volume selection for object lighting. Previously
+Auto SkyAppliers used only the batch/2D-map biome at the prefab root, so
+cave and interior sky overrides were ignored.
+
+- `sn-assets`: read the installed AtmosphereVolume layout through the existing
+  checked script reader; retain active visual volumes with enabled colliders.
+  Preserve the full prefab affine chain for box/sphere/capsule placement;
+  reject unsupported, sheared-box, collapsed and nonfinite geometry explicitly.
+- `sn-sim`: headless inclusive primitive point queries and priority selection.
+  Native instance IDs are unavailable: use an entity lifetime tie key and log
+  equal-priority overlaps with different biome overrides.
+- Client: stream volume metadata with its instance, including invisible
+  volume-only prefabs; removing the instance removes its volumes. Auto mesh
+  and effect bindings reselect when volumes load/unload or new bindings appear.
+  Materials remain cached per sky so outside objects keep their own lighting.
+- Resolve the query position from the owning SkyApplier component instead of
+  the prefab root, preserving transform order. Placeholder spawns carry that
+  position and their volume transforms into the parent placement.
+- Updated DESIGN, README and lighting/water format notes. No new dependencies,
+  architecture change or whitelist changes. Game install read-only.
+
+**Verified:**
+- `cargo test --workspace`: 637 passed, 0 failed, 57 ignored. New synthetic
+  coverage: primitive boundaries, invalid points, priorities/ties, empty
+  overrides, removal fallback, collider scaling/reflection, rejected shear,
+  owner-position transform order and an ECS load/unload regression. The ECS
+  regression checks existing meshes/effects, late bindings, outside-material
+  isolation and restoration to the cached fallback after the volume despawns.
+- `$env:SUBNAUTICA_DIR='<INSTALL>'; cargo test -p sn-assets --test real_data atmosphere_all_placed_prefabs_and_colliders -- --ignored --nocapture`:
+  passed. All 1,369 placed prefab families checked; 151 visual-volume families,
+  2,409 supported placements (1,425 boxes, 984 spheres, no capsules), zero
+  unsupported placement transforms. Collider centers are enclosed and far-away
+  probes excluded. Fixtures and numerical expectations contain no game assets.
+- `$env:SUBNAUTICA_DIR='<INSTALL>'; cargo test -p sn-assets --test real_data optimized_key_terminals_bind_skin_and_select_distinct_materials -- --ignored --nocapture`:
+  passed, including atmosphere reads after hidden terminal bones are rebuilt.
+- `cargo clippy --workspace --all-targets -- -D warnings`,
+  `cargo fmt --all -- --check`, `git diff --check`: pass.
+- `cargo build --release -p sn-client`: pass; rebuilt executable available.
+- Three final GPU runs each outdoors and in the thermal room: 960×540,
+  400 m view, 60 settled warm-up frames, 120 measured frames, fixed camera,
+  seeds and game clock, High water, grading off. All six exit 0, zero loader
+  warnings, zero shader validation errors, zero unsettled measurement frames.
+  Camera, terrain, grass, mesh/texture counts, fog and light counts match
+  their before cases. Metadata entity counts increase: Shallows 17,063→17,194;
+  interior 6,111→6,177. Some volume-only prefab definitions are now retained.
+- Shallows: 132 active volumes, 461 enclosed unique query positions, zero
+  different-biome tie ambiguities; cave sky bindings appear. Interior:
+  67 active volumes, 410 enclosed positions, 18 tie ambiguities; Precursor
+  interior sky bindings appear. The log labels these unique positions "roots";
+  they are positions of the owning appliers, not necessarily prefab roots.
+- Final outdoor mean times: 11.132 / 11.480 / 10.215 ms; medians
+  10.464 / 10.816 / 10.108 ms; p99 17.382 / 16.040 / 12.659 ms.
+  Before means: 11.289 / 30.175 / 11.566 ms; p99 17.599 / 65.492 / 14.208 ms.
+  Before outdoor run 2 overlapped compilation and is contaminated. Interior
+  final means: 7.383 / 6.958 / 6.908 ms; p99 8.522 / 8.473 / 8.047 ms;
+  before means 7.432 / 8.014 / 7.629 ms; p99 8.745 / 12.952 / 9.677 ms.
+  These short runs record costs, not a controlled speedup or proof of the
+  full-resolution/full-view 16.7 ms target. Waves/animation remain live.
+- Before executable was the preexisting release binary; its source revision
+  was not independently rebuilt. Its SHA256 and the starting HEAD are recorded
+  in ignored `out/atmosphere/provenance.txt`, alongside the final binary hash.
+  Logs and summary: `out/atmosphere/`. Final captures/reports:
+  `out/baselines/run-atmosphere-final-{shallows,interior}-{1,2,3}/`.
+
+**Dead end/correction:** the first GPU implementation introduced three terminal
+loader warnings by treating reconstructed hidden avatar bones as serialized
+GameObjects. These use our own `#avatar:` identities. The reader now skips
+their nonexistent components while retaining their transforms. The installed
+terminal regression and all final GPU runs pass with zero loader warnings.
+Earlier `run-atmosphere-after-*` captures are preliminary, before this correction;
+use `run-atmosphere-final-*` for the final result.
+
+**Exact verification command** (after setting SUBNAUTICA_DIR, choose a fresh NAME):
+```powershell
+target/release/sn-client.exe --benchmark 120 --baseline NAME --baseline-revision working-tree-atmosphere-final --warmup 60 --resolution 960 540 --start -41 -1223 112 --look -41 -1223 132 --fov 60 --view 400 --lifepod-seed 1 --slot-seed 1 --time 9.6 --time-scale 0 --aurora intact --water-quality high --color-grading off --gpu-timings
+```
+Expect a saved report/120 CSV samples/capture, zero loader warnings and settled
+loading; `atmosphere:` logs include the interior override, 67 active volumes
+and 18 different-biome equal-priority ambiguities. For interactive review,
+replace `--benchmark 120 --baseline NAME --baseline-revision working-tree-atmosphere-final --warmup 60`
+with `--free-cam`. Outdoor case: replace start/look with
+`--start 0 -10 0 --look 60 -40 60`; expect 132 active volumes and cave overrides.
+
+**Not tested:** matched original-game visuals, native PhysX scaling/boundary
+measurements, exact native runtime-ID tie ordering, moving appliers/volumes and
+script-driven activation. Fog rasterization, AtmosphereDirector fades, fixed/
+custom anchors, cube reflections and power state remain later slices. This
+completes M8c7b1's implementation checks, not full M8c7b or 1:1 acceptance.
+Only our source/docs appear in git status. Implementation was completed
+without commits or pushes; the user subsequently authorized committing and
+pushing this change on 2026-10-14.
+
 ## 2026-10-14 - Lost River lake footprints under nonuniform scale
 
 **What/why:** after authorizing commit/push of the waterfall-cap correction,

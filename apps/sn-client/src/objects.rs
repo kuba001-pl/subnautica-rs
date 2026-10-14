@@ -300,6 +300,7 @@ struct Part {
     /// Lit with the sky of the biome it stands in (a `SkyApplier` lists
     /// it); else with the global sky.
     biome_sky: bool,
+    sky_position: [f32; 3],
     /// Drawn by our effect pass (`effects.rs`): `mesh` is an effect mesh id
     /// (`Update::EffectMesh`) and the material has `effect` values.
     effect: bool,
@@ -556,6 +557,7 @@ struct PrefabContent {
     directional: Vec<DirectionalSource>,
     rigs: Vec<Arc<RigDesc>>,
     culls: Vec<CullDesc>,
+    atmospheres: Vec<sn_assets::AtmosphereTemplate>,
     lods: Vec<LodDesc>,
 }
 
@@ -598,6 +600,7 @@ enum Update {
         directional: Vec<DirectionalSource>,
         rigs: Vec<Arc<RigDesc>>,
         culls: Vec<CullDesc>,
+        atmospheres: Vec<sn_assets::AtmosphereTemplate>,
         lods: Vec<LodDesc>,
     },
     /// The game's LOD bias and most detailed level (M7f4f).
@@ -646,6 +649,7 @@ enum Update {
 /// What the worker knows: the game's assets and everything already sent.
 struct Library {
     assets: GameAssets<'static>,
+    atmosphere_layout: Arc<sn_unity::StructLayout>,
     /// Which classes are items (M9d4b).
     items: Option<Arc<ItemRules>>,
     catalog: Catalog,
@@ -1508,12 +1512,14 @@ impl Library {
             directional,
             rigs,
             culls,
+            atmospheres,
             lods,
         } = self.prefab_content(prefab, out, if spawn { 0 } else { NO_SPAWN });
         let id = (!parts.is_empty()
             || !lights.is_empty()
             || !directional.is_empty()
-            || !culls.is_empty())
+            || !culls.is_empty()
+            || !atmospheres.is_empty())
         .then(|| self.id());
         if let Some(id) = id {
             out.push(Update::Prefab {
@@ -1523,6 +1529,7 @@ impl Library {
                 directional,
                 rigs,
                 culls,
+                atmospheres,
                 lods,
             });
         }
@@ -1993,6 +2000,7 @@ impl Library {
                     material,
                     local,
                     biome_sky,
+                    sky_position: node.sky_applier_position,
                     effect,
                     rig,
                     shape: shape.filter(|_| !effect),
@@ -2073,6 +2081,16 @@ impl Library {
             directional,
             rigs: rigs.into_iter().map(|r| Arc::new(r.desc)).collect(),
             culls,
+            atmospheres: match self
+                .assets
+                .prefab_atmospheres(prefab, &self.atmosphere_layout)
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    out.push(Update::Warning(e));
+                    Vec::new()
+                }
+            },
             lods,
         };
         if depth != NO_SPAWN && self.spawn_placeholders {
@@ -2145,6 +2163,9 @@ impl Library {
                 // The spawned root takes the placeholder's place; its rigs
                 // hang there too.
                 let at = node.in_prefab;
+                content
+                    .atmospheres
+                    .extend(child.atmospheres.iter().map(|v| v.under(&at)));
                 let first_rig = content.rigs.len() as u16;
                 let first_lod = content.lods.len() as u16;
                 content.lods.extend(child.lods.iter().map(|l| LodDesc {
@@ -2161,11 +2182,13 @@ impl Library {
                     let lod = p.lod.map(|(g, m)| (g + first_lod, m));
                     match p.rig {
                         Some(rig) => Part {
+                            sky_position: at.transform_point(p.sky_position),
                             rig: Some(rig.shifted(first_rig)),
                             lod,
                             ..*p
                         },
                         None => Part {
+                            sky_position: at.transform_point(p.sky_position),
                             local: at.then(&sn_assets::waterfall_local(
                                 p.local,
                                 p.waterfall_cap_height,
@@ -2755,8 +2778,14 @@ fn worker(
         let catalog = assets.catalog()?;
         let class_paths = game.read_prefab_database().map_err(|e| e.0)?;
         let entity_infos = sn_assets::entity_infos(&assets)?;
+        let assemblies = sn_assets::ScriptAssemblies::load(game)?;
+        let atmosphere_layout =
+            assemblies
+                .layouts()?
+                .script("Assembly-CSharp", "", "AtmosphereVolume")?;
         Ok(Library {
             assets,
+            atmosphere_layout,
             items: items.clone(),
             catalog,
             class_paths,
@@ -3010,6 +3039,7 @@ pub struct ObjectStreamer {
     prefabs: HashMap<u32, Vec<Part>>,
     /// A prefab's `ShipExteriorCull` boxes (M7f4e).
     prefab_culls: HashMap<u32, Vec<CullDesc>>,
+    prefab_atmospheres: HashMap<u32, Vec<sn_assets::AtmosphereTemplate>>,
     /// A prefab's LOD groups (M7f4f).
     prefab_lods: HashMap<u32, Vec<LodDesc>>,
     /// Triangles per mesh id (for the LOD statistics).
@@ -3114,6 +3144,10 @@ impl ObjectStreamer {
                 items,
             )
         });
+        Self::receiving(shared, rx, lights)
+    }
+
+    fn receiving(shared: Arc<Shared>, rx: Receiver<Update>, lights: bool) -> Self {
         ObjectStreamer {
             shared,
             rx: Mutex::new(rx),
@@ -3125,6 +3159,7 @@ impl ObjectStreamer {
             meshes: HashMap::new(),
             prefabs: HashMap::new(),
             prefab_culls: HashMap::new(),
+            prefab_atmospheres: HashMap::new(),
             prefab_lods: HashMap::new(),
             mesh_triangles: HashMap::new(),
             prefab_rigs: HashMap::new(),
@@ -3741,9 +3776,17 @@ pub fn stream_objects(
                 directional,
                 rigs,
                 culls,
+                atmospheres,
                 lods,
             } => {
                 streamer.prefabs.insert(id, parts);
+                if !atmospheres.is_empty() {
+                    info!(
+                        "atmosphere: prefab {id}: {} visual volumes",
+                        atmospheres.len()
+                    );
+                    streamer.prefab_atmospheres.insert(id, atmospheres);
+                }
                 if !lods.is_empty() {
                     streamer.prefab_lods.insert(id, lods);
                 }
@@ -4296,6 +4339,126 @@ struct Spawner<'a, 'w, 's> {
     water: Option<&'a WaterWorld>,
 }
 
+#[derive(Component)]
+pub struct PlacedAtmosphere(sn_sim::atmosphere::Volume);
+
+#[derive(Component)]
+pub struct AutoSkyBinding {
+    position: [f32; 3],
+    material: u32,
+    sky: SkyKey,
+}
+
+/// Run after streaming commands are applied. Adding/removing an invisible
+/// volume relights existing meshes as well as meshes loaded in this frame.
+/// Cached materials are keyed by sky so objects outside a volume keep theirs.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+pub fn update_atmosphere_skies(
+    mut streamer: ResMut<ObjectStreamer>,
+    water: Option<Res<WaterWorld>>,
+    light: Res<GameLightImages>,
+    mut materials: ResMut<Assets<ObjectMaterial>>,
+    volumes: Query<(Entity, &PlacedAtmosphere)>,
+    mut bindings: Query<(
+        Mut<AutoSkyBinding>,
+        Option<&mut MeshMaterial3d<ObjectMaterial>>,
+        Option<&mut EffectPart>,
+    )>,
+    mut previous: Local<Vec<sn_sim::atmosphere::Volume>>,
+) {
+    let mut current: Vec<_> = volumes
+        .iter()
+        .map(|(entity, volume)| {
+            let mut v = volume.0.clone();
+            v.tie = entity.to_bits();
+            v
+        })
+        .collect();
+    current.sort_by_key(|v| v.tie);
+    let changed = *previous != current;
+    if !changed && !bindings.iter().any(|(b, _, _)| b.is_added()) {
+        return;
+    }
+    let streamer = &mut *streamer;
+    let Some(defaults) = streamer.defaults.as_ref() else {
+        return;
+    };
+    let mut positions = HashMap::new();
+    let mut rebound = 0;
+    let mut enclosed = 0;
+    let mut ambiguous = 0;
+    let mut selections = BTreeMap::<String, usize>::new();
+    for (mut binding, material, effect) in &mut bindings {
+        if !changed && !binding.is_added() {
+            continue;
+        }
+        let key = binding.position.map(f32::to_bits);
+        let sky = *positions.entry(key).or_insert_with(|| {
+            let position = sn_sim::V3::from_f32(binding.position);
+            let selected = sn_sim::atmosphere::enclosing(&current, position);
+            let biome = match selected {
+                Some(v) => {
+                    enclosed += 1;
+                    *selections.entry(v.biome.clone()).or_default() += 1;
+                    if current.iter().any(|other| {
+                        other.tie != v.tie
+                            && other.priority == v.priority
+                            && other.biome != v.biome
+                            && sn_sim::atmosphere::contains(&other.shape, position)
+                    }) {
+                        ambiguous += 1;
+                    }
+                    Some(v.biome.as_str())
+                }
+                None => water.as_ref().and_then(|w| w.biome_at(binding.position)),
+            };
+            streamer.skies.pick(true, biome, false)
+        });
+        if sky == binding.sky {
+            continue;
+        }
+        if let Some(mut material) = material {
+            let handle = match streamer.materials.get(&(binding.material, sky)) {
+                Some(handle) => handle.clone(),
+                None => {
+                    let Some(desc) = streamer.material_descs.get(&binding.material) else {
+                        continue;
+                    };
+                    let handle = materials.add(object_material(
+                        desc,
+                        streamer.skies.look(sky),
+                        &streamer.textures,
+                        defaults,
+                        &light,
+                    ));
+                    streamer
+                        .materials
+                        .insert((binding.material, sky), handle.clone());
+                    handle
+                }
+            };
+            material.0 = handle;
+        }
+        if let Some(mut effect) = effect {
+            effect.sky = sky;
+        }
+        binding.sky = sky;
+        rebound += 1;
+    }
+    if changed || rebound > 0 {
+        info!(
+            "atmosphere: {} active volumes; {} queried roots, {} enclosed, {} equal-priority different-biome ambiguities; {} part bindings changed; selected {:?}",
+            current.len(),
+            positions.len(),
+            enclosed,
+            ambiguous,
+            rebound,
+            selections
+        );
+    }
+    *previous = current;
+}
+
 impl ObjectStreamer {
     /// The lifepod's sky now (M7f4g): relights the materials made with it,
     /// and the global ones while the player is in the pod. Returns how
@@ -4400,9 +4563,18 @@ impl ObjectStreamer {
         let Some(parts) = self.prefabs.get(&inst.prefab) else {
             return;
         };
+        if let Some(volumes) = self.prefab_atmospheres.get(&inst.prefab) {
+            for template in volumes {
+                match template.placed(&inst.transform, 0) {
+                    Ok(volume) => {
+                        let entity = s.commands.spawn(PlacedAtmosphere(volume)).id();
+                        entities.push(entity);
+                    }
+                    Err(e) => warn!("{e}"),
+                }
+            }
+        }
         let mut lod_members: Vec<(u16, u32, Entity, u32)> = Vec::new();
-        // `SkyApplier`: the biome at the object's root.
-        let biome = s.water.and_then(|w| w.biome_at(inst.transform.position));
         // Animated rigs: a base entity (listed, so despawning it takes the
         // rest) and the rig's nodes below it.
         let rigs = self
@@ -4434,6 +4606,8 @@ impl ObjectStreamer {
         }
         let mut effect_root = None;
         for part in parts {
+            let sky_position = inst.transform.transform_point(part.sky_position);
+            let biome = s.water.and_then(|w| w.biome_at(sky_position));
             if part.effect {
                 let Some(look) = self
                     .material_descs
@@ -4484,6 +4658,13 @@ impl ObjectStreamer {
                         .commands
                         .spawn((marker, Transform::IDENTITY, ChildOf(parent)))
                         .id();
+                    if part.biome_sky && !inst.pod_sky {
+                        s.commands.entity(entity).insert(AutoSkyBinding {
+                            position: sky_position,
+                            material: part.material,
+                            sky: self.skies.pick(true, biome, false),
+                        });
+                    }
                     lod_member(s.commands, &mut lod_members, part.lod, entity, 0);
                     drawn.push(entity);
                     info!(
@@ -4512,6 +4693,13 @@ impl ObjectStreamer {
                     .commands
                     .spawn((marker, to_bevy(&local), ChildOf(parent)))
                     .id();
+                if part.biome_sky && !inst.pod_sky {
+                    s.commands.entity(entity).insert(AutoSkyBinding {
+                        position: sky_position,
+                        material: part.material,
+                        sky: self.skies.pick(true, biome, false),
+                    });
+                }
                 lod_member(s.commands, &mut lod_members, part.lod, entity, 0);
                 continue;
             }
@@ -4583,6 +4771,13 @@ impl ObjectStreamer {
                             .id()
                     }
                 };
+                if part.biome_sky && !inst.pod_sky {
+                    s.commands.entity(entity).insert(AutoSkyBinding {
+                        position: sky_position,
+                        material: part.material,
+                        sky,
+                    });
+                }
                 shadow_mode(s.commands, entity, casting, part.shadows);
                 // Blend shapes: the weights before the first update, and
                 // (for a mesh not skinned on the GPU) bounds that hold
@@ -4620,6 +4815,13 @@ impl ObjectStreamer {
                     to_bevy(&world),
                 ))
                 .id();
+            if part.biome_sky && !inst.pod_sky {
+                s.commands.entity(entity).insert(AutoSkyBinding {
+                    position: sky_position,
+                    material: part.material,
+                    sky,
+                });
+            }
             shadow_mode(s.commands, entity, casting, part.shadows);
             let tris = self.mesh_triangles.get(&part.mesh).copied().unwrap_or(0);
             lod_member(s.commands, &mut lod_members, part.lod, entity, tris);
@@ -4699,6 +4901,139 @@ impl ObjectStreamer {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn atmosphere_load_unload_rebinds_existing_meshes_and_effects() {
+        let shared = Arc::new(Shared {
+            queue: Mutex::new(Vec::new()),
+            spawn: Mutex::new(Vec::new()),
+            wake: Condvar::new(),
+            shutdown: AtomicBool::new(false),
+        });
+        let (_, rx) = channel();
+        let mut streamer = ObjectStreamer::receiving(shared, rx, false);
+        streamer.defaults = Some(Defaults {
+            flat: Handle::default(),
+            white: Handle::default(),
+        });
+        streamer.skies.skies.biomes = vec![("outside".into(), Some(0)), ("inside".into(), Some(1))];
+        let materials = Assets::<ObjectMaterial>::default();
+        let outside = materials.reserve_handle();
+        let inside = materials.reserve_handle();
+        streamer
+            .materials
+            .insert((7, SkyKey::Fixed(0)), outside.clone());
+        streamer
+            .materials
+            .insert((7, SkyKey::Fixed(1)), inside.clone());
+        let mut app = App::new();
+        app.insert_resource(streamer)
+            .insert_resource(materials)
+            .insert_resource(GameLightImages {
+                params: Handle::default(),
+                caustics: Handle::default(),
+                spot_cookie: Handle::default(),
+                has_caustics: false,
+            })
+            .add_systems(Update, update_atmosphere_skies);
+        let binding = |position| AutoSkyBinding {
+            position,
+            material: 7,
+            sky: SkyKey::Fixed(0),
+        };
+        let mesh = app
+            .world_mut()
+            .spawn((binding([0.0; 3]), MeshMaterial3d(outside.clone())))
+            .id();
+        let far = app
+            .world_mut()
+            .spawn((binding([20.0, 0.0, 0.0]), MeshMaterial3d(outside.clone())))
+            .id();
+        let effect = app
+            .world_mut()
+            .spawn((
+                binding([0.0; 3]),
+                EffectPart {
+                    mesh: 0,
+                    textures: std::array::from_fn(|_| Handle::default()),
+                    sky: SkyKey::Fixed(0),
+                    look: EffectLook::Glow(EffectValues {
+                        color: [1.0; 4],
+                        intensity: 1.0,
+                        fresnel_fade: 0.0,
+                        fresnel_pow: 1.0,
+                        clip_offset: 0.0,
+                        clip_fade: 0.0,
+                        offset: 0.0,
+                        fallof: 1.0,
+                        inv_fade: 1.0,
+                    }),
+                },
+            ))
+            .id();
+        app.update();
+        let volume = app
+            .world_mut()
+            .spawn(PlacedAtmosphere(sn_sim::atmosphere::Volume {
+                priority: 10,
+                tie: 0,
+                biome: "inside".into(),
+                shape: sn_sim::collide::Shape::Sphere {
+                    center: sn_sim::V3::ZERO,
+                    radius: 2.0,
+                },
+            }))
+            .id();
+        app.update();
+        assert_eq!(
+            app.world()
+                .get::<MeshMaterial3d<ObjectMaterial>>(mesh)
+                .unwrap()
+                .0,
+            inside
+        );
+        assert_eq!(
+            app.world()
+                .get::<MeshMaterial3d<ObjectMaterial>>(far)
+                .unwrap()
+                .0,
+            outside
+        );
+        assert_eq!(
+            app.world().get::<EffectPart>(effect).unwrap().sky,
+            SkyKey::Fixed(1)
+        );
+        // New bindings must be checked even while the volume roster is unchanged.
+        let late = app
+            .world_mut()
+            .spawn((binding([0.0; 3]), MeshMaterial3d(outside.clone())))
+            .id();
+        app.update();
+        assert_eq!(
+            app.world()
+                .get::<MeshMaterial3d<ObjectMaterial>>(late)
+                .unwrap()
+                .0,
+            inside
+        );
+        app.world_mut().despawn(volume);
+        app.update();
+        for entity in [mesh, late, far] {
+            assert_eq!(
+                app.world()
+                    .get::<MeshMaterial3d<ObjectMaterial>>(entity)
+                    .unwrap()
+                    .0,
+                outside
+            );
+        }
+        assert_eq!(
+            app.world().get::<EffectPart>(effect).unwrap().sky,
+            SkyKey::Fixed(0)
+        );
+        // No shared material was replaced or duplicated to affect the far object.
+        assert_eq!(app.world().resource::<ObjectStreamer>().materials.len(), 2);
+    }
+
     #[test]
     fn rigid_effect_hierarchy_preserves_stretched_and_rotated_footprints() {
         use bevy::prelude::*;

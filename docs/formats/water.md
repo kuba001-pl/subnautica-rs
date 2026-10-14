@@ -64,7 +64,8 @@ Examples: `safeShallows` absorption (125, 20, 4), scattering 1.2, murkiness
 `WaterBiomeManager` keeps a volume around the camera:
 `settingsTextureSize`³ cells over ±`regionBounds` metres (8³ over ±64 m:
 16 m cells). Each cell gets the biome at its position (plus local
-`AtmosphereVolume` shapes, e.g. caves, rasterised on top — not read yet),
+`AtmosphereVolume` shapes, e.g. caves, rasterised on top — not rasterised in
+our client yet; M8c7b1 reads their colliders for object sky point queries),
 then the volume is blurred and upsampled to 32³ (stored as a 2D atlas of
 slices) into three textures:
 

@@ -10,6 +10,106 @@ use sn_install::GameData;
 
 #[test]
 #[ignore = "needs SUBNAUTICA_DIR pointing at a Subnautica install"]
+fn atmosphere_all_placed_prefabs_and_colliders() {
+    use sn_sim::{V3, atmosphere::contains, collide::Shape};
+    use sn_world::{Transform, VOXEL_WORLD_OFFSET};
+    use std::collections::BTreeMap;
+    let Some(dir) = std::env::var_os("SUBNAUTICA_DIR") else {
+        return;
+    };
+    let game = GameData::locate(Some(PathBuf::from(dir))).unwrap();
+    let assets = Assets::index(&game).unwrap();
+    let catalog = assets.catalog().unwrap();
+    let assemblies = sn_assets::ScriptAssemblies::load(&game).unwrap();
+    let layout = assemblies
+        .layouts()
+        .unwrap()
+        .script("Assembly-CSharp", "", "AtmosphereVolume")
+        .unwrap();
+    let paths = game.read_prefab_database().unwrap();
+    let mut placements: BTreeMap<String, Vec<Transform>> = BTreeMap::new();
+    let mut collect = |tree: &sn_world::ObjectTree| {
+        let (world, missing) = tree.world_transforms();
+        assert_eq!(missing, 0);
+        for (o, at) in tree.objects.iter().zip(world) {
+            if let Some(path) = paths.get(&o.class_id) {
+                placements.entry(path.clone()).or_default().push(at);
+            }
+        }
+    };
+    for batch in game.object_batches().unwrap().0 {
+        let Some(mut tree) = game.read_batch_objects(batch).unwrap() else {
+            continue;
+        };
+        let corner = [batch.x, batch.y, batch.z];
+        for root in tree.objects.iter_mut().filter(|o| o.parent.is_none()) {
+            root.transform.position =
+                [0, 1, 2].map(|i| corner[i] as f32 * 160.0 - VOXEL_WORLD_OFFSET[i]);
+        }
+        collect(&tree);
+    }
+    for batch in game.cell_batches().unwrap().0 {
+        let Some(cells) = game.read_batch_cells(batch).unwrap() else {
+            continue;
+        };
+        for cell in &cells.cells {
+            if let Some(tree) = &cell.objects {
+                collect(tree);
+            }
+        }
+    }
+    let mut families = 0;
+    let mut counts = [0usize; 3];
+    let mut supported = 0;
+    let mut errors = BTreeMap::<String, usize>::new();
+    for (path, instances) in &placements {
+        let prefab = assets.prefab(&catalog, path).unwrap();
+        let volumes = assets.prefab_atmospheres(&prefab, &layout).unwrap();
+        if !volumes.is_empty() {
+            families += 1;
+        }
+        for at in instances {
+            for template in &volumes {
+                match template.placed(at, 0) {
+                    Ok(volume) => {
+                        let (index, center) = match volume.shape {
+                            Shape::Box { center, .. } => (0, center),
+                            Shape::Sphere { center, .. } => (1, center),
+                            Shape::Capsule { a, b, .. } => (2, (a + b) * 0.5),
+                            Shape::Triangle(_) => panic!("not a volume primitive"),
+                        };
+                        assert!(contains(&volume.shape, center));
+                        assert!(!contains(&volume.shape, V3::new(1e9, 1e9, 1e9)));
+                        counts[index] += 1;
+                        supported += 1;
+                        if instances.len() < 4 {
+                            println!(
+                                "volume probe: center={:?}, priority={}, shape={index}, biome={}",
+                                center.to_f32(),
+                                volume.priority,
+                                volume.biome
+                            );
+                        }
+                    }
+                    Err(e) => *errors.entry(e).or_default() += 1,
+                }
+            }
+        }
+        assets.trim_cache(512 << 20);
+    }
+    println!(
+        "atmosphere census: {} placed prefab families checked, {families} volume families, {supported} supported placements, box/sphere/capsule={counts:?}, unsupported={errors:?}",
+        placements.len()
+    );
+    assert!(families > 0 && supported > 0);
+    assert!(
+        errors.is_empty(),
+        "installed volume transform gaps must be resolved or explicitly scoped"
+    );
+}
+
+#[test]
+#[ignore = "needs SUBNAUTICA_DIR pointing at a Subnautica install"]
 fn optimized_key_terminals_bind_skin_and_select_distinct_materials() {
     use sn_anim::{Animator, Program, SlotKind};
     use std::collections::{HashMap, HashSet};
@@ -20,6 +120,12 @@ fn optimized_key_terminals_bind_skin_and_select_distinct_materials() {
     let game = GameData::locate(Some(PathBuf::from(dir))).unwrap();
     let assets = Assets::index(&game).unwrap();
     let catalog = assets.catalog().unwrap();
+    let assemblies = sn_assets::ScriptAssemblies::load(&game).unwrap();
+    let atmosphere_layout = assemblies
+        .layouts()
+        .unwrap()
+        .script("Assembly-CSharp", "", "AtmosphereVolume")
+        .unwrap();
     let mut cache = HashMap::new();
     let mut materials = HashSet::new();
     for color in ["Purple", "Orange", "Blue"] {
@@ -37,6 +143,10 @@ fn optimized_key_terminals_bind_skin_and_select_distinct_materials() {
             .unwrap();
         let program = Arc::new(Program::new(Arc::new(set.controller), &set.clips));
         let binding = prefab.bind_animator(root, &program, &|_| Vec::new());
+        // Reconstructed hidden bones have synthetic identities, not asset files.
+        assets
+            .prefab_atmospheres(&prefab, &atmosphere_layout)
+            .unwrap();
         assert_eq!(binding.missing, 0, "{color}");
         let mut runtime = Animator::new(program.clone(), binding.defaults.clone());
         for _ in 0..60 {

@@ -209,6 +209,14 @@ the game on screen yet). Flying from the lifepod
   keeps memory under 1.6 GiB, at about 220 fps on average on an RTX 3080
   (about 100 fps in the dense start area).
 
+- Object sky selection through streamed atmosphere volumes (M8c7b1): Auto
+  SkyAppliers query their own placement before the batch/map biome fallback.
+  Existing meshes and effects rebind when volumes load or unload. All 1,369
+  placed prefab families audited: 2,409 supported visual volume placements.
+  Outdoor and Precursor-interior GPU runs passed; original-game visual parity
+  is **not tested**. Equal-priority different-biome overlaps use a local tie
+  key; moving appliers/volumes and atmosphere fade rules remain follow-ups.
+
 ## What doesn't work yet
 
 The water clip map (no water inside the lifepod and bases,
@@ -220,7 +228,7 @@ the player's saved detail level and field-of-view options (High and 60°
 assumed); terrain grass
 beyond ~100 m, and grass tufts in the game's exact spots (the amount and
 spread follow its rules; our own random numbers); for world objects: reflections of the biome
-sky's cube map, cave/interior skies chosen by atmosphere volumes,
+sky's cube map, exact native atmosphere tie ordering and moving sky queries,
 animated lights, materials and script values, remaining unsupported object
 shaders (actual particle lighting modes, sand and lava falls and other effect
 meshes not yet decoded are flat; matched original-game SIG rock/coral comparisons are not tested;

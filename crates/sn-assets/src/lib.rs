@@ -10,6 +10,7 @@
 //! Read-only: everything comes from the player's install via `sn-install`.
 
 mod anim;
+mod atmosphere;
 mod cinematics;
 mod code;
 mod collision;
@@ -49,6 +50,7 @@ use sn_unity::{Bundle, BundleDirectory, ObjectInfo, PPtr, SerializedFile};
 pub use anim::{
     AnimationSet, AnimatorBinding, PosedLink, PosedNode, blend_shape_clamp, quality_settings,
 };
+pub use atmosphere::AtmosphereTemplate;
 pub use cinematics::{CinematicNames, PodCinematics};
 pub use code::{
     ExploderCode, GAME_ASSEMBLY, GameCode, PlayerCode, TechDefaults, exploder_code,

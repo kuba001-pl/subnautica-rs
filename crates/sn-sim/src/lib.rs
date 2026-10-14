@@ -11,6 +11,7 @@
 //! coordinates (left-handed, y up), computed in `f64` so that a few
 //! kilometres from the origin a 1 cm skin is still far above rounding.
 
+pub mod atmosphere;
 pub mod aurora;
 pub mod body;
 pub mod cinematic;

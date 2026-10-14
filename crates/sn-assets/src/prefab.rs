@@ -87,6 +87,8 @@ pub struct PrefabNode {
     /// The `anchorSky` of a `SkyApplier` listing this node's renderer (its
     /// sky then comes from the biome at the object); `None`: the global sky.
     pub sky_applier: Option<i32>,
+    /// Position of the owning SkyApplier relative to the prefab root.
+    pub sky_applier_position: [f32; 3],
     /// The node's `Light` components (any state; check `enabled`,
     /// `is_realtime()` and the node's `active`).
     pub lights: Vec<Light>,
@@ -594,7 +596,8 @@ impl Assets<'_> {
             }
         }
         // Sky appliers: mark the nodes of the renderers they list.
-        for (file_of, applier) in std::mem::take(&mut prefab.sky_appliers) {
+        for (file_of, applier, owner) in std::mem::take(&mut prefab.sky_appliers) {
+            let position = applier_position(&prefab.nodes, owner)?;
             for renderer in &applier.renderers {
                 let Some(r) = self.resolve(&file_of, *renderer)? else {
                     continue;
@@ -608,6 +611,7 @@ impl Assets<'_> {
                 };
                 if let Some(node) = prefab.nodes.iter_mut().find(|n| n.key == go.key()) {
                     node.sky_applier = Some(applier.anchor_sky);
+                    node.sky_applier_position = position;
                 }
             }
         }
@@ -737,6 +741,7 @@ impl Assets<'_> {
                     lod: n.lod,
                     lod_group: n.lod_group,
                     sky_applier: n.sky_applier,
+                    sky_applier_position: n.sky_applier_position,
                     lights: n.lights,
                     day_night_light: n.day_night_light,
                     volumetric_light: n.volumetric_light,
@@ -873,7 +878,9 @@ impl Assets<'_> {
                     Some("SkyApplier") => {
                         let a = SkyApplier::parse(data, big_endian)
                             .map_err(|e| format!("SkyApplier {}: {e}", c.path_id))?;
-                        prefab.sky_appliers.push((c.file.clone(), a));
+                        prefab
+                            .sky_appliers
+                            .push((c.file.clone(), a, prefab.nodes.len()));
                     }
                     Some("DayNightLight") => {
                         day_night_light = Some(
@@ -965,6 +972,7 @@ impl Assets<'_> {
             lod: None,
             lod_group: None,
             sky_applier: None,
+            sky_applier_position: [0.0; 3],
             lights,
             day_night_light,
             volumetric_light: None,
@@ -1058,6 +1066,7 @@ struct BuildingNode {
     lod: Option<usize>,
     lod_group: Option<(usize, u32)>,
     sky_applier: Option<i32>,
+    sky_applier_position: [f32; 3],
     lights: Vec<Light>,
     day_night_light: Option<DayNightLight>,
     volumetric_light: Option<VolumetricGlow>,
@@ -1071,7 +1080,7 @@ struct Building {
     key: String,
     nodes: Vec<BuildingNode>,
     /// `SkyApplier`s found, with the file their references are relative to.
-    sky_appliers: Vec<(FileRef, SkyApplier)>,
+    sky_appliers: Vec<(FileRef, SkyApplier, usize)>,
     /// `VFXVolumetricLight`s found: their file, the script, its node.
     volumetric_lights: Vec<(FileRef, VfxVolumetricLight, usize)>,
     /// `PrefabPlaceholder` components → their node.
@@ -1082,6 +1091,21 @@ struct Building {
     exterior_culls: Vec<(FileRef, bool, Vec<PPtr>, usize)>,
     waterfalls: Vec<(FileRef, sn_unity::VfxWaterFall, usize)>,
     key_terminals: Vec<(FileRef, sn_unity::PrecursorKeyTerminal, usize)>,
+}
+
+/// Apply each local transform to the origin, leaving the replaced root out.
+fn applier_position(nodes: &[BuildingNode], owner: usize) -> Result<[f32; 3]> {
+    let mut point = [0.0; 3];
+    let mut at = owner;
+    for _ in 0..=nodes.len() {
+        let node = nodes.get(at).ok_or("sky applier: missing owner")?;
+        let Some(parent) = node.parent else {
+            return Ok(point);
+        };
+        point = node.local.transform_point(point);
+        at = parent;
+    }
+    Err("sky applier: cyclic owner hierarchy".into())
 }
 
 fn below(nodes: &[BuildingNode], node: usize, root: usize) -> bool {
@@ -1253,6 +1277,9 @@ impl Building {
             sorted.push(node);
         }
         self.nodes = sorted;
+        for (_, _, at) in &mut self.sky_appliers {
+            *at = remap[*at];
+        }
         for (_, _, at) in &mut self.volumetric_lights {
             *at = remap[*at];
         }
@@ -1336,6 +1363,7 @@ mod optimized_tests {
             lod: None,
             lod_group: None,
             sky_applier: None,
+            sky_applier_position: [0.0; 3],
             lights: Vec::new(),
             day_night_light: None,
             volumetric_light: None,
@@ -1344,6 +1372,28 @@ mod optimized_tests {
             animator: None,
             blend_shape_weights: Vec::new(),
         }
+    }
+
+    #[test]
+    fn sky_query_uses_owner_position_and_preserves_transform_order() {
+        let mut nodes = vec![
+            node("root", None),
+            node("room", Some(0)),
+            node("applier", Some(1)),
+        ];
+        nodes[0].local.position = [100.0; 3]; // replaced by the placement
+        nodes[1].local.scale = [2.0, 1.0, 6.0];
+        nodes[2].local.position = [3.0, 0.0, 2.0];
+        nodes[2].local.rotation = [
+            0.0,
+            std::f32::consts::FRAC_1_SQRT_2,
+            0.0,
+            std::f32::consts::FRAC_1_SQRT_2,
+        ];
+        assert_eq!(applier_position(&nodes, 2).unwrap(), [6.0, 0.0, 12.0]);
+        assert_eq!(applier_position(&nodes, 0).unwrap(), [0.0; 3]);
+        nodes[1].parent = Some(2);
+        assert!(applier_position(&nodes, 2).is_err());
     }
 
     fn avatar() -> sn_unity::Avatar {
