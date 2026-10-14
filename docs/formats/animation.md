@@ -135,6 +135,34 @@ object curve (align 4)`.
   custom 22) 32, animator parameters (95, custom 8) 78, `GameObject`
   active (1) 17, `RectTransform` (224, custom 28) 14.
 
+## Editor curves and the legacy `Animation` (111) — confirmed (M9u6b2)
+
+Legacy clips are sampled from their **editor curves**, so these are now
+kept (`AnimationClip::editor`), except the compressed rotations and the
+object curves, which are only counted. Each list is an `i32` count of
+curves. Each curve is:
+- an `i32` key count; per key, `f32 time`, then per component (4 for a
+  quaternion, 3 for Euler, position and scale, 1 for a float) the value,
+  the in slopes and the out slopes, an `i32` weighted mode, then per
+  component the in and out weights;
+- `i32` pre and post infinity and rotation order;
+- a float curve then has its `string attribute` (e.g. `m_Alpha`);
+- every curve has its `string path`, below the `Animation`'s GameObject
+  (empty: that object);
+- a float curve ends with `i32 class id` (225 `CanvasGroup`, …) and a
+  `PPtr` script.
+
+Confirmed by `every_animation_object_parses` (all 2,294 clips still end
+at their last byte) and by a round trip of a clip with a scale curve and
+a float curve.
+
+`Animation` (111): `PPtr` GameObject, `u8` enabled (align 4), `PPtr`
+default clip (`m_Animation`), `PPtr[]` clips, `i32` wrap mode, `u8`
+play automatically, `u8` animate physics (align 4), `i32` culling type.
+Confirmed on the HUD's four bars: each has no default clip and one clip,
+wrap mode 0, play automatically false, culling 0 (always animate). How
+the HUD plays them is in `docs/formats/ui.md` § The bars' animations.
+
 ## Avatar (90) — confirmed
 
 `string name, u32 size`, then the avatar constant: skeleton (`{i32 parent,

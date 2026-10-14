@@ -30,6 +30,7 @@ mod pickup;
 mod pickups;
 mod png;
 mod prefab;
+mod pulse;
 mod rects;
 mod scene;
 mod skinned;
@@ -258,6 +259,8 @@ Commands:
                          through a scripted dive and drawn each frame; each
                          second each bar's value and text against a replay
   ui --start             M9u6s: what uGUI draws at start, by screen
+  ui --pulse             M9u6b2: the HUD bars' pulses, punches and turn
+                         through a scripted timeline, against a replay
   ui --layout <CLASS> [<NAME>]
                          M9u1: a script's layout and, for its first object
                          (named NAME), where each field starts and its value
@@ -477,6 +480,7 @@ fn run(mut args: Vec<String>) -> Result<ExitCode> {
         ["ui", "--live"] => live::run(&game),
         ["ui", "--bars"] => bars::run(&game),
         ["ui", "--start"] => start::run(&game),
+        ["ui", "--pulse"] => pulse::run(&game),
         ["ui", "--fonts"] => fonts::run(&game, false),
         ["ui", "--fonts", "--atlas"] => fonts::run(&game, true),
         ["ui", "--sprites"] => ui::sprites(&game, false),

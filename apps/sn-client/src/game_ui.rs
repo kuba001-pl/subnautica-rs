@@ -512,11 +512,13 @@ fn bars_line(hud: &Hud, i: &HudInputs) -> String {
     );
     for (b, s) in hud.config.bars.iter().zip(&hud.bars) {
         out += &format!(
-            "; {:?} {} \"{}\"",
+            "; {:?} {} \"{}\" pulse {:.3} s at {:.3}",
             b.kind,
             s.value
                 .map_or("-".to_string(), |v| format!("{:.4}", b.circular.value(v))),
-            s.text.as_deref().unwrap_or("-")
+            s.text.as_deref().unwrap_or("-"),
+            s.pulse_tween.duration(),
+            s.normalized
         );
     }
     out
@@ -830,8 +832,15 @@ fn request_build(mut worker: ResMut<UiWorker>, windows: Query<&Window, With<Prim
 
 /// Each frame, what the HUD's rules read (M9u6b1): the player's oxygen and
 /// health (`crate::hud::Hud`, filled by the player), `Time`'s step and
-/// clock. The worker adds `Survival`'s food and water.
-fn send_inputs(worker: Res<UiWorker>, hud: Res<crate::hud::Hud>, time: Res<Time>) {
+/// clock, whether the PDA is open (M9u6b2: the icons turn). The worker
+/// adds `Survival`'s food and water. Our player is never healed and never
+/// eats or drinks yet: no punch events.
+fn send_inputs(
+    worker: Res<UiWorker>,
+    hud: Res<crate::hud::Hud>,
+    time: Res<Time>,
+    panel: Option<Res<crate::inventory::Panel>>,
+) {
     let _ = worker.requests.send(Request::Frame(HudInputs {
         active: hud.shown,
         mode: hud_mode(false, false, false),
@@ -843,6 +852,10 @@ fn send_inputs(worker: Res<UiWorker>, hud: Res<crate::hud::Hud>, time: Res<Time>
         water: 0.0,
         delta_time: time.delta_secs(),
         time: time.elapsed_secs(),
+        pda_open: panel.is_some_and(|p| p.open),
+        healed: None,
+        ate: None,
+        drank: None,
     }));
 }
 

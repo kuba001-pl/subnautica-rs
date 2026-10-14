@@ -44,9 +44,9 @@ pub use anim::{
     ANIMATION_CLIP, ANIMATOR, ANIMATOR_CONTROLLER, ATTR_EULER, ATTR_POSITION, ATTR_ROTATION,
     ATTR_SCALE, AVATAR, AnimationClip, AnimationEvent, Animator, AnimatorController, Avatar,
     BIND_TRANSFORM, BlendNode, BlendType, Condition, ConditionMode, DefaultValues, DenseClip,
-    GenericBinding, Interruption, Layer, LayerBlending, Param, ParamKind, SELECTOR_BASE,
-    SelectorState, SelectorTransition, State, StateMachine, StreamedKey, Transition, Xform,
-    name_hash,
+    EditorCurve, EditorCurveKind, GenericBinding, Interruption, LEGACY_ANIMATION, Layer,
+    LayerBlending, LegacyAnimation, Param, ParamKind, SELECTOR_BASE, SelectorState,
+    SelectorTransition, State, StateMachine, StreamedKey, Transition, Xform, name_hash,
 };
 pub use blend_shape::{
     BlendShapeChannel, BlendShapeFrame, BlendShapeVertex, BlendShapes, PLAYER_SETTINGS,

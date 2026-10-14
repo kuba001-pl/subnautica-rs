@@ -3078,3 +3078,50 @@ fn the_start_state_hides_what_the_game_hides() {
         assert!(visible.contains(&shown), "{shown} not drawn at start");
     }
 }
+
+/// M9u6b2: each bar's pulse is read: its clip (oxygen `OxygenBarPulse`:
+/// the wave's scale and alpha, the halo's alpha; the others `IconPulse`:
+/// the icon's scale and the halo's alpha), its curves, and the icons'
+/// fields.
+#[test]
+#[ignore = "needs SUBNAUTICA_DIR pointing at a Subnautica install"]
+fn the_hud_bars_pulses_are_read() {
+    let Some(dir) = std::env::var_os("SUBNAUTICA_DIR") else {
+        eprintln!("SUBNAUTICA_DIR not set; skipping");
+        return;
+    };
+    let game = GameData::locate(Some(PathBuf::from(dir))).unwrap();
+    let assets = Assets::index(&game).unwrap();
+    let assemblies = sn_assets::ScriptAssemblies::load(&game).unwrap();
+    let layouts = assemblies.layouts().unwrap();
+    let catalog = assets.catalog().unwrap();
+    let root = assets.ugui_root(&catalog).unwrap();
+    let ui = assets.ui_tree("uGUI.prefab", &root).unwrap();
+    let config = assets.hud_config(&layouts, &ui).unwrap();
+    let names: Vec<(&str, usize, bool)> = config
+        .bars
+        .iter()
+        .map(|b| {
+            (
+                b.pulse.clip.name.as_str(),
+                b.pulse.clip.tracks.len(),
+                b.icon.is_some(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        names,
+        [
+            ("OxygenBarPulse", 3, false),
+            ("IconPulse", 2, true),
+            ("IconPulse", 2, true),
+            ("IconPulse", 2, true),
+        ]
+    );
+    for b in &config.bars {
+        assert_eq!(b.pulse.clip.length, 1.0);
+        assert!(!b.pulse.delay.keys.is_empty() && !b.pulse.time.keys.is_empty());
+        // No pulse with the bar full.
+        assert!(b.pulse.delay.evaluate(0.0) + b.pulse.time.evaluate(0.0) <= 0.0);
+    }
+}

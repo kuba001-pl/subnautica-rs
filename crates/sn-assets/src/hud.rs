@@ -1,12 +1,79 @@
 //! The HUD's scripts' nodes and fields (M9u6b1; `docs/formats/ui.md`
 //! § The HUD's bars), for `sn_ui::hud`'s rules: `uGUI_SceneHUD`'s elements
-//! and the four bar scripts' `bar`, `text` and fields. (`Survival`'s start
-//! food and water are in its code: `crate::survival_start`.)
+//! and the four bar scripts' `bar`, `text` and fields; their pulse curves,
+//! legacy clips and icons (M9u6b2, § The bars' animations). (`Survival`'s
+//! start food and water are in its code: `crate::survival_start`.)
 
-use sn_ui::hud::{BarConfig, BarKind, HudConfig, Overlays};
-use sn_unity::{Fields, PPtr, Value};
+use sn_ui::clip::{Channel, Clip, Curve, Key, Track};
+use sn_ui::hud::{BarConfig, BarKind, HudConfig, IconMotion, Overlays, Pulse};
+use sn_unity::{AnimationCurve, EditorCurveKind, Fields, PPtr, Value};
 
-use crate::{Assets, Layouts, Result, UiGraphicKind, UiTree};
+use crate::{Assets, Layouts, ObjectRef, Result, UiGraphicKind, UiTree};
+
+/// `RectTransform`'s class.
+const RECT_TRANSFORM: i32 = 224;
+/// `CanvasGroup`'s class.
+const CANVAS_GROUP: i32 = 225;
+/// `AnimationCurve`'s clamp wrap mode (pre and post infinity).
+const CLAMP: i64 = 2;
+
+/// An `AnimationCurve` field: unweighted keys and clamped ends, the only
+/// kind the HUD's rules evaluate.
+fn curve_field(f: &Fields, name: &str) -> Result<Curve> {
+    let c = f
+        .get(name)
+        .and_then(Value::as_struct)
+        .ok_or_else(|| format!("no curve {name}"))?;
+    for end in ["m_PreInfinity", "m_PostInfinity"] {
+        if c.get(end).and_then(Value::as_i64) != Some(CLAMP) {
+            return Err(format!("{name}: {end} is not clamp"));
+        }
+    }
+    let mut keys = Vec::new();
+    for k in c.get("m_Curve").and_then(Value::as_array).unwrap_or(&[]) {
+        let k = k
+            .as_struct()
+            .ok_or_else(|| format!("{name}: a key is not a struct"))?;
+        let n = |field: &str| {
+            k.get(field)
+                .and_then(Value::as_f64)
+                .map(|v| v as f32)
+                .ok_or_else(|| format!("{name}: a key without {field}"))
+        };
+        if k.get("weightedMode").and_then(Value::as_i64).unwrap_or(0) != 0 {
+            return Err(format!("{name}: a weighted key"));
+        }
+        keys.push(Key {
+            time: n("time")?,
+            value: n("value")?,
+            in_slope: n("inSlope")?,
+            out_slope: n("outSlope")?,
+        });
+    }
+    Ok(Curve { keys })
+}
+
+/// A clip's editor curve as ours, if clamped and unweighted.
+fn curve_of(c: &AnimationCurve, what: &str) -> Result<Curve> {
+    if c.pre_infinity != CLAMP as i32 || c.post_infinity != CLAMP as i32 {
+        return Err(format!("{what}: not clamped"));
+    }
+    if c.keys.iter().any(|k| k.weighted_mode != 0) {
+        return Err(format!("{what}: a weighted key"));
+    }
+    Ok(Curve {
+        keys: c
+            .keys
+            .iter()
+            .map(|k| Key {
+                time: k.time,
+                value: k.value,
+                in_slope: k.in_slope,
+                out_slope: k.out_slope,
+            })
+            .collect(),
+    })
+}
 
 fn pptr(f: &Fields, name: &str) -> Result<PPtr> {
     f.get(name)
@@ -23,6 +90,75 @@ fn num(f: &Fields, name: &str) -> Result<f32> {
 }
 
 impl Assets<'_> {
+    /// A node's stored `localScale` (its `RectTransform`).
+    fn stored_scale(&self, tree: &UiTree, node: usize) -> Result<[f32; 3]> {
+        let n = &tree.nodes[node];
+        let c = n
+            .components
+            .iter()
+            .find(|c| c.class_id == RECT_TRANSFORM)
+            .ok_or_else(|| format!("{}: no RectTransform", n.path))?;
+        let (_, d) = c.object.data()?;
+        let r = sn_unity::RectTransform::parse(d, c.object.file.file().big_endian)
+            .map_err(|e| format!("{}: RectTransform: {e}", n.path))?;
+        Ok(r.scale)
+    }
+
+    /// The legacy `Animation` `anim` (on node `at`) as our clip: its
+    /// only clip (the `Animation`'s state 0), each editor curve's path
+    /// resolved below `at`. A scale or a `CanvasGroup`'s `m_Alpha` only.
+    fn pulse_clip(&self, tree: &UiTree, anim: &ObjectRef, at: usize) -> Result<Clip> {
+        let a = self.legacy_animation(anim)?;
+        let mut clips = a.clips.iter().filter(|p| !p.is_null());
+        let (Some(p), None) = (clips.next(), clips.next()) else {
+            return Err(format!(
+                "{}: Animation without exactly one clip",
+                tree.nodes[at].path
+            ));
+        };
+        let o = self
+            .resolve(&anim.file, *p)?
+            .ok_or("Animation clip not found")?;
+        let clip = self.animation_clip(&o)?;
+        if !clip.legacy {
+            return Err(format!("{}: not a legacy clip", clip.name));
+        }
+        let base = &tree.nodes[at].path;
+        let mut tracks = Vec::new();
+        for e in &clip.editor {
+            let path = if e.path.is_empty() {
+                base.clone()
+            } else {
+                format!("{base}/{}", e.path)
+            };
+            let node = tree
+                .nodes
+                .iter()
+                .position(|n| n.path == path)
+                .ok_or_else(|| format!("{}: {path} not in the tree", clip.name))?;
+            let what = format!("{} {path}", clip.name);
+            let channel = match (e.kind, e.class_id, e.attribute.as_str()) {
+                (EditorCurveKind::Scale, _, _) => Channel::Scale([
+                    curve_of(&e.curves[0], &what)?,
+                    curve_of(&e.curves[1], &what)?,
+                    curve_of(&e.curves[2], &what)?,
+                ]),
+                (EditorCurveKind::Float, CANVAS_GROUP, "m_Alpha") => {
+                    Channel::GroupAlpha(curve_of(&e.curves[0], &what)?)
+                }
+                (k, class, attr) => {
+                    return Err(format!("{what}: {k:?} {attr} of class {class} not handled"));
+                }
+            };
+            tracks.push(Track { node, channel });
+        }
+        Ok(Clip {
+            name: clip.name.clone(),
+            length: clip.stop_time - clip.start_time,
+            tracks,
+        })
+    }
+
     /// `uGUI_SceneHUD` and its bars in `tree` (`uGUI`).
     pub fn hud_config(&self, layouts: &Layouts, tree: &UiTree) -> Result<HudConfig> {
         let (_, scene_hud) = tree
@@ -61,6 +197,39 @@ impl Assets<'_> {
                     _ => None,
                 })
                 .ok_or_else(|| format!("{script}.bar is not a uGUI_CircularBar"))?;
+            // The pulse: `animation` (oxygen, health) or `pulseAnimation`.
+            let field = if b.get("animation").is_some() {
+                "animation"
+            } else {
+                "pulseAnimation"
+            };
+            let anim = self
+                .resolve(&c.object.file, pptr(&b, field)?)?
+                .ok_or_else(|| format!("{script}.{field} not found"))?;
+            let at = tree
+                .nodes
+                .iter()
+                .position(|n| n.components.iter().any(|x| x.object.key() == anim.key()))
+                .ok_or_else(|| format!("{script}.{field}: not in the tree"))?;
+            let pulse = Pulse {
+                reference_capacity: num(&b, "pulseReferenceCapacity")?,
+                delay: curve_field(&b, "pulseDelayCurve")?,
+                time: curve_field(&b, "pulseTimeCurve")?,
+                clip: self.pulse_clip(tree, &anim, at)?,
+            };
+            let icon = if kind == BarKind::Oxygen {
+                None
+            } else {
+                let icon = of("icon")?;
+                Some(IconMotion {
+                    icon,
+                    scale: self.stored_scale(tree, icon)?,
+                    spring_coef: num(&b, "rotationSpringCoef")?,
+                    velocity_damp: num(&b, "rotationVelocityDamp")?,
+                    velocity_max: num(&b, "rotationVelocityMax")?,
+                    random_velocity: num(&b, "rotationRandomVelocity")?,
+                })
+            };
             let overlays = if kind == BarKind::Oxygen {
                 Some(Overlays {
                     speed: [num(&b, "overlay1Speed")?, num(&b, "overlay2Speed")?],
@@ -77,6 +246,8 @@ impl Assets<'_> {
                 text: of("text")?,
                 damp_speed: num(&b, "dampSpeed")?,
                 overlays,
+                pulse,
+                icon,
             });
         }
         Ok(HudConfig {

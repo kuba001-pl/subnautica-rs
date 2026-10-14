@@ -1,5 +1,6 @@
 //! `ui --start` (M9u6s, `docs/formats/ui.md` § Start-up state): what
-//! `uGUI` draws in its start state, by screen. Each screen (a child of a
+//! `uGUI` draws in its start state and the HUD's first frame (a new
+//! game's values), by screen. Each screen (a child of a
 //! root canvas, one level down for `ScreenCanvas`) is listed with its
 //! draws (and how many are visible), quads, the area its visible draws
 //! cover as a fraction of its canvas,
@@ -11,6 +12,7 @@ use std::process::ExitCode;
 
 use sn_assets::{Assets, GlyphAtlases, UiState};
 use sn_install::GameData;
+use sn_ui::hud::{Hud, HudInputs, hud_mode};
 use sn_ui::scaler::{DEFAULT_FIELD_OF_VIEW, DEFAULT_UI_SCALE, UiCamera, place};
 
 use crate::Result;
@@ -28,16 +30,6 @@ const SHOWN_BY: &[(&str, &str, &str)] = &[
         "uGUI/DepthClear/",
         "",
         "uGUI/DepthClear: depth only, nothing drawn in our pass (M9u5c)",
-    ),
-    (
-        "uGUI/ScreenCanvas/HUD/Content/BarsPanel/",
-        "/PulseHalo",
-        "the bar's pulse clip, not ported: stored state (M9u6b2)",
-    ),
-    (
-        "uGUI/ScreenCanvas/HUD/Content/BarsPanel/",
-        "/PulseWave",
-        "the bar's pulse clip, not ported: stored state (M9u6b2)",
     ),
     (
         "uGUI/ScreenCanvas/HUD/Content/BarsPanel/BackgroundQuad",
@@ -116,7 +108,27 @@ pub fn run(game: &GameData) -> Result<ExitCode> {
     for n in &start.notes {
         println!("start rule: {n}");
     }
-    let state = UiState::from(&start);
+    // The client's first frame: the start state, then the HUD's rules
+    // with a new game's values (M9u6b1–b2: the bars, their pulses at rest).
+    let mut state = UiState::from(&start);
+    let (food, water) = sn_assets::survival_start(&sn_assets::read_assembly(game)?)?;
+    let mut hud = Hud::new(assets.hud_config(&layouts, &tree)?);
+    state.apply(&hud.update(&HudInputs {
+        active: true,
+        mode: hud_mode(false, false, false),
+        oxygen: 45.0,
+        oxygen_capacity: 45.0,
+        health: 100.0,
+        max_health: 100.0,
+        food,
+        water,
+        delta_time: 1.0 / 60.0,
+        time: 1.0 / 60.0,
+        pda_open: false,
+        healed: None,
+        ate: None,
+        drank: None,
+    }));
     let mut scene = assets.ui_scene(&layouts, &tree, &fonts, &tags.sorting_layers)?;
     let mut atlases = GlyphAtlases::new(&fonts)?;
     let drawn = scene.draw(&assets, &fonts, &set, &mut atlases, &placements, &state)?;

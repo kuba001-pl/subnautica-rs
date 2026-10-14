@@ -873,6 +873,9 @@ the rule that shows them:
 - `DepthClear`, which our pass doesn't draw (1);
 - the bars' pulse halos and wave (5): their pulse animation clips are not
   ported (M9u6b2), so these are still their stored state.
+  Since M9u6b2, `ui --start` also runs the HUD's first frame with a new
+  game's values. The clips then put the halos and the wave at alpha 0,
+  and 21 of 21 visible draws are named.
 
 The only draw larger than 5 % of its canvas is `DepthClear`.
 
@@ -1167,6 +1170,109 @@ show where `CeilToInt` meets a whole number. For example, health after a
   the feedback panel, the confirmation dialog and the pop-ups (stored
   state, M9u6e and M9u7) cover them. The image is not a useful visual
   check yet.
+
+## The bars' animations (M9u6b2) — confirmed (decompiled code, `ui --pulse`)
+
+Ported in `sn-ui` (`clip`, `tween`, `hud`), read by `sn-assets::hud_config`,
+checked by `sn-inspect ui --pulse`.
+
+**The clips.** Each bar's root has a legacy `Animation` with one clip and
+no default clip:
+- `OxygenBarPulse` (1 s) on the oxygen bar: `PulseWave`'s scale (1.5 →
+  4.5), and the `CanvasGroup` alphas of `PulseWave` and `PulseHalo`.
+- `IconPulse` (1 s), the same clip on the health, food and water bars:
+  `Icon`'s x and y scale (1 → 1.25 → 1, z stays 1, with stepped keys) and
+  `PulseHalo`'s alpha.
+
+All their curves are unweighted and clamped. Every alpha is 0 at both
+ends, so a bar at rest shows no halo.
+
+**Playing them.** In `Awake` each script stops the animation and sets its
+only state to weight 1 and speed 0. In `OnEnable` it enables the state and
+starts `pulseTween`, a looping `CoroutineTween`. Each frame:
+- the tween's `OnPulse(scalar)` sets `normalizedTime = Clamp01((duration
+  × scalar − pulseDelay) / pulseTime)`;
+- the animation is sampled at that time;
+- `LateUpdate` computes `pulseDelay` and `pulseTime` from
+  `pulseDelayCurve` and `pulseTimeCurve` at `1 − Clamp01(value /
+  pulseReferenceCapacity)`, each at least 0, and sets the tween's duration
+  to their sum. When the sum drops to 0, `normalizedTime` resets to 0.
+
+So a pulse is a delay with the clip at its start, then the clip played
+over `pulseTime`, repeated. The stored `pulseReferenceCapacity` is 100 on
+all four bars, including oxygen, whose code default is 45. With these
+curves a bar pulses only once its value falls below 15 % of 100 (oxygen)
+or 20 % (the others); the delay curve is −1, so 0, before that.
+
+How Unity runs one frame (Unity's documented order):
+1. `Update` (`uGUI_SceneHUD` shows the bars; `OnEnable` runs);
+2. coroutines resume (`yield null`);
+3. the legacy animation is sampled;
+4. `LateUpdate`.
+
+`StartCoroutine` runs an iterator to its first yield at once, so a tween
+moves once when it starts.
+
+- `CoroutineTween`: `MoveNext` adds the frame's delta to its time. The
+  pulse uses `Time.deltaTime`; the punch uses `PDA.deltaTime`. In `Once`
+  mode the time is clamped to the duration and the tween stops there. In
+  `Loop` mode, `time %= duration`. With duration 0 it doesn't move. The
+  `duration` setter keeps the time's fraction of the duration.
+- Under `WrapMode.Loop` the state's time wraps at the clip's end, so a
+  normalized time of 1 samples the start. This is a *hypothesis*; it
+  shows nowhere, since every alpha is 0 at both ends.
+
+**The icons** (health, food and water; `icon` is the bar's `Icon` node):
+- **Punch:** `OnHealDamage`, `OnEat` and `OnDrink` call `Punch(2.5, 1 +
+  Clamp01(amount / 100))`. `onHealDamage` fires only from
+  `LiveMixin.AddHealth`, with the health gained; despite its name it is
+  not fired by damage. The punch's tween calls `Oscillation(100, 5, seed,
+  t)` with a random seed. `LateUpdate` adds `(o × max, o1 × max, 0)` to
+  the icon's scale; the clip has just written that scale, so it doesn't
+  build up. When the punch stops, the icon goes back to its scale from
+  the punch's start.
+- **Coin turn:** `LateUpdate` turns the icon about y towards 180° while
+  the PDA is open (the numbers' side) and 0° otherwise, with
+  `MathExtensions.CoinRotation`, a spring of 0.02 s steps. Each time the
+  PDA opens or closes, the spin gets a random kick (`Random.Range(−v,
+  v)`, v = `rotationRandomVelocity`).
+- **`CoinRotation` as written:** it takes `FloorToInt(now − last)` steps,
+  the whole seconds since `last`, not the 0.02 s steps in that time. So
+  nothing moves in the first second after `OnEnable`. After that, `last`
+  runs about a second behind and the spring takes one step per frame.
+  Ported as written.
+
+`UnityEngine.Random` is not reproduced: our `Hud` has its own generator,
+used in the same ranges.
+
+**Run** (2026-10-14, `sn-inspect ui --pulse`, 60 fps, 56 s). The script:
+oxygen held at 45, then 6, 3 and 1 of 45; health 12 of 100 while oxygen
+is at 1; a meal of 40 at 40 s; a heal of 30 at 42 s; the PDA open from 45
+to 50 s. The replay is written in the run from the decompiled scripts,
+with the curves read from `sn-unity`, not from our rules.
+- 13,440 of 13,440 halo alphas in the draw list equal the replay's
+  (within 1e-5).
+- The pulse periods measured on the drawn halo are within one frame of
+  the curves' delay + time:
+
+  | Level | Delay + time | Measured mean |
+  |---|---|---|
+  | oxygen 6 | 0.64 s | 0.6398 s |
+  | oxygen 3 | 0.52 s | 0.5205 s |
+  | oxygen 1 | 0.44 s | 0.4404 s |
+  | health 12 | 1.26 s | 1.2583 s |
+
+- 300 of 300 icon widths during the punches equal the rest width × (the
+  clip's scale + the punch), within 1e-3.
+- With the PDA open, the health icon is within 2° of 180° after 0.8 s
+  and settles on 180° by 1.3 s. Its drawn width follows |cos θ|: ×0.809
+  at 216°.
+- Client dive: the oxygen bar starts pulsing below 15 (period 2.48 s at
+  12, 0.40 s at 0). 62 of 62 draws, 0 warnings. Screenshot
+  `out/m9u6b2-dive.png`.
+
+Our player is never healed and never eats or drinks yet, so the client
+sends no punch events. The punches are checked only headless.
 
 ## Script fields (M9u1) — confirmed
 

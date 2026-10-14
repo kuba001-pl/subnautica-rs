@@ -10,12 +10,14 @@
 
 use crate::objects::PPtr;
 use crate::reader::Reader;
+use crate::water_surface::{AnimationCurve, Keyframe};
 use crate::{ErrorKind, Result};
 
 pub const ANIMATION_CLIP: i32 = 74;
 pub const AVATAR: i32 = 90;
 pub const ANIMATOR_CONTROLLER: i32 = 91;
 pub const ANIMATOR: i32 = 95;
+pub const LEGACY_ANIMATION: i32 = 111;
 
 /// `GenericBinding.typeID` of a `Transform` (its `attribute` says which
 /// property: [`ATTR_POSITION`] …).
@@ -153,6 +155,83 @@ pub struct AnimationEvent {
     pub message_options: i32,
 }
 
+/// The legacy `Animation` component (class 111).
+#[derive(Clone, Debug, PartialEq)]
+pub struct LegacyAnimation {
+    pub game_object: PPtr,
+    pub enabled: bool,
+    /// The default clip (`m_Animation`).
+    pub clip: PPtr,
+    pub clips: Vec<PPtr>,
+    pub wrap_mode: i32,
+    pub play_automatically: bool,
+    pub animate_physics: bool,
+    pub culling_type: i32,
+}
+
+impl LegacyAnimation {
+    pub fn parse(data: &[u8], big_endian: bool) -> Result<LegacyAnimation> {
+        let mut r = Reader::new(data, big_endian);
+        let r = &mut r;
+        let game_object = PPtr::read(r)?;
+        let enabled = bool_(r)?;
+        r.align(4)?;
+        let clip = PPtr::read(r)?;
+        let clips = vec_of(r, 12, PPtr::read)?;
+        let wrap_mode = r.i32()?;
+        let play_automatically = bool_(r)?;
+        let animate_physics = bool_(r)?;
+        r.align(4)?;
+        let culling_type = r.i32()?;
+        finish(
+            r,
+            data,
+            LegacyAnimation {
+                game_object,
+                enabled,
+                clip,
+                clips,
+                wrap_mode,
+                play_automatically,
+                animate_physics,
+                culling_type,
+            },
+        )
+    }
+}
+
+/// Which kind of editor curve: what its components animate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EditorCurveKind {
+    /// A `Transform`'s rotation (x, y, z, w).
+    Rotation,
+    /// A `Transform`'s Euler angles, degrees (x, y, z).
+    Euler,
+    /// A `Transform`'s local position (x, y, z).
+    Position,
+    /// A `Transform`'s local scale (x, y, z).
+    Scale,
+    /// A float property of a component (`attribute`, `class_id`).
+    Float,
+}
+
+/// An editor curve kept in a build (`m_RotationCurves` … `m_FloatCurves`;
+/// legacy clips are sampled from these, M9u6b2).
+#[derive(Clone, Debug, PartialEq)]
+pub struct EditorCurve {
+    pub kind: EditorCurveKind,
+    /// The animated object's path below the `Animation`'s GameObject.
+    pub path: String,
+    /// A float curve's property (e.g. `m_Alpha`); empty for the others.
+    pub attribute: String,
+    /// A float curve's component class (225 `CanvasGroup`, …); 4
+    /// (`Transform`) for the others.
+    pub class_id: i32,
+    pub script: PPtr,
+    /// One curve per component (1 for a float, 3 or 4 for the others).
+    pub curves: Vec<AnimationCurve>,
+}
+
 /// `AnimationClip` (class 74).
 #[derive(Clone, Debug, PartialEq)]
 pub struct AnimationClip {
@@ -163,6 +242,9 @@ pub struct AnimationClip {
     /// rotation, compressed rotation, Euler, position, scale, float and
     /// object curves, counted, not kept.
     pub editor_curves: [usize; 7],
+    /// The editor curves themselves (all but the compressed rotations and
+    /// object curves).
+    pub editor: Vec<EditorCurve>,
     pub sample_rate: f32,
     pub wrap_mode: i32,
     pub bounds: ([f32; 3], [f32; 3]),
@@ -224,12 +306,13 @@ impl AnimationClip {
         let mut editor_curves = [0; 7];
         // Keyframe sizes: time, value/in/out slopes, weighted mode, in/out
         // weights.
-        editor_curves[0] = skip_curves(r, 4 * (1 + 4 * 3 + 1 + 4 * 2), false)?;
+        let mut editor = Vec::new();
+        editor_curves[0] = read_curves(r, EditorCurveKind::Rotation, &mut editor)?;
         editor_curves[1] = vec_of(r, 4, skip_compressed_rotation)?.len();
-        editor_curves[2] = skip_curves(r, 4 * (1 + 3 * 3 + 1 + 3 * 2), false)?;
-        editor_curves[3] = skip_curves(r, 4 * (1 + 3 * 3 + 1 + 3 * 2), false)?;
-        editor_curves[4] = skip_curves(r, 4 * (1 + 3 * 3 + 1 + 3 * 2), false)?;
-        editor_curves[5] = skip_curves(r, 4 * 7, true)?;
+        editor_curves[2] = read_curves(r, EditorCurveKind::Euler, &mut editor)?;
+        editor_curves[3] = read_curves(r, EditorCurveKind::Position, &mut editor)?;
+        editor_curves[4] = read_curves(r, EditorCurveKind::Scale, &mut editor)?;
+        editor_curves[5] = read_curves(r, EditorCurveKind::Float, &mut editor)?;
         editor_curves[6] = vec_of(r, 4, skip_pptr_curve)?.len();
         let sample_rate = r.f32()?;
         let wrap_mode = r.i32()?;
@@ -332,6 +415,7 @@ impl AnimationClip {
             legacy,
             compressed,
             editor_curves,
+            editor,
             sample_rate,
             wrap_mode,
             bounds,
@@ -420,22 +504,78 @@ fn parse_streamed(
 
 /// Reads past a vector of editor curves (`AnimationCurve` + path, and for
 /// float curves attribute, class id and script); returns the count.
-fn skip_curves(r: &mut Reader, key_bytes: usize, float_curve: bool) -> Result<usize> {
+/// Reads a list of editor curves of `kind` into `out`; their count.
+/// A key is the time, then per component the value, in and out slopes,
+/// the weighted mode, then per component the in and out weights.
+fn read_curves(r: &mut Reader, kind: EditorCurveKind, out: &mut Vec<EditorCurve>) -> Result<usize> {
+    let dims = match kind {
+        EditorCurveKind::Rotation => 4,
+        EditorCurveKind::Float => 1,
+        _ => 3,
+    };
+    let key_bytes = 4 * (1 + dims * 3 + 1 + dims * 2);
     let n = r.count(4)?;
     for _ in 0..n {
         let keys = r.count(key_bytes)?;
-        r.bytes(keys * key_bytes)?;
-        r.i32()?;
-        r.i32()?;
-        r.i32()?; // pre/post infinity, rotation order
-        if float_curve {
-            r.aligned_string()?; // attribute
+        let mut curves: Vec<AnimationCurve> = (0..dims)
+            .map(|_| AnimationCurve {
+                keys: Vec::with_capacity(keys),
+                pre_infinity: 0,
+                post_infinity: 0,
+            })
+            .collect();
+        for _ in 0..keys {
+            let time = r.f32()?;
+            let mut v = [[0.0f32; 4]; 5]; // value, in, out, in weight, out weight
+            for row in v.iter_mut().take(3) {
+                for c in row.iter_mut().take(dims) {
+                    *c = r.f32()?;
+                }
+            }
+            let weighted_mode = r.i32()?;
+            for row in v.iter_mut().skip(3) {
+                for c in row.iter_mut().take(dims) {
+                    *c = r.f32()?;
+                }
+            }
+            for (d, curve) in curves.iter_mut().enumerate() {
+                curve.keys.push(Keyframe {
+                    time,
+                    value: v[0][d],
+                    in_slope: v[1][d],
+                    out_slope: v[2][d],
+                    weighted_mode,
+                    in_weight: v[3][d],
+                    out_weight: v[4][d],
+                });
+            }
         }
-        r.aligned_string()?; // path
-        if float_curve {
-            r.i32()?; // class id
-            PPtr::read(r)?; // script
+        let pre_infinity = r.i32()?;
+        let post_infinity = r.i32()?;
+        r.i32()?; // rotation order
+        for c in &mut curves {
+            c.pre_infinity = pre_infinity;
+            c.post_infinity = post_infinity;
         }
+        let attribute = if kind == EditorCurveKind::Float {
+            r.aligned_string()?
+        } else {
+            String::new()
+        };
+        let path = r.aligned_string()?;
+        let (class_id, script) = if kind == EditorCurveKind::Float {
+            (r.i32()?, PPtr::read(r)?)
+        } else {
+            (BIND_TRANSFORM, PPtr::default())
+        };
+        out.push(EditorCurve {
+            kind,
+            path,
+            attribute,
+            class_id,
+            script,
+            curves,
+        });
     }
     Ok(n)
 }
@@ -1264,8 +1404,50 @@ mod tests {
     fn encode_clip(c: &AnimationClip) -> Vec<u8> {
         let mut w = W::default();
         w.str(&c.name).b(c.legacy).b(c.compressed).b(false).align();
-        for _ in 0..7 {
-            w.i32(0); // no editor curves
+        // The editor curves, by list (compressed rotations and object
+        // curves: none).
+        let lists = [
+            Some(EditorCurveKind::Rotation),
+            None,
+            Some(EditorCurveKind::Euler),
+            Some(EditorCurveKind::Position),
+            Some(EditorCurveKind::Scale),
+            Some(EditorCurveKind::Float),
+            None,
+        ];
+        for kind in lists {
+            let Some(kind) = kind else {
+                w.i32(0);
+                continue;
+            };
+            let of: Vec<&EditorCurve> = c.editor.iter().filter(|e| e.kind == kind).collect();
+            w.i32(of.len() as i32);
+            for e in of {
+                let keys = e.curves[0].keys.len();
+                w.i32(keys as i32);
+                for k in 0..keys {
+                    let at = |f: fn(&Keyframe) -> f32| -> Vec<f32> {
+                        e.curves.iter().map(|c| f(&c.keys[k])).collect()
+                    };
+                    w.f32(e.curves[0].keys[k].time)
+                        .f32n(&at(|k| k.value))
+                        .f32n(&at(|k| k.in_slope))
+                        .f32n(&at(|k| k.out_slope))
+                        .i32(e.curves[0].keys[k].weighted_mode)
+                        .f32n(&at(|k| k.in_weight))
+                        .f32n(&at(|k| k.out_weight));
+                }
+                w.i32(e.curves[0].pre_infinity)
+                    .i32(e.curves[0].post_infinity)
+                    .i32(4);
+                if kind == EditorCurveKind::Float {
+                    w.str(&e.attribute);
+                }
+                w.str(&e.path);
+                if kind == EditorCurveKind::Float {
+                    w.i32(e.class_id).pptr(e.script);
+                }
+            }
         }
         w.f32(c.sample_rate)
             .i32(c.wrap_mode)
@@ -1381,7 +1563,51 @@ mod tests {
             name: "swim".into(),
             legacy: false,
             compressed: false,
-            editor_curves: [0; 7],
+            editor_curves: [0, 0, 0, 0, 1, 1, 0],
+            editor: {
+                let curve = |v: f32| AnimationCurve {
+                    keys: vec![
+                        Keyframe {
+                            time: 0.0,
+                            value: v,
+                            in_slope: 0.0,
+                            out_slope: f32::INFINITY,
+                            weighted_mode: 0,
+                            in_weight: 1.0 / 3.0,
+                            out_weight: 1.0 / 3.0,
+                        },
+                        Keyframe {
+                            time: 1.0,
+                            value: v + 1.0,
+                            in_slope: 2.0,
+                            out_slope: 0.0,
+                            weighted_mode: 0,
+                            in_weight: 1.0 / 3.0,
+                            out_weight: 1.0 / 3.0,
+                        },
+                    ],
+                    pre_infinity: 2,
+                    post_infinity: 2,
+                };
+                vec![
+                    EditorCurve {
+                        kind: EditorCurveKind::Scale,
+                        path: "Icon".into(),
+                        attribute: String::new(),
+                        class_id: BIND_TRANSFORM,
+                        script: PPtr::default(),
+                        curves: vec![curve(1.0), curve(2.0), curve(3.0)],
+                    },
+                    EditorCurve {
+                        kind: EditorCurveKind::Float,
+                        path: "Halo".into(),
+                        attribute: "m_Alpha".into(),
+                        class_id: 225,
+                        script: PPtr::default(),
+                        curves: vec![curve(0.0)],
+                    },
+                ]
+            },
             sample_rate: 30.0,
             wrap_mode: 0,
             bounds: ([0.0; 3], [1.0; 3]),
@@ -1467,6 +1693,40 @@ mod tests {
         let mut longer = bytes.clone();
         longer.extend([0; 4]);
         assert!(AnimationClip::parse(&longer, false).is_err());
+    }
+
+    #[test]
+    fn legacy_animation_layout() {
+        let p = |id| PPtr {
+            file_id: 0,
+            path_id: id,
+        };
+        let mut w = W::default();
+        w.pptr(p(1))
+            .b(true)
+            .align()
+            .pptr(p(0))
+            .i32(2)
+            .pptr(p(7))
+            .pptr(p(8));
+        w.i32(2).b(false).b(true).align().i32(1);
+        let a = LegacyAnimation::parse(&w.0, false).unwrap();
+        assert_eq!(
+            a,
+            LegacyAnimation {
+                game_object: p(1),
+                enabled: true,
+                clip: p(0),
+                clips: vec![p(7), p(8)],
+                wrap_mode: 2,
+                play_automatically: false,
+                animate_physics: true,
+                culling_type: 1,
+            }
+        );
+        for len in 0..w.0.len() {
+            assert!(LegacyAnimation::parse(&w.0[..len], false).is_err(), "{len}");
+        }
     }
 
     #[test]

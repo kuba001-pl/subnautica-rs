@@ -21,6 +21,7 @@
 //!   UI's scripts share.
 
 pub mod bar;
+pub mod clip;
 pub mod draw;
 pub mod font;
 pub mod hud;

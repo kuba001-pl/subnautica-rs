@@ -61,6 +61,7 @@ pub(crate) mod tests {
             legacy: false,
             compressed: false,
             editor_curves: [0; 7],
+            editor: Vec::new(),
             sample_rate: 30.0,
             wrap_mode: 0,
             bounds: ([0.0; 3], [0.0; 3]),

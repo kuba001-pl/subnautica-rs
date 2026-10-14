@@ -159,6 +159,10 @@ pub fn run(game: &GameData) -> Result<ExitCode> {
             water,
             delta_time: DT,
             time: t,
+            pda_open: false,
+            healed: None,
+            ate: None,
+            drank: None,
         };
         let mut state = start_state.clone();
         state.apply(&hud.update(&inputs));

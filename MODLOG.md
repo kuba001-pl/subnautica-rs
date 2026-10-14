@@ -2,6 +2,61 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-14 — M9u6b2: the bars' animations
+
+**What/why:** the HUD bars' pulse, and the health, food and water
+icons' punch and coin turn, now follow the game's scripts and clips.
+Until now the pulse halos were drawn at their stored alpha.
+- `sn-unity`: `AnimationClip` keeps its editor curves (`editor`:
+  rotation, Euler, position, scale and float curves, per component),
+  which legacy clips are sampled from. New `LegacyAnimation` reader
+  (class 111).
+- `sn-ui`:
+  - `clip`: Unity's `AnimationCurve` (clamped, Hermite, steps) and a
+    clip's scale and `CanvasGroup` alpha tracks sampled into a `UiState`;
+  - `tween`: `CoroutineTween`, `MathExtensions.CoinRotation`, `Spring`
+    and `Oscillation`, and `Mathf.Approximately`;
+  - `hud`: each bar's `pulseTween`, its clip sampled each frame, the
+    punch, and the coin turn, in Unity's frame order. New inputs: PDA
+    open, healed, ate, drank. `UnityEngine.Random` is replaced by our
+    own generator, used in the same ranges.
+- `sn-assets::hud_config`: reads the pulse curves, the bar's
+  `Animation` and its clip, with tracks resolved to nodes by path, and
+  the icon's fields and stored scale. A clip animating anything else is
+  an error.
+- `sn-client`: sends `pda_open` (`inventory::Panel.open`), and logs each
+  bar's pulse period and clip time every second.
+- `sn-inspect ui --pulse` (new): a scripted timeline checked against a
+  replay. `ui --start` now applies the HUD's first frame too, so the
+  halos are named by their rule instead of "stored state".
+
+**Findings** (`docs/formats/ui.md` § The bars' animations):
+- The health punch fires on healing (`AddHealth`), not on damage as the
+  plan said.
+- `pulseReferenceCapacity` is stored as 100 on all four bars, so oxygen
+  pulses below 15.
+- `CoinRotation` steps by whole seconds (`FloorToInt`); ported as
+  written.
+
+**Verified** (`SUBNAUTICA_DIR` set):
+- `ui --pulse`: 13,440 of 13,440 halo alphas equal the replay. The
+  measured periods are within one frame of the curves at oxygen 6, 3
+  and 1 of 45 and at health 12 (0.64, 0.52, 0.44 and 1.26 s). 300 of 300
+  icon widths during punches equal. The turn reaches 180°.
+- `ui --bars`: 300 checks, 0 differ.
+- `ui --start`: 21 of 21 visible draws named.
+- Client dive: the pulse starts below oxygen 15. 62 of 62 draws,
+  0 warnings. `out/m9u6b2-dive.png` shows only the oxygen bar glowing.
+- `cargo test --workspace`: 628 passed, 0 failed, 54 ignored.
+  `cargo test --release --workspace -- --ignored`: 54 of 54 pass with
+  the game, including all 2,294 clips still parsing to their last byte.
+  fmt and clippy are clean.
+
+**Not done:** the client sends no punch events (no healing, eating or
+drinking in our sim yet). The Loop wrap at normalized time 1 is a
+hypothesis; it is invisible with these clips. Not compared with the game
+on screen.
+
 ## 2026-10-14 — M9u6s: the other screens' start rules
 
 **What/why:** the stored `uGUI.prefab` drew screens the game hides at

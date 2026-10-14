@@ -8,7 +8,7 @@ use std::sync::Arc;
 use sn_anim::{Program, SlotKind};
 use sn_unity::{
     ANIMATION_CLIP, ANIMATOR_CONTROLLER, AVATAR, AnimationClip, AnimatorController, Avatar,
-    PLAYER_SETTINGS, clamps_blend_shape_weights, name_hash,
+    LEGACY_ANIMATION, LegacyAnimation, PLAYER_SETTINGS, clamps_blend_shape_weights, name_hash,
 };
 
 use crate::prefab::Prefab;
@@ -49,6 +49,15 @@ impl Assets<'_> {
             object.file.file().big_endian,
         )
         .map_err(|e| format!("AnimationClip {}: {e}", object.path_id))
+    }
+
+    /// A legacy `Animation` component (M9u6b2).
+    pub fn legacy_animation(&self, object: &ObjectRef) -> Result<LegacyAnimation> {
+        LegacyAnimation::parse(
+            data_of(object, LEGACY_ANIMATION)?,
+            object.file.file().big_endian,
+        )
+        .map_err(|e| format!("Animation {}: {e}", object.path_id))
     }
 
     pub fn avatar(&self, object: &ObjectRef) -> Result<Avatar> {
