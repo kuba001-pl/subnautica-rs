@@ -536,3 +536,31 @@ rather than producing non-finite render matrices (a defensive deviation).
 the reported green/blue falls starting too high. Original-game visual parity
 is not tested. Nested waterfall component layouts are explicitly rejected;
 none occur in the three installed waterfall families checked here.
+
+### Lake footprints under nonuniform placements (2026-10-14)
+
+**Confirmed by installed-data audit:** all 328 visible mesh surfaces on
+placed Lost River lake prefabs in BatchObjectsCache were compared using
+sequential parent/child point transformation. Sixteen differ from the old
+flattened TRS result by more than 1 cm; maximum vertex displacement is
+17.380856 m. Rotated border-fading planes under unequal X/Z placement
+scales are affected. The 90-degree child rotation changes which parent
+scale acts on each mesh axis; multiplying scale components and quaternion
+rotations separately does not preserve that ordering.
+
+**Confirmed numerically:** retaining the placement as a parent and the
+mesh transform as a child lets Bevy propagate their full affine product.
+Across those 328 surfaces, it matches sequential transformation to within
+0.000123 m. A synthetic hierarchy test also covers a non-axis-aligned
+rotation with reflected/nonuniform scale (shear), a changed parent, and
+removal of children when their streaming parent is removed.
+
+**Scope:** the correction is on rigid effect meshes at their placed root;
+animated effects retain rig attachments. It does not change the core TRS
+API or the terrain. Lost River lake mesh children in this audit are direct
+children. Other nested prefab TRS flattening remains outside this change.
+
+**Supported by user visual review (2026-10-14):** changed lake footprints explain
+some extra/missing green surfaces. The supplied client screenshot's exact
+location is unknown, so it is not a verified matched reproduction and this
+is not a claim that every lake coverage issue is solved.

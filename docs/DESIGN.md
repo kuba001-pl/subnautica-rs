@@ -3196,3 +3196,26 @@ Implemented and numerically checked: three installed families/six caps,
 terrain/object counts and no loader warnings; 50 cap instances retain
 configured thickness. Details and commands in MODLOG. Human visual
 confirmation remains open.
+
+#### Lost River lake coverage investigation (2026-10-14)
+
+The user reports extra and missing green surfaces in multiple client locations.
+Audit the placed lake meshes, especially rotated border-fading children under
+nonuniform placement scales: our flattened TRS composition may change their
+footprints. Compare flattened vertices with sequential parent/child application
+from the installed hierarchy before changing rendering. Also check depth/culling
+contracts. Keep this concern separate from committed waterfall cap correction.
+
+Done when:
+- [x] Quantify any transform discrepancy on installed lake placements.
+- [x] If confirmed, make a scoped rendering correction without an architecture change.
+- [x] Synthetic regression and installed-data checks, workspace tests and GPU checks pass.
+- [x] Human confirmation of lake coverage: user reports "looks good to me" (2026-10-14).
+
+Implemented as a scoped rigid-effect spawn correction: a placement parent
+and its local mesh children replace flattened world TRS. Animated effects
+retain their existing rig attachments; core coordinate APIs are unchanged.
+328 installed lake surfaces audited, 16 previously distorted by up to
+17.380856 m; affine composition agrees with sequential application within
+0.000123 m. 631 workspace tests pass; two GPU regressions pass. Exact user
+screenshot location and original-game coverage remain unverified.

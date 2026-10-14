@@ -156,7 +156,8 @@ pub(crate) enum EffectLook {
     Particles(ParticlesValues),
 }
 
-/// A placed effect sub-mesh; its transform is the world placement.
+/// A placed effect sub-mesh; GlobalTransform holds the full affine placement.
+/// Static and animated effects may inherit a parent placement.
 #[derive(Component, Clone)]
 #[require(Transform, Visibility)]
 pub(crate) struct EffectPart {

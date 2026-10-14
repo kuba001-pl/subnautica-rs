@@ -2,6 +2,76 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-14 - Lost River lake footprints under nonuniform scale
+
+**What/why:** after authorizing commit/push of the waterfall-cap correction,
+the user supplied a client screenshot and reported extra/missing green
+surfaces at several locations (exact coordinates unknown). The prior fix
+was committed/pushed as `536db41`; the user confirmed the new lake fix looks good and authorized its commit/push.
+
+The installed lake audit found a concrete transform-order error: flattening
+parent and child TRS by multiplying their scale components applies a
+nonuniform parent scale along the child's rotated axes. Sixteen of 328
+placed lake mesh surfaces were distorted; worst vertex displacement
+17.380856 m. Border-fading planes with rotated children are affected.
+
+**Change:** rigid effects spawn under one placement parent per instance,
+with their local transform retained. Bevy propagates the full affine
+product. Removing the tracked parent removes its effect children. Animated
+effects keep their existing rig attachment; waterfall cap height correction
+is applied to the local child before parenting. No core TRS change,
+dependencies, shader changes or whitelist changes.
+
+**Verified:**
+- `cargo test --workspace`: 631 passed, 0 failed, 56 ignored. New synthetic
+  propagation test: rotated/nonuniform footprints, reflected shear, dynamic
+  parent update, parent/child removal.
+- `$env:SUBNAUTICA_DIR='<INSTALL>'; cargo test -p sn-client audit_brine -- --ignored --nocapture`:
+  1 passed. All 328 placed lake surfaces, 16 old errors over 1 cm,
+  old maximum 17.380856 m. Correct affine product's maximum error against
+  sequential point transformation: 0.00012207031 m. The test lives in the
+  client so it checks Bevy's actual GlobalTransform math.
+- `cargo clippy --workspace --all-targets -- -D warnings`,
+  `cargo fmt --all -- --check`, `git diff --check`: pass.
+- `cargo build --release -p sn-client`: pass; rebuilt client available.
+- GPU checks: green worst-case area before/after and a blue waterfall
+  regression, 120 measured frames/60 settled warm-up, 960x540, view 400.
+  All processes exit 0; zero loader warnings or shader validation errors.
+  Green effect parts/meshes stay 162/7; terrain triangles 3,097,194, object
+  meshes/materials/textures 3,551/395/676 unchanged. Blue effects 60/5;
+  terrain triangles 2,093,114, meshes/materials/textures 1,196/233/448.
+  Tracked entity counts fall (green 2,697 to 2,603, blue 606 to 574) because one
+  tracked placement parent now owns several effect children. Rendered
+  effect-part counts are unchanged. Green mean frame times 6.72 to 7.49 ms,
+  p99 7.68 to 13.93 ms; blue regression mean 9.01 ms. Short single runs do not
+  isolate performance effects from scheduler/animation variation.
+- Evidence/logs: `out/waterfall-fix/lake-*.log`; baseline reports/captures
+  `out/baselines/run-lake-footprint-{before,after}/` and
+  `out/baselines/run-lake-blue-regression/` (all ignored).
+
+**Exact human verification command** (after setting SUBNAUTICA_DIR):
+```powershell
+target/release/sn-client.exe --free-cam --start -525 -810 215 --look -525 -824 155 --view 400 --resolution 960 540 --time-scale 0 --slot-seed 1 --lifepod-seed 1 --aurora intact
+```
+Expect the green border-fading planes to retain their authored footprints;
+for automated output, replace `--free-cam` with `--benchmark 120 --warmup 60`.
+Expect a completed benchmark and zero loader warnings.
+
+**Dead ends/corrections:** the first diagnostic scanned only baked cell
+placements and found no lakes. These are batch objects; the audit was
+corrected to read BatchObjectsCache and apply the same batch-root relocation
+as the client. No speculative individual surface offsets were introduced.
+
+**Human verification (2026-10-14):** user reports "looks good to me" and
+authorizes commit/push. This confirms the client result in their review.
+
+**Not tested:** matched reproduction of the user's screenshot (coordinates
+unknown) and original-game visual parity.
+This fixes a proven source of extra/missing area, not a claim that all green
+surface issues are resolved. Other non-effect/nested TRS flattening remains
+outside this scoped change. Game install read-only; only our source/docs
+appear in git status.
+
 ## 2026-10-14 ? Lost River green/blue waterfall cap height correction
 
 **What/why:** the user reports waterfall starting points extending too high.

@@ -173,6 +173,9 @@ regression passed; user visual confirmation pending); Tree Cove's
 brine and the Ghost Tree/Bones Field lakes with world-space scrolling,
 deformation, near fading and weighted transparency (M7g4a/b; GPU validated,
 saved lake lighting keywords are inactive in the installed shader;
+rigid effects preserve parent scale before child rotation, correcting
+16 distorted green lake surfaces (328 surfaces numerically checked;
+user visual check passed on 2026-10-14);
 original-game visual parity not tested); green and blue Lost River waterfalls
 keep their top/bottom cap thickness at the configured height when their
 placements are stretched (startup rule restored; numerical tests passed,

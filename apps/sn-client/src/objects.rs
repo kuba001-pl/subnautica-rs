@@ -4432,6 +4432,7 @@ impl ObjectStreamer {
             }
             rig_entities.push((base, nodes, Vec::new(), Vec::new()));
         }
+        let mut effect_root = None;
         for part in parts {
             if part.effect {
                 let Some(look) = self
@@ -4491,9 +4492,27 @@ impl ObjectStreamer {
                     );
                     continue;
                 }
-                let entity = s.commands.spawn((marker, to_bevy(&world))).id();
+                // Keep the transforms separate: nonuniform parent scale and
+                // a rotated child cannot be flattened by multiplying TRS scales.
+                // Bevy propagates the full affine product, including shear.
+                let parent = *effect_root.get_or_insert_with(|| {
+                    let base = s
+                        .commands
+                        .spawn((to_bevy(&inst.transform), Visibility::default()))
+                        .id();
+                    entities.push(base); // Despawning the base removes its children.
+                    base
+                });
+                let local = sn_assets::waterfall_local(
+                    part.local,
+                    part.waterfall_cap_height,
+                    inst.transform.scale[1],
+                );
+                let entity = s
+                    .commands
+                    .spawn((marker, to_bevy(&local), ChildOf(parent)))
+                    .id();
                 lod_member(s.commands, &mut lod_members, part.lod, entity, 0);
-                entities.push(entity);
                 continue;
             }
             let sky = self.skies.pick(part.biome_sky, biome, inst.pod_sky);
@@ -4680,6 +4699,40 @@ impl ObjectStreamer {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn rigid_effect_hierarchy_preserves_stretched_and_rotated_footprints() {
+        use bevy::prelude::*;
+        let mut app = App::new();
+        app.add_plugins(bevy::transform::TransformPlugin);
+        let parent = app
+            .world_mut()
+            .spawn(Transform::from_scale(Vec3::new(2.0, 1.0, 6.0)))
+            .id();
+        let local = Transform::from_rotation(Quat::from_rotation_y(std::f32::consts::FRAC_PI_2));
+        let child = app.world_mut().spawn((local, ChildOf(parent))).id();
+        app.update();
+        let global = app.world().get::<GlobalTransform>(child).unwrap();
+        assert!(
+            global
+                .transform_point(Vec3::X)
+                .distance(Vec3::new(0.0, 0.0, -6.0))
+                < 1e-5
+        );
+        // A non-axis-aligned rotation adds shear. Keeping a hierarchy must
+        // still match sequential application, including reflected parents.
+        let parent_transform = Transform::from_scale(Vec3::new(-3.0, 1.0, 7.0));
+        let child_transform = Transform::from_rotation(Quat::from_rotation_y(0.7));
+        *app.world_mut().get_mut::<Transform>(parent).unwrap() = parent_transform;
+        *app.world_mut().get_mut::<Transform>(child).unwrap() = child_transform;
+        app.update();
+        let global = app.world().get::<GlobalTransform>(child).unwrap();
+        let point = Vec3::new(4.0, 0.0, 2.0);
+        let expected = parent_transform.transform_point(child_transform.transform_point(point));
+        assert!(global.transform_point(point).distance(expected) < 1e-5);
+        // ChildOf owns the effect, so streaming out its base removes it too.
+        app.world_mut().despawn(parent);
+        assert!(app.world().get_entity(child).is_err());
+    }
     use super::*;
 
     /// The crash of 2026-10-12 (a picked-up item, then its batch's shadow
@@ -5226,4 +5279,88 @@ mod tests {
         assert!(shows(0, 0) && shows(3, 0) && shows(3, 3));
         assert!(!shows(0, 1) && !shows(2, 3));
     }
+}
+
+#[cfg(test)]
+#[test]
+#[ignore = "needs SUBNAUTICA_DIR pointing at a Subnautica install"]
+fn audit_brine_placement_composition() {
+    let Some(dir) = std::env::var_os("SUBNAUTICA_DIR") else {
+        return;
+    };
+    let game = sn_install::GameData::locate(Some(PathBuf::from(dir))).unwrap();
+    let assets = sn_assets::Assets::index(&game).unwrap();
+    let catalog = assets.catalog().unwrap();
+    let paths = game.read_prefab_database().unwrap();
+    let mut templates = std::collections::HashMap::new();
+    let mut placements = 0;
+    let mut distorted = 0;
+    let mut worst = 0.0f32;
+    let mut corrected_worst = 0.0f32;
+    let (batches, _) = game.object_batches().unwrap();
+    for batch in batches {
+        let Some(mut tree) = game.read_batch_objects(batch).unwrap() else {
+            continue;
+        };
+        let corner = [batch.x, batch.y, batch.z].map(|v| v as f32 * 160.0);
+        for object in tree.objects.iter_mut().filter(|o| o.parent.is_none()) {
+            object.transform.position =
+                std::array::from_fn(|i| corner[i] - sn_world::VOXEL_WORLD_OFFSET[i]);
+        }
+        {
+            let (world, _) = tree.world_transforms();
+            for (object, root) in tree.objects.iter().zip(world) {
+                let Some(path) = paths.get(&object.class_id) else {
+                    continue;
+                };
+                if !path.contains("LostRiver") || !path.contains("Lake") {
+                    continue;
+                }
+                if !templates.contains_key(path) {
+                    templates.insert(path.clone(), assets.prefab(&catalog, path).unwrap());
+                }
+                let prefab = &templates[path];
+                for node in prefab.visible_nodes() {
+                    let Some(mesh) = &node.mesh else {
+                        continue;
+                    };
+                    let (_, geometry) = assets.mesh(mesh).unwrap();
+                    let flattened = root.then(&node.in_prefab);
+                    let affine = GlobalTransform::from(to_bevy(&root))
+                        .mul_transform(to_bevy(&node.in_prefab));
+                    let mut error = 0.0f32;
+                    for &vertex in &geometry.positions {
+                        let correct = root.transform_point(node.in_prefab.transform_point(vertex));
+                        let actual = flattened.transform_point(vertex);
+                        let bevy_point =
+                            affine.transform_point(Vec3::new(vertex[0], vertex[1], -vertex[2]));
+                        let expected = Vec3::new(correct[0], correct[1], -correct[2]);
+                        corrected_worst = corrected_worst.max(bevy_point.distance(expected));
+                        let d = (0..3)
+                            .map(|i| (correct[i] - actual[i]).powi(2))
+                            .sum::<f32>()
+                            .sqrt();
+                        error = error.max(d);
+                    }
+                    placements += 1;
+                    if error > 0.01 {
+                        distorted += 1;
+                    }
+                    if error > worst {
+                        worst = error;
+                        eprintln!(
+                            "brine composition new worst={error}m root_scale={:?} root_position={:?}",
+                            root.scale, root.position
+                        );
+                    }
+                }
+            }
+        }
+    }
+    eprintln!("brine surfaces={placements} distorted={distorted} worst={worst}m");
+    assert_eq!(placements, 328);
+    assert_eq!(distorted, 16);
+    assert!(worst > 17.0);
+    eprintln!("brine corrected worst={corrected_worst}m");
+    assert!(corrected_worst < 0.002);
 }
