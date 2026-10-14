@@ -56,6 +56,12 @@ pub struct Rules {
 /// remote bodies); the body's animator rules (remote bodies use the
 /// owner's values, so a difference cannot desync).
 pub fn rules(game: &GameData, assets: &Assets) -> Result<Rules> {
+    rules_with(game, assets, &[])
+}
+
+/// [`rules`] with the pickups of `extra` tech types (M9u6c2,
+/// `crate::item_rules_with`).
+pub fn rules_with(game: &GameData, assets: &Assets, extra: &[i32]) -> Result<Rules> {
     let build = build_number(game)?;
     let data = crate::player_data(assets)?;
     let settings = crate::physics_settings(assets)?;
@@ -66,7 +72,7 @@ pub fn rules(game: &GameData, assets: &Assets) -> Result<Rules> {
     let look = crate::look_params(&data, &code);
     let exploder = crate::exploder_code(&code_bytes)?;
     let tech_data = crate::resource_bytes(assets, "balance/techdata")?;
-    let (items, _) = crate::item_rules(game, assets, &code_bytes)?;
+    let (items, _) = crate::item_rules_with(game, assets, &code_bytes, extra)?;
     let text = |s: String| Fnv64::new().str(&s).finish();
     let parts = vec![
         ("player", text(format!("{player:?}"))),

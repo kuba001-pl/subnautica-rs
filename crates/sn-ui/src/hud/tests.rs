@@ -122,6 +122,7 @@ fn inputs() -> HudInputs {
         drank: None,
         depth: 0.0,
         compass: false,
+        yaw: 0.0,
     }
 }
 

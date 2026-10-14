@@ -184,6 +184,8 @@ pub struct PlayerSim {
     use_hatch_at: Vec<f64>,
     hatch_name: Option<String>,
     hold_forward_from: Option<f64>,
+    /// `--turn`, degrees a second.
+    turn: Option<f64>,
     kill_at: Option<f64>,
     /// After a cinematic ends: trace every physics step until this time
     /// (only with the debug flags `--use-hatch` / `--hold-forward`).
@@ -240,6 +242,8 @@ pub struct Start {
     pub hatch_name: Option<String>,
     /// `--hold-forward`: hold W from this much play on.
     pub hold_forward: Option<f64>,
+    /// `--turn`: the look turns right at this many degrees a second.
+    pub turn: Option<f64>,
     /// `--kill`: the player dies after this much play.
     pub kill: Option<f64>,
     /// `--use-item`: seconds of play at which the hand turns to the
@@ -363,6 +367,7 @@ impl PlayerSim {
         let third_person = start.third_person;
         let look_down = start.look_down;
         let kill_at = start.kill;
+        let turn = start.turn;
         let mut use_hatch_at = start.use_hatch.clone();
         use_hatch_at.sort_by(|a, b| b.total_cmp(a));
         let mut use_item_at = start.use_item.clone();
@@ -395,6 +400,7 @@ impl PlayerSim {
             use_hatch_at,
             hatch_name,
             hold_forward_from,
+            turn,
             kill_at,
             trace_until: 0.0,
             trace_hatches,
@@ -1079,6 +1085,10 @@ pub fn update(
         state
             .look
             .apply(&state.look_params, f64::from(d.x), -f64::from(d.y));
+    }
+    // `--turn` (M9u6c2): the look turns right at a fixed rate.
+    if let Some(rate) = sim.turn.filter(|_| controls && !panel_open) {
+        state.look.rotation_x += rate * f64::from(time.delta_secs());
     }
     // `--use-hatch`: aim at the nearest usable hatch, then use it below.
     let play = sim.steps as f64 * state.params.fixed_dt;

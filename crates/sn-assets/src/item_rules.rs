@@ -94,6 +94,18 @@ pub fn item_rules(
     assets: &Assets,
     dll: &[u8],
 ) -> Result<(ItemRules, ItemRulesReport)> {
+    item_rules_with(game, assets, dll, &[])
+}
+
+/// [`item_rules`], with the pickup prefabs of `extra` tech types read as
+/// the supplies' are (M9u6c2: `--test-supply`, a debug aid; the rules and
+/// so their fingerprint then differ from a plain host's).
+pub fn item_rules_with(
+    game: &GameData,
+    assets: &Assets,
+    dll: &[u8],
+    extra: &[i32],
+) -> Result<(ItemRules, ItemRulesReport)> {
     let catalog = assets.catalog()?;
     let db = game
         .read_prefab_database_ordered()
@@ -230,7 +242,7 @@ pub fn item_rules(
             tech_class.insert(t, class.clone());
         }
     }
-    for t in &player.loot.escape_pod {
+    for t in player.loot.escape_pod.iter().chain(extra) {
         let class = tech_class
             .get(t)
             .ok_or_else(|| format!("supply tech type {t} has no prefab"))?;

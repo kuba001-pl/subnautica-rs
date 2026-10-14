@@ -351,6 +351,7 @@ impl Assets<'_> {
             half_moon_compass_normal: sprite("halfMoonCompassNormal")?,
             text_color_normal,
             meter_suffix: get("MeterSuffix"),
+            ring: self.compass_of(tree, from, &cf)?,
         })
     }
 }

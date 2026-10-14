@@ -7,6 +7,13 @@
 // - `UI/Simple` (no keywords, or `ALPHA_PREMULTIPLY`): the same without UV
 //   transform or soft clip; the hard clip `UnityGet2DClipping` always;
 //   premultiplied, colour × the clipped alpha.
+// - `uGUI/Compass` (M9u6c2, flag 16; its values in `st`): the UV divided by
+//   `uv1.x` (the mesh stores UV / z and 1/z); p = 2 UV − 1; the texture at
+//   p turned by `_Angle` about the centre; (`_MainTex` +
+//   `_TextureSampleAdd`) × colour; alpha × the hard clip × sin(1 − |2t −
+//   1|), t = saturate((the clockwise angle of p from +y as a fraction of a
+//   turn − `_AlphaFrom`) ÷ (`_AlphaTo` − `_AlphaFrom`)). Its pass culls
+//   back faces; the mesh faces the camera, so nothing is culled here.
 // Vertex colours arrive as stored (sRGB bytes) and are made linear, as
 // Unity does in a linear project (*hypothesis*, `docs/formats/ui.md`).
 
@@ -15,7 +22,7 @@ struct Item {
     clip_from_canvas: mat4x4<f32>,
     // `_Color`, linear.
     color: vec4<f32>,
-    // `_MainTex_ST`.
+    // `_MainTex_ST`; `uGUI/Compass`: `_Angle`, `_AlphaFrom`, `_AlphaTo`.
     st: vec4<f32>,
     // `_TextureSampleAdd`.
     texture_add: vec4<f32>,
@@ -23,7 +30,8 @@ struct Item {
     clip_rect: vec4<f32>,
     // `_UIMaskSoftnessX`, `_UIMaskSoftnessY`, flags, unused. Flags: 1 the
     // soft clip (`UNITY_UI_CLIP_RECT`), 2 the hard clip (`UI/Simple`), 4
-    // premultiply (`ALPHA_PREMULTIPLY`), 8 `_MainTex_ST` applies.
+    // premultiply (`ALPHA_PREMULTIPLY`), 8 `_MainTex_ST` applies, 16
+    // `uGUI/Compass`.
     softness: vec4<f32>,
     // `_ScreenParams.xy`, the projection's [0][0] and [1][1].
     pixel: vec4<f32>,
@@ -48,7 +56,11 @@ struct VertexOut {
     @location(2) canvas: vec2<f32>,
     @location(3) mask: vec4<f32>,
     @location(4) @interpolate(flat) instance: u32,
+    // `uv1.x` (the compass's 1/z).
+    @location(5) inv_z: f32,
 }
+
+const TAU: f32 = 6.283185;
 
 fn has(flags: f32, bit: u32) -> bool {
     return (u32(flags) & bit) != 0u;
@@ -83,13 +95,28 @@ fn vertex(in: VertexIn) -> VertexOut {
         0.25 / (0.25 * it.softness.xy + abs(pixel_size)),
     );
     out.instance = in.instance;
+    out.inv_z = in.uv1.x;
     return out;
 }
 
 @fragment
 fn fragment(in: VertexOut) -> @location(0) vec4<f32> {
     let it = items[in.instance];
-    var c = (textureSample(main_tex, main_sampler, in.uv) + it.texture_add) * in.color;
+    // `uGUI/Compass`: the perspective-correct UV, the turned sample UV and
+    // the angular window (computed for every item; the sample comes before
+    // any branch).
+    let compass = has(it.softness.z, 16u);
+    let p = select(in.uv, in.uv / in.inv_z, compass) * 2.0 - 1.0;
+    let turn = fract(atan2(p.x, p.y) / TAU);
+    let t = saturate((turn - it.st.y) / (it.st.z - it.st.y));
+    let window = sin(1.0 - abs(2.0 * t - 1.0));
+    let sc = vec2<f32>(sin(it.st.x), cos(it.st.x));
+    let turned = vec2<f32>(sc.y * p.x + sc.x * p.y, -sc.x * p.x + sc.y * p.y) * 0.5 + 0.5;
+    let uv = select(in.uv, turned, compass);
+    var c = (textureSample(main_tex, main_sampler, uv) + it.texture_add) * in.color;
+    if compass {
+        c.a = c.a * window;
+    }
     if has(it.softness.z, 1u) {
         let m = saturate((it.clip_rect.zw - it.clip_rect.xy - abs(in.mask.xy)) * in.mask.zw);
         c.a = c.a * m.x * m.y;

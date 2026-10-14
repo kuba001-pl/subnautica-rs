@@ -8,11 +8,13 @@
 //! drones, rocket or intro), so the mode is `Player` while the HUD is
 //! active and the PDA is closed, and `None` otherwise. `OnDepthClassChanged`
 //! forces the class to `Safe` in the game's code (IL), so the danger
-//! sprites and colour are never shown and are not read. The compass's
-//! drawing and direction (`uGUI_Compass`) are M9u6c2; here only its
-//! visibility (`SetVisible`), which enables or disables the graphic and
-//! its labels' texts.
+//! sprites and colour are never shown and are not read. `UpdateCompass`
+//! shows or hides the compass (`SetVisible`: the graphic and its labels'
+//! texts) and, while shown, sets its `direction` from the camera's yaw
+//! (M9u6c2): `uGUI_Compass`'s material values and labels
+//! ([`crate::compass`]).
 
+use crate::compass::{Compass, wrap};
 use crate::hud::HudInputs;
 use crate::state::{MaterialValues, SpriteId, UiState};
 
@@ -35,6 +37,8 @@ pub struct DepthConfig {
     /// with its language text (`CompassDirection{name}`).
     pub compass: usize,
     pub labels: Vec<(usize, String)>,
+    /// The `uGUI_Compass`'s fields.
+    pub ring: Compass,
     pub shadow_normal: SpriteId,
     pub half_moon_normal: SpriteId,
     pub half_moon_compass_normal: SpriteId,
@@ -64,6 +68,8 @@ pub struct DepthCompass {
     pub compass_cached: i32,
     /// `uGUI_Compass._visible` (true until `SetVisible(false)`).
     pub compass_visible: bool,
+    /// `uGUI_Compass._direction` (0 until first set).
+    pub direction: f32,
     /// Every change made so far.
     pub state: UiState,
 }
@@ -83,6 +89,7 @@ impl DepthCompass {
             player_depth: i32::MIN,
             compass_cached: -1,
             compass_visible: true,
+            direction: 0.0,
             state: UiState::default(),
         }
     }
@@ -176,8 +183,8 @@ impl DepthCompass {
         self.initialized && i.active && !i.pda_open && i.compass
     }
 
-    /// `UpdateCompass`: the half moon on a change, then
-    /// `compass.SetVisible`. (The direction is M9u6c2.)
+    /// `UpdateCompass`: the half moon on a change, `compass.SetVisible`,
+    /// and while enabled `compass.direction = eulerAngles.y / 360`.
     fn update_compass(&mut self, i: &HudInputs) {
         let on = self.compass_enabled(i);
         let n = i32::from(on);
@@ -187,12 +194,37 @@ impl DepthCompass {
                 self.update_half_moon();
             }
         }
-        if self.compass_visible != on {
-            self.compass_visible = on;
-            self.state.enabled.insert(self.config.compass, on);
-            for (node, _) in &self.config.labels {
-                self.state.enabled.insert(*node, on);
-            }
+        // `SetVisible` acts on a change of `_visible`; the state always
+        // says what it is, since a start state (M9u6s) may already have
+        // applied a first `SetVisible(false)`.
+        self.compass_visible = on;
+        self.state.enabled.insert(self.config.compass, on);
+        for (node, _) in &self.config.labels {
+            self.state.enabled.insert(*node, on);
+        }
+        if on {
+            self.set_direction(i.yaw / 360.0);
+        }
+    }
+
+    /// The `direction` setter: wrapped to 0…1; on a change `UpdateAngle`
+    /// (the material instance's values) and `UpdateLabels`.
+    fn set_direction(&mut self, value: f32) {
+        let value = wrap(value);
+        if self.direction == value {
+            return;
+        }
+        self.direction = value;
+        let ring = &self.config.ring;
+        let s = &mut self.state;
+        s.material
+            .entry(self.config.compass)
+            .or_default()
+            .apply(&ring.angle_values(value));
+        for l in &ring.labels {
+            let (pos, alpha) = ring.label(l.angle, value);
+            s.transform.entry(l.node).or_default().anchored_position = Some(pos);
+            s.color.insert(l.node, [1.0, 1.0, 1.0, alpha]);
         }
     }
 }

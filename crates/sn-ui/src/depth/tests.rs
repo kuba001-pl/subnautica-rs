@@ -1,4 +1,34 @@
 use super::*;
+use crate::compass::Label;
+
+fn ring() -> Compass {
+    Compass {
+        color: [1.0; 4],
+        size: 3.9,
+        position: [0.0, -0.54, -12.6],
+        rotation: [-70.8, 0.0, 0.0],
+        scale: [1.0; 3],
+        scale_2d: 342.0,
+        fov: 90.0,
+        near: 0.0,
+        far: 10.0,
+        radius: 4.5,
+        alpha_from: 0.375,
+        alpha_to: 0.625,
+        labels: vec![
+            Label {
+                node: 10,
+                name: "N".into(),
+                angle: 270.0,
+            },
+            Label {
+                node: 11,
+                name: "NE".into(),
+                angle: 315.0,
+            },
+        ],
+    }
+}
 
 fn config() -> DepthConfig {
     DepthConfig {
@@ -14,6 +44,7 @@ fn config() -> DepthConfig {
         half_moon_compass_normal: SpriteId(102),
         text_color_normal: [227, 243, 246, 255],
         meter_suffix: "m".into(),
+        ring: ring(),
     }
 }
 
@@ -35,6 +66,7 @@ fn inputs(depth: f32) -> HudInputs {
         drank: None,
         depth,
         compass: false,
+        yaw: 0.0,
     }
 }
 
@@ -115,6 +147,7 @@ fn a_compass_shows_the_compass_and_its_half_moon() {
     d.update(&inputs(3.0));
     let with = HudInputs {
         compass: true,
+        yaw: 0.0,
         ..inputs(3.0)
     };
     let s = d.update(&with).clone();
@@ -134,4 +167,29 @@ fn a_compass_shows_the_compass_and_its_half_moon() {
     let s = d.update(&inputs(3.0));
     assert_eq!(s.sprite[&2], Some(SpriteId(101)));
     assert_eq!(s.enabled.get(&10), Some(&false));
+}
+
+#[test]
+fn the_direction_turns_the_ring_and_moves_the_labels_only_on_a_change() {
+    let mut d = DepthCompass::new(config());
+    let with = |yaw: f32| HudInputs {
+        compass: true,
+        yaw,
+        ..inputs(3.0)
+    };
+    let s = d.update(&with(90.0)).clone();
+    assert_eq!(d.direction, 0.25);
+    let angle = s.material[&9].floats["_Angle"];
+    assert!((angle + std::f32::consts::FRAC_PI_2).abs() < 1e-6);
+    let (pos, alpha) = ring().label(270.0, 0.25);
+    assert_eq!(s.transform[&10].anchored_position, Some(pos));
+    assert_eq!(s.color[&10], [1.0, 1.0, 1.0, alpha]);
+    // 450° wraps to the same direction: nothing is set again.
+    d.state.color.remove(&10);
+    let s = d.update(&with(450.0));
+    assert!(!s.color.contains_key(&10));
+    // Without the compass the direction is not set.
+    let s = d.update(&inputs(3.0)).clone();
+    assert_eq!(d.direction, 0.25);
+    assert!(!s.color.contains_key(&10));
 }

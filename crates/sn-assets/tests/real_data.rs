@@ -3124,7 +3124,8 @@ fn the_hud_bars_are_read() {
 
 /// M9u6c1: `uGUI_DepthCompass`'s nodes, sprites, colour and strings are
 /// read: the player texts and images under `PlayerDepth`, three distinct
-/// sprites, 8 compass labels, and a suffix from the language file.
+/// sprites, 8 compass labels, and a suffix from the language file; and
+/// (M9u6c2) the compass ring's labels against their stored places.
 #[test]
 #[ignore = "needs SUBNAUTICA_DIR pointing at a Subnautica install"]
 fn the_depth_compass_is_read() {
@@ -3160,6 +3161,17 @@ fn the_depth_compass_is_read() {
     assert_eq!(c.labels.len(), 8);
     assert_eq!(c.text_color_normal[3], 255);
     assert_eq!(Some(&c.meter_suffix), language.get("MeterSuffix"));
+    // M9u6c2: the labels' stored places are what the editor last computed
+    // at the stored `debugDirection` (0.646): ours within 0.001 px.
+    assert_eq!(c.ring.labels.len(), 8);
+    let layout = assets.ui_layout(&layouts, &ui).unwrap();
+    for l in &c.ring.labels {
+        let stored = layout.tree.nodes[l.node].rect.anchored_position;
+        let (ours, _) = c.ring.label(l.angle, 0.646);
+        let e = (ours[0] - stored[0]).hypot(ours[1] - stored[1]);
+        assert!(e <= 0.001, "{}: {ours:?} vs {stored:?}", l.name);
+    }
+    assert_eq!(c.ring.mesh().vertices.len(), 4);
 }
 
 /// M9u6s: the start rules hide the screens the game hides at start (the

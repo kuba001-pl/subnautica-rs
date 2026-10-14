@@ -78,6 +78,7 @@ const SOFT_CLIP: u32 = 1;
 const HARD_CLIP: u32 = 2;
 const PREMULTIPLY: u32 = 4;
 const MAIN_TEX_ST: u32 = 8;
+const COMPASS: u32 = 16;
 
 /// A clip rect that clips nothing (`UI/Simple` always tests `_ClipRect`;
 /// *hypothesis*: Unity's native default covers everything).
@@ -534,6 +535,16 @@ fn bars_line(hud: &Hud, i: &HudInputs) -> String {
     out
 }
 
+/// Unity's `eulerAngles.y` (degrees, 0…360) of a Bevy rotation: the
+/// heading of the Unity forward (+z, Bevy −z), `atan2(R[0][2], R[2][2])`
+/// in Unity's decomposition, whatever the roll.
+pub(crate) fn euler_y(rotation: Quat) -> f32 {
+    let f = rotation * Vec3::NEG_Z;
+    // Unity's z is Bevy's −z.
+    let y = f.x.atan2(-f.z).to_degrees();
+    if y < 0.0 { y + 360.0 } else { y }
+}
+
 /// The depth input, its floor, the mode and the shown text (M9u6c1), for
 /// the log.
 fn depth_line(d: &DepthCompass, i: &HudInputs) -> String {
@@ -541,13 +552,17 @@ fn depth_line(d: &DepthCompass, i: &HudInputs) -> String {
     let text = |n: usize| d.state.text.get(&n).map_or("-", String::as_str);
     let shown = d.state.enabled.get(&c.depth_text).copied().unwrap_or(false);
     format!(
-        "input {:.3} m, floor {}, mode {:?}, shown {shown}, text \"{}\" \"{}\", compass {}",
+        "input {:.3} m, floor {}, mode {:?}, shown {shown}, text \"{}\" \"{}\", compass equipped {} shown {}, yaw {:.3}° / 360 = {:.5}, direction {:.5}",
         i.depth,
         sn_ui::depth::floor_depth(i.depth),
         d.mode,
         text(c.depth_text),
         text(c.suffix_text),
-        d.compass_visible
+        i.compass,
+        d.compass_visible,
+        i.yaw,
+        sn_ui::compass::wrap(i.yaw / 360.0),
+        d.direction
     )
 }
 
@@ -705,6 +720,10 @@ fn convert(
                 });
                 *census.drawn.entry(m.shader.clone()).or_default() += 1;
             }
+            "uGUI/Compass" => {
+                flags |= HARD_CLIP | COMPASS;
+                *census.drawn.entry(m.shader.clone()).or_default() += 1;
+            }
             "UI/Simple" => {
                 flags |= HARD_CLIP;
                 if m.has_keyword("ALPHA_PREMULTIPLY") {
@@ -736,11 +755,19 @@ fn convert(
                 }
             }
         }
-        let st = m
-            .colors
-            .get("_MainTex_ST")
-            .copied()
-            .unwrap_or([1.0, 1.0, 0.0, 0.0]);
+        let st = if flags & COMPASS != 0 {
+            [
+                m.float("_Angle"),
+                m.float("_AlphaFrom"),
+                m.float("_AlphaTo"),
+                0.0,
+            ]
+        } else {
+            m.colors
+                .get("_MainTex_ST")
+                .copied()
+                .unwrap_or([1.0, 1.0, 0.0, 0.0])
+        };
         let color = linear(m.colors.get("_Color").copied().unwrap_or([1.0; 4])).to_array();
         let base = (vertices.len() / VERTEX_BYTES) as u32;
         for (v, z) in it.vertices.iter().zip(&it.z) {
@@ -862,12 +889,41 @@ fn request_build(mut worker: ResMut<UiWorker>, windows: Query<&Window, With<Prim
 /// clock, whether the PDA is open (M9u6b2: the icons turn), the depth
 /// (M9u6c1). The worker adds `Survival`'s food and water. Our player is
 /// never healed and never eats or drinks yet: no punch events.
+#[allow(clippy::too_many_arguments)]
 fn send_inputs(
     worker: Res<UiWorker>,
     hud: Res<crate::hud::Hud>,
     time: Res<Time>,
     panel: Option<Res<crate::inventory::Panel>>,
+    session: Option<Res<crate::session::Session>>,
+    text: Option<Res<crate::items::Text>>,
+    camera: Query<&Transform, With<GameUiCamera>>,
+    mut compass_tech: Local<Option<Option<i32>>>,
 ) {
+    // `TechType.Compass`, by its name in the game's code.
+    let compass_tech = *compass_tech.get_or_insert_with(|| {
+        text.as_ref().and_then(|t| {
+            t.0.tech_names
+                .iter()
+                .find(|(_, n)| n.as_str() == "Compass")
+                .map(|(v, _)| *v)
+        })
+    });
+    // `Inventory.main.equipment.GetCount(TechType.Compass) > 0`.
+    let compass = match (session, compass_tech) {
+        (Some(s), Some(tech)) => {
+            let me = s.player();
+            s.with_items(|items, _| {
+                items
+                    .players
+                    .get(&me?)
+                    .map(|p| p.inventory.equipment.items().any(|i| i.tech == tech))
+            })
+            .flatten()
+            .unwrap_or(false)
+        }
+        _ => false,
+    };
     let _ = worker.requests.send(Request::Frame(HudInputs {
         active: hud.shown,
         mode: hud_mode(false, false, false),
@@ -884,8 +940,8 @@ fn send_inputs(
         ate: None,
         drank: None,
         depth: hud.depth as f32,
-        // No compass can be equipped yet (M9u6c2).
-        compass: false,
+        compass,
+        yaw: camera.single().map_or(0.0, |t| euler_y(t.rotation)),
     }));
 }
 
@@ -1565,6 +1621,22 @@ mod tests {
             out *= ((r[k + 2] - r[k] - mask.abs()) * factor).clamp(0.0, 1.0);
         }
         out
+    }
+
+    #[test]
+    fn euler_y_is_the_unity_yaw_whatever_the_pitch_and_roll() {
+        // The player's camera: Unity yaw about +y, pitch about x
+        // (`player::camera_rotation`).
+        for (yaw, pitch, roll) in [
+            (30.0f32, 20.0f32, 0.0f32),
+            (200.0, -60.0, 0.0),
+            (300.0, 10.0, 25.0),
+        ] {
+            let q = Quat::from_rotation_y(-yaw.to_radians())
+                * Quat::from_rotation_x(-pitch.to_radians())
+                * Quat::from_rotation_z(roll.to_radians());
+            assert!((euler_y(q) - yaw).abs() < 1e-3, "{yaw}: {}", euler_y(q));
+        }
     }
 
     #[test]

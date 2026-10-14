@@ -130,6 +130,7 @@ pub fn run(game: &GameData) -> Result<ExitCode> {
         drank: None,
         depth: 0.0,
         compass: false,
+        yaw: 0.0,
     }));
     let mut scene = assets.ui_scene(&layouts, &tree, &fonts, &tags.sorting_layers)?;
     let mut atlases = GlyphAtlases::new(&fonts)?;

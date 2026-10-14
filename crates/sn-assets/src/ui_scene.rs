@@ -351,9 +351,9 @@ impl UiScene {
         }
         for (node, kind, material, rect) in drawn {
             let objects = match &kind {
-                UiGraphicKind::Image { texture, .. } | UiGraphicKind::RawImage { texture, .. } => {
-                    vec![texture.clone()]
-                }
+                UiGraphicKind::Image { texture, .. }
+                | UiGraphicKind::RawImage { texture, .. }
+                | UiGraphicKind::Compass { texture, .. } => vec![texture.clone()],
                 UiGraphicKind::CircularBar {
                     texture, overlay, ..
                 } => vec![texture.clone(), overlay.clone()],
@@ -379,6 +379,14 @@ impl UiScene {
                     raw_image_mesh(rect, *color, *uv_rect, true),
                     texture.as_ref().map_or(0, texture_key),
                     "RawImage".to_string(),
+                ),
+                // Its own mesh (`OnPopulateMesh`), drawn while it is
+                // enabled (`SetVisible(false)` empties it; the rules
+                // disable it then).
+                UiGraphicKind::Compass { ring, texture } => (
+                    ring.mesh(),
+                    texture.as_ref().map_or(0, texture_key),
+                    "uGUI_Compass".to_string(),
                 ),
                 UiGraphicKind::CircularBar {
                     bar,
@@ -672,6 +680,12 @@ fn apply_to_graphic(
         UiGraphicKind::CircularBar { bar, .. } => {
             if let Some(c) = state.color.get(&node) {
                 bar.color = *c;
+            }
+            true
+        }
+        UiGraphicKind::Compass { ring, .. } => {
+            if let Some(c) = state.color.get(&node) {
+                ring.color = *c;
             }
             true
         }

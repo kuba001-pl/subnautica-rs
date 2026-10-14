@@ -217,20 +217,31 @@ impl ItemsState {
         if supplies {
             let rules = s.rules.clone();
             for tech in &rules.supplies {
-                let Some(class) = rules.tech_class.get(tech) else {
-                    continue;
-                };
-                let Some(info) = rules.pickups.get(class) else {
-                    continue;
-                };
-                let id = ItemId(s.next_item);
-                s.next_item += 1;
-                if s.locker.add(&rules.techs, make_item(id, info)).is_ok() {
-                    s.classes.insert(id, class.clone());
-                }
+                s.add_supply(*tech);
             }
         }
         s
+    }
+
+    /// One item of `tech` into the lifepod's locker, if the tech has a
+    /// pickup prefab and the locker has room (an id is used either way
+    /// once the prefab is known, as for the supplies).
+    pub fn add_supply(&mut self, tech: i32) -> bool {
+        let rules = self.rules.clone();
+        let Some(class) = rules.tech_class.get(&tech) else {
+            return false;
+        };
+        let Some(info) = rules.pickups.get(class) else {
+            return false;
+        };
+        let id = ItemId(self.next_item);
+        self.next_item += 1;
+        if self.locker.add(&rules.techs, make_item(id, info)).is_ok() {
+            self.classes.insert(id, class.clone());
+            true
+        } else {
+            false
+        }
     }
 
     pub fn rules(&self) -> &Arc<ItemRules> {

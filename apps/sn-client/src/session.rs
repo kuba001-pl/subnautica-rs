@@ -383,6 +383,7 @@ impl Session {
         mode: &Mode,
         name: &str,
         sim: Option<Impairment>,
+        test_supplies: &[i32],
     ) -> Result<Session, String> {
         let client = Client::new(
             ClientConfig {
@@ -438,7 +439,22 @@ impl Session {
             }
         }
         if let Some(server) = inner.server.as_mut() {
+            // `--test-supply` (M9u6c2): into the new world's locker before
+            // the local player joins.
+            let added = if test_supplies.is_empty() {
+                None
+            } else {
+                Some(server.add_test_supplies(test_supplies)?)
+            };
             server.connected(LOCAL, 0);
+            if let Some(added) = added {
+                inner.say(
+                    Level::INFO,
+                    format!(
+                        "session: DEBUG test supplies {test_supplies:?} put into the lifepod's locker: {added:?}"
+                    ),
+                );
+            }
         }
         // Until welcomed with a clock (at once over the direct link).
         let started = Instant::now();

@@ -998,3 +998,23 @@ fn a_million_bad_requests_never_panic() {
     );
     assert!(stats.requests > 10_000);
 }
+
+/// M9u6c2's debug aid: test supplies go into a new world's locker before
+/// anyone joins and reach a joiner in the world it is sent; refused
+/// afterwards and for an unknown tech.
+#[test]
+fn test_supplies_go_into_the_locker_and_reach_joiners() {
+    let mut w = World::with(item_config());
+    let locker = |w: &World| w.server.world().items.locker.len();
+    let before = locker(&w);
+    assert_eq!(
+        w.server.add_test_supplies(&[common::TANK, 12345]),
+        Ok(vec![true, false])
+    );
+    assert_eq!(locker(&w), before + 1);
+    let a = w.ready("a");
+    w.all_equal();
+    let world = w.clients[&a].world.as_ref().unwrap();
+    assert_eq!(world.items.locker.len(), before + 1);
+    assert!(w.server.add_test_supplies(&[common::TANK]).is_err());
+}

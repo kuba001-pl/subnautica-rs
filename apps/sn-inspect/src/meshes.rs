@@ -60,6 +60,10 @@ fn tree_meshes(
                 *t.other.entry("uGUI_CircularBar".into()).or_default() += 1;
                 continue;
             }
+            UiGraphicKind::Compass { .. } => {
+                *t.other.entry("uGUI_Compass".into()).or_default() += 1;
+                continue;
+            }
             _ if !(rect.width.is_finite() && rect.height.is_finite()) => {
                 t.unknown_rect += 1;
                 continue;

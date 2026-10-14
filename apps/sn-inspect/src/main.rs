@@ -10,6 +10,7 @@ mod bots;
 mod canvas;
 mod code;
 mod collision;
+mod compass;
 mod coop;
 mod density;
 mod depth;
@@ -265,6 +266,9 @@ Commands:
   ui --depth             M9u6c1: the depth readout through a scripted dive
                          (PDA, inactive HUD, compass flag), every frame
                          against a replay
+  ui --compass           M9u6c2: the compass ring and labels: the labels'
+                         stored places, 36 headings and an equip timeline
+                         against a replay
   ui --layout <CLASS> [<NAME>]
                          M9u1: a script's layout and, for its first object
                          (named NAME), where each field starts and its value
@@ -486,6 +490,7 @@ fn run(mut args: Vec<String>) -> Result<ExitCode> {
         ["ui", "--start"] => start::run(&game),
         ["ui", "--pulse"] => pulse::run(&game),
         ["ui", "--depth"] => depth::run(&game),
+        ["ui", "--compass"] => compass::run(&game),
         ["ui", "--fonts"] => fonts::run(&game, false),
         ["ui", "--fonts", "--atlas"] => fonts::run(&game, true),
         ["ui", "--sprites"] => ui::sprites(&game, false),

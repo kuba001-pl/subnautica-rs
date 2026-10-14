@@ -2,6 +2,78 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-14 — M9u6c2: the compass
+
+**What/why:** the HUD's compass (`uGUI_Compass`) was never drawn; it now
+shows while a compass is equipped, turns with the camera, and its
+direction labels move and fade as the game's script places them.
+- `sn-ui::compass` (new): `OnPopulateMesh`'s projected quad (UV ÷ z,
+  1/z), `UpdateAngle`'s material values, `UpdateLabels`' place and
+  alpha, with Unity's `Quaternion.Euler`, `TRS`, `Perspective` and
+  `MultiplyPoint3x4`.
+- `sn-ui::depth`: `UpdateCompass` sets the direction while enabled
+  (only on a change); new `HudInputs::yaw`. Fix: the visibility is now
+  written every frame (see Dead ends).
+- `sn-assets`: `UiGraphicKind::Compass` (fields, labels resolved to
+  nodes, `texture`), drawn by the scene with its own mesh and material;
+  `DepthConfig::ring`. Test aids: `ItemsState::add_supply`,
+  `item_rules_with` / `rules_with` (extra pickup prefabs read as the
+  supplies' are).
+- `sn-session`: `Server::add_test_supplies` (a new world's locker,
+  before anyone joins; the tick-0 hash redone).
+- `sn-client`: `uGUI/Compass` as flag 16 of `game_ui.wgsl` (from its
+  compiled programs; `_Angle`, `_AlphaFrom`, `_AlphaTo` in the
+  `_MainTex_ST` slot, no new pipeline); the camera's yaw (`euler_y`) and
+  "a compass in the equipment" sent each frame and logged each second.
+  Debug flags: `--test-supply TECH[,…]` (logged; on a join it only
+  extends the rules so the fingerprints match), `--turn DEG_PER_S`,
+  `--panel …=unequip`.
+- `sn-inspect ui --compass` (new); `ui --depth` now expects the ring
+  drawn with its labels.
+No new dependencies.
+
+**Verified** (`SUBNAUTICA_DIR` set):
+- `ui --compass`: 644 of 644 checks. The 8 stored label places equal
+  ours at the stored `debugDirection` 0.646 within 0.000051 px (and the
+  `f64` replay's within 0.000052). 36 headings: vertices within 1.7e-5,
+  label places within 5.3e-5 px, label alphas exact. The equip timeline
+  draws the ring and 8 labels iff equipped and the PDA is closed.
+- `ui --depth` 91,230 / 0 differ; `--bars` 300 / 0; `--pulse` 13,440
+  and 300 / 0; `--start` 21 of 21 named; `--live` 0 failures, start
+  hash `7f52d63da4ad1e96` unchanged; `--draw` 12 of 12 hashes equal;
+  `--meshes` 0 fail.
+- Client: `sn-client --game-ui --resolution 1920 1080 --test-supply
+  Compass --use-item 3 --panel 6=take-all,7=close,8=open,9=equip,
+  10=close,20=open,21=unequip,22=close --turn 30 --shot 26
+  m9u6c2-unequipped`. The compass went into the locker, was taken,
+  equipped ("equip") and later unequipped ("unequip"). It was shown in
+  every logged second while equipped with the PDA closed, and hidden
+  while the PDA was open and after the unequip. Direction = yaw ÷ 360 in
+  10 of 10 shown seconds. 71 of 71 draws, 0.14 ms CPU per frame, worker
+  3.2 ms per frame, 0 WARN, ERROR or panic lines. Screenshot run
+  (`--panel 6=take-all,7=close,8=open,9=equip,10=close --turn 30 --shot
+  18 m9u6c2-compass`): `out/m9u6c2-compass.png` shows the ring with SE
+  and S at a heading near 160°.
+- `cargo test --workspace`: 649 passed, 0 failed, 58 ignored (new: 5
+  compass, 1 depth, 1 yaw, 1 server test). `cargo test --release -p
+  sn-assets --test real_data -- --ignored`: 52 of 52 (the depth test
+  now also checks the labels' stored places). fmt and clippy clean.
+
+**Dead ends:**
+- The first `ui --compass` run never drew the ring when the compass was
+  on from the first frame. The start state (M9u6s) already applies the
+  first `SetVisible(false)`, but the rule started from the script's
+  `_visible = true`, so it saw no change. The rule now always states the
+  visibility.
+- The first client run's test supply was refused: our item rules only
+  know pickups placed in the world and the supplies, and no compass is
+  placed. The rules now read the test supplies' prefabs too.
+
+**Not tested / not 1:1:** no compass can be had in normal play yet
+(crafting is M9e). The camera drone's compass is not ported. The ring's
+back-face culling is not done (it faces the camera). `sn-server` has no
+`--test-supply`. Not compared with the game on screen.
+
 ## 2026-10-14 — M9u6c1: the depth readout's rules
 
 **Plan:** M9u6c was split in `docs/DESIGN.md` into c1 (`uGUI_DepthCompass`,

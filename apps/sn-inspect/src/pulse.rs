@@ -296,6 +296,7 @@ pub fn run(game: &GameData) -> Result<ExitCode> {
             drank: None,
             depth: 0.0,
             compass: false,
+            yaw: 0.0,
         };
         let mut state = start_state.clone();
         state.apply(&hud.update(&inputs));

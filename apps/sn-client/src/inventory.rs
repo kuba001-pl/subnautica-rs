@@ -41,6 +41,8 @@ pub enum Scripted {
     Equip,
     /// A right click on the first grid item.
     Drop,
+    /// A left click on the first item in the slots (M9u6c2).
+    Unequip,
 }
 
 impl Scripted {
@@ -51,6 +53,7 @@ impl Scripted {
             "take-all" => Scripted::TakeAll,
             "equip" => Scripted::Equip,
             "drop" => Scripted::Drop,
+            "unequip" => Scripted::Unequip,
             _ => return None,
         })
     }
@@ -445,11 +448,22 @@ pub fn input(
                         a & (inv::EQUIP | inv::SWAP) != 0
                     })
                     .collect();
-                Some((order(&p.inventory.container), order(&items.locker), equips))
+                let slots: Vec<ItemId> = p
+                    .inventory
+                    .equipment
+                    .items()
+                    .map(|i| ItemId(i.id.0 as u32))
+                    .collect();
+                Some((
+                    order(&p.inventory.container),
+                    order(&items.locker),
+                    equips,
+                    slots,
+                ))
             })
             .flatten()
             .unwrap_or_default();
-        let (grid, locker, equips) = lists;
+        let (grid, locker, equips, slots) = lists;
         match step {
             Scripted::Open => {
                 open(panel, &sim, &mut windows, false);
@@ -469,6 +483,10 @@ pub fn input(
             Scripted::Drop => match grid.first() {
                 Some(&item) => click(&mut session, &sim, panel, text, item, Click::Right),
                 None => info!("inventory: nothing in the grid to drop"),
+            },
+            Scripted::Unequip => match slots.first() {
+                Some(&item) => click(&mut session, &sim, panel, text, item, Click::Left),
+                None => info!("inventory: nothing in the slots"),
             },
         }
     }
@@ -736,6 +754,7 @@ mod tests {
     fn panel_steps_parse() {
         assert_eq!(Scripted::parse("take-all"), Some(Scripted::TakeAll));
         assert_eq!(Scripted::parse("drop"), Some(Scripted::Drop));
+        assert_eq!(Scripted::parse("unequip"), Some(Scripted::Unequip));
         assert_eq!(Scripted::parse("nope"), None);
     }
 }

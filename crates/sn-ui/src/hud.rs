@@ -152,6 +152,9 @@ pub struct HudInputs {
     /// The equipment holds a `Compass` (M9u6c1; `IsCompassEnabled`'s
     /// equipment test).
     pub compass: bool,
+    /// `MainCamera.camera.transform.eulerAngles.y`, degrees (M9u6c2: the
+    /// compass's direction).
+    pub yaw: f32,
 }
 
 /// One bar's script state.

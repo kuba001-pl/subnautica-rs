@@ -202,6 +202,27 @@ impl Server {
         }
     }
 
+    /// A debug aid (M9u6c2, `--test-supply`): one item of each tech put
+    /// into the lifepod's locker of a new world, before anyone joins, as
+    /// the supplies are; joiners get it in the world they are sent.
+    /// Returns whether each went in. Refused once a player is in or the
+    /// world has no lifepod.
+    pub fn add_test_supplies(&mut self, techs: &[i32]) -> Result<Vec<bool>, String> {
+        if !self.conns.is_empty() || self.world.events != 0 {
+            return Err("test supplies only go into a new world before anyone joins".into());
+        }
+        if self.world.settings.lifepod.is_none() {
+            return Err("test supplies need a lifepod (its locker)".into());
+        }
+        let added = techs
+            .iter()
+            .map(|t| self.world.items.add_supply(*t))
+            .collect();
+        self.hashes.clear();
+        self.hashes.push_back((0, self.world.hash()));
+        Ok(added)
+    }
+
     pub fn world(&self) -> &WorldState {
         &self.world
     }

@@ -315,6 +315,12 @@ pub enum UiGraphicKind {
         texture: Option<ObjectRef>,
         overlay: Option<ObjectRef>,
     },
+    /// `uGUI_Compass` (M9u6c2): its fields (labels resolved to nodes) and
+    /// its `texture` (its `mainTexture`).
+    Compass {
+        ring: sn_ui::compass::Compass,
+        texture: Option<ObjectRef>,
+    },
     /// Another graphic (the game's own `Graphic` subclasses), by script.
     Other(String),
 }
@@ -355,7 +361,62 @@ fn color_of(f: &Fields, name: &str) -> Result<[f32; 4]> {
     ])
 }
 
+fn vec3_of(f: &Fields, name: &str) -> Result<[f32; 3]> {
+    let v = f
+        .get(name)
+        .and_then(Value::as_struct)
+        .ok_or_else(|| format!("no vector {name}"))?;
+    Ok([f32_of(v, "x")?, f32_of(v, "y")?, f32_of(v, "z")?])
+}
+
 impl Assets<'_> {
+    /// `uGUI_Compass`'s fields; its labels with a text, resolved to their
+    /// nodes (`UpdateLabels` skips the others).
+    pub(crate) fn compass_of(
+        &self,
+        tree: &UiTree,
+        from: &ObjectRef,
+        f: &Fields,
+    ) -> Result<sn_ui::compass::Compass> {
+        let mut labels = Vec::new();
+        for l in f.get("labels").and_then(Value::as_array).unwrap_or(&[]) {
+            let Some(l) = l.as_struct() else {
+                continue;
+            };
+            let Some(text) = l
+                .get("text")
+                .and_then(Value::as_pptr)
+                .filter(|p| !p.is_null())
+            else {
+                continue;
+            };
+            let name = l.get("name").and_then(Value::as_str).unwrap_or("");
+            let node = self
+                .node_of(tree, from, text)?
+                .ok_or_else(|| format!("compass label {name}: not in the tree"))?;
+            labels.push(sn_ui::compass::Label {
+                node,
+                name: name.to_string(),
+                angle: f32_of(l, "angle")?,
+            });
+        }
+        Ok(sn_ui::compass::Compass {
+            color: color_of(f, "m_Color")?,
+            size: f32_of(f, "size")?,
+            position: vec3_of(f, "position")?,
+            rotation: vec3_of(f, "rotation")?,
+            scale: vec3_of(f, "scale")?,
+            scale_2d: f32_of(f, "scale2D")?,
+            fov: f32_of(f, "fov")?,
+            near: f32_of(f, "near")?,
+            far: f32_of(f, "far")?,
+            radius: f32_of(f, "radius")?,
+            alpha_from: f32_of(f, "alphaFrom")?,
+            alpha_to: f32_of(f, "alphaTo")?,
+            labels,
+        })
+    }
+
     /// A sprite's mesh data and the texture it is drawn from: its own
     /// render data, or (for a sprite packed late, whose own texture is
     /// null) its atlas's render data for it.
@@ -525,6 +586,18 @@ impl Assets<'_> {
                         },
                         texture: texture_of("_texture")?,
                         overlay: texture_of("_overlay")?,
+                    }
+                }
+                "uGUI_Compass" => {
+                    let texture = match f.get("texture").and_then(Value::as_pptr) {
+                        Some(p) if !p.is_null() => self.resolve(&c.object.file, p)?,
+                        _ => None,
+                    };
+                    UiGraphicKind::Compass {
+                        ring: self
+                            .compass_of(tree, &c.object, &f)
+                            .map_err(|e| format!("{path}: {e}"))?,
+                        texture,
                     }
                 }
                 other => UiGraphicKind::Other(other.to_string()),

@@ -114,13 +114,17 @@ Tested on Windows 11 with game build 10 (Steam):
   icons' punch on healing, eating and drinking is ported but not seen in
   the client, whose player never heals, eats or drinks yet. The depth
   readout follows `uGUI_DepthCompass` (whole metres rounded down, the
-  language file's suffix, hidden while the PDA is open). The other
-  screens start as the game's scripts leave them (feedback panel,
-  dialogs, pop-ups, vehicle and camera screens hidden; the reticle's
-  dot shown), but the compass, reticle, death and messages are not
-  driven yet (M9u6c2–M9u7). The texts are untranslated.
+  language file's suffix, hidden while the PDA is open), and so does
+  the compass ring with its direction labels (`uGUI_Compass`, its own
+  shader), shown while a compass is equipped and turning with the
+  camera. A compass can only be had for testing so far
+  (`--test-supply Compass`). The other screens start as the game's
+  scripts leave them (feedback panel, dialogs, pop-ups, vehicle and
+  camera screens hidden; the reticle's dot shown), but the reticle,
+  death and messages are not driven yet (M9u6d–M9u7). The texts are
+  untranslated.
   Checked by numbers (`ui --bars`, `ui --pulse`, `ui --start`,
-  `ui --depth`, the
+  `ui --depth`, `ui --compass`, the
   client's per-second log) and screenshots; not compared against the
   original game on screen.
 - Oxygen, suffocation, health, death and respawn in the lifepod, with

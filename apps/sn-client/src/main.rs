@@ -144,7 +144,8 @@ Usage: sn-client [--game-dir <PATH>] [--start <X> <Y> <Z>] [--look <X> <Y> <Z>]
                  steps at those times (open, close, take-all: a left click
                  on every locker item, equip: a left click on the first
                  grid item that equips, drop: a right click on the first
-                 grid item; a debug check, M9d5b)
+                 grid item, unequip: a left click on the first slot item;
+                 a debug check, M9d5b)
   --use-hatch    --use-hatch <SECONDS[,SECONDS…]>: at each time (seconds of
                  play), aim at the nearest usable lifepod hatch and use it
                  (a debug check of the hatch cinematics, M9g5e)
@@ -152,6 +153,13 @@ Usage: sn-client [--game-dir <PATH>] [--start <X> <Y> <Z>] [--look <X> <Y> <Z>]
                  trigger name contains TEXT (e.g. bot_out)
   --hold-forward --hold-forward <SECONDS>: from then on, hold W (a debug
                  check that the player moves)
+  --test-supply  --test-supply <TECH>[,<TECH>…]: a debug aid for a solo or
+                 host run: one item of each tech type (by its name in the
+                 game's code, e.g. Compass) put into the new world's
+                 lifepod locker, logged; the item's pickup joins the
+                 rules, so a joiner passes the same flag
+  --turn         --turn <DEG_PER_S>: the player's look turns right at this
+                 rate (a debug check of the compass)
   --kill         --kill <SECONDS>: after SECONDS of play the player takes
                  its full health as damage (a debug check of the death)
   --pick-up      --pick-up <SECONDS>: after SECONDS of play, ask to pick up
@@ -248,6 +256,10 @@ struct Args {
     hatch_name: Option<String>,
     /// `--hold-forward`: hold W from this much play on.
     hold_forward: Option<f32>,
+    /// `--test-supply`: tech type names put into a new world's locker.
+    test_supply: Vec<String>,
+    /// `--turn`: the player's look turns at this many degrees a second.
+    turn: Option<f32>,
     /// `--kill`: seconds of play before the player dies.
     kill: Option<f32>,
     /// `--pick-up`, `--drop`: seconds of play (M9d4b).
@@ -321,6 +333,8 @@ fn parse_args_from(raw: &[String]) -> Result<Args, String> {
         panel: Vec::new(),
         hatch_name: None,
         hold_forward: None,
+        test_supply: Vec::new(),
+        turn: None,
         kill: None,
         pick_up: None,
         drop: None,
@@ -489,6 +503,11 @@ fn parse_args_from(raw: &[String]) -> Result<Args, String> {
             "--hatch-name" => {
                 args.hatch_name = Some(it.next().ok_or("--hatch-name takes a name")?.clone());
             }
+            "--test-supply" => {
+                let list = it.next().ok_or("--test-supply takes TECH[,TECH…]")?;
+                args.test_supply = list.split(',').map(str::to_owned).collect();
+            }
+            "--turn" => args.turn = Some(number(it.next(), "--turn")?),
             "--hold-forward" => {
                 args.hold_forward = Some(number(it.next(), "--hold-forward")?);
             }
@@ -725,7 +744,6 @@ fn start_session(args: &Args, lifepod: bool) -> Result<Started, String> {
     let started = std::time::Instant::now();
     let game = GameData::locate(args.game_dir.clone()).map_err(|e| e.to_string())?;
     let assets = sn_assets::Assets::index(&game)?;
-    let rules = sn_assets::rules(&game, &assets)?;
     // The item text (M9d5): English, the only language read for now.
     let text = match sn_assets::read_assembly(&game)
         .and_then(|dll| sn_assets::item_text(&game, &dll, "English"))
@@ -743,6 +761,20 @@ fn start_session(args: &Args, lifepod: bool) -> Result<Started, String> {
             sn_assets::ItemText::default()
         }
     };
+    // `--test-supply`: tech types by their names in the game's code; their
+    // pickups join the rules (a joiner passes the same flag so the rules
+    // match; only a solo or host world gets the items).
+    let mut test_supplies = Vec::new();
+    for name in &args.test_supply {
+        let tech = text
+            .tech_names
+            .iter()
+            .find(|(_, n)| *n == name)
+            .map(|(v, _)| *v)
+            .ok_or_else(|| format!("--test-supply: no tech type {name:?}"))?;
+        test_supplies.push(tech);
+    }
+    let rules = sn_assets::rules_with(&game, &assets, &test_supplies)?;
     let joining = matches!(args.mode, session::Mode::Join { .. });
     let point = match (lifepod && !joining, args.lifepod) {
         (false, _) => None,
@@ -785,7 +817,13 @@ fn start_session(args: &Args, lifepod: bool) -> Result<Started, String> {
         max_speed: rules.max_speed,
         rules: rules.items.clone(),
     };
-    let mut session = session::Session::start(config, &args.mode, &args.name, args.net_sim)?;
+    let mut session = session::Session::start(
+        config,
+        &args.mode,
+        &args.name,
+        args.net_sim,
+        if joining { &[] } else { &test_supplies },
+    )?;
     session.log_every = args.log_ticks;
     let pod = match session.settings().lifepod {
         Some(point) => {
@@ -1157,6 +1195,7 @@ fn main() -> AppExit {
                     use_item: args.use_item.clone(),
                     hatch_name: args.hatch_name.clone(),
                     hold_forward: args.hold_forward.map(f64::from),
+                    turn: args.turn.map(f64::from),
                     kill: args.kill.map(f64::from),
                     items: Some(items.clone()),
                 };

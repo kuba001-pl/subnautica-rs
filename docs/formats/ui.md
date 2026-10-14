@@ -1363,6 +1363,33 @@ sea floor); `None` with the text kept in the 3 seconds the PDA is open
 and the 2 before the player runs; 0 warnings; `out/m9u6c1-dive.png`. Not
 compared with the game on screen.
 
+**Ported (M9u6c2)** in `sn_ui::compass` and `sn_ui::depth`, drawn as
+`UiGraphicKind::Compass`, the shader as flag 16 of `game_ui.wgsl`,
+checked by `sn-inspect ui --compass` (2026-10-14):
+- **The labels' stored places are an oracle** (*confirmed*): the 8 stored
+  `anchoredPosition`s equal `UpdateLabels`' at the stored `debugDirection`
+  0.646 within 0.00005 px (ours, and an `f64` replay with explicit
+  rotation matrices). This confirms the Euler order, the projection and
+  that the labels' parent is the compass (the world round trip is the
+  identity).
+- 36 headings drawn as the client does: the ring's 4 vertices (worst
+  1.7e-5), `_Angle`/`_AlphaFrom`/`_AlphaTo`, each label's place (worst
+  5.3e-5 px) and its drawn alpha (exact, in bytes): 644 of 644 checks
+  with the equip timeline (ring and labels drawn iff equipped and the PDA
+  closed).
+- The labels carry `uGUI_TextGradient`, an `IMeshModifier`; TMP's
+  `TextMeshProUGUI` never calls mesh modifiers (none in its decompiled
+  code), so it has no effect (*confirmed* by reading).
+- The yaw is the main camera's `eulerAngles.y`: `atan2` of its forward's
+  x and z, whatever the roll (Unity's decomposition).
+- Client (`--game-ui --test-supply Compass --use-item 3 --panel
+  6=take-all,7=close,8=open,9=equip,10=close,20=open,21=unequip,22=close
+  --turn 30`): the compass shows from the equip, hides while the PDA is
+  open and after the unequip; in 10 of 10 shown seconds the direction
+  equals yaw ÷ 360; 71 of 71 draws, 0.14 ms CPU per frame, worker 3.2 ms;
+  0 warnings. `out/m9u6c2-compass.png` shows the ring with SE and S at a
+  heading near 160°. Not compared with the game on screen.
+
 ## Script fields (M9u1) — confirmed
 
 A MonoBehaviour's fields follow its header (game object, enabled,

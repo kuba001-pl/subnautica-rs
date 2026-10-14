@@ -12,10 +12,9 @@
 //! - the half moon draws as its compass sprite iff the compass flag was
 //!   last on while shown (compared with a draw of that sprite);
 //! - the shadow's material has the multiplicative blend, premultiplied;
-//! - the compass's labels are drawn iff the compass is visible (shown and
-//!   the flag on; their places and alphas are M9u6c2), the compass
-//!   graphic never (its drawing is M9u6c2), the submersible graphics
-//!   never.
+//! - the compass ring and its labels are drawn iff the compass is visible
+//!   (shown and the flag on; their drawing is checked by `ui --compass`),
+//!   the submersible graphics never.
 
 use std::collections::HashMap;
 use std::process::ExitCode;
@@ -125,12 +124,7 @@ pub fn run(game: &GameData) -> Result<ExitCode> {
         config.depth_text,
         config.suffix_text,
     ];
-    let never: Vec<usize> = config
-        .submersible
-        .iter()
-        .copied()
-        .chain([config.compass])
-        .collect();
+    let never: Vec<usize> = config.submersible.to_vec();
     let color = config.text_color_normal;
     // The replay's state: the last shown integer and the compass flag of
     // the last frame shown (the half moon is re-picked on showing and on
@@ -162,6 +156,7 @@ pub fn run(game: &GameData) -> Result<ExitCode> {
             drank: None,
             depth: (0.0 - y).max(0.0),
             compass,
+            yaw: 0.0,
         };
         let mut state = start_state.clone();
         state.apply(depth.update(&inputs));
@@ -192,14 +187,14 @@ pub fn run(game: &GameData) -> Result<ExitCode> {
                 format!("{} drawn {drawn}", tree.nodes[n].name),
             );
         }
-        // `SetVisible` enables the labels' texts with the compass (their
-        // places and alphas are `UpdateLabels`', M9u6c2).
-        for (n, _) in &config.labels {
+        // `SetVisible` shows the ring and enables the labels' texts with
+        // the compass (their drawing: `ui --compass`).
+        for n in std::iter::once(&config.compass).chain(config.labels.iter().map(|l| &l.0)) {
             let drawn = !items(&d, *n).is_empty();
             check(
                 "labels",
                 drawn == flag,
-                format!("label {} drawn {drawn}", tree.nodes[*n].name),
+                format!("{} drawn {drawn}", tree.nodes[*n].name),
             );
         }
         for &n in &never {
