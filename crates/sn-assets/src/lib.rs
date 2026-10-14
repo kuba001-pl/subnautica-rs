@@ -34,6 +34,7 @@ mod texts;
 mod ui;
 mod ui_draw;
 mod ui_layout;
+mod ui_scene;
 mod ui_start;
 mod water;
 
@@ -101,6 +102,7 @@ pub use texts::UiText;
 pub use ui::{UGUI_PREFAB_KEY, UiComponent, UiNode, UiTree};
 pub use ui_draw::{GlyphAtlases, UiDraw, font_texture_key, texture_key};
 pub use ui_layout::{UiDrawParts, UiGraphic, UiGraphicKind, UiLayout};
+pub use ui_scene::{LocalTransform, SpriteRef, UiScene, UiState, color32};
 pub use ui_start::UiStartState;
 pub use water::{
     SkyTextures, WaterSurfaceData, builtin_texture, resource_bytes, resource_texture, sky,

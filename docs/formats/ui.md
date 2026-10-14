@@ -894,6 +894,77 @@ scaled. The strings are the prefab's stored ones (placeholders and
 untranslated keys); translation is `TranslateOnStart` and each screen's
 rules (M9u6, M9u7).
 
+## The live UI (M9u6a)
+
+Our port: `crates/sn-assets/src/ui_scene.rs` (`UiScene`, `UiState`),
+`crates/sn-ui/src/tween.rs`, the client's worker in
+`apps/sn-client/src/game_ui.rs`. Check: `sn-inspect ui --live`.
+
+A UI tree is read from the install once (its layout tree, canvases,
+groups, masks, graphics and texts). After that, each draw takes a
+`UiState`: the changes the game's scripts make through Unity's API.
+Materials, font materials and sprites are read the first time a draw
+needs them, then kept. Each change goes where uGUI puts it:
+
+| Script call | Applied to |
+|---|---|
+| `GameObject.SetActive` | the node's `activeSelf` (layout and drawing) |
+| `CanvasGroup.alpha` | the group's alpha; a node without a group gets none |
+| `CanvasRenderer.SetAlpha` | the graphic's own alpha, × the inherited alpha |
+| `Graphic.enabled` | drawn or not; a layout element or not |
+| `Graphic.color` | an image's colour; a text's `m_fontColor` as `Color32` |
+| `Image.sprite` | the mesh's sprite and texture, and the layout element's sprite size |
+| `Image.fillAmount` | the fill, clamped to 0…1 (its setter clamps) |
+| TMP `text` | the string, as set from code (`TextString`: escapes not parsed) |
+| `anchoredPosition`, `localPosition.z`, `localRotation`, `localScale` | the RectTransform |
+
+- **`Color` → `Color32`** — confirmed (decompiled
+  `UnityEngine.CoreModule`): `(byte)Mathf.Round(Mathf.Clamp01(c) × 255)`.
+  `Mathf.Round` is `Math.Round`, which rounds half to even.
+- **The renderer's own alpha multiplies the inherited alpha** —
+  *hypothesis* (the batching is native). `cullTransparentMesh` tests the
+  product (*hypothesis*, as in § Draw order). A text's fallback
+  sub-meshes take their text's alpha. In the game they are
+  `TMP_SubMeshUI` children with their own renderers (*hypothesis*).
+- **`Mathf.SmoothDamp`** — confirmed (decompiled `UnityEngine.
+  CoreModule`): ω = 2 ÷ max(0.0001, smoothTime), x = ω dt, e = 1 ÷ (1 +
+  x + 0.48 x² + 0.235 x³). The change is clamped to ± maxSpeed ×
+  smoothTime, temp = (v + ω change) dt, v' = (v − ω temp) e, and the
+  value = target + (change + temp) e. When that passes the original
+  target, the value snaps to the target and v' = 0.
+- **UWE's `Sequence`** — confirmed (decompiled `Assembly-CSharp`):
+  `t` moves by ± dt ÷ time, clamped to 0…1. With time 0, `t` jumps to its
+  end. The update after `t` reaches the target ends the sequence (that is
+  when the callback runs). `ForceState` sets `t` to the state and leaves
+  the sequence active, so the next update ends it.
+
+**The runs** (2026-10-14, `ui --live`, uGUI at 1920×1080):
+- Read into a scene in 0.011 s, after the install is indexed.
+- The hashes are unchanged by the change. Stored state, unplaced:
+  `83d22425b9e33ca7` (`ui --draw`'s uGUI). Placed: `f1365274ab2fbbf7`
+  (`ui --canvas`). `ui --draw`'s 12 hashes and `ui --canvas`'s 4 equal
+  the ones from before. Start state, placed: 175 draws,
+  `95b81442602e32d6`.
+- One change of each kind on a drawn HUD node (`SetActive`, text,
+  `enabled`, `SetAlpha`, colour, scale, sprite) changes the draw list as
+  expected. The start state drawn after each gives the start hash again.
+  No HUD image is filled in the start state, so `fillAmount` is checked
+  by unit tests only.
+- 120 frames, each changing every HUD text (52), the alpha of every
+  drawn HUD image (53) and the turn of the 8 bar icons: mean 2.66–2.81
+  ms per draw, p95 2.4–3.1 ms (target written before the run: mean ≤ 4
+  ms). Frame 0 took 42 ms, because it made 8 new digit glyphs (about 5
+  ms each, M9u3's cost). The same state again took 2.6 ms.
+- The first run's mean was 4.15 ms. 3 of the ~3.9 ms were texts, and
+  half of that was copying, padding and interning their materials on
+  every draw. Those are now kept per (material, font), which gives the
+  same hash in less time.
+- A fresh scene with fresh atlases draws the start state with the warm
+  scene's hash.
+- Client (`--game-ui --shot 25`, 1920×1080): 171 of 171 draws, as
+  before. The first draw takes 830 ms, of which 814 ms is making 101
+  glyphs. The pass costs 0.242 ms CPU per frame. 0 warnings or errors.
+
 ## Script fields (M9u1) — confirmed
 
 A MonoBehaviour's fields follow its header (game object, enabled,

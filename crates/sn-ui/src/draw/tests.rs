@@ -55,6 +55,7 @@ fn quad(t: &Tree, i: usize, texture: u64) -> Graphic {
         material: 0,
         maskable: true,
         cull_transparent: false,
+        alpha: 1.0,
         kind: format!("{kind:?}"),
     }
 }
@@ -170,6 +171,38 @@ fn canvas_groups_multiply_alpha() {
     let d = draw_list(&t, &inp);
     assert_eq!(d.transparent, 2);
     assert_eq!(d.items.len(), 1);
+}
+
+#[test]
+fn a_renderers_own_alpha_multiplies_the_inherited_one() {
+    let t = scene();
+    let mut inp = input(&t);
+    inp.groups.insert(
+        1,
+        GroupInfo {
+            alpha: 0.5,
+            ignore_parent_groups: false,
+            enabled: true,
+        },
+    );
+    // b (node 2) is under a's group (0.5) and sets its own alpha 0.5.
+    for g in inp.graphics.iter_mut().filter(|g| g.node == 2) {
+        g.alpha = 0.5;
+    }
+    let d = draw_list(&t, &inp);
+    assert_eq!(d.items[1].node, 2);
+    assert_eq!(d.items[1].alpha, 0.25);
+    assert_eq!(d.items[1].vertices[0].color[3], 64);
+    // Only its own graphic: its parent keeps the group's.
+    assert_eq!(d.items[0].alpha, 0.5);
+    // Its own alpha 0 with cullTransparentMesh: not drawn.
+    for g in inp.graphics.iter_mut().filter(|g| g.node == 2) {
+        g.alpha = 0.0;
+        g.cull_transparent = true;
+    }
+    let d = draw_list(&t, &inp);
+    assert_eq!(d.transparent, 1);
+    assert_eq!(d.items.len(), 2);
 }
 
 #[test]

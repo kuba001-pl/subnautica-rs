@@ -2813,6 +2813,7 @@ fn the_pda_screen_draw_list_is_stable() {
                 material: 0,
                 maskable: parts.maskable.get(&g.node).copied().unwrap_or(true),
                 cull_transparent: false,
+                alpha: 1.0,
                 kind: "Image".into(),
             });
         }
@@ -2914,4 +2915,69 @@ fn the_hud_canvases_fill_the_screen() {
         );
         assert!(bl[0].abs() < 0.5 && bl[1].abs() < 0.5, "{bl:?}");
     }
+}
+
+/// M9u6a: `uGUI` read once into a scene draws its start state with the
+/// one-shot path's hash; a state with a changed text and a hidden node
+/// changes the draw list, and the start state drawn again gives the start
+/// hash back.
+#[test]
+#[ignore = "needs SUBNAUTICA_DIR pointing at a Subnautica install"]
+fn the_live_hud_returns_to_its_start_state() {
+    let Some(dir) = std::env::var_os("SUBNAUTICA_DIR") else {
+        eprintln!("SUBNAUTICA_DIR not set; skipping");
+        return;
+    };
+    let game = GameData::locate(Some(PathBuf::from(dir))).unwrap();
+    let assets = Assets::index(&game).unwrap();
+    let tags = sn_assets::physics_settings(&assets).unwrap().tags;
+    let assemblies = sn_assets::ScriptAssemblies::load(&game).unwrap();
+    let layouts = assemblies.layouts().unwrap();
+    let fonts = assets.font_assets(&assemblies).unwrap();
+    let set = assets.tmp_font_set(&fonts).unwrap();
+    let catalog = assets.catalog().unwrap();
+    let root = assets.ugui_root(&catalog).unwrap();
+    let ui = assets.ui_tree("uGUI.prefab", &root).unwrap();
+    let start = assets.ui_start_state(&layouts, &ui).unwrap();
+    let none = std::collections::HashMap::new();
+    let mut atlases = sn_assets::GlyphAtlases::new(&fonts).unwrap();
+    let one_shot = assets
+        .ui_draw_placed(
+            &layouts,
+            &ui,
+            &fonts,
+            &set,
+            &mut atlases,
+            &tags.sorting_layers,
+            &none,
+            &start,
+        )
+        .unwrap()
+        .list
+        .hash();
+    let mut scene = assets
+        .ui_scene(&layouts, &ui, &fonts, &tags.sorting_layers)
+        .unwrap();
+    let state = sn_assets::UiState::from(&start);
+    let mut atlases = sn_assets::GlyphAtlases::new(&fonts).unwrap();
+    let mut draw = |s: &sn_assets::UiState| {
+        scene
+            .draw(&assets, &fonts, &set, &mut atlases, &none, s)
+            .unwrap()
+            .list
+    };
+    let base = draw(&state);
+    assert_eq!(base.hash(), one_shot);
+    let node = |path: &str| ui.nodes.iter().position(|n| n.path == path).unwrap();
+    let text = node("uGUI/ScreenCanvas/HUD/Content/BarsPanel/OxygenBar/Icon/Text");
+    let quad = node("uGUI/ScreenCanvas/HUD/Content/BarsPanel/BackgroundQuad");
+    let mut changed = state.clone();
+    changed.text.insert(text, "1234".into());
+    changed.active.insert(quad, false);
+    let d = draw(&changed);
+    assert_ne!(d.hash(), base.hash());
+    assert!(d.items.iter().all(|i| i.node != quad));
+    let t: Vec<_> = d.items.iter().filter(|i| i.node == text).collect();
+    assert_eq!(t.first().map(|i| i.vertices.len()), Some(16));
+    assert_eq!(draw(&state).hash(), base.hash());
 }

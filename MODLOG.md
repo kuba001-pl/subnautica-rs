@@ -2,6 +2,97 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-14 — M9u6a: the live UI (M9u6 split into a–e)
+
+**Plan:** M9u6 (the HUD's rules) was split into five steps in
+`docs/DESIGN.md`: a, the live UI; b, the four bars; c, depth and
+compass; d, the hand reticle; e, death, respawn and overlays, with
+`hud.rs` removed. Each step's scripts were read from the decompiled
+`Assembly-CSharp` (read only, in `out/`) before the plan was written.
+
+**What/why:** until now the UI was drawn once per window size. The HUD's
+rules change it every frame, so this step adds the part they write to:
+- `sn-assets::ui_scene`: `UiScene` reads a UI tree once. `UiScene::draw`
+  rebuilds the draw list from a `UiState`, the scripts' changes through
+  Unity's API: `SetActive`, `CanvasGroup.alpha`,
+  `CanvasRenderer.SetAlpha`, `Graphic.enabled` and `color`,
+  `Image.sprite` and `fillAmount`, TMP `text`, and the RectTransform's
+  position, z, rotation and scale. `UiStartState` converts into a
+  `UiState`. `ui_draw_placed` is now a scene drawn once, so the older
+  checks run through the new code.
+- `sn-ui::tween`: `Mathf.SmoothDamp` (decompiled
+  `UnityEngine.CoreModule`) and UWE's `Sequence`. `sn-ui::draw`: a
+  graphic's own renderer alpha.
+- `sn-inspect ui --live`; the client's worker keeps the scene.
+- `Assets::script_fields` is now public (the rules read their scripts'
+  fields).
+
+No new dependencies.
+
+**Verified (2026-10-14):**
+- Before the change, `ui --draw` and `ui --canvas` were run and their
+  hashes saved in `out/m9u6a/`. After it, all 12 and all 4 hashes are
+  equal.
+- `ui --live` exits 0 with 0 failures:
+  - stored state `83d22425b9e33ca7`, placed `f1365274ab2fbbf7` (the
+    same as before);
+  - 7 change kinds on drawn HUD nodes each change the draw list as
+    expected, and the start hash comes back after each;
+  - 120 frames with every HUD text, image alpha and bar icon changed:
+    mean 2.66–2.81 ms, p95 2.4–3.1 ms (target ≤ 4 ms, written before
+    the run);
+  - a fresh scene gives the warm scene's hash.
+- Client, `--game-ui --resolution 1920 1080 --shot 25 m9u6a-1080`:
+  - 171 of 171 draws, as in M9u5d; the pass costs 0.242 ms CPU per
+    frame;
+  - 0 WARN, ERROR or panic lines;
+  - screenshot `out/m9u6a-1080.png`.
+- 12 new unit tests: 6 for `ui_scene` (each override kind, merging
+  states, the start state, `Color32` rounding), 5 for `tween`, 1 for the
+  renderer alpha.
+- 1 new opt-in real-data test, `the_live_hud_returns_to_its_start_state`.
+  It passes, and the 11 other opt-in UI tests still pass.
+- `cargo test --workspace` without the game: 606 passed, 50 ignored.
+  fmt and clippy (`-D warnings`) pass.
+
+**Dead ends:**
+- The first `ui --live` run missed the target: mean 4.15 ms. A
+  throwaway timer (removed) showed texts took ~3 of ~3.9 ms. Half of
+  that was cloning, padding and interning each text's material on every
+  draw. These are now kept per (material, font). Same hashes, mean 2.7
+  ms.
+- The first sprite check set `halfMoonCompassNormal`, which is the
+  half moon's stored sprite, so nothing changed. The check now picks
+  the first half-moon sprite that differs from the stored one
+  (`halfMoonNormal`).
+- The 42 ms first frame is not the scene: it made 8 new digit glyphs
+  (M9u3's ~5 ms each). The same state drawn again took 2.6 ms.
+
+**Not tested / not 1:1:**
+- The renderer alpha × inherited alpha, and `cullTransparentMesh`
+  testing the product, are hypotheses (the batching is native).
+- A text's fallback sub-meshes take their text's renderer alpha; in the
+  game they have their own renderers.
+- No HUD image is filled in the start state, so `fillAmount` on real
+  data is not checked (unit tests only).
+- Nothing sends a per-frame state yet. That comes with M9u6b's first
+  rules. The client draws the start state as before.
+
+Reproduce (PowerShell):
+```powershell
+$env:SUBNAUTICA_DIR = 'D:\SteamLibrary\steamapps\common\Subnautica'
+cargo build --release -p sn-inspect -p sn-client
+target/release/sn-inspect.exe ui --live
+target/release/sn-inspect.exe ui --draw
+target/release/sn-inspect.exe ui --canvas
+target/release/sn-client.exe --game-ui --resolution 1920 1080 --shot 25 m9u6a-1080
+cargo test -p sn-assets --test real_data the_live_hud -- --ignored
+cargo test --workspace
+```
+Expected: `ui --live` ends with `failures 0`, and its first two hashes
+are `83d22425b9e33ca7` and `f1365274ab2fbbf7`. `ui --draw` shows 12 of
+12 equal hashes. The client logs `171 draws` and `171 of 171 draws`.
+
 ## 2026-10-13 — M7g4e2: entrance water-field pixel lighting
 
 **Checkpoint:** user authorized committing/pushing M7g4e1; `37872c2`

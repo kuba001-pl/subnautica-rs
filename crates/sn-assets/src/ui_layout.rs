@@ -58,11 +58,8 @@ pub struct UiLayout {
 }
 
 impl Assets<'_> {
-    pub(crate) fn script_fields(
-        &self,
-        layouts: &Layouts,
-        c: &UiComponent,
-    ) -> Result<(bool, Fields)> {
+    /// A script component's `enabled` flag and its fields (M9u1's layouts).
+    pub fn script_fields(&self, layouts: &Layouts, c: &UiComponent) -> Result<(bool, Fields)> {
         let script = self
             .mono_script(&c.object)
             .ok_or("MonoBehaviour without its script")?;

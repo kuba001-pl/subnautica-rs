@@ -1,0 +1,958 @@
+//! The live UI (M9u6a; `docs/formats/ui.md` § The live UI): a UI tree read
+//! once from the install ([`UiScene`]) and drawn again for each
+//! [`UiState`], the changes the game's scripts make to it through Unity's
+//! API. The screens' rules (M9u6b on) write a state each frame; the draw
+//! list is rebuilt from it without reading the install again.
+//!
+//! Each change is applied where uGUI applies it:
+//! - `GameObject.SetActive`: the node's `activeSelf` (layout and drawing);
+//! - `CanvasGroup.alpha`: the group's alpha;
+//! - `CanvasRenderer.SetAlpha`: the graphic's own alpha, multiplied into
+//!   the inherited one (`sn_ui::draw`);
+//! - `Graphic.enabled`: the graphic is drawn or not, and is a layout
+//!   element or not;
+//! - `Graphic.color`: an image's colour; a text's `m_fontColor`, as
+//!   `Color32` (`(byte)Mathf.Round(Mathf.Clamp01(c) × 255)`, rounding half
+//!   to even);
+//! - `Image.sprite`: the mesh's sprite and texture and the layout
+//!   element's sprite size; `Image.fillAmount` (clamped to 0…1 as its
+//!   setter does);
+//! - TMP's `text`: the string, as set from code (`TextString`: escapes
+//!   are not parsed);
+//! - `RectTransform.anchoredPosition`, `localPosition.z`, `localRotation`,
+//!   `localScale`.
+//!
+//! Materials, fonts' materials and sprites are read the first time a draw
+//! needs them and kept, so a draw reads nothing else from the install.
+
+use std::collections::{BTreeMap, HashMap};
+use std::path::PathBuf;
+
+use sn_ui::draw::{DrawInput, Graphic, GroupInfo, draw_list, scale_y_in_root_canvas};
+use sn_ui::layout::{Component, SpriteSize, Tree, layout_with};
+use sn_ui::material::{UiMaterial, fallback_material, tmp_padding};
+use sn_ui::mesh::{SpriteInfo, image_mesh, raw_image_mesh};
+use sn_ui::scaler::{Placement, apply_to_tree};
+use sn_ui::text::{
+    FontPad, FontSet, MeshOptions, Pads, Source, TextParams, Texts, layout_text, layout_text_with,
+    text_meshes,
+};
+
+use crate::ui_draw::{MaterialTable, font_texture_key, texture_key};
+use crate::{
+    Assets, FontAssets, GlyphAtlases, Layouts, ObjectRef, Result, UiDraw, UiDrawParts, UiGraphic,
+    UiGraphicKind, UiStartState, UiText, UiTree,
+};
+
+type Key = (PathBuf, String, i64);
+
+/// A sprite a script assigns (`Image.sprite`), compared by its object.
+#[derive(Clone)]
+pub struct SpriteRef(pub ObjectRef);
+
+impl PartialEq for SpriteRef {
+    fn eq(&self, other: &SpriteRef) -> bool {
+        self.0.key() == other.0.key()
+    }
+}
+
+impl std::fmt::Debug for SpriteRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Sprite({}#{})", self.0.file.name, self.0.path_id)
+    }
+}
+
+/// A node's local transform as a script sets it; `None` keeps the stored
+/// value.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct LocalTransform {
+    pub anchored_position: Option<[f32; 2]>,
+    pub z: Option<f32>,
+    /// A unit quaternion (x, y, z, w).
+    pub rotation: Option<[f32; 4]>,
+    pub scale: Option<[f32; 3]>,
+}
+
+/// The scripts' changes to a tree, by node. A node not in a map keeps its
+/// stored value.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct UiState {
+    /// `GameObject.SetActive`.
+    pub active: BTreeMap<usize, bool>,
+    /// `CanvasGroup.alpha`.
+    pub group_alpha: BTreeMap<usize, f32>,
+    /// `CanvasRenderer.SetAlpha`.
+    pub renderer_alpha: BTreeMap<usize, f32>,
+    /// `Graphic.enabled` (images, raw images and texts).
+    pub enabled: BTreeMap<usize, bool>,
+    /// `Graphic.color`, as Unity's `Color` (stored, not linear).
+    pub color: BTreeMap<usize, [f32; 4]>,
+    /// `Image.sprite` (`None`: no sprite).
+    pub sprite: BTreeMap<usize, Option<SpriteRef>>,
+    /// `Image.fillAmount`.
+    pub fill_amount: BTreeMap<usize, f32>,
+    /// TMP's `text`.
+    pub text: BTreeMap<usize, String>,
+    pub transform: BTreeMap<usize, LocalTransform>,
+}
+
+impl From<&UiStartState> for UiState {
+    fn from(s: &UiStartState) -> UiState {
+        let mut out = UiState::default();
+        out.group_alpha
+            .extend(s.group_alpha.iter().map(|(n, a)| (*n, *a)));
+        out.active.extend(s.inactive.iter().map(|n| (*n, false)));
+        out.enabled.extend(s.disabled.iter().map(|n| (*n, false)));
+        out
+    }
+}
+
+impl UiState {
+    /// `other`'s changes over this state's.
+    pub fn apply(&mut self, other: &UiState) {
+        self.active
+            .extend(other.active.iter().map(|(k, v)| (*k, *v)));
+        self.group_alpha
+            .extend(other.group_alpha.iter().map(|(k, v)| (*k, *v)));
+        self.renderer_alpha
+            .extend(other.renderer_alpha.iter().map(|(k, v)| (*k, *v)));
+        self.enabled
+            .extend(other.enabled.iter().map(|(k, v)| (*k, *v)));
+        self.color.extend(other.color.iter().map(|(k, v)| (*k, *v)));
+        self.sprite
+            .extend(other.sprite.iter().map(|(k, v)| (*k, v.clone())));
+        self.fill_amount
+            .extend(other.fill_amount.iter().map(|(k, v)| (*k, *v)));
+        self.text
+            .extend(other.text.iter().map(|(k, v)| (*k, v.clone())));
+        for (k, t) in &other.transform {
+            let e = self.transform.entry(*k).or_default();
+            e.anchored_position = t.anchored_position.or(e.anchored_position);
+            e.z = t.z.or(e.z);
+            e.rotation = t.rotation.or(e.rotation);
+            e.scale = t.scale.or(e.scale);
+        }
+    }
+}
+
+/// Unity's `Color` → `Color32` conversion (`UnityEngine.CoreModule`).
+pub fn color32(c: [f32; 4]) -> [u8; 4] {
+    c.map(|v| (v.clamp(0.0, 1.0) * 255.0).round_ties_even() as u8)
+}
+
+/// A sprite as the mesh and the layout take it.
+#[derive(Clone)]
+struct LoadedSprite {
+    info: SpriteInfo,
+    texture: Option<ObjectRef>,
+}
+
+impl LoadedSprite {
+    fn size(&self) -> SpriteSize {
+        SpriteSize {
+            size: self.info.size,
+            border: self.info.border,
+            pixels_per_unit: self.info.pixels_per_unit,
+        }
+    }
+}
+
+/// A UI tree read once, to draw for any state.
+pub struct UiScene {
+    pub tree: UiTree,
+    /// The layout tree as stored (before placement and layout).
+    layout: Tree,
+    parts: UiDrawParts,
+    graphics: Vec<UiGraphic>,
+    texts: Vec<UiText>,
+    cache: Cache,
+}
+
+/// What a draw reads from the install, kept after the first time.
+#[derive(Default)]
+struct Cache {
+    /// Materials by object.
+    materials: HashMap<Key, UiMaterial>,
+    /// Each font asset's own material.
+    font_materials: HashMap<usize, Option<UiMaterial>>,
+    sprites: HashMap<Key, LoadedSprite>,
+    /// Materials made for texts: a text's after `LoadFontAsset` and
+    /// `GetPaddingForMaterial`, and fallback ones.
+    derived: Vec<Derived>,
+    /// A text's material by (shared material, font, extra padding);
+    /// `None`: the font asset has no material.
+    text_materials: HashMap<(Option<Key>, usize, bool), Option<usize>>,
+    /// A fallback material by (text material, fallback font); `None`: the
+    /// fallback font asset has no material.
+    fallbacks: HashMap<(usize, usize), Option<usize>>,
+}
+
+/// A material made for a text, with its padding.
+struct Derived {
+    material: UiMaterial,
+    pad: FontPad,
+}
+
+fn pad_of(m: &UiMaterial, padding: f32) -> FontPad {
+    FontPad {
+        padding,
+        gradient_scale: m.has("_GradientScale").then(|| m.float("_GradientScale")),
+        scale_ratio_a: m.has("_ScaleRatioA").then(|| m.float("_ScaleRatioA")),
+    }
+}
+
+impl Assets<'_> {
+    /// Reads `tree`'s layout, draw parts, graphics and texts once
+    /// (`sorting_layers`: the TagManager's list).
+    pub fn ui_scene(
+        &self,
+        layouts: &Layouts,
+        tree: &UiTree,
+        fonts: &FontAssets,
+        sorting_layers: &[(String, u32)],
+    ) -> Result<UiScene> {
+        Ok(UiScene {
+            parts: self.ui_draw_parts(layouts, tree, sorting_layers)?,
+            layout: self.ui_layout(layouts, tree)?.tree,
+            graphics: self.ui_graphics(layouts, tree)?,
+            texts: self.ui_texts(layouts, tree, fonts)?,
+            tree: tree.clone(),
+            cache: Cache::default(),
+        })
+    }
+}
+
+impl Cache {
+    fn material(
+        &mut self,
+        assets: &Assets,
+        o: &ObjectRef,
+        fonts: &FontAssets,
+    ) -> Result<UiMaterial> {
+        let key = o.key();
+        if let Some(m) = self.materials.get(&key) {
+            return Ok(m.clone());
+        }
+        let m = assets.ui_material(o, fonts)?;
+        self.materials.insert(key, m.clone());
+        Ok(m)
+    }
+
+    fn font_material(
+        &mut self,
+        assets: &Assets,
+        fonts: &FontAssets,
+        font: usize,
+    ) -> Result<Option<UiMaterial>> {
+        if let Some(m) = self.font_materials.get(&font) {
+            return Ok(m.clone());
+        }
+        let m = assets.font_material(fonts, font)?;
+        self.font_materials.insert(font, m.clone());
+        Ok(m)
+    }
+
+    fn sprite(&mut self, assets: &Assets, s: &SpriteRef) -> Result<LoadedSprite> {
+        let key = s.0.key();
+        if let Some(l) = self.sprites.get(&key) {
+            return Ok(l.clone());
+        }
+        let (info, texture) = assets.sprite_info(&s.0)?;
+        let l = LoadedSprite { info, texture };
+        self.sprites.insert(key, l.clone());
+        Ok(l)
+    }
+
+    fn derive(&mut self, mut material: UiMaterial, extra_padding: bool) -> usize {
+        let padding = tmp_padding(&mut material, extra_padding);
+        let pad = pad_of(&material, padding);
+        self.derived.push(Derived { material, pad });
+        self.derived.len() - 1
+    }
+
+    /// A text's material (`LoadFontAsset`): its shared material if that
+    /// samples the font's atlas, else the font asset's; its ratios and
+    /// padding set.
+    fn text_material(
+        &mut self,
+        assets: &Assets,
+        fonts: &FontAssets,
+        shared: Option<&ObjectRef>,
+        font: usize,
+        extra_padding: bool,
+    ) -> Result<Option<usize>> {
+        let key = (shared.map(ObjectRef::key), font, extra_padding);
+        if let Some(id) = self.text_materials.get(&key) {
+            return Ok(*id);
+        }
+        let own = self.font_material(assets, fonts, font)?;
+        let shared = match shared {
+            Some(o) => Some(self.material(assets, o, fonts)?),
+            None => None,
+        };
+        let atlas_key = font_texture_key(font);
+        let main = match shared {
+            Some(m) if m.textures.get("_MainTex") == Some(&atlas_key) => Some(m),
+            _ => own,
+        };
+        let id = main.map(|m| self.derive(m, extra_padding));
+        self.text_materials.insert(key, id);
+        Ok(id)
+    }
+
+    /// `GetFallbackMaterial` of text material `main` for font `target`.
+    fn fallback(
+        &mut self,
+        assets: &Assets,
+        fonts: &FontAssets,
+        main: usize,
+        target: usize,
+        extra_padding: bool,
+    ) -> Result<Option<usize>> {
+        if let Some(id) = self.fallbacks.get(&(main, target)) {
+            return Ok(*id);
+        }
+        let id = match self.font_material(assets, fonts, target)? {
+            Some(t) => {
+                let m = &self.derived[main].material;
+                let mut fallback = fallback_material(m, &t);
+                // The game's copy keeps the text material's name; ours names
+                // both for the logs.
+                fallback.name = format!("{} (fallback {})", m.name, t.name);
+                Some(self.derive(fallback, extra_padding))
+            }
+            None => None,
+        };
+        self.fallbacks.insert((main, target), id);
+        Ok(id)
+    }
+}
+
+impl UiScene {
+    /// Sorting layer ids not in the TagManager.
+    pub fn unknown_layers(&self) -> &[i32] {
+        &self.parts.unknown_layers
+    }
+
+    /// The draw list for `state`, with canvases placed as `placements`
+    /// say (by node, from `sn_ui::scaler::place`; empty: as stored).
+    /// Glyphs the texts need go into `atlases`.
+    pub fn draw(
+        &mut self,
+        assets: &Assets,
+        fonts: &FontAssets,
+        set: &FontSet,
+        atlases: &mut GlyphAtlases,
+        placements: &HashMap<usize, Placement>,
+        state: &UiState,
+    ) -> Result<UiDraw> {
+        let mut tree = self.layout.clone();
+        let mut groups = self.parts.groups.clone();
+        let mut sprites: HashMap<usize, Option<LoadedSprite>> = HashMap::new();
+        for (node, s) in &state.sprite {
+            let loaded = match s {
+                Some(s) => Some(
+                    self.cache
+                        .sprite(assets, s)
+                        .map_err(|e| format!("{}: sprite: {e}", self.tree.nodes[*node].path))?,
+                ),
+                None => None,
+            };
+            sprites.insert(*node, loaded);
+        }
+        let sizes = sprites
+            .iter()
+            .map(|(n, s)| (*n, s.as_ref().map(LoadedSprite::size)))
+            .collect();
+        apply_to_layout(&mut tree, &mut groups, state, &sizes);
+        // Parents first, so a nested canvas sees its parent's new size.
+        let mut placed: Vec<(&usize, &Placement)> = placements.iter().collect();
+        placed.sort_by_key(|(n, _)| **n);
+        for (node, p) in placed {
+            apply_to_tree(&mut tree, *node, p);
+        }
+        // The texts' parameters with the scripts' strings and colours.
+        let params: Vec<TextParams> = self
+            .texts
+            .iter()
+            .map(|t| {
+                let mut p = t.params.clone();
+                apply_to_text(&mut p, t.node, state);
+                p
+            })
+            .collect();
+        let sizer = Texts {
+            fonts: set,
+            params: self
+                .texts
+                .iter()
+                .zip(&params)
+                .map(|(t, p)| (t.node, p.clone()))
+                .collect(),
+        };
+        layout_with(&mut tree, &sizer);
+        let mut materials = MaterialTable::new();
+        let mut graphics = Vec::new();
+        let mut textures = HashMap::new();
+        let finite = |r: sn_ui::layout::Rect| r.width.is_finite() && r.height.is_finite();
+        let maskable = |n: usize| self.parts.maskable.get(&n).copied().unwrap_or(true);
+        let cull = |n: usize| {
+            self.parts
+                .cull_transparent
+                .get(&n)
+                .copied()
+                .unwrap_or(false)
+        };
+        let alpha = |n: usize| state.renderer_alpha.get(&n).copied().unwrap_or(1.0);
+        let mut drawn = Vec::new();
+        for g in &self.graphics {
+            if !state.enabled.get(&g.node).copied().unwrap_or(g.enabled) {
+                continue;
+            }
+            let rect = tree.rect(g.node);
+            if !finite(rect) {
+                continue;
+            }
+            let mut kind = g.kind.clone();
+            if !apply_to_graphic(&mut kind, g.node, state, &sprites) {
+                continue;
+            }
+            drawn.push((g.node, kind, g.material.clone(), rect));
+        }
+        for (node, kind, material, rect) in drawn {
+            let object = match &kind {
+                UiGraphicKind::Image { texture, .. } | UiGraphicKind::RawImage { texture, .. } => {
+                    texture.clone()
+                }
+                _ => None,
+            };
+            if let Some(o) = object {
+                textures.insert(texture_key(&o), o);
+            }
+            let (mesh, texture, kind) = match &kind {
+                UiGraphicKind::Image { params, texture } => {
+                    let (kind, m) = image_mesh(rect, tree.nodes[node].rect.pivot, params, 100.0);
+                    (
+                        m,
+                        texture.as_ref().map_or(0, texture_key),
+                        format!("Image {kind:?}"),
+                    )
+                }
+                UiGraphicKind::RawImage {
+                    color,
+                    uv_rect,
+                    texture,
+                } => (
+                    raw_image_mesh(rect, *color, *uv_rect, true),
+                    texture.as_ref().map_or(0, texture_key),
+                    "RawImage".to_string(),
+                ),
+                _ => continue,
+            };
+            let material = match &material {
+                Some(o) => match materials.by_key.get(&o.key()) {
+                    Some(&i) => i,
+                    None => {
+                        let m = self
+                            .cache
+                            .material(assets, o, fonts)
+                            .map_err(|e| format!("{}: {e}", self.tree.nodes[node].path))?;
+                        materials.list.push(m);
+                        let i = materials.list.len() - 1;
+                        materials.by_key.insert(o.key(), i);
+                        i
+                    }
+                },
+                None => 0,
+            };
+            graphics.push(Graphic {
+                node,
+                mesh,
+                texture,
+                material,
+                maskable: maskable(node),
+                cull_transparent: cull(node),
+                alpha: alpha(node),
+                kind,
+            });
+        }
+        // Each text material once in this draw's table (equal ones share an
+        // index, as `MaterialTable::intern` gives).
+        let mut ids: HashMap<usize, usize> = HashMap::new();
+        let mut interned = |table: &mut MaterialTable, cache: &Cache, id: usize| -> usize {
+            *ids.entry(id)
+                .or_insert_with(|| table.intern(cache.derived[id].material.clone()))
+        };
+        let mut unported = Vec::new();
+        let mut text_count = 0;
+        let mut sub_meshes = 0;
+        for (t, p) in self.texts.iter().zip(&params) {
+            let node = t.node;
+            if !state.enabled.get(&node).copied().unwrap_or(t.enabled) {
+                continue;
+            }
+            let rect = tree.rect(node);
+            if !finite(rect) {
+                continue;
+            }
+            let path = self.tree.nodes[node].path.clone();
+            let font = p.font;
+            let (extra_padding, mapping, vertex_gradient) =
+                (t.extra_padding, t.mapping, t.vertex_gradient);
+            let shared = t.material.clone();
+            let Some(main) = self
+                .cache
+                .text_material(assets, fonts, shared.as_ref(), font, extra_padding)
+                .map_err(|e| format!("{path}: {e}"))?
+            else {
+                unported.push(format!("{path}: font asset without a material"));
+                continue;
+            };
+            let mut pads = Pads {
+                default: self.cache.derived[main].pad,
+                fonts: HashMap::new(),
+            };
+            // The fonts the text's characters come from (the layout's choice
+            // does not depend on padding).
+            let first = layout_text(set, p, rect, 0.0);
+            let mut sub_materials: HashMap<usize, usize> = HashMap::new();
+            for c in first.characters.iter().filter(|c| c.visible) {
+                if c.font == font || sub_materials.contains_key(&c.font) {
+                    continue;
+                }
+                let Some(fallback) =
+                    self.cache
+                        .fallback(assets, fonts, main, c.font, extra_padding)?
+                else {
+                    unported.push(format!(
+                        "{path}: fallback font {} without a material",
+                        c.font
+                    ));
+                    continue;
+                };
+                pads.fonts.insert(c.font, self.cache.derived[fallback].pad);
+                sub_materials.insert(c.font, interned(&mut materials, &self.cache, fallback));
+            }
+            let main_index = interned(&mut materials, &self.cache, main);
+            let layout = layout_text_with(set, p, rect, &pads);
+            let options = MeshOptions {
+                horizontal_mapping: mapping[0],
+                vertical_mapping: mapping[1],
+                sdf_shader: self.cache.derived[main].material.has("_WeightNormal"),
+                lossy_scale_y: scale_y_in_root_canvas(&tree, &self.parts.canvases, node),
+            };
+            let (meshes, notes) =
+                text_meshes(&layout, p, &options, |f, g| atlases.glyph(set, f, g));
+            for n in notes.iter().chain(layout.unported.iter()) {
+                unported.push(format!("{path}: {n}"));
+            }
+            if vertex_gradient {
+                unported.push(format!("{path}: vertex gradient"));
+            }
+            text_count += 1;
+            for m in meshes {
+                if m.font != font {
+                    sub_meshes += 1;
+                }
+                let material = if m.font == font {
+                    main_index
+                } else {
+                    sub_materials.get(&m.font).copied().unwrap_or(main_index)
+                };
+                graphics.push(Graphic {
+                    node,
+                    mesh: m.mesh,
+                    texture: font_texture_key(m.font),
+                    material,
+                    maskable: maskable(node),
+                    cull_transparent: cull(node),
+                    alpha: alpha(node),
+                    kind: if m.font == font {
+                        "Text".into()
+                    } else {
+                        "Text sub-mesh".into()
+                    },
+                });
+            }
+        }
+        let input = DrawInput {
+            canvases: self.parts.canvases.clone(),
+            groups,
+            masks: self.parts.masks.clone(),
+            graphics,
+        };
+        Ok(UiDraw {
+            list: draw_list(&tree, &input),
+            materials: materials.list,
+            unknown_layers: self.parts.unknown_layers.clone(),
+            unported,
+            texts: text_count,
+            sub_meshes,
+            textures,
+        })
+    }
+}
+
+/// The changes the layout and the draw list's tree see: `SetActive`, the
+/// transform, `CanvasGroup.alpha`, and a graphic's `enabled` and sprite
+/// size as a layout element (`sprite_sizes`: the new sprites' sizes by
+/// node).
+fn apply_to_layout(
+    tree: &mut Tree,
+    groups: &mut HashMap<usize, GroupInfo>,
+    state: &UiState,
+    sprite_sizes: &HashMap<usize, Option<SpriteSize>>,
+) {
+    for (node, alpha) in &state.group_alpha {
+        if let Some(g) = groups.get_mut(node) {
+            g.alpha = *alpha;
+        }
+    }
+    for (node, active) in &state.active {
+        if let Some(n) = tree.nodes.get_mut(*node) {
+            n.active_self = *active;
+        }
+    }
+    for (node, t) in &state.transform {
+        let Some(n) = tree.nodes.get_mut(*node) else {
+            continue;
+        };
+        if let Some(p) = t.anchored_position {
+            n.rect.anchored_position = p;
+        }
+        if let Some(z) = t.z {
+            n.rect.z = z;
+        }
+        if let Some(r) = t.rotation {
+            n.rect.rotation = r;
+        }
+        if let Some(s) = t.scale {
+            n.rect.scale = s;
+        }
+    }
+    for (node, n) in tree.nodes.iter_mut().enumerate() {
+        let enabled = state.enabled.get(&node);
+        let sprite = sprite_sizes.get(&node);
+        if enabled.is_none() && sprite.is_none() {
+            continue;
+        }
+        for c in &mut n.components {
+            match &mut c.kind {
+                Component::Image { sprite: size, .. } => {
+                    if let Some(e) = enabled {
+                        c.enabled = *e;
+                    }
+                    if let Some(s) = sprite {
+                        *size = *s;
+                    }
+                }
+                Component::Text => {
+                    if let Some(e) = enabled {
+                        c.enabled = *e;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+/// A text's string and colour as a script set them.
+fn apply_to_text(p: &mut TextParams, node: usize, state: &UiState) {
+    if let Some(s) = state.text.get(&node) {
+        p.text = s.clone();
+        p.source = Source::Code;
+    }
+    if let Some(c) = state.color.get(&node) {
+        p.color = color32(*c);
+    }
+}
+
+/// An image's or raw image's own changes: sprite, colour, fill amount.
+/// False for the other graphics (texts are drawn apart; the game's own
+/// graphics wait for their steps).
+fn apply_to_graphic(
+    kind: &mut UiGraphicKind,
+    node: usize,
+    state: &UiState,
+    sprites: &HashMap<usize, Option<LoadedSprite>>,
+) -> bool {
+    match kind {
+        UiGraphicKind::Image { params, texture } => {
+            if let Some(s) = sprites.get(&node) {
+                params.sprite = s.as_ref().map(|s| s.info);
+                *texture = s.as_ref().and_then(|s| s.texture.clone());
+            }
+            if let Some(c) = state.color.get(&node) {
+                params.color = *c;
+            }
+            if let Some(f) = state.fill_amount.get(&node) {
+                // `Image.fillAmount`'s setter clamps.
+                params.fill_amount = f.clamp(0.0, 1.0);
+            }
+            true
+        }
+        UiGraphicKind::RawImage { color, .. } => {
+            if let Some(c) = state.color.get(&node) {
+                *color = *c;
+            }
+            true
+        }
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sn_ui::layout::{Comp, Node, RectTransform};
+
+    #[test]
+    fn color32_rounds_half_to_even_and_clamps() {
+        // 0.5 × 255 = 127.5 → 128 (even); 1.5/255 × 255 = 1.5 → 2;
+        // 2.5/255 × 255 = 2.5 → 2.
+        assert_eq!(
+            color32([0.5, 1.5 / 255.0, 2.5 / 255.0, 2.0]),
+            [128, 2, 2, 255]
+        );
+        assert_eq!(color32([-1.0, 0.0, 1.0, 0.999]), [0, 0, 255, 255]);
+    }
+
+    #[test]
+    fn a_later_state_overrides_an_earlier_one_field_by_field() {
+        let mut a = UiState::default();
+        a.active.insert(1, false);
+        a.transform.insert(
+            2,
+            LocalTransform {
+                scale: Some([2.0, 2.0, 1.0]),
+                ..LocalTransform::default()
+            },
+        );
+        let mut b = UiState::default();
+        b.active.insert(1, true);
+        b.text.insert(3, "12".into());
+        b.transform.insert(
+            2,
+            LocalTransform {
+                z: Some(5.0),
+                ..LocalTransform::default()
+            },
+        );
+        a.apply(&b);
+        assert!(a.active[&1]);
+        assert_eq!(a.text[&3], "12");
+        assert_eq!(a.transform[&2].scale, Some([2.0, 2.0, 1.0]));
+        assert_eq!(a.transform[&2].z, Some(5.0));
+    }
+
+    fn node(
+        name: &str,
+        parent: Option<usize>,
+        children: Vec<usize>,
+        comp: Option<Component>,
+    ) -> Node {
+        Node {
+            name: name.into(),
+            parent,
+            children,
+            active_self: true,
+            rect: RectTransform::default(),
+            components: comp
+                .into_iter()
+                .map(|kind| Comp {
+                    kind,
+                    enabled: true,
+                })
+                .collect(),
+        }
+    }
+
+    fn sample_tree() -> Tree {
+        Tree::new(vec![
+            node("canvas", None, vec![1, 2], None),
+            node(
+                "image",
+                Some(0),
+                vec![],
+                Some(Component::Image {
+                    sprite: None,
+                    kind: 0,
+                }),
+            ),
+            node("text", Some(0), vec![], Some(Component::Text)),
+        ])
+    }
+
+    fn sprite(size: f32) -> SpriteInfo {
+        SpriteInfo::new(
+            [size, size],
+            [0.0; 4],
+            100.0,
+            [0.0, 0.0, size, size],
+            [0.0, 0.0],
+            [256.0, 256.0],
+            false,
+            false,
+        )
+    }
+
+    fn image_params() -> sn_ui::mesh::ImageParams {
+        sn_ui::mesh::ImageParams {
+            sprite: Some(sprite(32.0)),
+            kind: 3,
+            preserve_aspect: false,
+            fill_center: true,
+            fill_method: 4,
+            fill_amount: 1.0,
+            fill_clockwise: true,
+            fill_origin: 2,
+            use_sprite_mesh: false,
+            pixels_per_unit_multiplier: 1.0,
+            color: [1.0; 4],
+        }
+    }
+
+    #[test]
+    fn layout_changes_reach_the_tree_and_groups() {
+        let mut tree = sample_tree();
+        let mut groups: HashMap<usize, GroupInfo> = [(
+            0,
+            GroupInfo {
+                alpha: 1.0,
+                ignore_parent_groups: false,
+                enabled: true,
+            },
+        )]
+        .into_iter()
+        .collect();
+        let mut state = UiState::default();
+        state.active.insert(2, false);
+        state.group_alpha.insert(0, 0.25);
+        // A node without a CanvasGroup gets none.
+        state.group_alpha.insert(1, 0.5);
+        state.enabled.insert(1, false);
+        state.enabled.insert(2, false);
+        let q = [0.0, 1.0, 0.0, 0.0];
+        state.transform.insert(
+            1,
+            LocalTransform {
+                anchored_position: Some([3.0, 4.0]),
+                z: Some(-1.0),
+                rotation: Some(q),
+                scale: Some([2.0, 2.0, 1.0]),
+            },
+        );
+        let size = SpriteSize {
+            size: [64.0, 32.0],
+            border: [0.0; 4],
+            pixels_per_unit: 100.0,
+        };
+        let sizes = [(1, Some(size))].into_iter().collect();
+        apply_to_layout(&mut tree, &mut groups, &state, &sizes);
+        assert!(!tree.nodes[2].active_self);
+        assert!(tree.nodes[1].active_self);
+        assert_eq!(groups[&0].alpha, 0.25);
+        assert!(!groups.contains_key(&1));
+        let r = &tree.nodes[1].rect;
+        assert_eq!(r.anchored_position, [3.0, 4.0]);
+        assert_eq!(r.z, -1.0);
+        assert_eq!(r.rotation, q);
+        assert_eq!(r.scale, [2.0, 2.0, 1.0]);
+        assert!(!tree.nodes[1].components[0].enabled);
+        assert!(!tree.nodes[2].components[0].enabled);
+        assert_eq!(
+            tree.nodes[1].components[0].kind,
+            Component::Image {
+                sprite: Some(size),
+                kind: 0
+            }
+        );
+        // An empty state changes nothing.
+        let before = sample_tree();
+        let mut t = sample_tree();
+        apply_to_layout(
+            &mut t,
+            &mut HashMap::new(),
+            &UiState::default(),
+            &HashMap::new(),
+        );
+        assert_eq!(t, before);
+    }
+
+    #[test]
+    fn a_texts_string_is_set_from_code_and_its_colour_as_color32() {
+        let mut p = TextParams::new("stored", 0, 36.0);
+        p.source = Source::Stored;
+        let mut state = UiState::default();
+        apply_to_text(&mut p, 7, &state);
+        assert_eq!(p.text, "stored");
+        assert_eq!(p.source, Source::Stored);
+        state.text.insert(7, "42".into());
+        state.color.insert(7, [1.0, 0.5, 0.0, 1.0]);
+        apply_to_text(&mut p, 7, &state);
+        assert_eq!(p.text, "42");
+        assert_eq!(p.source, Source::Code);
+        assert_eq!(p.color, [255, 128, 0, 255]);
+    }
+
+    #[test]
+    fn an_images_sprite_colour_and_fill_change() {
+        let mut kind = UiGraphicKind::Image {
+            params: image_params(),
+            texture: None,
+        };
+        let mut state = UiState::default();
+        state.fill_amount.insert(1, 1.5);
+        state.color.insert(1, [0.0, 1.0, 0.0, 0.5]);
+        let other = LoadedSprite {
+            info: sprite(64.0),
+            texture: None,
+        };
+        let sprites = [(1, Some(other))].into_iter().collect();
+        assert!(apply_to_graphic(&mut kind, 1, &state, &sprites));
+        let UiGraphicKind::Image { params, .. } = &kind else {
+            unreachable!()
+        };
+        assert_eq!(params.fill_amount, 1.0);
+        assert_eq!(params.color, [0.0, 1.0, 0.0, 0.5]);
+        assert_eq!(params.sprite.map(|s| s.size), Some([64.0, 64.0]));
+        state.fill_amount.insert(1, -0.5);
+        let none = [(1, None)].into_iter().collect();
+        assert!(apply_to_graphic(&mut kind, 1, &state, &none));
+        let UiGraphicKind::Image { params, texture } = &kind else {
+            unreachable!()
+        };
+        assert_eq!(params.fill_amount, 0.0);
+        assert!(params.sprite.is_none() && texture.is_none());
+        // A raw image takes the colour; a text is not drawn here.
+        let mut raw = UiGraphicKind::RawImage {
+            color: [1.0; 4],
+            uv_rect: [0.0, 0.0, 1.0, 1.0],
+            texture: None,
+        };
+        assert!(apply_to_graphic(&mut raw, 1, &state, &HashMap::new()));
+        assert!(
+            matches!(raw, UiGraphicKind::RawImage { color, .. } if color == [0.0, 1.0, 0.0, 0.5])
+        );
+        assert!(!apply_to_graphic(
+            &mut UiGraphicKind::Text,
+            1,
+            &state,
+            &HashMap::new()
+        ));
+    }
+
+    #[test]
+    fn the_start_state_becomes_a_state() {
+        let mut s = UiStartState::default();
+        s.group_alpha.insert(4, 0.0);
+        s.inactive.insert(5);
+        s.disabled.insert(6);
+        let u = UiState::from(&s);
+        assert_eq!(u.group_alpha[&4], 0.0);
+        assert!(!u.active[&5]);
+        assert!(!u.enabled[&6]);
+        assert!(u.text.is_empty());
+    }
+}

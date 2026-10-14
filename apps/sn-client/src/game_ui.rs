@@ -3,8 +3,8 @@
 //! our own HUD (`hud.rs`) it is off by default, so the two never draw
 //! together.
 //!
-//! - A worker thread reads the install once and builds `uGUI`'s draw list
-//!   (`sn_assets::Assets::ui_draw_placed`) with its canvases placed for the
+//! - A worker thread reads the install once into a `sn_assets::UiScene`
+//!   (M9u6a) and draws `uGUI`'s draw list from it with its canvases placed for the
 //!   window's size (`sn_ui::scaler`: in front of the game's UI camera, sized
 //!   from the main camera's field of view), again whenever the size
 //!   changes. It sends the vertices, one draw per item, and each texture
@@ -322,6 +322,9 @@ fn run_worker(
     for n in &start_state.notes {
         info!("game UI start: {n}");
     }
+    let state = sn_assets::UiState::from(&start_state);
+    // Read once; each build only draws it (M9u6a).
+    let mut scene = assets.ui_scene(&layouts, &tree, &fonts, &tags.sorting_layers)?;
     info!(
         "game UI: uGUI read in {:.2} s; {} canvas scalers",
         start.elapsed().as_secs_f64(),
@@ -346,16 +349,14 @@ fn run_worker(
                 Err(e) => warn!("game UI: {}: {e}", tree.nodes[*node].path),
             }
         }
-        let d = assets.ui_draw_placed(
-            &layouts,
-            &tree,
-            &fonts,
-            &set,
-            &mut atlases,
-            &tags.sorting_layers,
-            &placements,
-            &start_state,
-        )?;
+        let drawing = Instant::now();
+        let d = scene.draw(&assets, &fonts, &set, &mut atlases, &placements, &state)?;
+        info!(
+            "game UI: drawn for {}×{} in {:.3} ms",
+            request.screen[0],
+            request.screen[1],
+            drawing.elapsed().as_secs_f64() * 1000.0
+        );
         let mut build = convert(&tree, &d, request.screen, fov, placements);
         for (key, object) in &d.textures {
             if sent.contains(key) {

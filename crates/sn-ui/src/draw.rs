@@ -21,8 +21,10 @@
 //!   inset by its padding. A graphic whose rect, in its root canvas's
 //!   space, does not overlap the clip rect is culled (`Cull`); an empty
 //!   intersection culls everything under it.
+//! - A `CanvasRenderer`'s own alpha (`SetAlpha`, M9u6a) multiplies the
+//!   inherited alpha.
 //! - A `CanvasRenderer` with `cullTransparentMesh` draws nothing when its
-//!   alpha is 0.
+//!   alpha is 0 (*hypothesis*: the inherited alpha times its own).
 
 use std::collections::HashMap;
 
@@ -127,6 +129,8 @@ pub struct Graphic {
     pub material: usize,
     pub maskable: bool,
     pub cull_transparent: bool,
+    /// `CanvasRenderer.GetAlpha` (1 unless a script set it).
+    pub alpha: f32,
     /// What it is, for the logs.
     pub kind: String,
 }
@@ -374,7 +378,7 @@ pub fn draw_list(tree: &Tree, input: &DrawInput) -> DrawList {
         if !input.canvases.get(&root).is_some_and(|c| c.enabled) {
             continue;
         }
-        let alpha = alpha_of(i);
+        let alpha = alpha_of(i) * g.alpha;
         if g.cull_transparent && alpha <= 0.0 {
             out.transparent += 1;
             continue;

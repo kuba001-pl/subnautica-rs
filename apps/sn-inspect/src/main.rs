@@ -18,6 +18,7 @@ mod fonts;
 mod game;
 mod gameplay;
 mod grass;
+mod live;
 mod lods;
 mod materials;
 mod mesh;
@@ -248,6 +249,9 @@ Commands:
   ui --canvas            M9u5b: each canvas scaler's placement at several
                          screens, its corners projected through the UI
                          camera, and the trees laid out at those sizes
+  ui --live              M9u6a: uGUI read once and drawn for many states:
+                         each kind of script change, frames with every HUD
+                         text changed (draw time), the start state again
   ui --layout <CLASS> [<NAME>]
                          M9u1: a script's layout and, for its first object
                          (named NAME), where each field starts and its value
@@ -464,6 +468,7 @@ fn run(mut args: Vec<String>) -> Result<ExitCode> {
         ["ui", "--texts"] => texts::run(&game),
         ["ui", "--draw"] => draw::run(&game),
         ["ui", "--canvas"] => canvas::run(&game),
+        ["ui", "--live"] => live::run(&game),
         ["ui", "--fonts"] => fonts::run(&game, false),
         ["ui", "--fonts", "--atlas"] => fonts::run(&game, true),
         ["ui", "--sprites"] => ui::sprites(&game, false),
