@@ -120,6 +120,8 @@ fn inputs() -> HudInputs {
         healed: None,
         ate: None,
         drank: None,
+        depth: 0.0,
+        compass: false,
     }
 }
 

@@ -1274,6 +1274,95 @@ with the curves read from `sn-unity`, not from our rules.
 Our player is never healed and never eats or drinks yet, so the client
 sends no punch events. The punches are checked only headless.
 
+## The depth and compass (M9u6c research) — confirmed (decompiled code, IL, stored fields)
+
+Read on 2026-10-14 from the decompiled `uGUI_DepthCompass`, `uGUI_Compass`,
+`Ocean`, `MaterialExtensions` and `IntStringCache` (read only, in `out/`),
+the IL (`sn-inspect code --il`) and the stored fields (`ui --layout`).
+`uGUI_DepthCompass` is on `uGUI/ScreenCanvas/HUD/Content/DepthCompass`,
+which `uGUI_SceneHUD` never deactivates, so its `LateUpdate` runs every
+frame.
+
+**`uGUI_DepthCompass.LateUpdate`** runs `Initialize`, `UpdateDepth`,
+`UpdateCompass`, in that order.
+- `Initialize` (once, when `Player.main` exists): the label keys
+  `CompassDirection{label.name}`; `OnLanguageChanged` (`_meterSuffix` =
+  `Language.Get("MeterSuffix")`, also into `submersibleDepthSuffix`; the
+  compass labels' texts); `OnDepthClassChanged(player.depthClass)`.
+- **`OnDepthClassChanged` ignores its argument.** The IL stores the value
+  and then stores the constant 1 (`Safe`) over it (`ldc.i4.1; stloc.0`),
+  as the decompiled `value2 = Ocean.DepthClass.Safe` shows. So the
+  danger sprites, the danger colour and the alpha blend are never used:
+  the shadow always gets `shadowNormal`, `SetBlending(Multiplicative,
+  alphaPremultiply: true)` and both texts `textColorNormal` (stored
+  (227, 243, 246, 255)). `_cachedDepthClass` starts at `Safe`, so the
+  half moon is not re-picked here.
+- `SetBlending(Multiplicative, true)` on the shadow's own material:
+  `_SrcFactor` = `DstColor` (2), `_DstFactor` = `OneMinusSrcAlpha` (10),
+  keyword `ALPHA_PREMULTIPLY` on (`SetBlendMode`).
+- `UpdateDepth`: the mode is `None` when not initialized, not the main
+  level, the intro, the rocket launching, a cinematic, or the PDA in use;
+  `Submersible` in a vehicle; `MapRoomCamera` with a camera drone; `None`
+  when piloting; else `Player` with depth `FloorToInt(Ocean.GetDepthOf
+  (player))` = `floor(max(0, oceanLevel − y))`, the ocean level being
+  `Ocean.main`'s y. On a mode change: `shadow`, `halfMoon`, `depthText`,
+  `suffixText` enabled iff `Player` (then the half moon's sprite is
+  picked); the four submersible graphics enabled for `Submersible` or
+  `MapRoomCamera` (the crush depth for `Submersible` only). In `Player`,
+  when the integer changes, `depthText` = `IntStringCache.GetStringForInt`
+  (the integer's `ToString()`, cached) and `suffixText` = the suffix.
+  Texts are not touched in `None`.
+- `UpdateCompass`: enabled iff initialized, main level, no launch, no
+  intro, the PDA not in use, not piloting, no cinematic, and the
+  equipment holds a `Compass` (or a camera drone is in use). A change
+  re-picks the half moon in `Player` mode. Then `compass.SetVisible
+  (enabled)` and, when enabled, `compass.direction =
+  MainCamera.camera.transform.eulerAngles.y / 360`.
+- The half moon: `halfMoonCompassNormal` when the compass flag is 1, else
+  `halfMoonNormal` (the danger pair is unreachable, above). The flag
+  starts at −1, so before the first `UpdateCompass` the normal sprite is
+  used.
+
+**`uGUI_Compass`** (a `Graphic`; stored: `size` 3.9, `position` (0, −0.54,
+−12.6), `rotation` (−70.8, 0, 0), `scale` 1, `scale2D` 342, `fov` 90,
+`near` 0, `far` 10, `radius` 4.5, `alphaFrom` 0.375, `alphaTo` 0.625,
+8 labels). `SetVisible(false)` empties its mesh and disables the labels'
+texts. Its mesh is one quad of half-size `size`, moved by `TRS(position,
+rotation, scale)`, projected by `Matrix4x4.Perspective(fov, 1, near,
+far)` with `MultiplyPoint3x4` (no divide; with `near` 0 the third row
+gives z = −(view z)), then x, y = `scale2D` × x / z; the UVs are stored
+divided by z with 1/z in `uv1.x`, so the fragment's `uv / (1/z)` is
+perspective-correct. `direction` (wrapped to 0…1, applied only when it
+changes) sets `_Angle` = (`rotation.z` − 360 × direction) in radians,
+`_AlphaFrom`, `_AlphaTo`, and each label's `anchoredPosition` (the point
+at `radius` and angle `rotation.z + label.angle` through the same
+matrix, rotated by the direction) and colour (white, alpha = sin(1 −
+|2t − 1|), t = `Clamp01`((frac((rotation.z + angle − 90 − 360 ×
+direction) / 360) − alphaFrom) / (alphaTo − alphaFrom))).
+`uGUI/Compass`'s fragment (`out/m9u5/uGUI_Compass/`): p = 2 uv − 1; the
+clockwise angle of p from +y as a fraction of a turn, through
+`_AlphaFrom`…`_AlphaTo`, gives the same sin window as the labels; the
+texture is sampled at p rotated by `_Angle`, (`_MainTex` +
+`_TextureSampleAdd`) × colour, alpha × window × hard clip.
+
+**Ported (M9u6c1)** in `sn_ui::depth`, read by `sn-assets::depth_config`,
+checked by `sn-inspect ui --depth`. In our client the mode is `Player`
+while the HUD is active (the player runs) and the PDA is closed, else
+`None`; the depth is `max(0, ocean level − y)` of the simulated player's
+position. `ui --depth` (2026-10-14): a 70 s timeline at 60 frames a
+second (down to 139 m and back up, the PDA open twice, the HUD inactive
+2 s, the compass flag on twice), drawn every frame: 91,230 of 91,230
+checks equal the replay (player graphics drawn iff shown, the text the
+last shown floor with one quad a digit in `textColorNormal`, the suffix
+"m" from `MeterSuffix`, the half moon's sprite, the shadow's blend, the
+labels drawn iff the compass shows, the submersible graphics and the
+compass graphic never). Client dive (`--game-ui --start 0 -3 0 --look 20
+-3 20 --look-down 60 --hold-forward 3 --panel 12=open,15=close`): in
+29 of 29 shown seconds the text is `floor(depth)` (3 m to 19 m on the
+sea floor); `None` with the text kept in the 3 seconds the PDA is open
+and the 2 before the player runs; 0 warnings; `out/m9u6c1-dive.png`. Not
+compared with the game on screen.
+
 ## Script fields (M9u1) — confirmed
 
 A MonoBehaviour's fields follow its header (game object, enabled,

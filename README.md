@@ -112,13 +112,15 @@ Tested on Windows 11 with game build 10 (Steam):
   game's values), and so do their animations: the low-value pulse (the
   game's own clips), and the icons' turn while the PDA is open. The
   icons' punch on healing, eating and drinking is ported but not seen in
-  the client, whose player never heals, eats or drinks yet. The other
+  the client, whose player never heals, eats or drinks yet. The depth
+  readout follows `uGUI_DepthCompass` (whole metres rounded down, the
+  language file's suffix, hidden while the PDA is open). The other
   screens start as the game's scripts leave them (feedback panel,
-  dialogs, pop-ups, vehicle and camera screens hidden; the player depth
-  and the reticle's dot shown), but the depth value, compass, reticle,
-  death and messages are not driven yet (M9u6c–M9u7). The texts are
-  untranslated.
-  Checked by numbers (`ui --bars`, `ui --pulse`, `ui --start`, the
+  dialogs, pop-ups, vehicle and camera screens hidden; the reticle's
+  dot shown), but the compass, reticle, death and messages are not
+  driven yet (M9u6c2–M9u7). The texts are untranslated.
+  Checked by numbers (`ui --bars`, `ui --pulse`, `ui --start`,
+  `ui --depth`, the
   client's per-second log) and screenshots; not compared against the
   original game on screen.
 - Oxygen, suffocation, health, death and respawn in the lifepod, with

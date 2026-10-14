@@ -10,6 +10,7 @@
 //!   (layout groups, fitters, layout elements).
 //! - [`mesh`] (M9u4b): the meshes `Image` and `RawImage` build.
 //! - [`bar`] (M9u6b1): `uGUI_CircularBar`, the HUD's round bars.
+//! - [`depth`] (M9u6c1): `uGUI_DepthCompass`, the depth readout's rules.
 //! - [`draw`] (M9u4d): the draw list: order, canvas space, alpha, clipping.
 //! - [`hud`] (M9u6b1): the HUD's rules (`uGUI_SceneHUD`, the bars).
 //! - [`material`] (M9u5a): UI materials and TextMesh Pro's material rules.
@@ -22,6 +23,7 @@
 
 pub mod bar;
 pub mod clip;
+pub mod depth;
 pub mod draw;
 pub mod font;
 pub mod hud;

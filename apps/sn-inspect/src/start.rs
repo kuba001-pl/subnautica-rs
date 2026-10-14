@@ -128,6 +128,8 @@ pub fn run(game: &GameData) -> Result<ExitCode> {
         healed: None,
         ate: None,
         drank: None,
+        depth: 0.0,
+        compass: false,
     }));
     let mut scene = assets.ui_scene(&layouts, &tree, &fonts, &tags.sorting_layers)?;
     let mut atlases = GlyphAtlases::new(&fonts)?;

@@ -12,6 +12,7 @@ mod code;
 mod collision;
 mod coop;
 mod density;
+mod depth;
 mod dive;
 mod draw;
 mod entities;
@@ -261,6 +262,9 @@ Commands:
   ui --start             M9u6s: what uGUI draws at start, by screen
   ui --pulse             M9u6b2: the HUD bars' pulses, punches and turn
                          through a scripted timeline, against a replay
+  ui --depth             M9u6c1: the depth readout through a scripted dive
+                         (PDA, inactive HUD, compass flag), every frame
+                         against a replay
   ui --layout <CLASS> [<NAME>]
                          M9u1: a script's layout and, for its first object
                          (named NAME), where each field starts and its value
@@ -481,6 +485,7 @@ fn run(mut args: Vec<String>) -> Result<ExitCode> {
         ["ui", "--bars"] => bars::run(&game),
         ["ui", "--start"] => start::run(&game),
         ["ui", "--pulse"] => pulse::run(&game),
+        ["ui", "--depth"] => depth::run(&game),
         ["ui", "--fonts"] => fonts::run(&game, false),
         ["ui", "--fonts", "--atlas"] => fonts::run(&game, true),
         ["ui", "--sprites"] => ui::sprites(&game, false),

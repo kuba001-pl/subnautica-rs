@@ -163,6 +163,8 @@ pub fn run(game: &GameData) -> Result<ExitCode> {
             healed: None,
             ate: None,
             drank: None,
+            depth: 0.0,
+            compass: false,
         };
         let mut state = start_state.clone();
         state.apply(&hud.update(&inputs));

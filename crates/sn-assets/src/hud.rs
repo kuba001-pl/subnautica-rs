@@ -1,14 +1,18 @@
 //! The HUD's scripts' nodes and fields (M9u6b1; `docs/formats/ui.md`
 //! § The HUD's bars), for `sn_ui::hud`'s rules: `uGUI_SceneHUD`'s elements
 //! and the four bar scripts' `bar`, `text` and fields; their pulse curves,
-//! legacy clips and icons (M9u6b2, § The bars' animations). (`Survival`'s
+//! legacy clips and icons (M9u6b2, § The bars' animations); and
+//! `uGUI_DepthCompass`'s (M9u6c1, § The depth and compass). (`Survival`'s
 //! start food and water are in its code: `crate::survival_start`.)
 
+use std::collections::HashMap;
+
 use sn_ui::clip::{Channel, Clip, Curve, Key, Track};
+use sn_ui::depth::DepthConfig;
 use sn_ui::hud::{BarConfig, BarKind, HudConfig, IconMotion, Overlays, Pulse};
 use sn_unity::{AnimationCurve, EditorCurveKind, Fields, PPtr, Value};
 
-use crate::{Assets, Layouts, ObjectRef, Result, UiGraphicKind, UiTree};
+use crate::{Assets, Layouts, ObjectRef, Result, SpriteId, UiGraphicKind, UiScene, UiTree};
 
 /// `RectTransform`'s class.
 const RECT_TRANSFORM: i32 = 224;
@@ -254,6 +258,99 @@ impl Assets<'_> {
             background_double: node("backgroundBarsDouble")?,
             background_quad: node("backgroundBarsQuad")?,
             bars,
+        })
+    }
+}
+
+impl Assets<'_> {
+    /// `uGUI_DepthCompass` in `tree` (`uGUI`; M9u6c1, `docs/formats/ui.md`
+    /// § The depth and compass): its nodes, its normal sprites as ids of
+    /// `scene`, `textColorNormal`, and the strings `Language.Get` gives from
+    /// `language` (a key the file lacks is shown as itself).
+    pub fn depth_config(
+        &self,
+        layouts: &Layouts,
+        tree: &UiTree,
+        scene: &mut UiScene,
+        language: &HashMap<String, String>,
+    ) -> Result<DepthConfig> {
+        let (_, c) = tree
+            .scripts("uGUI_DepthCompass")
+            .next()
+            .ok_or("no uGUI_DepthCompass")?;
+        let (_, f) = self.script_fields(layouts, c)?;
+        let from = &c.object;
+        let node = |name: &str| -> Result<usize> {
+            self.node_of(tree, from, pptr(&f, name)?)?
+                .ok_or_else(|| format!("uGUI_DepthCompass.{name}: not in the tree"))
+        };
+        let mut sprite = |name: &str| -> Result<SpriteId> {
+            let o = self
+                .resolve(&from.file, pptr(&f, name)?)?
+                .ok_or_else(|| format!("uGUI_DepthCompass.{name}: not found"))?;
+            Ok(scene.sprite_id(&o))
+        };
+        let get = |key: &str| {
+            language
+                .get(key)
+                .cloned()
+                .unwrap_or_else(|| key.to_string())
+        };
+        let color = f
+            .get("textColorNormal")
+            .and_then(Value::as_struct)
+            .ok_or("no textColorNormal")?;
+        let channel = |k: &str| -> Result<u8> {
+            color
+                .get(k)
+                .and_then(Value::as_i64)
+                .and_then(|v| u8::try_from(v).ok())
+                .ok_or_else(|| format!("textColorNormal.{k}"))
+        };
+        let text_color_normal = [channel("r")?, channel("g")?, channel("b")?, channel("a")?];
+        // The compass's labels: `CompassDirection{name}` for each label with
+        // a text (`Initialize`, `OnLanguageChanged`).
+        let compass_ptr = pptr(&f, "compass")?;
+        let compass = node("compass")?;
+        let cf = self
+            .fields_at(layouts, from, compass_ptr)?
+            .ok_or("uGUI_DepthCompass.compass: not found")?;
+        let mut labels = Vec::new();
+        for l in cf.get("labels").and_then(Value::as_array).unwrap_or(&[]) {
+            let Some(l) = l.as_struct() else {
+                continue;
+            };
+            let Some(text) = l
+                .get("text")
+                .and_then(Value::as_pptr)
+                .filter(|p| !p.is_null())
+            else {
+                continue;
+            };
+            let name = l.get("name").and_then(Value::as_str).unwrap_or("");
+            let at = self
+                .node_of(tree, from, text)?
+                .ok_or_else(|| format!("compass label {name}: not in the tree"))?;
+            labels.push((at, get(&format!("CompassDirection{name}"))));
+        }
+        Ok(DepthConfig {
+            shadow: node("shadow")?,
+            half_moon: node("halfMoon")?,
+            depth_text: node("depthText")?,
+            suffix_text: node("suffixText")?,
+            submersible: [
+                node("submersibleBackground")?,
+                node("submersibleDepth")?,
+                node("submersibleDepthSuffix")?,
+                node("submersibleCrushDepth")?,
+            ],
+            compass,
+            labels,
+            shadow_normal: sprite("shadowNormal")?,
+            half_moon_normal: sprite("halfMoonNormal")?,
+            half_moon_compass_normal: sprite("halfMoonCompassNormal")?,
+            text_color_normal,
+            meter_suffix: get("MeterSuffix"),
         })
     }
 }

@@ -2,6 +2,63 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-14 — M9u6c1: the depth readout's rules
+
+**Plan:** M9u6c was split in `docs/DESIGN.md` into c1 (`uGUI_DepthCompass`,
+the depth) and c2 (`uGUI_Compass`: its shader, mesh, direction and
+labels, and a compass in the equipment). Research in `docs/formats/ui.md`
+§ The depth and compass.
+
+**What/why:** the HUD's depth showed its stored state; it now follows
+`uGUI_DepthCompass.LateUpdate` each frame.
+- `sn-ui::depth` (new): `Initialize` (meter suffix, label texts, the
+  shadow's sprite and multiplicative blend, the texts' colour),
+  `UpdateDepth` (mode, the graphics shown per mode, the text when
+  `floor(depth)` changes), `UpdateCompass`'s visibility part (half moon
+  sprite, `SetVisible` on the compass and its labels).
+- `sn-ui::hud::HudInputs`: new `depth` and `compass` inputs.
+- `sn-assets::depth_config` reads the script's nodes, sprites, colour
+  and the language strings (`fields_at` made `pub(crate)`).
+- `sn-client`: sends the depth (`sn_sim::vitals::depth_of`, as our HUD
+  did); `compass` is always false (no compass can be equipped yet);
+  logs the depth each second.
+- `sn-inspect ui --depth` (new): a scripted timeline checked every frame
+  against a replay.
+No new dependencies.
+
+**Findings:**
+- `OnDepthClassChanged` replaces its argument with `Safe` (IL: `ldc.i4.1;
+  stloc.0`), so the danger sprites and colour never show. Not read.
+- The first `ui --depth` run failed 570 frames: the compass labels drew
+  while the compass flag was on. The script does enable them
+  (`SetVisible`); the check was wrong, not the rule. Their places and
+  alphas are M9u6c2.
+
+**Verified** (`SUBNAUTICA_DIR` set):
+- `ui --depth`: 91,230 of 91,230 checks over 4,200 frames, 0 differ;
+  draw mean 1.93 ms.
+- `ui --bars` 300 / 0 differ, `ui --pulse` 13,440 and 300 / 0 differ,
+  `ui --start` 21 of 21 named, `ui --live` 0 failures.
+- Client: `sn-client --game-ui --resolution 1920 1080 --start 0 -3 0
+  --look 20 -3 20 --look-down 60 --hold-forward 3 --panel
+  12=open,15=close --shot 30 m9u6c1-dive`. In 29 of 29 shown seconds the
+  depth text equals `floor(depth)` (3 → 19 m); `None` with the text kept
+  while the PDA is open (3 s). 62 of 62 draws, 0.13 ms CPU per frame,
+  0 WARN, ERROR or panic lines. `out/m9u6c1-dive.png` shows "19 m".
+  A first run at `--start -950 -616 1018` stayed at 616 m and a second
+  without `--look-down` stayed at 3 m (the player swam level), so
+  neither tested the floor.
+- `cargo test --workspace`: 641 passed, 0 failed, 58 ignored (4 new unit
+  tests). `cargo test --release -p sn-assets --test real_data --
+  --ignored`: 52 of 52 (new: `the_depth_compass_is_read`). fmt and
+  clippy (`-D warnings`) clean.
+
+**Not tested / not 1:1:** vehicles, the camera drone, the intro and the
+rocket (the other modes) are not ported. The compass is M9u6c2. Not
+compared with the game on screen. Observed, not investigated: after the
+PDA closed in the client run, the held W no longer moved the player
+(depth fixed at 19.359 m on the sea floor).
+
 ## 2026-10-14 — M8c7b1: atmosphere volumes select object skies
 
 **What/why:** the user authorized the next visual work and reiterated that

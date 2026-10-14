@@ -223,7 +223,12 @@ impl Assets<'_> {
     }
 
     /// The fields of the object `p` (from `from`'s file) points at.
-    fn fields_at(&self, layouts: &Layouts, from: &ObjectRef, p: PPtr) -> Result<Option<Fields>> {
+    pub(crate) fn fields_at(
+        &self,
+        layouts: &Layouts,
+        from: &ObjectRef,
+        p: PPtr,
+    ) -> Result<Option<Fields>> {
         let Some(o) = self.resolve(&from.file, p)? else {
             return Ok(None);
         };

@@ -59,6 +59,7 @@ use bevy::render::texture::GpuImage;
 use bevy::render::view::{ExtractedView, ViewTarget};
 use bevy::render::{Render, RenderApp, RenderStartup, RenderSystems};
 use bevy::window::PrimaryWindow;
+use sn_ui::depth::DepthCompass;
 use sn_ui::hud::{Hud, HudInputs, hud_mode};
 use sn_ui::scaler::{DEFAULT_UI_SCALE, Placement, UiCamera, place};
 use sn_ui::state::UiState;
@@ -375,6 +376,10 @@ fn run_worker(
     // The HUD's rules (M9u6b1): `Survival`'s start food and water are in
     // its code.
     let mut hud = Hud::new(assets.hud_config(&layouts, &tree)?);
+    // The depth readout (M9u6c1): its strings from the language file
+    // (English, the only language read for now).
+    let language = sn_assets::language(&game, "English")?;
+    let mut depth = DepthCompass::new(assets.depth_config(&layouts, &tree, &mut scene, &language)?);
     let (food, water) = sn_assets::survival_start(&sn_assets::read_assembly(&game)?)?;
     info!(
         "game UI: uGUI read in {:.2} s; {} canvas scalers; HUD: {} bars, food {food}, water {water}",
@@ -407,11 +412,16 @@ fn run_worker(
                     inputs.food = food;
                     inputs.water = water;
                     rules = hud.update(&inputs);
+                    rules.apply(depth.update(&inputs));
                     frames += 1;
                     let second = inputs.time.floor() as i64;
                     if second != logged_second {
                         logged_second = second;
                         info!("game UI bars at {second} s: {}", bars_line(&hud, &inputs));
+                        info!(
+                            "game UI depth at {second} s: {}",
+                            depth_line(&depth, &inputs)
+                        );
                     }
                 }
             }
@@ -522,6 +532,23 @@ fn bars_line(hud: &Hud, i: &HudInputs) -> String {
         );
     }
     out
+}
+
+/// The depth input, its floor, the mode and the shown text (M9u6c1), for
+/// the log.
+fn depth_line(d: &DepthCompass, i: &HudInputs) -> String {
+    let c = &d.config;
+    let text = |n: usize| d.state.text.get(&n).map_or("-", String::as_str);
+    let shown = d.state.enabled.get(&c.depth_text).copied().unwrap_or(false);
+    format!(
+        "input {:.3} m, floor {}, mode {:?}, shown {shown}, text \"{}\" \"{}\", compass {}",
+        i.depth,
+        sn_ui::depth::floor_depth(i.depth),
+        d.mode,
+        text(c.depth_text),
+        text(c.suffix_text),
+        d.compass_visible
+    )
 }
 
 /// A texture decoded to RGBA8, bottom row first.
@@ -832,9 +859,9 @@ fn request_build(mut worker: ResMut<UiWorker>, windows: Query<&Window, With<Prim
 
 /// Each frame, what the HUD's rules read (M9u6b1): the player's oxygen and
 /// health (`crate::hud::Hud`, filled by the player), `Time`'s step and
-/// clock, whether the PDA is open (M9u6b2: the icons turn). The worker
-/// adds `Survival`'s food and water. Our player is never healed and never
-/// eats or drinks yet: no punch events.
+/// clock, whether the PDA is open (M9u6b2: the icons turn), the depth
+/// (M9u6c1). The worker adds `Survival`'s food and water. Our player is
+/// never healed and never eats or drinks yet: no punch events.
 fn send_inputs(
     worker: Res<UiWorker>,
     hud: Res<crate::hud::Hud>,
@@ -856,6 +883,9 @@ fn send_inputs(
         healed: None,
         ate: None,
         drank: None,
+        depth: hud.depth as f32,
+        // No compass can be equipped yet (M9u6c2).
+        compass: false,
     }));
 }
 

@@ -3122,6 +3122,46 @@ fn the_hud_bars_are_read() {
     assert_eq!(sn_assets::survival_start(&code).unwrap(), (50.5, 90.5));
 }
 
+/// M9u6c1: `uGUI_DepthCompass`'s nodes, sprites, colour and strings are
+/// read: the player texts and images under `PlayerDepth`, three distinct
+/// sprites, 8 compass labels, and a suffix from the language file.
+#[test]
+#[ignore = "needs SUBNAUTICA_DIR pointing at a Subnautica install"]
+fn the_depth_compass_is_read() {
+    let Some(dir) = std::env::var_os("SUBNAUTICA_DIR") else {
+        eprintln!("SUBNAUTICA_DIR not set; skipping");
+        return;
+    };
+    let game = GameData::locate(Some(PathBuf::from(dir))).unwrap();
+    let assets = Assets::index(&game).unwrap();
+    let tags = sn_assets::physics_settings(&assets).unwrap().tags;
+    let assemblies = sn_assets::ScriptAssemblies::load(&game).unwrap();
+    let layouts = assemblies.layouts().unwrap();
+    let fonts = assets.font_assets(&assemblies).unwrap();
+    let catalog = assets.catalog().unwrap();
+    let root = assets.ugui_root(&catalog).unwrap();
+    let ui = assets.ui_tree("uGUI.prefab", &root).unwrap();
+    let mut scene = assets
+        .ui_scene(&layouts, &ui, &fonts, &tags.sorting_layers)
+        .unwrap();
+    let language = sn_assets::language(&game, "English").unwrap();
+    let c = assets
+        .depth_config(&layouts, &ui, &mut scene, &language)
+        .unwrap();
+    for n in [c.shadow, c.half_moon, c.depth_text, c.suffix_text] {
+        assert!(ui.nodes[n].path.contains("/DepthCompass/PlayerDepth/"));
+    }
+    let sprites = [
+        c.shadow_normal,
+        c.half_moon_normal,
+        c.half_moon_compass_normal,
+    ];
+    assert!(sprites[0] != sprites[1] && sprites[1] != sprites[2]);
+    assert_eq!(c.labels.len(), 8);
+    assert_eq!(c.text_color_normal[3], 255);
+    assert_eq!(Some(&c.meter_suffix), language.get("MeterSuffix"));
+}
+
 /// M9u6s: the start rules hide the screens the game hides at start (the
 /// feedback panel, the confirmation dialog, pop-ups, the vehicles' and
 /// cameras' screens), and the HUD's bars, player depth and the reticle's

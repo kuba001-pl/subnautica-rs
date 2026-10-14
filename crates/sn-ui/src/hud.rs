@@ -147,6 +147,11 @@ pub struct HudInputs {
     pub healed: Option<f32>,
     pub ate: Option<f32>,
     pub drank: Option<f32>,
+    /// `Ocean.GetDepthOf(player)`: `max(0, oceanLevel − y)` (M9u6c1).
+    pub depth: f32,
+    /// The equipment holds a `Compass` (M9u6c1; `IsCompassEnabled`'s
+    /// equipment test).
+    pub compass: bool,
 }
 
 /// One bar's script state.
