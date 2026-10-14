@@ -62,9 +62,27 @@ impl MeshData {
     }
 }
 
-/// `Color` → `Color32`: clamped, scaled and rounded.
+/// `Graphic.OnPopulateMesh`: the rect as one quad, UVs 0 to 1, the colour
+/// as `Color32` (the game's own graphics that do not build a mesh, as
+/// `uGUI_CircularBar`, and an `Image` without a sprite).
+pub fn graphic_quad(rect: Rect, color: [f32; 4]) -> MeshData {
+    let mut m = MeshData::default();
+    m.rect_quad(
+        [rect.x, rect.y],
+        [rect.x + rect.width, rect.y + rect.height],
+        [0.0, 0.0],
+        [1.0, 1.0],
+        color32(color),
+    );
+    m
+}
+
+/// Unity's `Color` → `Color32` conversion (`UnityEngine.CoreModule`):
+/// `(byte)Mathf.Round(Mathf.Clamp01(c) × 255)`. `Mathf.Round` is
+/// `Math.Round`, which rounds half to even (M9u6b1; before, half away
+/// from zero).
 pub fn color32(c: [f32; 4]) -> [u8; 4] {
-    c.map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8)
+    c.map(|v| (v.clamp(0.0, 1.0) * 255.0).round_ties_even() as u8)
 }
 
 /// What an `Image` needs of its sprite (Unity's `DataUtility` values).

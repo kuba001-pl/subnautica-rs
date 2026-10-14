@@ -60,13 +60,18 @@ pub struct UiLayout {
 impl Assets<'_> {
     /// A script component's `enabled` flag and its fields (M9u1's layouts).
     pub fn script_fields(&self, layouts: &Layouts, c: &UiComponent) -> Result<(bool, Fields)> {
+        self.object_fields(layouts, &c.object)
+    }
+
+    /// A MonoBehaviour's `enabled` flag and its fields (M9u1's layouts).
+    pub fn object_fields(&self, layouts: &Layouts, o: &ObjectRef) -> Result<(bool, Fields)> {
         let script = self
-            .mono_script(&c.object)
+            .mono_script(o)
             .ok_or("MonoBehaviour without its script")?;
         let layout = layouts.script(&script.assembly, &script.namespace, &script.class_name)?;
-        let (_, d) = c.object.data()?;
+        let (_, d) = o.data()?;
         let (MonoBehaviourHeader { enabled, .. }, fields) =
-            sn_unity::read_script(d, c.object.file.file().big_endian, &layout)
+            sn_unity::read_script(d, o.file.file().big_endian, &layout)
                 .map_err(|e| format!("{}: {e}", script.class_name))?;
         Ok((enabled, fields))
     }
@@ -303,6 +308,13 @@ pub enum UiGraphicKind {
     },
     /// A TMP text (its mesh is M9u4c's).
     Text,
+    /// `uGUI_CircularBar` (M9u6b1): its fields, its `_texture` and
+    /// `_overlay`.
+    CircularBar {
+        bar: sn_ui::bar::CircularBar,
+        texture: Option<ObjectRef>,
+        overlay: Option<ObjectRef>,
+    },
     /// Another graphic (the game's own `Graphic` subclasses), by script.
     Other(String),
 }
@@ -469,6 +481,52 @@ impl Assets<'_> {
                     }
                 }
                 "TextMeshProUGUI" => UiGraphicKind::Text,
+                "uGUI_CircularBar" => {
+                    let texture_of = |name: &str| -> Result<Option<ObjectRef>> {
+                        match f.get(name).and_then(Value::as_pptr) {
+                            Some(p) if !p.is_null() => self.resolve(&c.object.file, p),
+                            _ => Ok(None),
+                        }
+                    };
+                    let vec4 = |name: &str| -> Result<[f32; 4]> {
+                        let v = f
+                            .get(name)
+                            .and_then(Value::as_struct)
+                            .ok_or_else(|| format!("no vector {name}"))?;
+                        Ok([
+                            f32_of(v, "x")?,
+                            f32_of(v, "y")?,
+                            f32_of(v, "z")?,
+                            f32_of(v, "w")?,
+                        ])
+                    };
+                    let vec2 = |name: &str| -> Result<[f32; 2]> {
+                        let v = f
+                            .get(name)
+                            .and_then(Value::as_struct)
+                            .ok_or_else(|| format!("no vector {name}"))?;
+                        Ok([f32_of(v, "x")?, f32_of(v, "y")?])
+                    };
+                    UiGraphicKind::CircularBar {
+                        bar: sn_ui::bar::CircularBar {
+                            color: color_of(&f, "m_Color")?,
+                            border: bool_of(&f, "_border")?,
+                            border_color: color_of(&f, "_borderColor")?,
+                            edge_width: f32_of(&f, "_edgeWidth")?,
+                            border_width: f32_of(&f, "_borderWidth")?,
+                            round_corners: bool_of(&f, "_roundCorners")?,
+                            size: f32_of(&f, "_size")?,
+                            width: f32_of(&f, "_width")?,
+                            max_value: f32_of(&f, "_maxValue")?,
+                            overlay1_st: vec4("_overlay1ST")?,
+                            overlay2_st: vec4("_overlay2ST")?,
+                            overlay_shift: vec2("_overlayShift")?,
+                            overlay_alpha: vec2("_overlayAlpha")?,
+                        },
+                        texture: texture_of("_texture")?,
+                        overlay: texture_of("_overlay")?,
+                    }
+                }
                 other => UiGraphicKind::Other(other.to_string()),
             };
             let material = match f.get("m_Material").and_then(Value::as_pptr) {

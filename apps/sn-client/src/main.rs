@@ -131,9 +131,10 @@ Usage: sn-client [--game-dir <PATH>] [--start <X> <Y> <Z>] [--look <X> <Y> <Z>]
                  the head (the player's body is drawn in either view)
   --look-down    the player's starting pitch, degrees (negative looks up;
                  clamped to the game's limits)
-  --game-ui      draw the game's own HUD from its UI files (M9u5c: images
-                 in their stored state; texts not yet) instead of our bars
-                 and depth (our hand text and fade stay)
+  --game-ui      draw the game's own HUD from its UI files instead of our
+                 bars and depth: images and texts, the four bars driven by
+                 the game's rules (M9u6b1); the other screens still in
+                 their stored state; our hand text and fade stay
   --shot         --shot <SECONDS> <NAME>: after SECONDS of play, save
                  out/NAME.png and exit (a check for the human)
   --use-item     --use-item <SECONDS[,SECONDS…]>: at each time, turn to the

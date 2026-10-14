@@ -105,11 +105,15 @@ Tested on Windows 11 with game build 10 (Steam):
 - Drawing the game's HUD (`sn-client --game-ui`, off by default): the
   images and TextMesh Pro texts of `uGUI.prefab`, with the game's own
   shaders ported (`UI/Default`, `UI/Simple`, `TextMeshPro/Distance
-  Field` with outline and shadow), at any window size. It shows the
-  prefab's stored state, every screen at once and untranslated, not yet
-  the game's live HUD (bars, reticle and messages follow in M9u6–M9u7).
-  Checked by numbers and screenshots at 1920×1080 and 2560×1440; not
-  compared against the original game on screen.
+  Field` with outline and shadow, `Hidden/UI/CircularBar`), at any window
+  size. The four round bars (oxygen, health, food, water) follow the
+  game's rules each frame (`uGUI_SceneHUD`, each bar's smoothing, number
+  and the oxygen bar's scrolling overlays; food and water show a new
+  game's values). The rest is the prefab's stored state: every other
+  screen at once and untranslated (reticle, depth, death and messages
+  follow in M9u6c–M9u7), and the bars' pulse animations are not ported.
+  Checked by numbers (`ui --bars`, the client's per-second log) and
+  screenshots; not compared against the original game on screen.
 - Oxygen, suffocation, health, death and respawn in the lifepod, with
   the game's numbers (45 units, 1 / 1.5 / 2 per second by depth, refill
   30 per second at the surface, 8 s to pass out). `sn-inspect dive` runs

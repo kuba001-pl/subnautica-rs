@@ -965,6 +965,145 @@ needs them, then kept. Each change goes where uGUI puts it:
   before. The first draw takes 830 ms, of which 814 ms is making 101
   glyphs. The pass costs 0.242 ms CPU per frame. 0 warnings or errors.
 
+**Moved in M9u6b1.** `UiState` is now `sn_ui::state` (pure), so the
+screens' rules can write it. Sprites are `SpriteId`s that the scene gives
+out (`UiScene::sprite_id`). It also gained `material`: a node's
+`MaterialValues` (floats, vectors and colours, keywords), which a script
+writes into its graphic's own material instance. The scene copies the
+graphic's material, applies the values and interns the result.
+`mesh::color32` used to round half away from zero; it now rounds half to
+even, as `Mathf.Round` does. No stored colour lands on an exact half:
+the hashes are unchanged.
+
+## The HUD's bars (M9u6b1)
+
+Our port: `crates/sn-ui/src/bar.rs` (`CircularBar`),
+`crates/sn-ui/src/hud.rs` (the rules), `crates/sn-assets/src/hud.rs`
+(their fields and nodes), `apps/sn-client/src/game_ui_bar.wgsl`. Checks:
+`sn-inspect ui --bars`; the client logs the bars each second.
+
+**`uGUI_CircularBar`** — confirmed (decompiled `Assembly-CSharp`; fields
+by `ui --layout`). This is a `Graphic` of the game's own. It builds no
+mesh, so it draws `Graphic`'s quad (UVs 0…1, the colour as `Color32`).
+Its layout sizes its rect to `_size` on both axes (M9u4a). It draws with
+a material instance of `ShaderManager.preloadedShaders.UICircularBar`,
+whose setters write:
+- keywords `BORDER` and `ROUND_CORNERS` (from their fields), and
+  `OVERLAY` when `_overlay` is set;
+- `_Width` = (`_width` ÷ ppu) ÷ (`_size` ÷ ppu), where ppu is the
+  canvas's `referencePixelsPerUnit` (100);
+- `_EdgeWidth` and `_BorderWidth`, clamped to 0…1;
+- `_BorderColor`, `_Overlay1_ST`, `_Overlay2_ST`, `_OverlayShift`,
+  `_OverlayAlpha` (the setters clamp shift to −1…1 and alpha to 0…1);
+- `_Value` = `Clamp01(value × _maxValue)`;
+- `_MainTex` = `_texture`, or the white texture when it is null.
+
+`value` is not serialized and starts at 0.75.
+
+uGUI has 5 bars: the four HUD bars (size 115/52, width 34/20, border,
+round corners) and the intro's `SkipProgress`. Only the oxygen bar sets
+`_texture` and `_overlay`. The PDA screen has 1 more.
+
+**`Hidden/UI/CircularBar`** — confirmed (UnityPy and `D3DDisassemble`,
+throwaway scripts in the ignored `out/m9u6b/`). It is in
+`preloadedshaders.asset_….bundle` (path id 4836221551473169727) and also
+in `resources.assets`. One pass: `SrcAlpha OneMinusSrcAlpha`, no z
+write, `unity_GUIZTestMode`, no culling, the stencil from `_Stencil…`.
+There are 8 + 8 variants over `BORDER`, `OVERLAY` and `ROUND_CORNERS`;
+each variant is the full program (15) with terms switched off.
+- **Vertex.** The colour is vertex colour × `_Color`. The two overlay UVs
+  are the UV through `_Overlay1_ST` and `_Overlay2_ST`.
+- **Fragment.** With p = UV × 2 − 1 and w = `_Width`:
+  - `_Value` ≤ 0 gives 0, and the pixel is not drawn.
+  - v = 1 − |2 saturate((|p| + w − 1) ÷ w) − 1|: 1 in the middle of the
+    ring, 0 at its edges.
+  - v = 0 where the clockwise angle from the top, as a fraction of a
+    turn, is past `_Value`. The program computes the angle from two
+    `atan2` approximations: `atan2(x, y)` for x > 0, else `atan2(−x, −y)`
+    + ½ turn.
+  - `ROUND_CORNERS`: v = max(v, 1 − |p − c| × 2 ÷ w) for a cap at the
+    start c = (0, 1 − w ÷ 2) and one at the end c = (sin a, cos a) × (1 −
+    w ÷ 2), with a = `_Value` × 2π.
+  - The hard clip on `_ClipRect`, then discard where v × clip < 0.001.
+  - Colour = (`_MainTex` + `_TextureSampleAdd`) × colour. Where 0 < v <
+    `_EdgeWidth`, alpha × smoothstep(v ÷ `_EdgeWidth`).
+  - `BORDER`: where 0 < v < `_BorderWidth`, rgb = lerp(`_BorderColor`,
+    rgb, smoothstep(v ÷ `_BorderWidth`)).
+  - `OVERLAY`: `_OverlayTex` is sampled at each overlay UV, its x moved
+    by −floor(y) × `_OverlayShift`. Each sample's rgb × a is added ×
+    `_OverlayAlpha.x` (or `.y`).
+- **Our port.** `_BorderColor` is a colour property and is made linear,
+  like `_Color`. Vectors are not. *Hypothesis*: Unity converts colour
+  properties in a linear project. Our WGSL samples both textures before
+  any branch, because WGSL needs uniform control flow for derivatives;
+  the result is the same.
+
+**`uGUI_SceneHUD`** — confirmed (decompiled). `Awake` hides every
+element. The game mode's options give its mode:
+- `NoSurvival` with `NoOxygen` and `NoAggression`: 0, nothing shown;
+- `NoSurvival` otherwise: 1, oxygen and health over `backgroundBarsDouble`;
+- else: 2, all four bars over `backgroundBarsQuad`.
+
+Its elements show while `IsActive`: the main level, not the intro, not
+launching, a player not piloting and no cinematic, no camera drone. Our
+`active` is "the player runs" (`Hud.shown`); the intro, piloting and the
+drone are not ported. We play mode 2 (Survival).
+
+**The bars** — confirmed (decompiled). Each bar's `LateUpdate` runs
+only while its object is active, so a hidden bar keeps its value. In
+`SetValue`, `curr` follows the target with `Mathf.SmoothDamp(curr,
+target, vel, dampSpeed, ∞, PDA.deltaTime)`, starting at 0, and `bar.value
+= curr`. `dampSpeed` is 0.1 for all four.
+- Oxygen: the target is available ÷ capacity. The text is
+  `RoundToInt(available)` of the input, not of `curr`. It is cached on
+  (value, `RoundToInt(capacity)`).
+- Health: the target is `Clamp01((health − tempDamage) ÷ maxHealth)`. The
+  text is `CeilToInt(curr × maxHealth)`, every frame.
+- Food and water: the target is value ÷ 100. The text is
+  `CeilToInt(curr × 100)`, cached.
+- The oxygen overlays: `overlayNST.w = −Time.time × overlayNSpeed`
+  (0.25, 0.7). Each alpha = `Clamp01(EvaluateLine(0.5, 1, 1, 0,
+  available ÷ capacity)) × overlayNAlpha` (0.75, 0.5), so they show from
+  half oxygen down.
+- `Mathf.RoundToInt` rounds half to even; `IntStringCache` gives the
+  int's `ToString()`.
+- `PDA.deltaTime` is `Time.deltaTime` unless the PDA pauses the game
+  (not ported).
+
+**Start values.** The main scene stores `Survival.food` and `water` as
+0. `Survival.Start` calls `ResetStats`, which sets 50.5 and 90.5:
+confirmed, read from the IL (`sn_dotnet::method_store_f32`). The bars
+show these until eating and drinking are ported.
+
+***Hypothesis*: float precision.** Our rules compute in single precision
+op by op, as the decompiled C# reads. If the game's Mono runtime keeps
+intermediates in double, results can differ in the last bit. That would
+show where `CeilToInt` meets a whole number. For example, health after a
+20-point hit settles at a `curr` just above 0.8, and our text shows "81"
+(`ui --bars`, t = 31–35 s). Not compared with the game.
+
+**The runs** (2026-10-14):
+- `ui --bars` (a 75 s dive driven by `sn_sim::vitals`, drawn every frame
+  at 1920×1080): 300 of 300 bar checks equal a replay written in the
+  tool. Each check covers `_Value` in the drawn material, the text
+  string, its quad count, and the oxygen ST and alpha. Draw mean
+  2.6–2.9 ms, p95 2.6–3.3 ms. The first frame takes 300 ms (it makes
+  glyphs).
+- `ui --draw`: 12 of 12 hashes equal across two runs. 6 bar draws (5 in
+  uGUI, 1 on the PDA screen).
+- Client, `--game-ui`, starting at the Lost River (−950, −616, 1018):
+  - the per-second log follows the simulation: oxygen 45 → 0 over 27 s,
+    the bar's `_Value` lagging by the damping, its text the rounded
+    oxygen;
+  - 176 of 176 draws; the pass costs 0.24–0.33 ms CPU per frame;
+  - the worker draws each frame in 3.3–4.4 ms (mean of 600, while the
+    world streams);
+  - 0 warnings or errors.
+- Screenshot `out/m9u6b1-dive.png`: the bars are drawn bottom left, but
+  the feedback panel, the confirmation dialog and the pop-ups (stored
+  state, M9u6e and M9u7) cover them. The image is not a useful visual
+  check yet.
+
 ## Script fields (M9u1) — confirmed
 
 A MonoBehaviour's fields follow its header (game object, enabled,

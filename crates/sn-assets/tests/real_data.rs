@@ -2981,3 +2981,33 @@ fn the_live_hud_returns_to_its_start_state() {
     assert_eq!(t.first().map(|i| i.vertices.len()), Some(16));
     assert_eq!(draw(&state).hash(), base.hash());
 }
+
+/// M9u6b1: `uGUI_SceneHUD`'s four bars are read with their circular bars
+/// and texts (only oxygen has overlays), and `Survival.ResetStats`' food
+/// and water come from the code.
+#[test]
+#[ignore = "needs SUBNAUTICA_DIR pointing at a Subnautica install"]
+fn the_hud_bars_are_read() {
+    let Some(dir) = std::env::var_os("SUBNAUTICA_DIR") else {
+        eprintln!("SUBNAUTICA_DIR not set; skipping");
+        return;
+    };
+    let game = GameData::locate(Some(PathBuf::from(dir))).unwrap();
+    let assets = Assets::index(&game).unwrap();
+    let assemblies = sn_assets::ScriptAssemblies::load(&game).unwrap();
+    let layouts = assemblies.layouts().unwrap();
+    let catalog = assets.catalog().unwrap();
+    let root = assets.ugui_root(&catalog).unwrap();
+    let ui = assets.ui_tree("uGUI.prefab", &root).unwrap();
+    let c = assets.hud_config(&layouts, &ui).unwrap();
+    assert_eq!(c.bars.len(), 4);
+    for b in &c.bars {
+        assert!(ui.nodes[b.bar].path.starts_with(&ui.nodes[b.root].path));
+        assert!(ui.nodes[b.text].path.starts_with(&ui.nodes[b.root].path));
+        assert_eq!(b.damp_speed, 0.1);
+    }
+    assert!(c.bars[0].overlays.is_some());
+    assert!(c.bars[1..].iter().all(|b| b.overlays.is_none()));
+    let code = sn_assets::read_assembly(&game).unwrap();
+    assert_eq!(sn_assets::survival_start(&code).unwrap(), (50.5, 90.5));
+}

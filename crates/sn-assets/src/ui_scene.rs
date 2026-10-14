@@ -25,14 +25,15 @@
 //! Materials, fonts' materials and sprites are read the first time a draw
 //! needs them and kept, so a draw reads nothing else from the install.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use sn_ui::draw::{DrawInput, Graphic, GroupInfo, draw_list, scale_y_in_root_canvas};
 use sn_ui::layout::{Component, SpriteSize, Tree, layout_with};
 use sn_ui::material::{UiMaterial, fallback_material, tmp_padding};
-use sn_ui::mesh::{SpriteInfo, image_mesh, raw_image_mesh};
+use sn_ui::mesh::{SpriteInfo, graphic_quad, image_mesh, raw_image_mesh};
 use sn_ui::scaler::{Placement, apply_to_tree};
+use sn_ui::state::{MaterialValues, SpriteId, UiState, color32};
 use sn_ui::text::{
     FontPad, FontSet, MeshOptions, Pads, Source, TextParams, Texts, layout_text, layout_text_with,
     text_meshes,
@@ -46,56 +47,6 @@ use crate::{
 
 type Key = (PathBuf, String, i64);
 
-/// A sprite a script assigns (`Image.sprite`), compared by its object.
-#[derive(Clone)]
-pub struct SpriteRef(pub ObjectRef);
-
-impl PartialEq for SpriteRef {
-    fn eq(&self, other: &SpriteRef) -> bool {
-        self.0.key() == other.0.key()
-    }
-}
-
-impl std::fmt::Debug for SpriteRef {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Sprite({}#{})", self.0.file.name, self.0.path_id)
-    }
-}
-
-/// A node's local transform as a script sets it; `None` keeps the stored
-/// value.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct LocalTransform {
-    pub anchored_position: Option<[f32; 2]>,
-    pub z: Option<f32>,
-    /// A unit quaternion (x, y, z, w).
-    pub rotation: Option<[f32; 4]>,
-    pub scale: Option<[f32; 3]>,
-}
-
-/// The scripts' changes to a tree, by node. A node not in a map keeps its
-/// stored value.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct UiState {
-    /// `GameObject.SetActive`.
-    pub active: BTreeMap<usize, bool>,
-    /// `CanvasGroup.alpha`.
-    pub group_alpha: BTreeMap<usize, f32>,
-    /// `CanvasRenderer.SetAlpha`.
-    pub renderer_alpha: BTreeMap<usize, f32>,
-    /// `Graphic.enabled` (images, raw images and texts).
-    pub enabled: BTreeMap<usize, bool>,
-    /// `Graphic.color`, as Unity's `Color` (stored, not linear).
-    pub color: BTreeMap<usize, [f32; 4]>,
-    /// `Image.sprite` (`None`: no sprite).
-    pub sprite: BTreeMap<usize, Option<SpriteRef>>,
-    /// `Image.fillAmount`.
-    pub fill_amount: BTreeMap<usize, f32>,
-    /// TMP's `text`.
-    pub text: BTreeMap<usize, String>,
-    pub transform: BTreeMap<usize, LocalTransform>,
-}
-
 impl From<&UiStartState> for UiState {
     fn from(s: &UiStartState) -> UiState {
         let mut out = UiState::default();
@@ -105,39 +56,6 @@ impl From<&UiStartState> for UiState {
         out.enabled.extend(s.disabled.iter().map(|n| (*n, false)));
         out
     }
-}
-
-impl UiState {
-    /// `other`'s changes over this state's.
-    pub fn apply(&mut self, other: &UiState) {
-        self.active
-            .extend(other.active.iter().map(|(k, v)| (*k, *v)));
-        self.group_alpha
-            .extend(other.group_alpha.iter().map(|(k, v)| (*k, *v)));
-        self.renderer_alpha
-            .extend(other.renderer_alpha.iter().map(|(k, v)| (*k, *v)));
-        self.enabled
-            .extend(other.enabled.iter().map(|(k, v)| (*k, *v)));
-        self.color.extend(other.color.iter().map(|(k, v)| (*k, *v)));
-        self.sprite
-            .extend(other.sprite.iter().map(|(k, v)| (*k, v.clone())));
-        self.fill_amount
-            .extend(other.fill_amount.iter().map(|(k, v)| (*k, *v)));
-        self.text
-            .extend(other.text.iter().map(|(k, v)| (*k, v.clone())));
-        for (k, t) in &other.transform {
-            let e = self.transform.entry(*k).or_default();
-            e.anchored_position = t.anchored_position.or(e.anchored_position);
-            e.z = t.z.or(e.z);
-            e.rotation = t.rotation.or(e.rotation);
-            e.scale = t.scale.or(e.scale);
-        }
-    }
-}
-
-/// Unity's `Color` → `Color32` conversion (`UnityEngine.CoreModule`).
-pub fn color32(c: [f32; 4]) -> [u8; 4] {
-    c.map(|v| (v.clamp(0.0, 1.0) * 255.0).round_ties_even() as u8)
 }
 
 /// A sprite as the mesh and the layout take it.
@@ -166,6 +84,8 @@ pub struct UiScene {
     graphics: Vec<UiGraphic>,
     texts: Vec<UiText>,
     cache: Cache,
+    /// The sprites given ids ([`UiScene::sprite_id`]).
+    sprite_refs: HashMap<SpriteId, ObjectRef>,
 }
 
 /// What a draw reads from the install, kept after the first time.
@@ -218,6 +138,7 @@ impl Assets<'_> {
             texts: self.ui_texts(layouts, tree, fonts)?,
             tree: tree.clone(),
             cache: Cache::default(),
+            sprite_refs: HashMap::new(),
         })
     }
 }
@@ -252,12 +173,12 @@ impl Cache {
         Ok(m)
     }
 
-    fn sprite(&mut self, assets: &Assets, s: &SpriteRef) -> Result<LoadedSprite> {
-        let key = s.0.key();
+    fn sprite(&mut self, assets: &Assets, s: &ObjectRef) -> Result<LoadedSprite> {
+        let key = s.key();
         if let Some(l) = self.sprites.get(&key) {
             return Ok(l.clone());
         }
-        let (info, texture) = assets.sprite_info(&s.0)?;
+        let (info, texture) = assets.sprite_info(s)?;
         let l = LoadedSprite { info, texture };
         self.sprites.insert(key, l.clone());
         Ok(l)
@@ -329,6 +250,13 @@ impl Cache {
 }
 
 impl UiScene {
+    /// The id a state uses for sprite `o` (`Image.sprite = o`).
+    pub fn sprite_id(&mut self, o: &ObjectRef) -> SpriteId {
+        let id = SpriteId(texture_key(o));
+        self.sprite_refs.insert(id, o.clone());
+        id
+    }
+
     /// Sorting layer ids not in the TagManager.
     pub fn unknown_layers(&self) -> &[i32] {
         &self.parts.unknown_layers
@@ -350,12 +278,19 @@ impl UiScene {
         let mut groups = self.parts.groups.clone();
         let mut sprites: HashMap<usize, Option<LoadedSprite>> = HashMap::new();
         for (node, s) in &state.sprite {
+            let path = &self.tree.nodes[*node].path;
             let loaded = match s {
-                Some(s) => Some(
-                    self.cache
-                        .sprite(assets, s)
-                        .map_err(|e| format!("{}: sprite: {e}", self.tree.nodes[*node].path))?,
-                ),
+                Some(id) => {
+                    let o = self
+                        .sprite_refs
+                        .get(id)
+                        .ok_or_else(|| format!("{path}: sprite {id:?} not given out"))?;
+                    Some(
+                        self.cache
+                            .sprite(assets, o)
+                            .map_err(|e| format!("{path}: sprite: {e}"))?,
+                    )
+                }
                 None => None,
             };
             sprites.insert(*node, loaded);
@@ -420,13 +355,16 @@ impl UiScene {
             drawn.push((g.node, kind, g.material.clone(), rect));
         }
         for (node, kind, material, rect) in drawn {
-            let object = match &kind {
+            let objects = match &kind {
                 UiGraphicKind::Image { texture, .. } | UiGraphicKind::RawImage { texture, .. } => {
-                    texture.clone()
+                    vec![texture.clone()]
                 }
-                _ => None,
+                UiGraphicKind::CircularBar {
+                    texture, overlay, ..
+                } => vec![texture.clone(), overlay.clone()],
+                _ => Vec::new(),
             };
-            if let Some(o) = object {
+            for o in objects.into_iter().flatten() {
                 textures.insert(texture_key(&o), o);
             }
             let (mesh, texture, kind) = match &kind {
@@ -447,6 +385,35 @@ impl UiScene {
                     texture.as_ref().map_or(0, texture_key),
                     "RawImage".to_string(),
                 ),
+                UiGraphicKind::CircularBar {
+                    bar,
+                    texture,
+                    overlay,
+                } => {
+                    // Its own material instance, as its setters write it;
+                    // `Graphic`'s quad.
+                    let main = texture.as_ref().map_or(0, texture_key);
+                    let mut m = bar.material(
+                        sn_ui::bar::START_VALUE,
+                        main,
+                        overlay.as_ref().map_or(0, texture_key),
+                        tree.reference_pixels_per_unit,
+                    );
+                    if let Some(v) = state.material.get(&node) {
+                        apply_material_values(&mut m, v);
+                    }
+                    graphics.push(Graphic {
+                        node,
+                        mesh: graphic_quad(rect, bar.color),
+                        texture: main,
+                        material: materials.intern(m),
+                        maskable: maskable(node),
+                        cull_transparent: cull(node),
+                        alpha: alpha(node),
+                        kind: "uGUI_CircularBar".into(),
+                    });
+                    continue;
+                }
                 _ => continue,
             };
             let material = match &material {
@@ -464,6 +431,15 @@ impl UiScene {
                     }
                 },
                 None => 0,
+            };
+            // A script's values in the graphic's own material instance.
+            let material = match state.material.get(&node) {
+                Some(v) => {
+                    let mut m = materials.list[material].clone();
+                    apply_material_values(&mut m, v);
+                    materials.intern(m)
+                }
+                None => material,
             };
             graphics.push(Graphic {
                 node,
@@ -698,7 +674,30 @@ fn apply_to_graphic(
             }
             true
         }
+        UiGraphicKind::CircularBar { bar, .. } => {
+            if let Some(c) = state.color.get(&node) {
+                bar.color = *c;
+            }
+            true
+        }
         _ => false,
+    }
+}
+
+/// A script's `SetFloat`, `SetVector`/`SetColor` and keyword calls on a
+/// material instance.
+fn apply_material_values(m: &mut UiMaterial, v: &MaterialValues) {
+    for (k, x) in &v.floats {
+        m.floats.insert(k.clone(), *x);
+    }
+    for (k, x) in &v.vectors {
+        m.colors.insert(k.clone(), *x);
+    }
+    for (k, on) in &v.keywords {
+        m.keywords.retain(|w| w != k);
+        if *on {
+            m.keywords.push(k.clone());
+        }
     }
 }
 
@@ -706,45 +705,7 @@ fn apply_to_graphic(
 mod tests {
     use super::*;
     use sn_ui::layout::{Comp, Node, RectTransform};
-
-    #[test]
-    fn color32_rounds_half_to_even_and_clamps() {
-        // 0.5 × 255 = 127.5 → 128 (even); 1.5/255 × 255 = 1.5 → 2;
-        // 2.5/255 × 255 = 2.5 → 2.
-        assert_eq!(
-            color32([0.5, 1.5 / 255.0, 2.5 / 255.0, 2.0]),
-            [128, 2, 2, 255]
-        );
-        assert_eq!(color32([-1.0, 0.0, 1.0, 0.999]), [0, 0, 255, 255]);
-    }
-
-    #[test]
-    fn a_later_state_overrides_an_earlier_one_field_by_field() {
-        let mut a = UiState::default();
-        a.active.insert(1, false);
-        a.transform.insert(
-            2,
-            LocalTransform {
-                scale: Some([2.0, 2.0, 1.0]),
-                ..LocalTransform::default()
-            },
-        );
-        let mut b = UiState::default();
-        b.active.insert(1, true);
-        b.text.insert(3, "12".into());
-        b.transform.insert(
-            2,
-            LocalTransform {
-                z: Some(5.0),
-                ..LocalTransform::default()
-            },
-        );
-        a.apply(&b);
-        assert!(a.active[&1]);
-        assert_eq!(a.text[&3], "12");
-        assert_eq!(a.transform[&2].scale, Some([2.0, 2.0, 1.0]));
-        assert_eq!(a.transform[&2].z, Some(5.0));
-    }
+    use sn_ui::state::LocalTransform;
 
     fn node(
         name: &str,

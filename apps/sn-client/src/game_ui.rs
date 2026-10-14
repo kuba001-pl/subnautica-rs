@@ -59,7 +59,9 @@ use bevy::render::texture::GpuImage;
 use bevy::render::view::{ExtractedView, ViewTarget};
 use bevy::render::{Render, RenderApp, RenderStartup, RenderSystems};
 use bevy::window::PrimaryWindow;
+use sn_ui::hud::{Hud, HudInputs, hud_mode};
 use sn_ui::scaler::{DEFAULT_UI_SCALE, Placement, UiCamera, place};
+use sn_ui::state::UiState;
 
 use crate::textures::linear;
 
@@ -120,6 +122,44 @@ pub(crate) struct UiDrawCmd {
     /// A TMP text's material values (`game_ui_text.wgsl`); `None` for an
     /// image.
     pub text: Option<TextValues>,
+    /// A `uGUI_CircularBar`'s material values (`game_ui_bar.wgsl`, M9u6b1).
+    pub bar: Option<BarValues>,
+}
+
+/// What a draw is drawn with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+enum Kind {
+    Image,
+    Text,
+    Bar,
+}
+
+impl UiDrawCmd {
+    fn kind(&self) -> Kind {
+        if self.text.is_some() {
+            Kind::Text
+        } else if self.bar.is_some() {
+            Kind::Bar
+        } else {
+            Kind::Image
+        }
+    }
+}
+
+/// A `Hidden/UI/CircularBar` material's values (colours linear).
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct BarValues {
+    pub overlay1_st: [f32; 4],
+    pub overlay2_st: [f32; 4],
+    /// `_Width`, `_Value`, `_EdgeWidth`, `_BorderWidth`.
+    pub bar: [f32; 4],
+    pub border_color: [f32; 4],
+    /// `_OverlayShift.xy`, `_OverlayAlpha.xy`.
+    pub overlay: [f32; 4],
+    /// 1 `BORDER`, 2 `OVERLAY`, 4 `ROUND_CORNERS`.
+    pub flags: u32,
+    /// `_OverlayTex`'s key (0: none).
+    pub overlay_texture: u64,
 }
 
 /// A `TextMeshPro/Distance Field` material's values (colours linear).
@@ -183,10 +223,16 @@ pub(crate) struct UiBuild {
     /// Textures not sent before.
     pub textures: Vec<UiTexture>,
     pub seconds: f64,
+    /// Built for a new size (logged in full); a frame's build is not.
+    pub resized: bool,
 }
 
-struct Request {
-    screen: [i32; 2],
+/// What the main world sends the worker.
+enum Request {
+    /// The window's size.
+    Size([i32; 2]),
+    /// A frame's inputs to the HUD's rules (M9u6b1).
+    Frame(HudInputs),
 }
 
 /// The worker's ends of the channels.
@@ -221,6 +267,7 @@ impl Plugin for GameUiPlugin {
     fn build(&self, app: &mut App) {
         bevy::asset::embedded_asset!(app, "game_ui.wgsl");
         bevy::asset::embedded_asset!(app, "game_ui_text.wgsl");
+        bevy::asset::embedded_asset!(app, "game_ui_bar.wgsl");
         let (requests, worker_requests) = channel::<Request>();
         let (worker_builds, builds) = channel();
         let game_dir = self.game_dir.clone();
@@ -241,7 +288,7 @@ impl Plugin for GameUiPlugin {
         ))
         .add_systems(Startup, make_white)
         .add_systems(PostStartup, mark_camera)
-        .add_systems(Update, (request_build, receive_build).chain());
+        .add_systems(Update, (request_build, send_inputs, receive_build).chain());
         let Some(render_app) = app.get_sub_app_mut(RenderApp) else {
             return;
         };
@@ -322,42 +369,74 @@ fn run_worker(
     for n in &start_state.notes {
         info!("game UI start: {n}");
     }
-    let state = sn_assets::UiState::from(&start_state);
+    let start_state = sn_assets::UiState::from(&start_state);
     // Read once; each build only draws it (M9u6a).
     let mut scene = assets.ui_scene(&layouts, &tree, &fonts, &tags.sorting_layers)?;
+    // The HUD's rules (M9u6b1): `Survival`'s start food and water are in
+    // its code.
+    let mut hud = Hud::new(assets.hud_config(&layouts, &tree)?);
+    let (food, water) = sn_assets::survival_start(&sn_assets::read_assembly(&game)?)?;
     info!(
-        "game UI: uGUI read in {:.2} s; {} canvas scalers",
+        "game UI: uGUI read in {:.2} s; {} canvas scalers; HUD: {} bars, food {food}, water {water}",
         start.elapsed().as_secs_f64(),
-        scalers.len()
+        scalers.len(),
+        hud.config.bars.len()
     );
     let camera = UiCamera::game(fov, NEAR, FAR);
     let mut sent: std::collections::HashSet<u64> = std::collections::HashSet::new();
     // Glyphs per font atlas when it was last sent.
     let mut sent_glyphs: HashMap<usize, usize> = HashMap::new();
-    while let Ok(mut request) = requests.recv() {
-        // Only the latest size matters.
-        while let Ok(r) = requests.try_recv() {
-            request = r;
-        }
-        let begin = Instant::now();
-        let mut placements = HashMap::new();
-        for (node, s) in &scalers {
-            match place(s, &camera, fov, request.screen, DEFAULT_UI_SCALE) {
-                Ok(p) => {
-                    placements.insert(*node, p);
+    let mut screen: Option<[i32; 2]> = None;
+    let mut placements = HashMap::new();
+    let mut rules = UiState::default();
+    // The frames' draw time, logged every 600 builds; the bars, each
+    // second of game time.
+    let (mut draw_seconds, mut draws) = (0.0, 0u32);
+    let mut logged_second = -1i64;
+    while let Ok(first) = requests.recv() {
+        let mut resized = false;
+        let mut frames = 0;
+        // Every frame's rules run, in order; only the latest state is drawn.
+        for request in std::iter::once(first).chain(requests.try_iter()) {
+            match request {
+                Request::Size(s) => {
+                    resized |= screen != Some(s);
+                    screen = Some(s);
                 }
-                Err(e) => warn!("game UI: {}: {e}", tree.nodes[*node].path),
+                Request::Frame(mut inputs) => {
+                    inputs.food = food;
+                    inputs.water = water;
+                    rules = hud.update(&inputs);
+                    frames += 1;
+                    let second = inputs.time.floor() as i64;
+                    if second != logged_second {
+                        logged_second = second;
+                        info!("game UI bars at {second} s: {}", bars_line(&hud, &inputs));
+                    }
+                }
             }
         }
-        let drawing = Instant::now();
+        let Some(size) = screen else {
+            continue;
+        };
+        if resized {
+            placements.clear();
+            for (node, s) in &scalers {
+                match place(s, &camera, fov, size, DEFAULT_UI_SCALE) {
+                    Ok(p) => {
+                        placements.insert(*node, p);
+                    }
+                    Err(e) => warn!("game UI: {}: {e}", tree.nodes[*node].path),
+                }
+            }
+        } else if frames == 0 {
+            continue;
+        }
+        let begin = Instant::now();
+        let mut state = start_state.clone();
+        state.apply(&rules);
         let d = scene.draw(&assets, &fonts, &set, &mut atlases, &placements, &state)?;
-        info!(
-            "game UI: drawn for {}×{} in {:.3} ms",
-            request.screen[0],
-            request.screen[1],
-            drawing.elapsed().as_secs_f64() * 1000.0
-        );
-        let mut build = convert(&tree, &d, request.screen, fov, placements);
+        let mut build = convert(&tree, &d, size, fov, placements.clone(), resized);
         for (key, object) in &d.textures {
             if sent.contains(key) {
                 continue;
@@ -378,11 +457,14 @@ fn run_worker(
             }
             sent_glyphs.insert(font, a.glyphs.len());
             info!(
-                "game UI: font atlas {} sent: {} glyphs, {}×{}",
+                "game UI: font atlas {} sent: {} glyphs, {}×{} ({} made so far in {:.3} s; atlas full {})",
                 fonts.assets[font].name,
                 a.glyphs.len(),
                 a.width,
-                a.height
+                a.height,
+                atlases.made,
+                atlases.seconds,
+                atlases.full
             );
             build.textures.push(UiTexture {
                 key: sn_assets::font_texture_key(font),
@@ -395,16 +477,49 @@ fn run_worker(
                 alpha_only: true,
             });
         }
-        info!(
-            "game UI: {} glyphs made so far in {:.3} s; atlas full {}",
-            atlases.made, atlases.seconds, atlases.full
-        );
         build.seconds = begin.elapsed().as_secs_f64();
+        if resized {
+            info!(
+                "game UI: drawn for {}×{} in {:.3} ms",
+                size[0],
+                size[1],
+                build.seconds * 1000.0
+            );
+        } else {
+            draw_seconds += build.seconds;
+            draws += 1;
+            if draws == 600 {
+                info!(
+                    "game UI: frames drawn on the worker in {:.3} ms each (mean of 600)",
+                    draw_seconds * 1000.0 / 600.0
+                );
+                (draw_seconds, draws) = (0.0, 0);
+            }
+        }
+        build.resized = resized;
         if builds.send(Ok(build)).is_err() {
             break;
         }
     }
     Ok(())
+}
+
+/// Each bar's input, shown value (`_Value`) and text, for the log.
+fn bars_line(hud: &Hud, i: &HudInputs) -> String {
+    let mut out = format!(
+        "active {}; oxygen {:.2}/{}, health {:.1}/{}, food {}, water {}",
+        hud.active, i.oxygen, i.oxygen_capacity, i.health, i.max_health, i.food, i.water
+    );
+    for (b, s) in hud.config.bars.iter().zip(&hud.bars) {
+        out += &format!(
+            "; {:?} {} \"{}\"",
+            b.kind,
+            s.value
+                .map_or("-".to_string(), |v| format!("{:.4}", b.circular.value(v))),
+            s.text.as_deref().unwrap_or("-")
+        );
+    }
+    out
 }
 
 /// A texture decoded to RGBA8, bottom row first.
@@ -459,6 +574,7 @@ fn convert(
     screen: [i32; 2],
     field_of_view: f32,
     placements: HashMap<usize, Placement>,
+    log: bool,
 ) -> UiBuild {
     let mut vertices = Vec::new();
     let mut indices = Vec::new();
@@ -483,6 +599,7 @@ fn convert(
         let mut blend = ALPHA_BLEND;
         let clip = it.clip.map(|r| [r.x, r.y, r.x + r.width, r.y + r.height]);
         let mut text = None;
+        let mut bar = None;
         match m.shader.as_str() {
             "TextMeshPro/Distance Field" => {
                 census.texts += 1;
@@ -534,6 +651,28 @@ fn convert(
                         f("_MaskSoftnessX"),
                         f("_MaskSoftnessY"),
                     ],
+                });
+                *census.drawn.entry(m.shader.clone()).or_default() += 1;
+            }
+            sn_ui::bar::SHADER => {
+                let f = |k: &str| m.float(k);
+                let v = |k: &str| m.colors.get(k).copied().unwrap_or([0.0; 4]);
+                let mut bar_flags = 0;
+                for (k, bit) in [("BORDER", 1), ("OVERLAY", 2), ("ROUND_CORNERS", 4)] {
+                    if m.has_keyword(k) {
+                        bar_flags |= bit;
+                    }
+                }
+                let shift = v("_OverlayShift");
+                let alpha = v("_OverlayAlpha");
+                bar = Some(BarValues {
+                    overlay1_st: v("_Overlay1_ST"),
+                    overlay2_st: v("_Overlay2_ST"),
+                    bar: [f("_Width"), f("_Value"), f("_EdgeWidth"), f("_BorderWidth")],
+                    border_color: linear(v("_BorderColor")).to_array(),
+                    overlay: [shift[0], shift[1], alpha[0], alpha[1]],
+                    flags: bar_flags,
+                    overlay_texture: m.textures.get("_OverlayTex").copied().unwrap_or(0),
                 });
                 *census.drawn.entry(m.shader.clone()).or_default() += 1;
             }
@@ -598,10 +737,11 @@ fn convert(
             softness: [it.softness[0] as f32, it.softness[1] as f32],
             flags,
             text,
+            bar,
         });
         // Draws that cover their whole canvas (a full-screen panel hides
         // everything behind it): logged with their colour.
-        if let Some(p) = placements.get(&it.root) {
+        if let Some(p) = placements.get(&it.root).filter(|_| log) {
             let (mut lo, mut hi) = ([f32::MAX; 2], [f32::MIN; 2]);
             for v in &it.vertices {
                 for k in 0..2 {
@@ -637,24 +777,26 @@ fn convert(
         g.1 += it.vertices.len();
         g.2.insert(it.texture);
     }
-    info!(
-        "game UI {}×{}: {} draws, {} vertices, {} indices; by shader {:?}; drawn as UI/Default (not ported yet) {:?}; texts {} (TextMeshPro/Distance Field); skipped: {} DepthClear (depth only), {} without a placed canvas",
-        screen[0],
-        screen[1],
-        draws.len(),
-        vertices.len() / VERTEX_BYTES,
-        indices.len(),
-        census.drawn,
-        census.as_default,
-        census.texts,
-        census.depth_clear,
-        census.without_placement
-    );
-    for (canvas, (n, v, t)) in &groups {
+    if log {
         info!(
-            "game UI canvas {canvas}: {n} draw calls, {v} vertices, {} textures",
-            t.len()
+            "game UI {}×{}: {} draws, {} vertices, {} indices; by shader {:?}; drawn as UI/Default (not ported yet) {:?}; texts {} (TextMeshPro/Distance Field); skipped: {} DepthClear (depth only), {} without a placed canvas",
+            screen[0],
+            screen[1],
+            draws.len(),
+            vertices.len() / VERTEX_BYTES,
+            indices.len(),
+            census.drawn,
+            census.as_default,
+            census.texts,
+            census.depth_clear,
+            census.without_placement
         );
+        for (canvas, (n, v, t)) in &groups {
+            info!(
+                "game UI canvas {canvas}: {n} draw calls, {v} vertices, {} textures",
+                t.len()
+            );
+        }
     }
     UiBuild {
         screen,
@@ -665,6 +807,7 @@ fn convert(
         placements,
         textures: Vec::new(),
         seconds: 0.0,
+        resized: log,
     }
 }
 
@@ -682,7 +825,25 @@ fn request_build(mut worker: ResMut<UiWorker>, windows: Query<&Window, With<Prim
         return;
     }
     worker.requested = Some(size);
-    let _ = worker.requests.send(Request { screen: size });
+    let _ = worker.requests.send(Request::Size(size));
+}
+
+/// Each frame, what the HUD's rules read (M9u6b1): the player's oxygen and
+/// health (`crate::hud::Hud`, filled by the player), `Time`'s step and
+/// clock. The worker adds `Survival`'s food and water.
+fn send_inputs(worker: Res<UiWorker>, hud: Res<crate::hud::Hud>, time: Res<Time>) {
+    let _ = worker.requests.send(Request::Frame(HudInputs {
+        active: hud.shown,
+        mode: hud_mode(false, false, false),
+        oxygen: hud.oxygen as f32,
+        oxygen_capacity: hud.capacity as f32,
+        health: hud.health as f32,
+        max_health: hud.max_health as f32,
+        food: 0.0,
+        water: 0.0,
+        delta_time: time.delta_secs(),
+        time: time.elapsed_secs(),
+    }));
 }
 
 fn receive_build(
@@ -744,13 +905,15 @@ fn receive_build(
             }
         }
     }
-    info!(
-        "game UI: built for {}×{} in {:.3} s; {} textures on the GPU",
-        build.screen[0],
-        build.screen[1],
-        build.seconds,
-        map.len()
-    );
+    if build.resized {
+        info!(
+            "game UI: built for {}×{} in {:.3} s; {} textures on the GPU",
+            build.screen[0],
+            build.screen[1],
+            build.seconds,
+            map.len()
+        );
+    }
     frame.images = Arc::new(map);
     frame.build = Some(Arc::new(build));
     frame.generation += 1;
@@ -801,15 +964,38 @@ struct GpuTextItems {
     items: Vec<GpuTextItem>,
 }
 
+/// One bar item's values; must match `BarItem` in `game_ui_bar.wgsl`.
+#[derive(Clone, Copy, Default, ShaderType)]
+struct GpuBarItem {
+    clip_from_canvas: Mat4,
+    color: Vec4,
+    overlay1_st: Vec4,
+    overlay2_st: Vec4,
+    bar: Vec4,
+    border_color: Vec4,
+    overlay: Vec4,
+    texture_add: Vec4,
+    clip_rect: Vec4,
+    flags: Vec4,
+}
+
+#[derive(Clone, Default, ShaderType)]
+struct GpuBarItems {
+    #[shader(size(runtime))]
+    items: Vec<GpuBarItem>,
+}
+
 #[derive(Resource)]
 struct UiPipelines {
     items_layout: BindGroupLayoutDescriptor,
     text_items_layout: BindGroupLayoutDescriptor,
+    bar_items_layout: BindGroupLayoutDescriptor,
     texture_layout: BindGroupLayoutDescriptor,
     shader: Handle<Shader>,
     text_shader: Handle<Shader>,
-    /// By target format, blend and whether it draws text.
-    by_key: HashMap<(TextureFormat, BlendKey, bool), CachedRenderPipelineId>,
+    bar_shader: Handle<Shader>,
+    /// By target format, blend and kind.
+    by_key: HashMap<(TextureFormat, BlendKey, Kind), CachedRenderPipelineId>,
 }
 
 /// This frame's GPU data.
@@ -822,6 +1008,7 @@ struct GpuUi {
     made_for: Option<([u32; 2], u64)>,
     items: StorageBuffer<GpuItems>,
     text_items: StorageBuffer<GpuTextItems>,
+    bar_items: StorageBuffer<GpuBarItems>,
     /// Each draw's instance in its kind's buffer.
     instances: Vec<u32>,
     /// CPU time of preparing, summed over the frames since the last log.
@@ -843,6 +1030,13 @@ fn init_gpu(mut commands: Commands, asset_server: Res<AssetServer>) {
             (storage_buffer_read_only::<GpuTextItems>(false),),
         ),
     );
+    let bar_items_layout = BindGroupLayoutDescriptor::new(
+        "game_ui_bar_items_layout",
+        &BindGroupLayoutEntries::sequential(
+            ShaderStages::VERTEX_FRAGMENT,
+            (storage_buffer_read_only::<GpuBarItems>(false),),
+        ),
+    );
     let texture_layout = BindGroupLayoutDescriptor::new(
         "game_ui_texture_layout",
         &BindGroupLayoutEntries::sequential(
@@ -856,29 +1050,36 @@ fn init_gpu(mut commands: Commands, asset_server: Res<AssetServer>) {
     commands.insert_resource(UiPipelines {
         items_layout,
         text_items_layout,
+        bar_items_layout,
         texture_layout,
         shader: asset_server.load("embedded://sn_client/game_ui.wgsl"),
         text_shader: asset_server.load("embedded://sn_client/game_ui_text.wgsl"),
+        bar_shader: asset_server.load("embedded://sn_client/game_ui_bar.wgsl"),
         by_key: HashMap::new(),
     });
 }
 
-/// The pipelines each view needs: one per blend state and kind (image or
-/// text) in the build.
+/// The pipelines each view needs: one per blend state and kind (image,
+/// text, bar) in the build.
 #[derive(Component)]
-struct UiPipelineIds(HashMap<(BlendKey, bool), CachedRenderPipelineId>);
+struct UiPipelineIds(HashMap<(BlendKey, Kind), CachedRenderPipelineId>);
 
 fn pipeline_descriptor(
     p: &UiPipelines,
     format: TextureFormat,
     blend: BlendKey,
-    text: bool,
+    kind: Kind,
 ) -> RenderPipelineDescriptor {
-    let (items_layout, shader) = if text {
-        (&p.text_items_layout, &p.text_shader)
-    } else {
-        (&p.items_layout, &p.shader)
+    let (items_layout, shader) = match kind {
+        Kind::Text => (&p.text_items_layout, &p.text_shader),
+        Kind::Bar => (&p.bar_items_layout, &p.bar_shader),
+        Kind::Image => (&p.items_layout, &p.shader),
     };
+    // A bar also samples its overlay texture (group 2).
+    let mut layout = vec![items_layout.clone(), p.texture_layout.clone()];
+    if kind == Kind::Bar {
+        layout.push(p.texture_layout.clone());
+    }
     let attribute = |format, offset, shader_location| VertexAttribute {
         format,
         offset,
@@ -899,7 +1100,7 @@ fn pipeline_descriptor(
     };
     RenderPipelineDescriptor {
         label: Some("game_ui_pipeline".into()),
-        layout: vec![items_layout.clone(), p.texture_layout.clone()],
+        layout,
         vertex: VertexState {
             shader: shader.clone(),
             shader_defs: Vec::new(),
@@ -946,11 +1147,8 @@ fn prepare_pipelines(
     let Some(build) = frame.as_ref().and_then(|f| f.build.clone()) else {
         return;
     };
-    let mut blends: Vec<(BlendKey, bool)> = build
-        .draws
-        .iter()
-        .map(|d| (d.blend, d.text.is_some()))
-        .collect();
+    let mut blends: Vec<(BlendKey, Kind)> =
+        build.draws.iter().map(|d| (d.blend, d.kind())).collect();
     blends.sort();
     blends.dedup();
     for (entity, view) in &views {
@@ -1052,6 +1250,7 @@ fn prepare_buffers(
     let projection = clip_from_world(build.field_of_view, aspect);
     let mut items = Vec::with_capacity(build.draws.len());
     let mut text_items = Vec::new();
+    let mut bar_items = Vec::new();
     let mut instances = Vec::with_capacity(build.draws.len());
     let pixel = Vec4::new(
         screen[0] as f32,
@@ -1085,17 +1284,34 @@ fn prepare_buffers(
             });
             continue;
         }
-        instances.push(items.len() as u32);
         let alpha_only = frame.images.get(&d.texture).is_some_and(|(_, a)| *a);
+        let texture_add = if alpha_only {
+            Vec4::new(1.0, 1.0, 1.0, 0.0)
+        } else {
+            Vec4::ZERO
+        };
+        if let Some(b) = &d.bar {
+            instances.push(bar_items.len() as u32);
+            bar_items.push(GpuBarItem {
+                clip_from_canvas: clip_from_canvas(p, build.field_of_view, aspect),
+                color: Vec4::from_array(d.color),
+                overlay1_st: Vec4::from_array(b.overlay1_st),
+                overlay2_st: Vec4::from_array(b.overlay2_st),
+                bar: Vec4::from_array(b.bar),
+                border_color: Vec4::from_array(b.border_color),
+                overlay: Vec4::from_array(b.overlay),
+                texture_add,
+                clip_rect: Vec4::from_array(d.clip),
+                flags: Vec4::new(b.flags as f32, 0.0, 0.0, 0.0),
+            });
+            continue;
+        }
+        instances.push(items.len() as u32);
         items.push(GpuItem {
             clip_from_canvas: clip_from_canvas(p, build.field_of_view, aspect),
             color: Vec4::from_array(d.color),
             st: Vec4::from_array(d.st),
-            texture_add: if alpha_only {
-                Vec4::new(1.0, 1.0, 1.0, 0.0)
-            } else {
-                Vec4::ZERO
-            },
+            texture_add,
             clip_rect: Vec4::from_array(d.clip),
             softness: Vec4::new(d.softness[0], d.softness[1], d.flags as f32, 0.0),
             pixel,
@@ -1108,14 +1324,22 @@ fn prepare_buffers(
     if text_items.is_empty() {
         text_items.push(GpuTextItem::default());
     }
+    if bar_items.is_empty() {
+        bar_items.push(GpuBarItem::default());
+    }
     gpu.items.set(GpuItems { items });
     gpu.items.write_buffer(&device, &queue);
     gpu.text_items.set(GpuTextItems { items: text_items });
     gpu.text_items.write_buffer(&device, &queue);
+    gpu.bar_items.set(GpuBarItems { items: bar_items });
+    gpu.bar_items.write_buffer(&device, &queue);
     gpu.instances = instances;
     let spent = begin.elapsed().as_secs_f64();
     gpu.cpu.0 += spent;
     gpu.cpu.1 += 1;
+    if !build.resized {
+        return;
+    }
     info!(
         "game UI: {} items made for {}×{} in {:.3} ms",
         build.draws.len(),
@@ -1153,11 +1377,12 @@ fn game_ui_pass(
     let Some(build) = frame.build.clone() else {
         return;
     };
-    let (Some(vertices), Some(indices), Some(items), Some(text_items)) = (
+    let (Some(vertices), Some(indices), Some(items), Some(text_items), Some(bar_items)) = (
         &gpu.vertices,
         &gpu.indices,
         gpu.items.binding(),
         gpu.text_items.binding(),
+        gpu.bar_items.binding(),
     ) else {
         return;
     };
@@ -1171,14 +1396,20 @@ fn game_ui_pass(
         &pipeline_cache.get_bind_group_layout(&pipelines.text_items_layout),
         &BindGroupEntries::sequential((text_items,)),
     );
+    let bar_items_group = device.create_bind_group(
+        "game_ui_bar_items",
+        &pipeline_cache.get_bind_group_layout(&pipelines.bar_items_layout),
+        &BindGroupEntries::sequential((bar_items,)),
+    );
     let texture_layout = pipeline_cache.get_bind_group_layout(&pipelines.texture_layout);
     let mut texture_groups = HashMap::new();
-    for d in &build.draws {
-        texture_groups.entry(d.texture).or_insert_with(|| {
-            let handle = frame
-                .images
-                .get(&d.texture)
-                .map_or(&frame.white, |(h, _)| h);
+    let keys = build
+        .draws
+        .iter()
+        .flat_map(|d| std::iter::once(d.texture).chain(d.bar.map(|b| b.overlay_texture)));
+    for key in keys {
+        texture_groups.entry(key).or_insert_with(|| {
+            let handle = frame.images.get(&key).map_or(&frame.white, |(h, _)| h);
             images.get(handle.id()).map(|img| {
                 device.create_bind_group(
                     "game_ui_texture",
@@ -1212,9 +1443,9 @@ fn game_ui_pass(
     let mut current_kind = None;
     let mut drawn = 0;
     for (k, d) in build.draws.iter().enumerate() {
-        let text = d.text.is_some();
+        let kind = d.kind();
         let (Some(id), Some(Some(group)), Some(&i)) = (
-            ids.0.get(&(d.blend, text)),
+            ids.0.get(&(d.blend, kind)),
             texture_groups.get(&d.texture),
             gpu.instances.get(k),
         ) else {
@@ -1230,16 +1461,23 @@ fn game_ui_pass(
             pass.set_pipeline(pipeline);
             current = Some(*id);
         }
-        if current_kind != Some(text) {
-            let items = if text {
-                &text_items_group
-            } else {
-                &items_group
+        if current_kind != Some(kind) {
+            let items = match kind {
+                Kind::Text => &text_items_group,
+                Kind::Bar => &bar_items_group,
+                Kind::Image => &items_group,
             };
             pass.set_bind_group(0, items, &[]);
-            current_kind = Some(text);
+            current_kind = Some(kind);
         }
         pass.set_bind_group(1, group, &[]);
+        if let Some(b) = &d.bar {
+            // The overlay (none: the white texture, unused without `OVERLAY`).
+            let Some(Some(overlay)) = texture_groups.get(&b.overlay_texture) else {
+                continue;
+            };
+            pass.set_bind_group(2, overlay, &[]);
+        }
         pass.draw_indexed(d.first_index..d.first_index + d.index_count, 0, i..i + 1);
         drawn += 1;
     }

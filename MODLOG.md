@@ -2,6 +2,99 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-14 — M9u6b1: the HUD's bars drawn and driven
+
+**Plan:** M9u6b was split in `docs/DESIGN.md` into b1 (shader, values,
+texts) and b2 (the bars' animations). A new step, M9u6s (the other
+screens' start rules), was added and moved out of M9u6e, because the
+stored-state screens cover the bars in every screenshot.
+
+**What/why:** the four round bars now follow the game's rules each
+frame.
+- `sn-ui`:
+  - `state`: `UiState`, moved here from `sn-assets` so the rules stay
+    pure. Sprites are ids. Per-node material values were added.
+  - `bar`: `uGUI_CircularBar`'s material, as its setters write it, and
+    `mesh::graphic_quad`.
+  - `hud`: the rules (`uGUI_SceneHUD`'s elements by game mode; the four
+    bars' `SetValue`, texts and caching; the oxygen overlays' scroll and
+    alpha).
+- `sn-assets`:
+  - `UiGraphicKind::CircularBar`, drawn by the scene;
+  - material values applied to a graphic's own material;
+  - `hud_config`, `object_fields`, and `survival_start` (read from
+    `Survival.ResetStats`' IL with the new `sn_dotnet::method_store_f32`).
+- `sn-client`:
+  - `game_ui_bar.wgsl` (`Hidden/UI/CircularBar` from its 8 + 8 compiled
+    programs), as a third pipeline kind with the overlay texture;
+  - the per-frame path: the main world sends `HudInputs`, the worker runs
+    every frame's rules and draws the latest state, and per-frame logs
+    are summarised.
+- `sn-inspect ui --bars`.
+- Fix: `mesh::color32` now rounds half to even, as `Mathf.Round` does
+  (no hash moved).
+
+No new dependencies.
+
+**Verified (2026-10-14):**
+- `ui --bars`, a 75 s dive with vitals from `sn_sim`, drawn every frame:
+  - 300 of 300 checks equal a replay of the decompiled `SetValue`
+    (`_Value` in the drawn material, the text, its quad count, and the
+    oxygen overlay ST and alpha);
+  - draw mean 2.6–2.9 ms.
+- `ui --draw`: 12 of 12 hashes equal across two runs. `ui --live`: 0
+  failures, mean 2.7 ms.
+- Client, `--game-ui --resolution 1920 1080 --start -950 -616 1018 --look
+  -942 -621 1026 --shot 30 m9u6b1-dive`:
+  - the bars' per-second log follows the simulation (oxygen 45 → 0 in
+    27 s, its text the rounded oxygen, food 51, water 91);
+  - 176 of 176 draws; pass CPU 0.24–0.33 ms per frame;
+  - worker 3.3–4.4 ms per frame;
+  - 0 WARN, ERROR or panic lines.
+- Tests:
+  - 10 new unit tests: 6 for the HUD rules, 2 for the bar material, 2
+    for the state (moved);
+  - 1 more `sn-dotnet` assertion;
+  - 1 new opt-in real-data test (`the_hud_bars_are_read`).
+- `cargo test --workspace` without the game: 614 passed, 51 ignored. The
+  13 opt-in UI tests pass. fmt and clippy (`-D warnings`) pass.
+
+**Dead ends:**
+- The first `ui --bars` run showed food and water at 0. That is what
+  the main scene stores; `Survival.Start` → `ResetStats` sets 50.5 and
+  90.5, now read from the IL.
+- A Python edit script opened `crates/sn-assets/src/lib.rs` for writing
+  before reading it and emptied the file. It had no uncommitted
+  changes, so it was restored with `git checkout` and the edit was
+  redone. Bash heredocs with long Python failed twice more; the scripts
+  were written as files in `out/m9u6b/`.
+- The first WGSL sampled after the program's branches, which WGSL
+  forbids. The samples now come first.
+
+**Not tested / not 1:1:**
+- The screenshot shows the bars under the feedback panel, the
+  confirmation dialog and the pop-ups (stored state); M9u6s comes next.
+- The pulses, coin turn and punch are not ported (M9u6b2).
+- `IsActive` is "the player runs": the intro, piloting and the camera
+  drone are not ported.
+- Float precision against the game's Mono runtime is a hypothesis.
+  Health after a 20-point hit shows "81" in our port.
+- `_BorderColor` made linear is a hypothesis.
+- Not compared with the original game.
+
+Reproduce (PowerShell):
+```powershell
+$env:SUBNAUTICA_DIR = 'D:\SteamLibrary\steamapps\common\Subnautica'
+cargo build --release -p sn-inspect -p sn-client
+target/release/sn-inspect.exe ui --bars
+target/release/sn-inspect.exe ui --draw
+target/release/sn-client.exe --game-ui --resolution 1920 1080 --start -950 -616 1018 --look -942 -621 1026 --shot 30 m9u6b1-dive
+cargo test -p sn-assets --test real_data the_hud_bars -- --ignored
+cargo test --workspace
+```
+Expected: `ui --bars` ends with `300 bar checks, 0 differ`. The client
+logs `game UI bars at N s: …` each second and `176 of 176 draws`.
+
 ## 2026-10-14 — M9u6a: the live UI (M9u6 split into a–e)
 
 **Plan:** M9u6 (the HUD's rules) was split into five steps in

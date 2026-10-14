@@ -15,8 +15,10 @@ use sn_install::GameData;
 
 use crate::Result;
 
-/// The shaders M9u5c–d port (`docs/DESIGN.md`).
-const PORTED: [&str; 6] = [
+/// The shaders the client ports (M9u5c–d; `Hidden/UI/CircularBar`
+/// M9u6b1; `docs/DESIGN.md`).
+const PORTED: [&str; 7] = [
+    "Hidden/UI/CircularBar",
     "UI/Default",
     "UI/Simple",
     "TextMeshPro/Distance Field",
@@ -277,12 +279,12 @@ pub fn run(game: &GameData) -> Result<ExitCode> {
                 ""
             } else {
                 not_ported += n;
-                "  NOT IN M9u5c-d"
+                "  NOT PORTED YET"
             };
             println!("  {shader} [{keys}]: {n} draws; materials {names:?}{mark}");
         }
         println!(
-            "materials: {} of {} draw items have one; {not_ported} draws use a shader M9u5c-d do not port",
+            "materials: {} of {} draw items have one; {not_ported} draws use a shader not ported yet",
             t.with_material, t.items
         );
         println!(

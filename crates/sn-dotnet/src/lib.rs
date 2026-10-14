@@ -24,8 +24,8 @@ use std::fmt;
 pub use assembly::{Assembly, MemberRefInfo};
 pub use game::{
     CraftNode, CraftTree, DefaultValue, const_f32, craft_trees, enum_values, enum_values_of,
-    field_initializer_f32, multiplier_f32, random_range_f32, static_initializer_f32,
-    tech_data_defaults, tech_type_names,
+    field_initializer_f32, method_store_f32, multiplier_f32, random_range_f32,
+    static_initializer_f32, tech_data_defaults, tech_type_names,
 };
 pub use il::{Instr, Operand, decode, opcode_name};
 pub use items::{Arg, constructor_args, static_string_int_dictionary, string_array};

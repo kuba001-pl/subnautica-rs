@@ -513,8 +513,22 @@ pub fn field_initializer_f32(
     type_name: &str,
     field: &str,
 ) -> Result<f32> {
+    method_store_f32(asm, namespace, type_name, ".ctor", field)
+}
+
+/// The float constant `method` of the type stores into its own instance
+/// field (`this.field = 50.5f;`: `ldarg.0; ldc.r4 v; stfld field`), as in
+/// `Survival.ResetStats` (M9u6b1). Only that pattern is accepted, and it
+/// must occur exactly once.
+pub fn method_store_f32(
+    asm: &Assembly,
+    namespace: &str,
+    type_name: &str,
+    method: &str,
+    field: &str,
+) -> Result<f32> {
     let ty = find_type(asm, namespace, type_name)?;
-    let code = method_code(asm, ty, ".ctor")?;
+    let code = method_code(asm, ty, method)?;
     let mut found = Vec::new();
     for (k, i) in code.iter().enumerate() {
         if i.opcode != STFLD {
@@ -526,7 +540,7 @@ pub fn field_initializer_f32(
         }
         let fail = || {
             err(format!(
-                "{type_name}.{field}: initialiser pattern not recognised"
+                "{type_name}.{field}: store pattern in {method} not recognised"
             ))
         };
         let (Some(load), Some(value)) = (
@@ -542,9 +556,9 @@ pub fn field_initializer_f32(
     }
     match found[..] {
         [v] => Ok(v),
-        [] => Err(err(format!("{type_name}.{field}: not set in .ctor"))),
+        [] => Err(err(format!("{type_name}.{field}: not set in {method}"))),
         _ => Err(err(format!(
-            "{type_name}.{field}: set {} times in .ctor",
+            "{type_name}.{field}: set {} times in {method}",
             found.len()
         ))),
     }
@@ -1001,6 +1015,12 @@ mod tests {
         });
         let e = field_initializer_f32(&parse(&bad), "", "Manager", "rate").unwrap_err();
         assert!(e.message.contains("set 2 times"), "{e}");
+        // The same reader for any method; a method the type lacks fails.
+        assert_eq!(
+            method_store_f32(&asm, "", "Manager", ".ctor", "rate").unwrap(),
+            30.0
+        );
+        assert!(method_store_f32(&asm, "", "Manager", "ResetStats", "rate").is_err());
     }
 
     #[test]

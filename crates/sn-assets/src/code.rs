@@ -177,6 +177,17 @@ pub fn field_of_view_code(bytes: &[u8]) -> Result<f32> {
     sn_dotnet::static_initializer_f32(&asm, "", "MiscSettings", "fieldOfView").map_err(e)
 }
 
+/// `Survival.ResetStats`'s food and water: a new game's (`Start` calls
+/// it) and a respawned player's (M9u6b1; the scene stores 0 for both).
+pub fn survival_start(bytes: &[u8]) -> Result<(f32, f32)> {
+    let e = |e: sn_dotnet::Error| format!("{GAME_ASSEMBLY}: {e}");
+    let asm = Assembly::parse(bytes).map_err(e)?;
+    let read = |field: &str| {
+        sn_dotnet::method_store_f32(&asm, "", "Survival", "ResetStats", field).map_err(e)
+    };
+    Ok((read("food")?, read("water")?))
+}
+
 /// Reads [`PlayerCode`] from the game's code assembly.
 pub fn player_code(bytes: &[u8]) -> Result<PlayerCode> {
     let e = |e: sn_dotnet::Error| format!("{GAME_ASSEMBLY}: {e}");

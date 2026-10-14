@@ -55,7 +55,12 @@ fn curve_at_zero(curve: &Fields) -> Option<f32> {
 impl Assets<'_> {
     /// The node of the component or GameObject `p` (from `from`'s file)
     /// points at.
-    fn node_of(&self, tree: &UiTree, from: &ObjectRef, p: PPtr) -> Result<Option<usize>> {
+    pub(crate) fn node_of(
+        &self,
+        tree: &UiTree,
+        from: &ObjectRef,
+        p: PPtr,
+    ) -> Result<Option<usize>> {
         let Some(o) = self.resolve(&from.file, p)? else {
             return Ok(None);
         };

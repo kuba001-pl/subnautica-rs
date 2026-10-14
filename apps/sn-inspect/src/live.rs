@@ -18,9 +18,7 @@ use std::collections::HashMap;
 use std::process::ExitCode;
 use std::time::Instant;
 
-use sn_assets::{
-    Assets, GlyphAtlases, LocalTransform, SpriteRef, UiGraphicKind, UiScene, UiState, color32,
-};
+use sn_assets::{Assets, GlyphAtlases, LocalTransform, UiGraphicKind, UiScene, UiState, color32};
 use sn_install::GameData;
 use sn_ui::draw::DrawList;
 use sn_ui::scaler::{DEFAULT_FIELD_OF_VIEW, DEFAULT_UI_SCALE, UiCamera, place};
@@ -326,7 +324,7 @@ pub fn run(game: &GameData) -> Result<ExitCode> {
     }
     if let Some((image, name, sprite)) = sprite_check {
         let mut s = start_state.clone();
-        s.sprite.insert(image, Some(SpriteRef(sprite)));
+        s.sprite.insert(image, Some(scene.sprite_id(&sprite)));
         let before = items_of(&base.list, image)
             .first()
             .map(|i| (i.texture, i.vertices.clone()));
