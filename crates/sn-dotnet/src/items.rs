@@ -160,6 +160,92 @@ pub fn static_string_int_dictionary(
     Ok(entries)
 }
 
+/// The entries of a static collection built by a collection initialiser
+/// in the type's static constructor, whatever its type: `newobj
+/// T::.ctor()` (no arguments), then per entry `dup`, each argument as one
+/// constant (`ldc.i4` or `ldstr`), `callvirt Add`, then `stsfld field`.
+/// Each entry's arguments in order, entries in source order. E.g.
+/// `GameInputSystem.bindingsKeyboard` (M9u6d2): `{ Button.LeftHand,
+/// "<Mouse>/leftButton" }`, some with a second binding.
+pub fn static_collection(
+    asm: &Assembly,
+    namespace: &str,
+    type_name: &str,
+    field: &str,
+) -> Result<Vec<Vec<Arg>>> {
+    let ty = find_type(asm, namespace, type_name)?;
+    let code = method_code(asm, ty, ".cctor")?;
+    let what = || format!("{type_name}.{field}");
+    let mut stores = Vec::new();
+    for (k, i) in code.iter().enumerate() {
+        if i.opcode == STSFLD {
+            let f = asm.field_token(i.token().unwrap_or(0))?;
+            if f.type_name == type_name && f.namespace == namespace && f.name == field {
+                stores.push(k);
+            }
+        }
+    }
+    let end = match stores[..] {
+        [k] => k,
+        _ => {
+            return Err(err(format!(
+                "{}: set {} times in .cctor",
+                what(),
+                stores.len()
+            )));
+        }
+    };
+    let fail = || {
+        err(format!(
+            "{}: collection initialiser pattern not recognised",
+            what()
+        ))
+    };
+    // Walk back over the `dup; args…; callvirt Add` groups to the `newobj`.
+    let mut entries = Vec::new();
+    let mut at = end;
+    loop {
+        let last = at
+            .checked_sub(1)
+            .and_then(|j| code.get(j))
+            .ok_or_else(fail)?;
+        if last.opcode == NEWOBJ {
+            let c = asm.method_token(last.token().unwrap_or(0))?;
+            if c.name != ".ctor" || c.params != 0 {
+                return Err(fail());
+            }
+            break;
+        }
+        if last.opcode != CALLVIRT {
+            return Err(fail());
+        }
+        let add = asm.method_token(last.token().unwrap_or(0))?;
+        let n = add.params as usize;
+        if add.name != "Add" || n == 0 {
+            return Err(fail());
+        }
+        let first = (at - 1).checked_sub(n).ok_or_else(fail)?;
+        let mut args = Vec::with_capacity(n);
+        for i in &code[first..at - 1] {
+            match arg(asm, i)? {
+                Some(a @ (Arg::Int(_) | Arg::Str(_))) => args.push(a),
+                _ => return Err(fail()),
+            }
+        }
+        let dup = first.checked_sub(1).ok_or_else(fail)?;
+        if code[dup].opcode != DUP {
+            return Err(fail());
+        }
+        entries.push(args);
+        if entries.len() > MAX_ITEMS {
+            return Err(err(format!("{}: more than {MAX_ITEMS} entries", what())));
+        }
+        at = dup;
+    }
+    entries.reverse();
+    Ok(entries)
+}
+
 /// The strings of the one `new string[n] { … }` in a method: `ldc.i4 n;
 /// newarr String`, then per element `dup; ldc.i4 index; ldstr s;
 /// stelem.ref` with the indices 0, 1, …, n − 1 in order.
@@ -365,12 +451,23 @@ mod tests {
         );
         // Set from something other than a dictionary initialiser.
         assert!(static_string_int_dictionary(&asm, "", "Equipment", "other").is_err());
+        // The same initialiser read as any collection.
+        assert_eq!(
+            static_collection(&asm, "", "Equipment", "slotMapping").unwrap(),
+            [
+                vec![Arg::Str("Head".into()), Arg::Int(2)],
+                vec![Arg::Str("Tank".into()), Arg::Int(6)]
+            ]
+        );
+        assert!(static_collection(&asm, "", "Equipment", "other").is_err());
         let bytes = sample(&Options {
             bad_value: true,
             ..Options::default()
         });
         let e = static_string_int_dictionary(&parse(&bytes), "", "Equipment", "slotMapping")
             .unwrap_err();
+        assert!(e.message.contains("not recognised"), "{e}");
+        let e = static_collection(&parse(&bytes), "", "Equipment", "slotMapping").unwrap_err();
         assert!(e.message.contains("not recognised"), "{e}");
     }
 
@@ -411,6 +508,7 @@ mod tests {
                     "_container",
                 );
                 let _ = static_string_int_dictionary(&asm, "", "Equipment", "slotMapping");
+                let _ = static_collection(&asm, "", "Equipment", "slotMapping");
                 let _ = string_array(&asm, "", "Inventory", "UnlockDefaultEquipmentSlots");
             }
         };

@@ -1390,6 +1390,151 @@ checked by `sn-inspect ui --compass` (2026-10-14):
   0 warnings. `out/m9u6c2-compass.png` shows the ring with SE and S at a
   heading near 160°. Not compared with the game on screen.
 
+## TMP inline sprites (M9u6d1) — confirmed (decompiled TMP, IL, `ui --tmp-sprites`)
+
+The hand reticle's texts end in the key to press, written as a TMP
+`<sprite>` tag (M9u6d2). Read on 2026-10-14 from the decompiled
+`TMP_Text` and `TextMeshProUGUI` (read only, in `out/`), `LanguageSDF`,
+and the IL of `TMP_SpriteAsset` and `TMP_ExtensionMethods`. Our port is
+`crates/sn-ui/src/text/sprite.rs` (with the tag in `input.rs`, the
+layout in `generate.rs` / `preferred.rs`, the quad in `mesh.rs`); the
+code is ours.
+
+**The sprite assets.** Two are loaded: `InputSymbols` (164 sprites, all
+unicode 0xFFFE, a 1024 × 512 `Alpha8` sheet, face point size 0, every
+character and glyph scale 1.4, glyphs 48 × 48 with bearing (−8, 32.32)
+and advance 32) and `EmojiOne` (16 sprites, a 512 × 512 sRGB sheet).
+Stored `m_HashCode`s equal TMP's `GetSimpleHashCode` of the name
+(`h = ((h << 5) + h) ^ c` over UTF-16 units) for all 180.
+
+**The default sprite asset at run time is `InputSymbols`, not the stored
+`EmojiOne`.** `LanguageSDF.PreloadFontAssets` loads its entry points
+(`Aller_Rg SDF`, `Aller_W_Bd SDF`, `InputSymbols`), sets the first
+sprite asset as `TMP_Settings.m_defaultSpriteAsset` (by reflection) and
+adds any further ones as its fallbacks (none).
+
+**The tag** (`ValidateHtmlTag`): `<sprite>` with an optional first
+value (`=N`: an index; `="Asset"`: an asset by name; none: the text's
+sprite asset, else the default) and attributes `name=` (found by its
+hash in the asset, its fallbacks depth first, then the default asset),
+`index=`, `tint=` (not 0: tinted), `color=` (hex) and `anim=`. Any other
+attribute, an index out of range or a name not found rejects the tag,
+and its characters are then laid out as text. `anim` is not ported (the
+tag is rejected and counted). No in-scope text has its own sprite asset.
+
+**The layout** (`GenerateTextMesh`, sprite branch): bold is cleared (and
+stays cleared); a tag's character becomes U+E000 + its index, a sprite
+found by its character gets white. For a sprite asset without a point
+size (as `InputSymbols`) the scale is `font ascent line / glyph height
+× character scale × glyph scale × (size / font point size × font face
+scale)`, and the ascent and descent lines are the font's × (font scale ÷
+that scale), so the sprite's height fits the font's ascent line. The
+material padding is 0; the sprite is always visible. Kerning looks the
+sprite's glyph index up in the font's pair table, as for a character.
+At 24 px in `Aller_Rg SDF`, `MouseButtonLeft` is 44.0294 px square and
+advances 29.3530 px (`ui --tmp-sprites`, equal to the formula in `f64`
+within 1e-5).
+
+**The quad** (`SaveSpriteVertexInfo`): UVs are the glyph rect in the
+sheet, without padding. The colour is the tag's, × the text colour when
+tinted (`Color32.Multiply`, IL: each channel `(byte)(a / 255f × b /
+255f × 255f)` in `f32`, truncated). If its alpha is below the text
+colour's it becomes `min(alpha, html colour alpha)`, else the text
+colour's alpha. Sprites go into a sub-mesh per material.
+
+**The material** — a Subnautica change to TMP: `ValidateHtmlTag` calls
+`TMP_SpriteAsset.FindMatchingMaterial(m_currentMaterial)` (IL). Each
+`m_materials` name's postfix is what follows its first space; the
+longest postfix found in the text material's name (ordinal, ignoring
+case) wins, the first on a tie; none found: the asset's `material`.
+`InputSymbols` has `InputSymbols Atlas Material` and `m_materials`
+`InputSymbols Outline` and `InputSymbols Shadow` (both `UNDERLAY_ON`),
+**all `TextMeshPro/Distance Field`** sampling the sheet: the symbols are
+a distance field, drawn with the text shader already ported (no
+`TextMeshPro/Sprite` port needed). The shader reads the distance from
+`.a`; our font atlases keep it in `.r`, so the client's text shader
+reads `.a` for an install texture (text flag 4). *Hypothesis*: the sub-mesh's
+material ratios and padding are set as a fallback material's
+(`GetPadding`); the IL of `TMP_SubMeshUI` was not read.
+
+**Not ported:** sprites found by their unicode (the default asset's are
+all 0xFFFE), the text's own sprite asset, `anim`, sprite assets with
+a point size are ported but none is in scope (untested on real data).
+
+## The hand reticle (M9u6d2) — confirmed (decompiled code, IL, `ui --reticle`)
+
+Read on 2026-10-14 from the decompiled `HandReticle`,
+`uGUI_HandReticleIcon`, `Sequence`, `GUIHand`, `Pickupable`,
+`BreakableResource`, `EscapePod`, `CinematicModeTrigger`, `GameInput`,
+`GameInputSystem`, `AvatarInputHandler` and `Language` (read only, in
+`out/`). Our port: `crates/sn-ui/src/reticle.rs` (rules),
+`crates/sn-assets/src/reticle.rs` (config, `FormatButton`); the code is
+ours.
+
+**Stored** (`uGUI/ScreenCanvas/HUD/Content/HandReticle`): 10 icons under
+`IconCanvas`, one per `IconType` 1–10 (`Progress` with 3 graphics, the
+others 1); `iconScaleSpeed` 10; the icon canvas's scale 1; the four
+texts `Hand`, `HandSubscript`, `Use`, `UseSubscript`.
+
+**`LateUpdate`** (every frame): each text set and active iff not empty;
+the icon is `None` while `hideCount > 0` or `!AvatarInputHandler.
+IsEnabled()` (its cursor lock, off while the PDA is open); `SetIconInternal`
+(on a change the old icon's `Sequence` goes to 0 and the new one's to 1
+over 0.1 s, at once when the new one is `None`); the icon canvas's scale
+lerps to `clamp(desired, 0, 2)` by `dt × 10`; the progress (on a change:
+the image's fill and `HandReticleProgressPercentFormat`); every icon's
+`UpdateIcon` (while its sequence runs: the game object active iff `t > 0`,
+each graphic's `CanvasRenderer` alpha = `t`); then the reset: icon
+`Default`, scale 1, progress 0, empty texts. So with nothing hovered the
+`Default` dot shows.
+
+**Start-state fix:** `uGUI_HandReticleIcon.go` is not stored (set in
+`Awake` to its own game object). M9u6s looked it up as a field and so
+left the 9 hidden icons active at alpha 0; they are now inactive, as
+`Awake`'s `SetActive(false)` leaves them (`ui --live`'s start hash
+changed from `7f52d63da4ad1e96` to `efa1606eb7c79aff`).
+
+**What sets it** (`GUIHand.OnUpdate`, only while `IsEnabled()` and the
+PDA is not in use, then the target's `OnHandHover`):
+- pickup that fits: `PickUpFormat` (or `PackUpFormat` and icon `PackUp`
+  when `usePackUpIcon`) with the left hand's button, icon `Hand`; the
+  subscript is an `ISecondaryTooltip`'s (not ported);
+- pickup that does not fit: the tech name, subscript `InventoryFull`, no
+  icon (`Default`), no button; not pickupable: the name only;
+- outcrop: its `breakText` with the button, icon `Hand`;
+- the lifepod's locker: `EscapePodStorageOpen` with the button, icon `Hand`;
+- a `CinematicModeTrigger` (the pod's ladder and hatches): its `handText`
+  with the button, icon `Hand`, if `showIconOnHandHover` and no cinematic
+  runs;
+- the held item's `Use` texts (eat, drop, battery) are not driven (our
+  player holds nothing).
+
+**`GetText`**: the translated text, then `HandReticleAddButtonFormat`
+(`{0} ({1})`) of it and `GameInput.FormatButton(button)`.
+**`FormatButton(LeftHand)`**, keyboard, default bindings, every step
+read from the code: `bindingsKeyboard` gives `<Mouse>/leftButton`; its
+control's `displayName` in `Unity.InputSystem.dll`'s `MouseState` is
+"Left Button" (*hypothesis*: what `ToHumanReadableString` with the device
+omitted gives); `displayKeyboard` maps it to `MouseButtonLeft`; the
+default sprite asset (`InputSymbols`) has that sprite, so the text is
+`<sprite name="MouseButtonLeft" color=#ADF8FFFF>` (`defaultControlsColor`).
+The player's own saved bindings are not read.
+
+**Not ported or not reached:** `hideCount` (`RequestCrosshairHide`:
+vehicles, cinematics), the screenshot hide, VR placement, the progress
+(nothing calls `SetProgress` yet; `{0:P0}` formatted as `n%`,
+*hypothesis* for Mono's English culture), `SetIcon` sizes other than 1,
+and the game's Escape menu (our window's mouse grab is not the game's
+cursor lock: the reticle hides only for the PDA).
+
+**Checked:** `ui --reticle`, 22 of 22 checks and 6,480 frame checks
+against a replay (0 differ); each fade 0.1000 s at 60 fps. Client: the
+outcrop, the ore it drops, the ladder hatch and the locker each showed
+the `Hand` icon and their text with the mouse icon; every fade done in
+0.1 s plus less than one frame; `None` while the panel is open.
+Screenshots `out/m9u6d2-outcrop.png`, `out/m9u6d2-locker.png`. Not
+compared with the game on screen.
+
 ## Script fields (M9u1) — confirmed
 
 A MonoBehaviour's fields follow its header (game object, enabled,

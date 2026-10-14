@@ -21,6 +21,7 @@ pub mod generate;
 pub mod input;
 pub mod mesh;
 pub mod preferred;
+pub mod sprite;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -28,8 +29,8 @@ use std::collections::HashMap;
 use crate::font::{FaceInfo, FontFile, GlyphMetrics};
 
 pub use generate::{CharInfo, LineInfo, TextLayout, layout_text, layout_text_with};
-pub use input::{Source, Tag, parse_tag, processing_array};
-pub use mesh::{AtlasGlyph, MeshOptions, TextMesh, text_meshes};
+pub use input::{Source, SpriteAssetValue, SpriteTag, Tag, parse_tag, processing_array};
+pub use mesh::{AtlasGlyph, MeshOptions, TextMesh, text_meshes, text_meshes_with};
 pub use preferred::preferred_values;
 
 /// `FontStyles` bits.
@@ -74,6 +75,10 @@ pub struct FontSet<'a> {
     pub default_font: Option<usize>,
     /// `TMP_Settings.missingGlyphCharacter` (0: U+25A1).
     pub missing_glyph: u32,
+    /// The sprite assets (M9u6d1) and the default one (`TMP_Settings.
+    /// defaultSpriteAsset` as the game sets it at run time).
+    pub sprites: Vec<sprite::SpriteAsset>,
+    pub default_sprite: Option<usize>,
     metrics: RefCell<HashMap<(usize, u32), GlyphMetrics>>,
 }
 
@@ -150,6 +155,9 @@ pub struct Element {
     pub metrics: GlyphMetrics,
     /// From a weight table's face (bold or italic typeface).
     pub alternate: bool,
+    /// A sprite (M9u6d1): its sprite asset and character index; `glyph`
+    /// and `metrics` are then its sprite glyph's.
+    pub sprite: Option<(usize, usize)>,
 }
 
 impl<'a> FontSet<'a> {
@@ -164,6 +172,8 @@ impl<'a> FontSet<'a> {
             settings_fallbacks,
             default_font,
             missing_glyph,
+            sprites: Vec::new(),
+            default_sprite: None,
             metrics: RefCell::new(HashMap::new()),
         }
     }
@@ -215,6 +225,7 @@ impl<'a> FontSet<'a> {
                         glyph: g,
                         metrics: self.metrics(alt, g),
                         alternate: true,
+                        sprite: None,
                     });
                 }
             }
@@ -225,6 +236,7 @@ impl<'a> FontSet<'a> {
             glyph: g,
             metrics: self.metrics(font, g),
             alternate: false,
+            sprite: None,
         })
     }
 

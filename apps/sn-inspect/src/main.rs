@@ -34,9 +34,11 @@ mod png;
 mod prefab;
 mod pulse;
 mod rects;
+mod reticle;
 mod scene;
 mod skinned;
 mod slots;
+mod sprites_tmp;
 mod start;
 mod swim;
 mod texts;
@@ -491,6 +493,8 @@ fn run(mut args: Vec<String>) -> Result<ExitCode> {
         ["ui", "--pulse"] => pulse::run(&game),
         ["ui", "--depth"] => depth::run(&game),
         ["ui", "--compass"] => compass::run(&game),
+        ["ui", "--tmp-sprites"] => sprites_tmp::run(&game),
+        ["ui", "--reticle"] => reticle::run(&game),
         ["ui", "--fonts"] => fonts::run(&game, false),
         ["ui", "--fonts", "--atlas"] => fonts::run(&game, true),
         ["ui", "--sprites"] => ui::sprites(&game, false),

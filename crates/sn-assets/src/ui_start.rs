@@ -516,10 +516,10 @@ impl Assets<'_> {
                 let (_, fi) = self.object_fields(layouts, &icon_ref)?;
                 let kind = fi.get("type").and_then(Value::as_i64);
                 let show = kind == Some(ICON_DEFAULT);
-                if let Some(go) = pptr(&fi, "go") {
-                    if let Some(g) = self.node_of(tree, &icon_ref, go)? {
-                        out.state.active.insert(g, show);
-                    }
+                // `go` is the icon's own game object (set in `Awake`, not
+                // stored).
+                if let Some(g) = self.node_of(tree, &c.object, p)? {
+                    out.state.active.insert(g, show);
                 }
                 for gr in fi.get("graphic").and_then(Value::as_array).unwrap_or(&[]) {
                     let Some(gp) = gr.as_pptr().filter(|p| !p.is_null()) else {

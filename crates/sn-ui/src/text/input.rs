@@ -39,13 +39,128 @@ pub enum Tag {
     EndSize,
     Color([u8; 4]),
     EndColor,
+    /// `<sprite …>` (M9u6d1): which sprite and its colour.
+    Sprite(SpriteTag),
     /// A tag TMP knows that this port does not apply (counted by the
     /// callers): its name.
     Unported(String),
 }
 
+/// The first value of a `<sprite>` tag.
+#[derive(Clone, Debug, PartialEq)]
+pub enum SpriteAssetValue {
+    /// `<sprite …>`: the text's sprite asset, else the default one.
+    Default,
+    /// `<sprite=N>`: that index in the default asset.
+    Index(i32),
+    /// `<sprite="Asset" …>`: an asset by name.
+    Named(String),
+}
+
+/// A `<sprite>` tag's attributes (`ValidateHtmlTag`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct SpriteTag {
+    pub asset: SpriteAssetValue,
+    /// `name="…"` (found by its hash).
+    pub name: Option<String>,
+    /// `index=N`.
+    pub index: Option<i32>,
+    /// `tint=`: not 0.
+    pub tint: bool,
+    /// `color=` (white without).
+    pub color: [u8; 4],
+    /// `anim=` (not ported: the tag is rejected and counted).
+    pub anim: bool,
+}
+
+/// A tag body's attributes after the name: `key=value`, the value quoted
+/// or up to the next space.
+fn attributes(rest: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let mut it = rest.chars().peekable();
+    loop {
+        while it.peek() == Some(&' ') {
+            it.next();
+        }
+        let mut key = String::new();
+        while let Some(&c) = it.peek() {
+            if c == '=' || c == ' ' {
+                break;
+            }
+            key.push(c);
+            it.next();
+        }
+        if key.is_empty() {
+            break;
+        }
+        let mut value = String::new();
+        if it.peek() == Some(&'=') {
+            it.next();
+            if it.peek() == Some(&'"') {
+                it.next();
+                for c in it.by_ref() {
+                    if c == '"' {
+                        break;
+                    }
+                    value.push(c);
+                }
+            } else {
+                while let Some(&c) = it.peek() {
+                    if c == ' ' {
+                        break;
+                    }
+                    value.push(c);
+                    it.next();
+                }
+            }
+        }
+        out.push((key, value));
+    }
+    out
+}
+
+/// `<sprite…>`'s body after the name.
+fn sprite_tag(after_name: &str) -> Option<SpriteTag> {
+    let (asset, rest) = match after_name.strip_prefix('=') {
+        Some(v) => {
+            let (value, rest) = if let Some(q) = v.strip_prefix('"') {
+                let end = q.find('"')?;
+                (q[..end].to_string(), &q[end + 1..])
+            } else {
+                let end = v.find(' ').unwrap_or(v.len());
+                (v[..end].to_string(), &v[end..])
+            };
+            let a = match value.parse::<f32>() {
+                Ok(n) if !v.starts_with('"') => SpriteAssetValue::Index(n as i32),
+                _ => SpriteAssetValue::Named(value),
+            };
+            (a, rest)
+        }
+        None => (SpriteAssetValue::Default, after_name),
+    };
+    let mut t = SpriteTag {
+        asset,
+        name: None,
+        index: None,
+        tint: false,
+        color: [255; 4],
+        anim: false,
+    };
+    for (k, v) in attributes(rest) {
+        match k.as_str() {
+            "name" | "NAME" => t.name = Some(v),
+            "index" | "INDEX" => t.index = Some(v.parse::<f32>().ok()? as i32),
+            "tint" | "TINT" => t.tint = v.parse::<f32>().ok()? != 0.0,
+            "color" | "COLOR" => t.color = hex_color(&v)?,
+            "anim" | "ANIM" => t.anim = true,
+            _ => return None,
+        }
+    }
+    Some(t)
+}
+
 /// TMP's names this port knows but does not apply.
-const UNPORTED: [&str; 34] = [
+const UNPORTED: [&str; 33] = [
     "u",
     "/u",
     "s",
@@ -77,7 +192,6 @@ const UNPORTED: [&str; 34] = [
     "/mark",
     "mspace",
     "/mspace",
-    "sprite",
     "voffset",
     "/voffset",
 ];
@@ -196,6 +310,7 @@ pub fn parse_tag(chars: &[u32], start: usize) -> Option<(Tag, usize)> {
         ("/size", _) => Tag::EndSize,
         ("color", Some(v)) => Tag::Color(hex_color(v).or_else(|| named_color(v))?),
         ("/color", _) => Tag::EndColor,
+        ("sprite", _) => Tag::Sprite(sprite_tag(&body[name_end..])?),
         (n, _) if UNPORTED.contains(&n) => Tag::Unported(n.to_string()),
         _ => return None,
     };
@@ -334,6 +449,29 @@ mod tests {
             parse_tag(&arr("<u>"), 1),
             Some((Tag::Unported("u".into()), 2))
         );
+    }
+
+    #[test]
+    fn sprite_tags_parse_their_attributes() {
+        let sprite = |s: &str| match parse_tag(&arr(s), 1) {
+            Some((Tag::Sprite(t), end)) if end == s.chars().count() - 1 => Some(t),
+            _ => None,
+        };
+        let t = sprite("<sprite name=\"MouseButtonLeft\" color=#ADF8FFFF>").unwrap();
+        assert_eq!(t.asset, SpriteAssetValue::Default);
+        assert_eq!(t.name.as_deref(), Some("MouseButtonLeft"));
+        assert_eq!(
+            (t.color, t.tint, t.index),
+            ([0xAD, 0xF8, 0xFF, 0xFF], false, None)
+        );
+        let t = sprite("<sprite=3>").unwrap();
+        assert_eq!((t.asset, t.color), (SpriteAssetValue::Index(3), [255; 4]));
+        let t = sprite("<sprite=\"Icons\" index=2 tint=1>").unwrap();
+        assert_eq!(t.asset, SpriteAssetValue::Named("Icons".into()));
+        assert_eq!((t.index, t.tint), (Some(2), true));
+        assert!(sprite("<sprite anim=\"0,3,10\">").unwrap().anim);
+        // An attribute TMP does not know rejects the tag.
+        assert!(sprite("<sprite foo=1>").is_none());
     }
 
     #[test]

@@ -120,11 +120,14 @@ Tested on Windows 11 with game build 10 (Steam):
   camera. A compass can only be had for testing so far
   (`--test-supply Compass`). The other screens start as the game's
   scripts leave them (feedback panel, dialogs, pop-ups, vehicle and
-  camera screens hidden; the reticle's dot shown), but the reticle,
-  death and messages are not driven yet (M9u6d–M9u7). The texts are
-  untranslated.
+  camera screens hidden). The hand reticle follows `HandReticle`: the
+  hand or pack-up icon with its 0.1 s fade, the game's texts with the
+  mouse-button icon (TMP's inline `<sprite>`, the button read from the
+  game's input code), hidden while the PDA is open; our own hand text is
+  gone under `--game-ui`. Death and messages are not driven yet
+  (M9u6e–M9u7). The texts are untranslated.
   Checked by numbers (`ui --bars`, `ui --pulse`, `ui --start`,
-  `ui --depth`, `ui --compass`, the
+  `ui --depth`, `ui --compass`, `ui --tmp-sprites`, `ui --reticle`, the
   client's per-second log) and screenshots; not compared against the
   original game on screen.
 - Oxygen, suffocation, health, death and respawn in the lifepod, with

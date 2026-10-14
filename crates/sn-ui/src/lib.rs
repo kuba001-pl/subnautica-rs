@@ -14,6 +14,7 @@
 //! - [`depth`] (M9u6c1): `uGUI_DepthCompass`, the depth readout's rules.
 //! - [`draw`] (M9u4d): the draw list: order, canvas space, alpha, clipping.
 //! - [`hud`] (M9u6b1): the HUD's rules (`uGUI_SceneHUD`, the bars).
+//! - [`reticle`] (M9u6d2): `HandReticle`, the hand's icon and texts.
 //! - [`material`] (M9u5a): UI materials and TextMesh Pro's material rules.
 //! - [`scaler`] (M9u5b): the UI camera and `uGUI_CanvasScaler`'s placement.
 //! - [`text`] (M9u4c): TextMesh Pro's text layout, auto-size and
@@ -32,6 +33,7 @@ pub mod hud;
 pub mod layout;
 pub mod material;
 pub mod mesh;
+pub mod reticle;
 pub mod scaler;
 pub mod state;
 pub mod text;

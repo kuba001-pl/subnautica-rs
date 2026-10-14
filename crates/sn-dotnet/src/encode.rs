@@ -169,9 +169,14 @@ impl Builder {
     /// A custom attribute on `parent`, made by constructor `ctor` (a
     /// MethodDef or MemberRef row).
     pub fn attribute(&mut self, parent: (TableId, u32), ctor: (TableId, u32)) {
+        self.attribute_with(parent, ctor, &[1, 0, 0, 0]);
+    }
+
+    /// A custom attribute with its value blob as given.
+    pub fn attribute_with(&mut self, parent: (TableId, u32), ctor: (TableId, u32), value: &[u8]) {
         let p = coded(HAS_CUSTOM_ATTRIBUTE, parent.0, parent.1);
         let c = coded(CUSTOM_ATTRIBUTE_TYPE, ctor.0, ctor.1);
-        let blob = self.blob(&[1, 0, 0, 0]);
+        let blob = self.blob(value);
         self.row(Table::CUSTOM_ATTRIBUTE, vec![p, c, blob]);
     }
 
@@ -212,6 +217,14 @@ impl Builder {
         let b = self.blob(&value.to_le_bytes());
         let parent = coded(HAS_CONSTANT, Table::FIELD, field & 0x00FF_FFFF);
         self.row(Table::CONSTANT, vec![0x0C, parent, b]);
+    }
+
+    /// A `string` constant of a field (by token), UTF-16.
+    pub fn constant_string(&mut self, field: u32, value: &str) {
+        let bytes: Vec<u8> = value.encode_utf16().flat_map(u16::to_le_bytes).collect();
+        let b = self.blob(&bytes);
+        let parent = coded(HAS_CONSTANT, Table::FIELD, field & 0x00FF_FFFF);
+        self.row(Table::CONSTANT, vec![0x0E, parent, b]);
     }
 
     fn method_sig(&mut self, params: u8) -> u32 {

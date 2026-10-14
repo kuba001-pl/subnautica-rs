@@ -22,6 +22,7 @@ const ELEMENT_U4: u8 = 0x09;
 const ELEMENT_I8: u8 = 0x0A;
 const ELEMENT_U8: u8 = 0x0B;
 const ELEMENT_R4: u8 = 0x0C;
+const ELEMENT_STRING: u8 = 0x0E;
 
 /// Deepest crafting menu accepted.
 const MAX_DEPTH: usize = 32;
@@ -503,6 +504,36 @@ pub fn const_f32(asm: &Assembly, namespace: &str, type_name: &str, field: &str) 
     Err(err(format!("{type_name}: no field {field}")))
 }
 
+/// The value of a `const string` field (its `Constant` row, UTF-16), e.g.
+/// `GameInput.defaultControlsColor` (M9u6d2).
+pub fn const_string(
+    asm: &Assembly,
+    namespace: &str,
+    type_name: &str,
+    field: &str,
+) -> Result<String> {
+    let ty = find_type(asm, namespace, type_name)?;
+    let constants = asm.field_constants()?;
+    for row in asm.fields(ty)? {
+        if asm.field_name(row)? != field {
+            continue;
+        }
+        let what = || format!("{type_name}.{field}");
+        let &(element, bytes) = constants
+            .get(&row)
+            .ok_or_else(|| err(format!("{}: no constant", what())))?;
+        if element != ELEMENT_STRING || bytes.len() % 2 != 0 {
+            return Err(err(format!("{}: constant is not a string", what())));
+        }
+        let units: Vec<u16> = bytes
+            .chunks_exact(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .collect();
+        return String::from_utf16(&units).map_err(|_| err(format!("{}: not UTF-16", what())));
+    }
+    Err(err(format!("{type_name}: no field {field}")))
+}
+
 /// The value an instance field gets in the type's constructor, from a
 /// C# initialiser such as `private float rate = 30f;` (the compiler puts
 /// it at the start of `.ctor` as `ldarg.0; ldc.r4 v; stfld field`). Only
@@ -849,6 +880,8 @@ mod tests {
         b.type_def("", "Manager");
         let c = b.field(LITERAL, "defaultRate");
         b.constant_r4(c, 0.15);
+        let colour = b.field(LITERAL, "colour");
+        b.constant_string(colour, "#ADF8FFFF");
         let rate = b.field(0x0001, "rate");
         let other = b.field(0x0001, "other");
         let mut ctor = Il::default()
@@ -1001,6 +1034,11 @@ mod tests {
         let asm = parse(&bytes);
         assert_eq!(const_f32(&asm, "", "Manager", "defaultRate").unwrap(), 0.15);
         assert!(const_f32(&asm, "", "Manager", "rate").is_err());
+        assert_eq!(
+            const_string(&asm, "", "Manager", "colour").unwrap(),
+            "#ADF8FFFF"
+        );
+        assert!(const_string(&asm, "", "Manager", "defaultRate").is_err());
         assert!(const_f32(&asm, "", "TechType", "Knife").is_err());
         assert_eq!(
             field_initializer_f32(&asm, "", "Manager", "rate").unwrap(),

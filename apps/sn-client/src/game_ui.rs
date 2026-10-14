@@ -61,6 +61,7 @@ use bevy::render::{Render, RenderApp, RenderStartup, RenderSystems};
 use bevy::window::PrimaryWindow;
 use sn_ui::depth::DepthCompass;
 use sn_ui::hud::{Hud, HudInputs, hud_mode};
+use sn_ui::reticle::{HAND, HAND_SUBSCRIPT, HandReticle, IconType, ReticleInputs, get_text};
 use sn_ui::scaler::{DEFAULT_UI_SCALE, Placement, UiCamera, place};
 use sn_ui::state::UiState;
 
@@ -187,6 +188,10 @@ pub(crate) struct TextValues {
 /// Text item flags (`game_ui_text.wgsl`).
 const TEXT_CLIP: u32 = 1;
 const TEXT_UNDERLAY: u32 = 2;
+/// The atlas is a texture of the install (a sprite asset's sheet, M9u6d1):
+/// its distance is in `.a`, as Unity's shader reads it; our font atlases
+/// keep it in `.r`.
+const TEXT_ALPHA_ATLAS: u32 = 4;
 /// TMP's blend: premultiplied (`One OneMinusSrcAlpha`).
 const PREMULTIPLIED_BLEND: BlendKey = [1, 10, 1, 10];
 
@@ -233,8 +238,16 @@ pub(crate) struct UiBuild {
 enum Request {
     /// The window's size.
     Size([i32; 2]),
-    /// A frame's inputs to the HUD's rules (M9u6b1).
-    Frame(HudInputs),
+    /// A frame's inputs to the HUD's rules (M9u6b1) and the hand's
+    /// hover (M9u6d2).
+    Frame(HudInputs, HandFrame),
+}
+
+/// What the hand reticle's rules read (M9u6d2): this frame's
+/// `OnHandHover` calls.
+#[derive(Clone, Debug, Default)]
+struct HandFrame {
+    hover: Option<crate::hud::HandHover>,
 }
 
 /// The worker's ends of the channels.
@@ -381,6 +394,15 @@ fn run_worker(
     // (English, the only language read for now).
     let language = sn_assets::language(&game, "English")?;
     let mut depth = DepthCompass::new(assets.depth_config(&layouts, &tree, &mut scene, &language)?);
+    // The hand reticle (M9u6d2) and the left hand's button text.
+    let mut reticle = HandReticle::new(assets.reticle_config(&layouts, &tree, &language)?);
+    let left_hand = sn_assets::format_button(&game, &set, &language, "LeftHand")?;
+    info!(
+        "game UI reticle: FormatButton(LeftHand): binding {:?} → {:?} → {:?} → {:?}",
+        left_hand.binding, left_hand.readable, left_hand.id, left_hand.text
+    );
+    // The icon's last change (time, icon), until its fade ends.
+    let mut fading: Option<(f32, IconType)> = None;
     let (food, water) = sn_assets::survival_start(&sn_assets::read_assembly(&game)?)?;
     info!(
         "game UI: uGUI read in {:.2} s; {} canvas scalers; HUD: {} bars, food {food}, water {water}",
@@ -409,11 +431,50 @@ fn run_worker(
                     resized |= screen != Some(s);
                     screen = Some(s);
                 }
-                Request::Frame(mut inputs) => {
+                Request::Frame(mut inputs, hand) => {
                     inputs.food = food;
                     inputs.water = water;
                     rules = hud.update(&inputs);
                     rules.apply(depth.update(&inputs));
+                    let before = reticle.icon_type;
+                    rules.apply(reticle.update(&reticle_inputs(
+                        &reticle,
+                        &left_hand.text,
+                        &inputs,
+                        &hand,
+                    )));
+                    if reticle.icon_type != before {
+                        info!(
+                            "game UI reticle at {:.3} s: icon {:?} → {:?}; hand {:?}, subscript {:?}",
+                            inputs.time,
+                            before,
+                            reticle.icon_type,
+                            reticle.state.text.get(&reticle.config.texts[HAND]),
+                            reticle
+                                .state
+                                .text
+                                .get(&reticle.config.texts[HAND_SUBSCRIPT])
+                        );
+                        // From the start of the change's frame (its step
+                        // already moved the fade).
+                        fading = Some((inputs.time - inputs.delta_time, reticle.icon_type));
+                    }
+                    if let Some((at, icon)) = fading {
+                        let t = icon_alpha(&reticle, icon);
+                        if icon == IconType::None || t >= 1.0 {
+                            // The rule: done on the first frame whose steps
+                            // add up to 0.1 s (at once to `None`).
+                            let took = inputs.time - at;
+                            let rule = if icon == IconType::None { 0.0 } else { 0.1 };
+                            let ok = took + 1e-4 >= rule && took < rule + inputs.delta_time + 1e-4;
+                            info!(
+                                "game UI reticle: {icon:?} fully in after {took:.4} s ({}: rule {rule} s, last step {:.4} s)",
+                                if ok { "ok" } else { "DIFFERS" },
+                                inputs.delta_time
+                            );
+                            fading = None;
+                        }
+                    }
                     frames += 1;
                     let second = inputs.time.floor() as i64;
                     if second != logged_second {
@@ -422,6 +483,15 @@ fn run_worker(
                         info!(
                             "game UI depth at {second} s: {}",
                             depth_line(&depth, &inputs)
+                        );
+                        info!(
+                            "game UI reticle at {second} s: icon {:?}, hand {:?}, subscript {:?}",
+                            reticle.icon_type,
+                            reticle.state.text.get(&reticle.config.texts[HAND]),
+                            reticle
+                                .state
+                                .text
+                                .get(&reticle.config.texts[HAND_SUBSCRIPT])
                         );
                     }
                 }
@@ -547,6 +617,39 @@ pub(crate) fn euler_y(rotation: Quat) -> f32 {
 
 /// The depth input, its floor, the mode and the shown text (M9u6c1), for
 /// the log.
+/// The reticle's inputs from the frame: the hover's texts (the hand text
+/// through `GetText` with the left hand's button) and icon. The game's
+/// `AvatarInputHandler.IsEnabled()` is its cursor lock, on in play and off
+/// while the PDA (or a menu, not ported) is open: here, the PDA closed.
+/// Our window's own mouse grab is not that lock (a scripted run never
+/// grabs it). `GUIHand` hovers only while it is on.
+fn reticle_inputs(r: &HandReticle, button: &str, i: &HudInputs, hand: &HandFrame) -> ReticleInputs {
+    let mut out = ReticleInputs {
+        delta_time: i.delta_time,
+        hidden: i.pda_open,
+        ..ReticleInputs::default()
+    };
+    if let (Some(h), false) = (&hand.hover, i.pda_open) {
+        out.texts[HAND] = get_text(&r.config, &h.text, h.button.then_some(button));
+        out.texts[HAND_SUBSCRIPT] = h.subscript.clone();
+        if let Some(icon) = h.icon {
+            out.icon = icon;
+        }
+    }
+    out
+}
+
+/// The alpha the icon's graphics were last given (1: never faded).
+fn icon_alpha(r: &HandReticle, icon: IconType) -> f32 {
+    r.config
+        .icons
+        .iter()
+        .find(|i| i.kind == icon)
+        .and_then(|i| i.graphics.first())
+        .and_then(|g| r.state.renderer_alpha.get(g).copied())
+        .unwrap_or(1.0)
+}
+
 fn depth_line(d: &DepthCompass, i: &HudInputs) -> String {
     let c = &d.config;
     let text = |n: usize| d.state.text.get(&n).map_or("-", String::as_str);
@@ -653,6 +756,10 @@ fn convert(
                 }
                 if m.has_keyword("UNDERLAY_ON") {
                     flags |= TEXT_UNDERLAY;
+                }
+                if it.texture & (1 << 40) == 0 {
+                    // Not a `font_texture_key`.
+                    flags |= TEXT_ALPHA_ATLAS;
                 }
                 for t in ["_FaceTex", "_OutlineTex"] {
                     if m.textures.get(t).is_some_and(|k| *k != 0) {
@@ -924,25 +1031,30 @@ fn send_inputs(
         }
         _ => false,
     };
-    let _ = worker.requests.send(Request::Frame(HudInputs {
-        active: hud.shown,
-        mode: hud_mode(false, false, false),
-        oxygen: hud.oxygen as f32,
-        oxygen_capacity: hud.capacity as f32,
-        health: hud.health as f32,
-        max_health: hud.max_health as f32,
-        food: 0.0,
-        water: 0.0,
-        delta_time: time.delta_secs(),
-        time: time.elapsed_secs(),
-        pda_open: panel.is_some_and(|p| p.open),
-        healed: None,
-        ate: None,
-        drank: None,
-        depth: hud.depth as f32,
-        compass,
-        yaw: camera.single().map_or(0.0, |t| euler_y(t.rotation)),
-    }));
+    let _ = worker.requests.send(Request::Frame(
+        HudInputs {
+            active: hud.shown,
+            mode: hud_mode(false, false, false),
+            oxygen: hud.oxygen as f32,
+            oxygen_capacity: hud.capacity as f32,
+            health: hud.health as f32,
+            max_health: hud.max_health as f32,
+            food: 0.0,
+            water: 0.0,
+            delta_time: time.delta_secs(),
+            time: time.elapsed_secs(),
+            pda_open: panel.is_some_and(|p| p.open),
+            healed: None,
+            ate: None,
+            drank: None,
+            depth: hud.depth as f32,
+            compass,
+            yaw: camera.single().map_or(0.0, |t| euler_y(t.rotation)),
+        },
+        HandFrame {
+            hover: hud.hand.clone(),
+        },
+    ));
 }
 
 fn receive_build(

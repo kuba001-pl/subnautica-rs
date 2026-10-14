@@ -70,6 +70,8 @@ const THIRD_PERSON_DISTANCE: f32 = 2.5;
 struct TriggerInfo {
     name: String,
     hand_text: String,
+    /// `showIconOnHandHover` (M9u6d2).
+    show_icon: bool,
     /// Its object's world position (where to look to use it).
     at: V3,
     bodies: Vec<Body>,
@@ -511,6 +513,7 @@ fn worker(
                         at: V3::from_f32(t.at),
                         name: t.trigger.name,
                         hand_text: t.trigger.trigger.hand_text,
+                        show_icon: t.trigger.trigger.show_icon_on_hand_hover,
                         bodies: t.bodies,
                     })
                     .collect(),
@@ -1318,12 +1321,37 @@ pub fn update(
         }
         _ => None,
     };
+    // A hatch (`CinematicModeTrigger.OnHandHover`, M9u6d2): its text with
+    // the button and the hand icon, if it shows them (no cinematic runs:
+    // the hover is off during one).
+    let hatch_aim = match (hover, item_text.as_ref()) {
+        (Some((_, hit)), Some(text)) if hit.body & HATCH_BODY != 0 => {
+            let t = state.triggers.get(((hit.body >> 8) & 0xff) as usize);
+            t.filter(|t| t.show_icon && !t.hand_text.is_empty())
+                .map(|t| crate::hud::HandHover {
+                    text: text.0.get(&t.hand_text).to_string(),
+                    subscript: String::new(),
+                    button: true,
+                    icon: Some(sn_ui::reticle::IconType::Hand),
+                })
+        }
+        _ => None,
+    };
     hud.hand = item_aim
         .as_ref()
-        .map(|a| (a.text.clone(), a.subscript.clone()));
-    let aim_line = item_aim
-        .as_ref()
-        .map(|a| format!("{:?} / {:?}", a.text, a.subscript));
+        .map(|a| crate::hud::HandHover {
+            text: a.text.clone(),
+            subscript: a.subscript.clone(),
+            button: a.button,
+            icon: a.icon,
+        })
+        .or(hatch_aim);
+    let aim_line = hud.hand.as_ref().map(|a| {
+        format!(
+            "{:?} / {:?}, icon {:?}, button {}",
+            a.text, a.subscript, a.icon, a.button
+        )
+    });
     if aim_line != sim.last_aim {
         if let Some(line) = &aim_line {
             info!("player: hand: {line}");

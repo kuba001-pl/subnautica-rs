@@ -5,7 +5,8 @@
 //! overflow and no truncation; it breaks lines only when wrapping.
 
 use super::generate::{Styling, case_transform, is_white_space, prepare};
-use super::input::{parse_tag, processing_array};
+use super::input::{Tag, parse_tag, processing_array};
+use super::sprite;
 use super::{FontSet, SYNTHESIZED, TextParams, style};
 
 const LARGE_POSITIVE: f32 = 32767.0;
@@ -162,9 +163,19 @@ impl Calc<'_, '_> {
             let mut unicode = self.chars[i as usize];
             if p.rich_text && unicode == u32::from('<') {
                 if let Some((tag, end)) = parse_tag(self.chars, i as usize + 1) {
-                    self.st.apply(&tag, self.font_size, p.style, italic_style);
-                    i = end as isize + 1;
-                    continue;
+                    match &tag {
+                        // A sprite tag is its character (M9u6d1).
+                        Tag::Sprite(t) => {
+                            if sprite::resolve(&fonts.sprites, fonts.default_sprite, t).is_some() {
+                                i = end as isize;
+                            }
+                        }
+                        _ => {
+                            self.st.apply(&tag, self.font_size, p.style, italic_style);
+                            i = end as isize + 1;
+                            continue;
+                        }
+                    }
                 }
             }
             let Some(prep) = self.prepared.get(self.count).copied() else {
@@ -189,11 +200,19 @@ impl Calc<'_, '_> {
             // current size (the same for every in-scope text).
             let size = self.st.size;
             let mut scale = size * small_caps / font.face.point_size as f32 * font.face.scale;
-            let (asc_line, desc_line) = if substituted && unicode == 8230 {
+            let (mut asc_line, mut desc_line) = if substituted && unicode == 8230 {
                 (0.0, 0.0)
             } else {
                 (font.face.ascent_line, font.face.descent_line)
             };
+            if let Some(sp) = element.sprite {
+                self.st.style &= !style::BOLD;
+                if let Some((s, a, d, _)) = sprite::sprite_metrics(fonts, font, sp, size) {
+                    scale = s;
+                    asc_line = a;
+                    desc_line = d;
+                }
+            }
             let unscaled = scale;
             if unicode == 173 || unicode == 3 {
                 scale = 0.0;
@@ -240,6 +259,7 @@ impl Calc<'_, '_> {
             if unicode == 9
                 || (!white && unicode != 8203 && unicode != 173 && unicode != 3)
                 || (unicode == 173 && !soft_hyphen)
+                || element.sprite.is_some()
             {
                 needed = self.x_advance.abs()
                     + metrics.advance * cw * if unicode == 173 { unscaled } else { scale };

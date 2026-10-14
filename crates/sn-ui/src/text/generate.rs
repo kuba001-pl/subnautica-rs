@@ -10,6 +10,7 @@
 //! when the text mesh is built, M9u5a).
 
 use super::input::{Tag, Unit, parse_tag, processing_array};
+use super::sprite;
 use super::{Element, FontSet, Pads, SYNTHESIZED, TextParams, style};
 use crate::font::GlyphMetrics;
 use crate::layout::{Rect, V2};
@@ -63,6 +64,10 @@ pub struct CharInfo {
     pub baseline: f32,
     pub visible: bool,
     pub line: usize,
+    /// A sprite (M9u6d1): its asset and index, the tag's colour and tint.
+    pub sprite: Option<(usize, usize)>,
+    pub sprite_color: [u8; 4],
+    pub tint: bool,
     /// The material padding and style padding its quad was made with
     /// (`num6`, `num7` in `GenerateTextMesh`; the UVs reach as far).
     pub padding: f32,
@@ -249,7 +254,7 @@ impl Styling {
                 self.color_stack.add(*c);
             }
             Tag::EndColor => self.color = self.color_stack.remove(),
-            Tag::Unported(_) => {}
+            Tag::Unported(_) | Tag::Sprite(_) => {}
         }
     }
 }
@@ -266,11 +271,48 @@ pub fn prepare(
     let italic_style = font.italic_style as i32;
     let mut st = Styling::new(p, p.font_size, italic_style);
     let mut out = Vec::with_capacity(chars.len());
+    // `m_currentFontAsset`: a sprite records the font in use.
+    let mut current_font = p.font;
     let mut i = 0;
     while i < chars.len() && chars[i] != 0 {
         let mut c = chars[i];
         if p.rich_text && c == u32::from('<') {
             if let Some((tag, end)) = parse_tag(chars, i + 1) {
+                if let Tag::Sprite(t) = &tag {
+                    // A sprite the tag finds is one character; one it
+                    // does not is no tag: its characters are text.
+                    match sprite::resolve(&fonts.sprites, fonts.default_sprite, t) {
+                        Some((asset, index)) => {
+                            let a = &fonts.sprites[asset];
+                            let g = a.glyph_of(index).copied();
+                            out.push(Prepared {
+                                unicode: 0xE000 + index as u32,
+                                element: Element {
+                                    font: current_font,
+                                    glyph: g.map_or(SYNTHESIZED, |g| g.index),
+                                    metrics: g.map(|g| g.metrics).unwrap_or_default(),
+                                    alternate: false,
+                                    sprite: Some((asset, index)),
+                                },
+                            });
+                            i = end + 1;
+                            continue;
+                        }
+                        None => {
+                            unported.push(format!(
+                                "<sprite> not found: {}",
+                                chars[i..=end]
+                                    .iter()
+                                    .filter_map(|&c| char::from_u32(c))
+                                    .collect::<String>()
+                            ));
+                            out.push(text_element(fonts, p, &st, &mut c));
+                            current_font = out.last().map_or(p.font, |e| e.element.font);
+                            i += 1;
+                            continue;
+                        }
+                    }
+                }
                 if let Tag::Unported(n) = &tag {
                     unported.push(format!("<{n}>"));
                 }
@@ -279,37 +321,45 @@ pub fn prepare(
                 continue;
             }
         }
-        c = case_transform(c, st.style).0;
-        let element = fonts
-            .lookup(c, p.font, p.font, st.style, st.weight)
-            .or_else(|| {
-                c = if fonts.missing_glyph == 0 {
-                    9633
-                } else {
-                    fonts.missing_glyph
-                };
-                fonts.lookup(c, p.font, p.font, st.style, st.weight)
-            })
-            .or_else(|| {
-                c = 32;
-                fonts.lookup(c, p.font, p.font, st.style, st.weight)
-            })
-            .unwrap_or_else(|| {
-                c = 3;
-                Element {
-                    font: p.font,
-                    glyph: SYNTHESIZED,
-                    metrics: GlyphMetrics::default(),
-                    alternate: false,
-                }
-            });
-        out.push(Prepared {
-            unicode: c,
-            element,
-        });
+        out.push(text_element(fonts, p, &st, &mut c));
+        current_font = out.last().map_or(p.font, |e| e.element.font);
         i += 1;
     }
     out
+}
+
+/// A character's text element as `SetArraySizes` finds it, the character
+/// replaced when no font has it (the missing glyph, a space, ETX).
+fn text_element(fonts: &FontSet, p: &TextParams, st: &Styling, c: &mut u32) -> Prepared {
+    *c = case_transform(*c, st.style).0;
+    let element = fonts
+        .lookup(*c, p.font, p.font, st.style, st.weight)
+        .or_else(|| {
+            *c = if fonts.missing_glyph == 0 {
+                9633
+            } else {
+                fonts.missing_glyph
+            };
+            fonts.lookup(*c, p.font, p.font, st.style, st.weight)
+        })
+        .or_else(|| {
+            *c = 32;
+            fonts.lookup(*c, p.font, p.font, st.style, st.weight)
+        })
+        .unwrap_or_else(|| {
+            *c = 3;
+            Element {
+                font: p.font,
+                glyph: SYNTHESIZED,
+                metrics: GlyphMetrics::default(),
+                alternate: false,
+                sprite: None,
+            }
+        });
+    Prepared {
+        unicode: *c,
+        element,
+    }
 }
 
 /// Upper case, lower case, small caps: the character and its size factor.
@@ -681,11 +731,26 @@ impl Gen<'_, '_> {
         }
         while i < len && self.chars[i as usize] != 0 {
             unicode = self.chars[i as usize];
+            // A sprite's colour (`m_spriteColor`, `m_tintSprite`): its tag's,
+            // white for a sprite found by its character.
+            let mut sprite_tag = None;
             if p.rich_text && unicode == u32::from('<') {
                 if let Some((tag, end)) = parse_tag(self.chars, i as usize + 1) {
-                    self.st.apply(&tag, self.font_size, p.style, italic_style);
-                    i = end as isize;
-                    next!();
+                    match &tag {
+                        // A sprite tag is its character: it is laid out
+                        // here, not skipped (one not found is text).
+                        Tag::Sprite(t) => {
+                            if sprite::resolve(&fonts.sprites, fonts.default_sprite, t).is_some() {
+                                sprite_tag = Some((t.color, t.tint));
+                                i = end as isize;
+                            }
+                        }
+                        _ => {
+                            self.st.apply(&tag, self.font_size, p.style, italic_style);
+                            i = end as isize;
+                            next!();
+                        }
+                    }
                 }
             }
             let Some(prep) = self.prepared.get(self.count).copied() else {
@@ -703,6 +768,7 @@ impl Gen<'_, '_> {
                         glyph: SYNTHESIZED,
                         metrics: GlyphMetrics::default(),
                         alternate: false,
+                        sprite: None,
                     };
                     self.truncated = true;
                 }
@@ -724,13 +790,27 @@ impl Gen<'_, '_> {
             };
             let char_scale =
                 size_for_scale * small_caps / font.face.point_size as f32 * font.face.scale;
-            let (asc_line, desc_line) = if substituted && unicode == 8230 {
+            let (mut asc_line, mut desc_line) = if substituted && unicode == 8230 {
                 (0.0, 0.0)
             } else {
                 (font.face.ascent_line, font.face.descent_line)
             };
             element_scale = char_scale;
-            let baseline_y = font.face.baseline * char_scale * font.face.scale;
+            let mut baseline_y = font.face.baseline * char_scale * font.face.scale;
+            if let Some(sp) = element.sprite {
+                // A sprite clears bold (and it stays cleared, as in TMP); a
+                // tag's character becomes U+E000 + its index.
+                self.st.style &= !style::BOLD;
+                if unicode == u32::from('<') {
+                    unicode = 0xE000 + sp.1 as u32;
+                }
+                if let Some((s, a, d, b)) = sprite::sprite_metrics(fonts, font, sp, self.st.size) {
+                    element_scale = s;
+                    asc_line = a;
+                    desc_line = d;
+                    baseline_y = b;
+                }
+            }
             let unscaled = element_scale;
             if unicode == 173 || unicode == 3 {
                 element_scale = 0.0;
@@ -748,6 +828,9 @@ impl Gen<'_, '_> {
                 c.point_size = point_size;
                 c.color = st_color;
                 c.style = st_style;
+                c.sprite = element.sprite;
+                c.sprite_color = sprite_tag.map_or([255; 4], |t| t.0);
+                c.tint = sprite_tag.is_some_and(|t| t.1);
             }
             let metrics = element.metrics;
             let white = is_white_space(unicode);
@@ -764,7 +847,11 @@ impl Gen<'_, '_> {
                 self.glyph_adjustment = adv_adjust;
             }
             let bold = !element.alternate && self.st.style & style::BOLD != 0;
-            let (pad, style_padding) = self.pads.of(font_i, font, bold);
+            let (mut pad, style_padding) = self.pads.of(font_i, font, bold);
+            if element.sprite.is_some() {
+                // `num6 = 0` for a sprite; `num7` from the current material.
+                pad = 0.0;
+            }
             bold_spacing = if bold { font.bold_spacing } else { 0.0 };
             let s = element_scale;
             let cw = 1.0 - self.char_width_adj;
@@ -844,6 +931,7 @@ impl Gen<'_, '_> {
             if unicode == 9
                 || (!white && unicode != 8203 && unicode != 173 && unicode != 3)
                 || (unicode == 173 && !soft_hyphen)
+                || element.sprite.is_some()
             {
                 self.ch(cc).visible = true;
                 if substituted {

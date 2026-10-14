@@ -2,6 +2,121 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-14 — M9u6d2: the hand reticle's rules
+
+**What/why:** under `--game-ui` the hand's hover is now the game's own
+`HandReticle`: the icon (Default dot, Hand, PackUp) with its 0.1 s fade,
+the texts with the mouse-button sprite, hidden while the PDA is open.
+Our stand-in hand text no longer shows under `--game-ui`.
+- `sn-ui::reticle` (new): `LateUpdate`, `SetIconInternal`, the icons'
+  `Sequence` fades, the scale lerp, the progress, `GetText`'s format.
+- `sn-assets`: `reticle_config` (nodes, icons, fields, formats);
+  `format_button` (`GameInput.FormatButton` for the keyboard's default
+  binding, every step read from `Assembly-CSharp.dll` and
+  `Unity.InputSystem.dll`); `hand::aim` gives the icon and button each
+  `OnHandHover` sets; `PickupInfo::pack_up_icon` (`usePackUpIcon`; the
+  rules fingerprint's value changes with it).
+- Fix in `ui_start`: the hidden reticle icons are now inactive, as
+  `Awake` leaves them (it looked for the unstored field `go`).
+- `sn-dotnet`: `static_collection`, `const_string`,
+  `Assembly::attribute_named_args` (`AttrValue`); `Builder::
+  attribute_with`, `constant_string` for tests.
+- `sn-client`: the hover (with hatches: `CinematicModeTrigger`'s text,
+  `Hand` icon) goes to the UI worker, which runs the reticle and logs
+  each icon change, each fade's length against 0.1 s, and the texts each
+  second; `hud::update_hand` runs only without `--game-ui`.
+- `sn-inspect ui --reticle` (new).
+No new dependencies.
+
+**Dead ends:**
+1. The first client run showed the icon `None` throughout: I took the
+   window's mouse grab as the game's cursor lock, and a scripted run
+   never grabs it. The game locks the cursor during play and frees it for
+   the PDA, so the rule now uses the PDA alone.
+2. The first fade log left out the change frame's own step (0.076–0.174 s
+   on uneven frames); it now counts from the frame's start and checks
+   "0.1 s plus less than one frame".
+
+**Verified** (`SUBNAUTICA_DIR` set):
+- `ui --reticle`: 22 of 22 checks. 10 icons, one per type; FormatButton
+  `<Mouse>/leftButton` → "Left Button" → `MouseButtonLeft` → a sprite
+  tag; 6,480 frame checks over 240 frames (pickup, full inventory,
+  pack-up, cursor freed, outcrop, nothing) equal to the replay; 5 fades
+  of 0.1000 s; drawn: the sprite iff the text has the button, a square
+  45.864 px quad in (173, 248, 255, 255); the icons drawn equal the
+  replay's.
+- Client `sn-client --game-ui --resolution 1920 1080 --start -283.5
+  -63.3 -114.4 --use-item 3,4,5,7,8 --shot 7 m9u6d2-outcrop`: "Break
+  limestone outcrop (sprite)" with Default → Hand, fade 0.1107 s (ok,
+  last step 0.0238 s); "Pick up Copper ore (sprite)"; Hand → Default
+  after the pickup; 0 WARN/ERROR/panic. `out/m9u6d2-outcrop.png` shows
+  the hand icon and "Pick up Copper ore (mouse icon)".
+- Client in the pod, `--use-item 3 --panel 8=open,10=close --shot 14
+  m9u6d2-locker`: "Climb Ladder (sprite)" (hatch), "Open storage
+  container (sprite)", Hand → None while the panel is open (at once),
+  None → Hand after it closes; every fade ok; 0 warnings.
+  `out/m9u6d2-locker.png`.
+- **Not tested in the client:** a full inventory (covered by `ui
+  --reticle` and the `hand::aim` test), a pack-up item in the world.
+- No regression: `ui --draw` 12 of 12 hashes equal; `ui --live` 0
+  failures (start hash now `efa1606eb7c79aff`, from the start-state fix);
+  `--start` 21 of 21; `--compass` 644 / 0; `--depth` 91,230 / 0;
+  `--bars` 300 / 0; `--tmp-sprites` 371 of 371.
+- `cargo test --workspace`: 663 passed, 0 failed, 58 ignored (new: 6
+  reticle, 1 attribute, 1 collection reader; hand test extended).
+  `cargo test --release -p sn-assets --test real_data -- --ignored`: 52
+  of 52. fmt and clippy clean.
+
+## 2026-10-14 — M9u6d1: TMP inline sprites
+
+**What/why:** the hand reticle's texts (M9u6d2) end in the key's icon,
+a TMP `<sprite name="…">` tag; TMP texts can now lay out and draw
+sprites. Facts in `docs/formats/ui.md` § TMP inline sprites.
+- `sn-ui::text::sprite` (new): sprite assets (face, glyph and character
+  tables), `simple_hash`, `SearchForSpriteByHashCode`, the tag's
+  resolution, the sprite's scale and lines, `find_matching_material`
+  (the game's `FindMatchingMaterial`, read from the IL).
+- `sn-ui::text`: the `<sprite>` tag parsed (`name`, `index`, `tint`,
+  `color`, `anim` rejected); a found sprite is one character in
+  `prepare`, the layout and the preferred size (bold cleared, no
+  padding, always visible, U+E000 + index); `text_meshes_with` puts its
+  quad in a sub-mesh per sprite asset (UVs from the glyph rect, TMP's
+  colour rule with `Color32.Multiply` as the IL computes it).
+- `sn-assets`: sprite assets' tables, sheet and materials read; the
+  runtime default sprite asset is `InputSymbols` (as `LanguageSDF` sets
+  it), the stored `EmojiOne` replaced; the UI scene draws sprite
+  sub-meshes with the matching material and the sheet as a texture.
+- `sn-client`: the SDF text shader reads `.a` from an install texture
+  (flag 4; `InputSymbols`' sheet is `Alpha8`) and `.r` from our font
+  atlases.
+- `sn-inspect ui --tmp-sprites` (new).
+No new dependencies.
+
+**Dead end / correction:** the plan expected a `TextMeshPro/Sprite`
+port. `InputSymbols`' three materials are all `TextMeshPro/Distance
+Field` (the symbols are a distance field), so none was needed.
+
+**Verified** (`SUBNAUTICA_DIR` set):
+- `ui --tmp-sprites`: 371 of 371 checks. 180 of 180 stored hashes equal
+  ours, every character has its glyph, 164 of 164 `InputSymbols` names
+  resolve. `<sprite name="MouseButtonLeft" color=#ADF8FFFF>` at 24 px in
+  `Aller_Rg SDF`: scale 0.917280 (formula in `f64` 0.917280), quad
+  44.0294 × 44.0294 (formula equal), UVs at the glyph rect's corners
+  (735, 147, 48, 48 in 1024 × 512), colour (173, 248, 255, 255). Text
+  materials named `… Outline` / `… Shadow` get `InputSymbols Outline` /
+  `Shadow`, others its `material`.
+- No regression: `ui --draw` 12 of 12 hashes equal; `ui --live` 0
+  failures, start hash `7f52d63da4ad1e96` unchanged; `ui --compass` 644
+  / 0 differ; `ui --depth` 91,230 / 0 differ.
+- Client: `sn-client --game-ui --resolution 1920 1080 --shot 12
+  m9u6d1-client`: exit 0, 0 WARN, ERROR or panic lines (the shader
+  change compiles). No in-game text holds a sprite yet, so a sprite was
+  **not seen drawn** in the client (that comes with M9u6d2).
+- `cargo test --workspace`: 656 passed, 0 failed, 58 ignored (new: 3
+  sprite layout and mesh tests, 1 tag test, 1 material-match test, 2
+  hash and search tests). `cargo test --release -p sn-assets --test
+  real_data -- --ignored`: 52 of 52. fmt and clippy clean.
+
 ## 2026-10-14 — M9u6c2: the compass
 
 **What/why:** the HUD's compass (`uGUI_Compass`) was never drawn; it now

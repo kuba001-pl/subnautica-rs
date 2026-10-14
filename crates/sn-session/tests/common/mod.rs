@@ -21,6 +21,7 @@ pub fn rules() -> Arc<ItemRules> {
         destroy_on_death: true,
         eatable,
         randomize_rotation: true,
+        pack_up_icon: false,
     };
     let mut r = ItemRules {
         techs,

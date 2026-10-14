@@ -432,3 +432,112 @@ fn characters_without_glyphs_and_other_mappings_are_counted() {
     assert_eq!(m[0].mesh.vertices.len(), 4);
     assert_eq!(unported.len(), 2, "{unported:?}");
 }
+
+/// The test font's set with one sprite asset like the game's
+/// `InputSymbols` (no point size of its own): sprite 0 `Mouse`, a 48 × 48
+/// glyph at (735, 147) in a 1024 × 512 sheet, scales 1.4 and 1.4.
+fn sprite_set(bytes: &[u8]) -> FontSet<'_> {
+    use sprite::{SpriteAsset, SpriteCharacter, SpriteFace, SpriteGlyph, simple_hash};
+    let mut s = set(bytes);
+    s.sprites.push(SpriteAsset {
+        name: "Symbols".into(),
+        face: SpriteFace::default(),
+        characters: vec![SpriteCharacter {
+            name: "Mouse".into(),
+            hash: simple_hash("Mouse"),
+            unicode: 0xFFFE,
+            glyph: 0,
+            scale: 1.4,
+        }],
+        glyphs: vec![SpriteGlyph {
+            index: 0,
+            metrics: crate::font::GlyphMetrics {
+                width: 48.0,
+                height: 48.0,
+                bearing_x: -8.0,
+                bearing_y: 32.32,
+                advance: 32.0,
+            },
+            rect: crate::font::GlyphRect::new(735, 147, 48, 48),
+            scale: 1.4,
+        }],
+        sheet: [1024, 512],
+        fallbacks: Vec::new(),
+    });
+    s.default_sprite = Some(0);
+    s
+}
+
+#[test]
+fn a_sprite_tag_is_one_character() {
+    let bytes = crate::font::tests::test_font();
+    let fonts = sprite_set(&bytes);
+    let p = TextParams::new("x<sprite name=\"Mouse\" color=#ADF8FFFF>x", 0, 9.0);
+    let l = layout_text(&fonts, &p, rect(200.0, 100.0), 0.0);
+    assert!(l.unported.is_empty(), "{:?}", l.unported);
+    let v = visible(&l);
+    assert_eq!(v.len(), 3);
+    let s = v[1];
+    assert_eq!(s.sprite, Some((0, 0)));
+    assert_eq!(s.unicode, 0xE000);
+    assert_eq!(s.sprite_color, [0xAD, 0xF8, 0xFF, 0xFF]);
+    assert!(!s.tint);
+    // No point size: the glyph's height fits the font's ascent line (72 at
+    // the 90 px sampling size), × both scales × the font scale 0.1:
+    // 72 / 48 × 1.96 × 0.1 = 0.294.
+    let k = 0.294;
+    assert!(close(s.scale, k));
+    assert!(close(s.top_right[0] - s.top_left[0], 48.0 * k));
+    assert!(close(s.top_left[1] - s.bottom_left[1], 48.0 * k));
+    // Its left edge is the pen (after `x`'s 4.5) + the bearing −8 × k,
+    // with no padding; the next `x` starts 32 × k further.
+    assert!(close(s.bottom_left[0], 4.5 - 8.0 * k));
+    assert!(close(
+        v[2].bottom_left[0] - v[0].bottom_left[0],
+        4.5 + 32.0 * k
+    ));
+    // The preferred width counts it the same way (to the hundredth TMP
+    // rounds it to).
+    let [w, _] = preferred_values(&fonts, &p, 0.0);
+    let [w0, _] = preferred_values(&fonts, &TextParams::new("xx", 0, 9.0), 0.0);
+    assert!((w - w0 - 32.0 * k).abs() < 0.011, "{w} {w0}");
+}
+
+#[test]
+fn a_sprite_quad_has_its_sheet_rect_and_colour() {
+    let bytes = crate::font::tests::test_font();
+    let fonts = sprite_set(&bytes);
+    let options = MeshOptions {
+        horizontal_mapping: 0,
+        vertical_mapping: 0,
+        sdf_shader: true,
+        lossy_scale_y: 1.0,
+    };
+    let mut p = TextParams::new("x<sprite name=\"Mouse\" color=#ADF8FF80 tint=1>", 0, 9.0);
+    p.color = [255, 128, 0, 255];
+    let l = layout_text_with(&fonts, &p, rect(200.0, 100.0), &pads(2.0, 10.0));
+    let (m, unported) = text_meshes_with(&l, &p, &options, &fonts.sprites, atlas_glyph);
+    assert!(unported.is_empty());
+    assert_eq!(m.len(), 2);
+    assert_eq!((m[1].sprite, m[1].mesh.vertices.len()), (Some(0), 4));
+    let v = &m[1].mesh.vertices;
+    // The rect without padding: (735, 147)–(783, 195) in 1024 × 512.
+    assert!(close(v[0].uv[0], 735.0 / 1024.0) && close(v[0].uv[1], 147.0 / 512.0));
+    assert!(close(v[2].uv[0], 783.0 / 1024.0) && close(v[2].uv[1], 195.0 / 512.0));
+    // Tinted: the tag's colour × the text's, (byte)(a/255 × b/255 × 255);
+    // its alpha 128 is below the text's 255, so it stays min(128, 255).
+    assert_eq!(v[0].color, [0xAD, 0x7C, 0x00, 0x80]);
+    // The sprite has no material padding.
+    assert_eq!(l.characters[1].padding, 0.0);
+}
+
+#[test]
+fn a_sprite_tag_not_found_is_text() {
+    let bytes = crate::font::tests::test_font();
+    let fonts = sprite_set(&bytes);
+    let p = TextParams::new("<sprite name=\"Nope\">", 0, 9.0);
+    let l = layout_text(&fonts, &p, rect(500.0, 100.0), 0.0);
+    assert!(l.characters.iter().all(|c| c.sprite.is_none()));
+    assert_eq!(l.characters.len(), "<sprite name=\"Nope\">".len());
+    assert_eq!(l.unported.len(), 1);
+}

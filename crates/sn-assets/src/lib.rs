@@ -26,6 +26,7 @@ mod lifepod_light;
 mod marmo;
 mod player_body;
 mod prefab;
+mod reticle;
 mod scene;
 mod script_layout;
 mod skin;
@@ -88,6 +89,7 @@ pub use prefab::{
     CullBox, ExteriorCull, NodeAnimator, PlaceholderGroup, Prefab, PrefabLodGroup, PrefabNode,
     SHADOWS_OFF, SHADOWS_ON, SHADOWS_ONLY, SHADOWS_TWO_SIDED, VolumetricGlow, WorldBox,
 };
+pub use reticle::{ButtonText, format_button};
 pub use scene::{
     AuroraGroup, AuroraShow, CinematicForward, CinematicTrigger, DiveHatch, LIGHTMAPPED_PREFAB,
     ObjectKey, Scene, SceneSpawn,

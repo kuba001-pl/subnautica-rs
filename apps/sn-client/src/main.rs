@@ -1232,7 +1232,12 @@ fn main() -> AppExit {
                         Update,
                         hud::hide_bars.after(hud::update).run_if(move || game_ui),
                     )
-                    .add_systems(Update, hud::update_hand.after(player::update))
+                    .add_systems(
+                        Update,
+                        hud::update_hand
+                            .after(player::update)
+                            .run_if(move || !game_ui),
+                    )
                     .insert_resource(items::Text(text.clone()))
                     .insert_resource(items::ItemsView::new(
                         args.pick_up.map(f64::from),

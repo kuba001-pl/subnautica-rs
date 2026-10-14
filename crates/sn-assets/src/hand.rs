@@ -6,6 +6,8 @@
 use sn_protocol::{EntityKey, HitKind, Request};
 use sn_sim::V3;
 
+use sn_ui::reticle::IconType;
+
 use crate::{ItemText, TargetBody, TargetKind};
 
 /// Language keys the game's code passes as literals (M9d5): the pick-up
@@ -13,6 +15,8 @@ use crate::{ItemText, TargetBody, TargetKind};
 /// (`Pickupable.OnHandHover`), the lifepod's locker
 /// (`EscapePod.StorageHover`).
 const PICK_UP_FORMAT: &str = "PickUpFormat";
+/// `LanguageCache.GetPackUpText` (M9u6d2).
+const PACK_UP_FORMAT: &str = "PackUpFormat";
 const INVENTORY_FULL: &str = "InventoryFull";
 const POD_STORAGE: &str = "EscapePodStorageOpen";
 
@@ -23,6 +27,11 @@ pub struct Aim {
     /// `HandReticle`'s hand text and its subscript.
     pub text: String,
     pub subscript: String,
+    /// The hand text ends in the left hand's button (`SetText(…,
+    /// GameInput.Button.LeftHand)`; M9u6d2).
+    pub button: bool,
+    /// `SetIcon`'s icon (M9u6d2); `None`: not called (`Default`).
+    pub icon: Option<IconType>,
     pub action: AimAction,
 }
 
@@ -50,6 +59,8 @@ pub fn aim(
         return Some(Aim {
             text: text.get(POD_STORAGE).to_string(),
             subscript: String::new(),
+            button: true,
+            icon: Some(IconType::Hand),
             action: AimAction::OpenLocker,
         });
     }
@@ -66,9 +77,17 @@ pub fn aim(
             // `AllowedToPickUp`: pickupable and room (the 1 s after a drop
             // always passes, see `sn_sim::inventory::pickup`).
             Some(if info.pickupable && room(info.tech) {
+                // `usePackUpIcon`: the pack-up text and icon.
+                let (format, icon) = if info.pack_up_icon {
+                    (PACK_UP_FORMAT, IconType::PackUp)
+                } else {
+                    (PICK_UP_FORMAT, IconType::Hand)
+                };
                 Aim {
-                    text: text.format(PICK_UP_FORMAT, &name),
+                    text: text.format(format, &name),
                     subscript: String::new(),
+                    button: true,
+                    icon: Some(icon),
                     action: AimAction::Request(Request::PickUp {
                         key: t.key.clone(),
                         class,
@@ -78,12 +97,16 @@ pub fn aim(
                 Aim {
                     text: name,
                     subscript: text.get(INVENTORY_FULL).to_string(),
+                    button: false,
+                    icon: None,
                     action: AimAction::None,
                 }
             } else {
                 Aim {
                     text: name,
                     subscript: String::new(),
+                    button: false,
+                    icon: None,
                     action: AimAction::None,
                 }
             })
@@ -101,6 +124,8 @@ pub fn aim(
             Some(Aim {
                 text: text.get(&info.break_text).to_string(),
                 subscript: String::new(),
+                button: true,
+                icon: Some(IconType::Hand),
                 action: AimAction::Request(Request::Hit {
                     key: t.key.clone(),
                     class,
@@ -129,6 +154,7 @@ mod tests {
             strings: HashMap::from([
                 ("Titanium".to_string(), "Ti".to_string()),
                 ("PickUpFormat".to_string(), "Pick up {0}".to_string()),
+                ("PackUpFormat".to_string(), "Pack up {0}".to_string()),
                 ("InventoryFull".to_string(), "Full".to_string()),
                 ("BreakLime".to_string(), "Break it".to_string()),
                 ("EscapePodStorageOpen".to_string(), "Open".to_string()),
@@ -144,6 +170,7 @@ mod tests {
             destroy_on_death: true,
             eatable: false,
             randomize_rotation: true,
+            pack_up_icon: false,
         };
         r.pickups.insert("ti".into(), pickup(5, true));
         r.pickups.insert("stuck".into(), pickup(5, false));
@@ -188,6 +215,7 @@ mod tests {
 
         let a = aim(&t, &r, Some(&ti), false, |_| true).unwrap();
         assert_eq!((a.text.as_str(), a.subscript.as_str()), ("Pick up Ti", ""));
+        assert_eq!((a.button, a.icon), (true, Some(IconType::Hand)));
         assert_eq!(
             a.action,
             AimAction::Request(Request::PickUp {
@@ -200,6 +228,8 @@ mod tests {
         let a = aim(&t, &r, Some(&ti), false, |_| false).unwrap();
         assert_eq!((a.text.as_str(), a.subscript.as_str()), ("Ti", "Full"));
         assert_eq!(a.action, AimAction::None);
+        // No icon set (it stays `Default`), no button.
+        assert_eq!((a.button, a.icon), (false, None));
 
         // Not pickupable: the name only.
         let stuck = target("stuck", TargetKind::Pickup, placed.clone());
@@ -223,6 +253,7 @@ mod tests {
         let lime = target("lime", TargetKind::Outcrop, placed.clone());
         let a = aim(&t, &r, Some(&lime), false, |_| true).unwrap();
         assert_eq!(a.text, "Break it");
+        assert_eq!((a.button, a.icon), (true, Some(IconType::Hand)));
         let AimAction::Request(Request::Hit { kind, spawn, .. }) = a.action else {
             panic!("{:?}", a.action);
         };
@@ -234,6 +265,15 @@ mod tests {
         // The locker; nothing; a class the rules do not know.
         let a = aim(&t, &r, None, true, |_| true).unwrap();
         assert_eq!((a.text.as_str(), a.action), ("Open", AimAction::OpenLocker));
+        assert_eq!((a.button, a.icon), (true, Some(IconType::Hand)));
+        // `usePackUpIcon`: the pack-up text and icon.
+        let mut r2 = rules();
+        r2.pickups.get_mut("ti").unwrap().pack_up_icon = true;
+        let a = aim(&t, &r2, Some(&ti), false, |_| true).unwrap();
+        assert_eq!(
+            (a.text.as_str(), a.icon),
+            ("Pack up Ti", Some(IconType::PackUp))
+        );
         assert!(aim(&t, &r, None, false, |_| true).is_none());
         let unknown = target("x", TargetKind::Pickup, placed);
         assert!(aim(&t, &r, Some(&unknown), false, |_| true).is_none());

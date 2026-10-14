@@ -144,3 +144,26 @@ is matched exactly; anything else is an error.
 - **Hypothesis:** an entry without `craftTime` crafts with a duration
   chosen by the crafting code, not 0 s; check the crafter's code before
   M9e uses craft times.
+
+## Collections, string constants and attribute arguments (M9u6d2) — confirmed
+
+- **Collection initialisers** (`static_collection`): a static field set in
+  `.cctor` as `newobj T::.ctor()`, then per entry `dup`, each argument as
+  one `ldc.i4` or `ldstr`, `callvirt Add`, then `stsfld`. Any collection
+  type and any `Add` arity. Read: `GameInputSystem.bindingsKeyboard`
+  (button value, one or two binding paths) and `displayKeyboard`
+  (control name → display id). Confirmed by `sn-inspect code --il
+  "Assembly-CSharp:GameInputSystem" .cctor` and `ui --reticle`.
+- **`const string` fields** (`const_string`): the `Constant` row's
+  element type `0x0E`, its blob UTF-16LE (`GameInput.defaultControlsColor`).
+- **Custom attribute named arguments** (`Assembly::attribute_named_args`,
+  ECMA-335 § II.23.3): the value blob starts with the prolog `0x0001`;
+  only constructors without parameters are read (no fixed arguments).
+  Then a `u16` count, and per argument: `0x53` (field) or `0x54`
+  (property), its type (`0x02` bool … `0x0E` string, `0x1D` + element
+  for an array with a `u32` count, `0xFFFFFFFF` = null, `0x51` boxed
+  object prefixed by its own type, `0x55` enum + its type name), its name
+  as a `SerString` (packed length, `0xFF` = null, UTF-8), its value.
+  *Hypothesis*: enums are 4 bytes (none was met in what we read). Used for
+  `[InputControl(name = …, displayName = …)]` on `MouseState` in
+  `Unity.InputSystem.dll` (confirmed: `leftButton` → "Left Button").

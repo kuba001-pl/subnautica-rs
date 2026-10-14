@@ -21,9 +21,21 @@ pub struct Hud {
     pub overlay: f64,
     /// Dead or respawning.
     pub dead: bool,
-    /// The hand's text and subscript (M9d5: `HandReticle`), when it is
-    /// on something.
-    pub hand: Option<(String, String)>,
+    /// What the hand's hover set (M9d5: `HandReticle`; M9u6d2: its icon
+    /// and button), when it is on something.
+    pub hand: Option<HandHover>,
+}
+
+/// One frame's `OnHandHover` calls (M9u6d2).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct HandHover {
+    /// The hand text (translated) and its subscript.
+    pub text: String,
+    pub subscript: String,
+    /// The text ends in the left hand's button.
+    pub button: bool,
+    /// `SetIcon`'s icon; `None`: not called.
+    pub icon: Option<sn_ui::reticle::IconType>,
 }
 
 #[derive(Component)]
@@ -170,11 +182,11 @@ pub fn update_hand(
     }
     for (mut text, main) in &mut texts {
         let new = match (&hud.hand, hud.shown) {
-            (Some((t, s)), true) => {
+            (Some(h), true) => {
                 if main {
-                    t.as_str()
+                    h.text.as_str()
                 } else {
-                    s.as_str()
+                    h.subscript.as_str()
                 }
             }
             _ => "",

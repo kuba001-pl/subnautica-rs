@@ -36,7 +36,7 @@ use sn_ui::scaler::{Placement, apply_to_tree};
 use sn_ui::state::{MaterialValues, SpriteId, UiState, color32};
 use sn_ui::text::{
     FontPad, FontSet, MeshOptions, Pads, Source, TextParams, Texts, layout_text, layout_text_with,
-    text_meshes,
+    text_meshes_with,
 };
 
 use crate::ui_draw::{MaterialTable, font_texture_key, texture_key};
@@ -100,6 +100,9 @@ struct Cache {
     /// A fallback material by (text material, fallback font); `None`: the
     /// fallback font asset has no material.
     fallbacks: HashMap<(usize, usize), Option<usize>>,
+    /// A sprite's material by (text material, sprite asset), M9u6d1;
+    /// `None`: the sprite asset has no material.
+    sprite_materials: HashMap<(usize, usize), Option<usize>>,
 }
 
 /// A material made for a text, with its padding.
@@ -240,6 +243,50 @@ impl Cache {
             None => None,
         };
         self.fallbacks.insert((main, target), id);
+        Ok(id)
+    }
+}
+
+impl Cache {
+    /// The material a sprite of sprite asset `asset` is drawn with in a
+    /// text whose material is `main` (M9u6d1): the game's
+    /// `FindMatchingMaterial` over the asset's `m_materials` by name, else
+    /// its `material`; its ratios and padding set as a sub-mesh's.
+    fn sprite_material(
+        &mut self,
+        assets: &Assets,
+        fonts: &FontAssets,
+        main: usize,
+        asset: usize,
+        extra_padding: bool,
+    ) -> Result<Option<usize>> {
+        if let Some(id) = self.sprite_materials.get(&(main, asset)) {
+            return Ok(*id);
+        }
+        let s = fonts
+            .sprite_assets
+            .get(asset)
+            .ok_or_else(|| format!("sprite asset {asset} not loaded"))?;
+        let mut names = Vec::new();
+        for m in &s.materials {
+            names.push(self.material(assets, m, fonts)?.name);
+        }
+        let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+        let chosen = match sn_ui::text::sprite::find_matching_material(
+            &self.derived[main].material.name,
+            &refs,
+        ) {
+            Some(i) => s.materials.get(i),
+            None => s.material.as_ref(),
+        };
+        let id = match chosen {
+            Some(o) => {
+                let m = self.material(assets, o, fonts)?;
+                Some(self.derive(m, extra_padding))
+            }
+            None => None,
+        };
+        self.sprite_materials.insert((main, asset), id);
         Ok(id)
     }
 }
@@ -520,8 +567,9 @@ impl UiScene {
                 sdf_shader: self.cache.derived[main].material.has("_WeightNormal"),
                 lossy_scale_y: scale_y_in_root_canvas(&tree, &self.parts.canvases, node),
             };
-            let (meshes, notes) =
-                text_meshes(&layout, p, &options, |f, g| atlases.glyph(set, f, g));
+            let (meshes, notes) = text_meshes_with(&layout, p, &options, &set.sprites, |f, g| {
+                atlases.glyph(set, f, g)
+            });
             for n in notes.iter().chain(layout.unported.iter()) {
                 unported.push(format!("{path}: {n}"));
             }
@@ -530,8 +578,45 @@ impl UiScene {
             }
             text_count += 1;
             for m in meshes {
-                if m.font != font {
+                if m.font != font || m.sprite.is_some() {
                     sub_meshes += 1;
+                }
+                if let Some(a) = m.sprite {
+                    // A sprite asset's sub-mesh: its sheet, its material.
+                    let Some(id) = self
+                        .cache
+                        .sprite_material(assets, fonts, main, a, extra_padding)
+                        .map_err(|e| format!("{path}: {e}"))?
+                    else {
+                        unported.push(format!("{path}: sprite asset {a} without a material"));
+                        continue;
+                    };
+                    let material = interned(&mut materials, &self.cache, id);
+                    let texture = self.cache.derived[id]
+                        .material
+                        .textures
+                        .get("_MainTex")
+                        .copied()
+                        .unwrap_or(0);
+                    match &fonts.sprite_assets[a].sheet {
+                        Some(o) if texture_key(o) == texture => {
+                            textures.insert(texture, o.clone());
+                        }
+                        _ => unported.push(format!(
+                            "{path}: sprite material's _MainTex is not its sheet"
+                        )),
+                    }
+                    graphics.push(Graphic {
+                        node,
+                        mesh: m.mesh,
+                        texture,
+                        material,
+                        maskable: maskable(node),
+                        cull_transparent: cull(node),
+                        alpha: alpha(node),
+                        kind: "Text sprite sub-mesh".into(),
+                    });
+                    continue;
                 }
                 let material = if m.font == font {
                     main_index

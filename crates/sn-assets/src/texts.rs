@@ -102,7 +102,37 @@ impl Assets<'_> {
             ),
             None => (Vec::new(), None, 0),
         };
-        Ok(FontSet::new(out, fallbacks, default_font, missing))
+        let mut set = FontSet::new(out, fallbacks, default_font, missing);
+        // The sprite assets (M9u6d1), their fallbacks as indices.
+        let sprite_index = |o: &ObjectRef| {
+            fonts
+                .sprite_assets
+                .iter()
+                .position(|s| s.object.key() == o.key())
+        };
+        for s in &fonts.sprite_assets {
+            let sheet = match &s.sheet {
+                Some(t) => {
+                    let (_, d) = t.data()?;
+                    let tex = sn_unity::Texture2D::parse(d, t.file.file().big_endian)
+                        .map_err(|e| format!("{} sheet: {e}", s.name))?;
+                    [tex.width, tex.height]
+                }
+                None => [0, 0],
+            };
+            let mut a = s.tables(sheet).map_err(|e| format!("{}: {e}", s.name))?;
+            a.fallbacks = s.fallbacks.iter().filter_map(sprite_index).collect();
+            set.sprites.push(a);
+        }
+        // `LanguageSDF.LoadFontAssets`: the first sprite asset of its entry
+        // points becomes `TMP_Settings.defaultSpriteAsset` (the stored
+        // one, `EmojiOne`, is replaced), the others its fallbacks; the
+        // entry points hold one, `InputSymbols`.
+        set.default_sprite = set
+            .sprites
+            .iter()
+            .position(|s| s.name == crate::fonts::RUNTIME_DEFAULT_SPRITE_ASSET);
+        Ok(set)
     }
 
     /// Every `TextMeshProUGUI` of a tree whose font asset is one of the

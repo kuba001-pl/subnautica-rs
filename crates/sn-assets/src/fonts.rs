@@ -151,14 +151,86 @@ pub struct LoadedFont {
     pub object: ObjectRef,
 }
 
+/// The sprite asset `LanguageSDF.assetEntryPoints` names (its only one:
+/// `…/Sprite Atlases/InputSymbols.asset`), which the game makes
+/// `TMP_Settings.defaultSpriteAsset` at start (M9u6d1; decompiled code).
+pub const RUNTIME_DEFAULT_SPRITE_ASSET: &str = "InputSymbols";
+
 /// A `TMP_SpriteAsset`: the unicode values of its sprite characters
-/// (0xFFFE: none).
+/// (0xFFFE: none), and (M9u6d1) its fields, sheet and materials.
 pub struct LoadedSpriteAsset {
     pub name: String,
     pub object: ObjectRef,
     pub unicodes: Vec<u32>,
     /// `fallbackSpriteAssets`.
     pub fallbacks: Vec<ObjectRef>,
+    pub fields: Fields,
+    /// `spriteSheet`.
+    pub sheet: Option<ObjectRef>,
+    /// `TMP_Asset.material` and `m_materials` (`FindMatchingMaterial`).
+    pub material: Option<ObjectRef>,
+    pub materials: Vec<ObjectRef>,
+}
+
+impl LoadedSpriteAsset {
+    /// The tables as the layout reads them; `sheet` is the sheet's size,
+    /// fallbacks are left for the caller to resolve.
+    pub fn tables(&self, sheet: [i32; 2]) -> Result<sn_ui::text::sprite::SpriteAsset> {
+        use sn_ui::text::sprite::{SpriteCharacter, SpriteFace, SpriteGlyph};
+        let f = &self.fields;
+        let fi = f
+            .get("m_FaceInfo")
+            .and_then(Value::as_struct)
+            .ok_or("no m_FaceInfo")?;
+        let n = |p: &str| num(fi, p).map(|v| v as f32);
+        let face = SpriteFace {
+            point_size: num(fi, "m_PointSize")? as i32,
+            scale: n("m_Scale")?,
+            ascent_line: n("m_AscentLine")?,
+            descent_line: n("m_DescentLine")?,
+            baseline: n("m_Baseline")?,
+        };
+        let mut glyphs = Vec::new();
+        for g in items(f, "m_SpriteGlyphTable") {
+            let g = g.as_struct().ok_or("TMP_SpriteGlyph is not a struct")?;
+            let m = |p: &str| num(g, &format!("m_Metrics.{p}")).map(|v| v as f32);
+            glyphs.push(SpriteGlyph {
+                index: num(g, "m_Index")? as u32,
+                metrics: GlyphMetrics {
+                    width: m("m_Width")?,
+                    height: m("m_Height")?,
+                    bearing_x: m("m_HorizontalBearingX")?,
+                    bearing_y: m("m_HorizontalBearingY")?,
+                    advance: m("m_HorizontalAdvance")?,
+                },
+                rect: rect(g.get("m_GlyphRect").ok_or("no m_GlyphRect")?)?,
+                scale: num(g, "m_Scale")? as f32,
+            });
+        }
+        let mut characters = Vec::new();
+        for c in items(f, "m_SpriteCharacterTable") {
+            let c = c.as_struct().ok_or("TMP_SpriteCharacter is not a struct")?;
+            characters.push(SpriteCharacter {
+                name: c
+                    .get("m_Name")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
+                hash: num(c, "m_HashCode")? as i32,
+                unicode: num(c, "m_Unicode")? as u32,
+                glyph: num(c, "m_GlyphIndex")? as u32,
+                scale: num(c, "m_Scale")? as f32,
+            });
+        }
+        Ok(sn_ui::text::sprite::SpriteAsset {
+            name: self.name.clone(),
+            face,
+            characters,
+            glyphs,
+            sheet,
+            fallbacks: Vec::new(),
+        })
+    }
 }
 
 /// `TMP_Settings` (the resource `TMP Settings`): what a text falls back to
@@ -276,6 +348,10 @@ impl Assets<'_> {
             object: object.clone(),
             unicodes,
             fallbacks,
+            sheet: self.field_ref(object, &fields, "spriteSheet")?,
+            material: self.field_ref(object, &fields, "material")?,
+            materials: self.field_refs(object, &fields, "m_materials")?,
+            fields,
         }))
     }
 

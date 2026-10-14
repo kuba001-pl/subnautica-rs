@@ -134,6 +134,13 @@ fn vertex(in: VertexIn) -> VertexOut {
     return out;
 }
 
+/// The distance at `uv`: `.a` of an install texture (flag 4), `.r` of our
+/// font atlases.
+fn distance_at(flags: f32, uv: vec2<f32>) -> f32 {
+    let t = textureSample(atlas, atlas_sampler, uv);
+    return select(t.r, t.a, has(flags, 4u));
+}
+
 @fragment
 fn fragment(in: VertexOut) -> @location(0) vec4<f32> {
     let it = items[in.instance];
@@ -144,14 +151,14 @@ fn fragment(in: VertexOut) -> @location(0) vec4<f32> {
     face = vec4<f32>(face.rgb * face.a, face.a);
     var outline = it.outline_color;
     outline = vec4<f32>(outline.rgb * outline.a, outline.a);
-    let d = in.param.z - textureSample(atlas, atlas_sampler, in.uv).r;
+    let d = in.param.z - distance_at(it.atlas.w, in.uv);
     let width = it.face.y * ratio_a * scale;
     let mixed = sqrt(min(1.0, width)) * saturate(d * scale + width * 0.5);
     var c = mix(face, outline, mixed);
     let softness = it.face.z * ratio_a * scale;
     c = c * (1.0 - saturate((d * scale - width * 0.5 + softness * 0.5) / (1.0 + softness)));
     if has(it.atlas.w, 2u) {
-        let u = textureSample(atlas, atlas_sampler, in.underlay.xy).r;
+        let u = distance_at(it.atlas.w, in.underlay.xy);
         let a = saturate(u * in.underlay.z - in.underlay.w);
         c = c + in.underlay_color * a * (1.0 - c.a);
     }

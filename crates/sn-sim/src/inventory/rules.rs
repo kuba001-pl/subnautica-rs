@@ -17,6 +17,8 @@ pub struct PickupInfo {
     pub eatable: bool,
     /// `Pickupable.randomizeRotationWhenDropped` (M9d5b).
     pub randomize_rotation: bool,
+    /// `Pickupable.usePackUpIcon` (M9u6d2: the hand's icon and text).
+    pub pack_up_icon: bool,
 }
 
 /// One entry of an outcrop's `prefabList`.
