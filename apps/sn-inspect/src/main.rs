@@ -22,6 +22,8 @@ mod fonts;
 mod game;
 mod gameplay;
 mod grass;
+mod icon_mesh;
+mod icons;
 mod instantiate;
 mod live;
 mod lods;
@@ -282,6 +284,10 @@ Commands:
                          SetAsLastSibling, checked against the stored draws
   ui --messages          M9u7b: ErrorMessage, the HUD's text messages,
                          through a scripted timeline against a replay
+  ui --icon-mesh         M9u7c1: item icons made by code (uGUI_ItemIcon,
+                         uGUI_Icon, UI/Icon) drawn from their sprites' meshes
+  ui --icons             M9u7c2: uGUI_IconNotifier, the picked-up icons,
+                         through a scripted queue against a replay
   ui --layout <CLASS> [<NAME>]
                          M9u1: a script's layout and, for its first object
                          (named NAME), where each field starts and its value
@@ -509,6 +515,8 @@ fn run(mut args: Vec<String>) -> Result<ExitCode> {
         ["ui", "--death"] => death::run(&game),
         ["ui", "--instantiate"] => instantiate::run(&game),
         ["ui", "--messages"] => messages::run(&game),
+        ["ui", "--icon-mesh"] => icon_mesh::run(&game),
+        ["ui", "--icons"] => icons::run(&game),
         ["ui", "--fonts"] => fonts::run(&game, false),
         ["ui", "--fonts", "--atlas"] => fonts::run(&game, true),
         ["ui", "--sprites"] => ui::sprites(&game, false),

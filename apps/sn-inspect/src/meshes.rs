@@ -64,6 +64,11 @@ fn tree_meshes(
                 *t.other.entry("uGUI_Compass".into()).or_default() += 1;
                 continue;
             }
+            // Made by code only (M9u7c1), never stored.
+            UiGraphicKind::Icon { .. } => {
+                *t.other.entry("uGUI_Icon (code)".into()).or_default() += 1;
+                continue;
+            }
             _ if !(rect.width.is_finite() && rect.height.is_finite()) => {
                 t.unknown_rect += 1;
                 continue;

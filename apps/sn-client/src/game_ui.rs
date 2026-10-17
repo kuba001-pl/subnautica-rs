@@ -20,7 +20,8 @@
 //! ui_start_state`: faders, overlays, the game-over blocker), not its
 //! stored one, which is black.
 //!
-//! Shaders: `UI/Default` and `UI/Simple` (`game_ui.wgsl`), and TMP's
+//! Shaders: `UI/Default`, `UI/Simple` and `UI/Icon`'s base variant
+//! (`game_ui.wgsl`), and TMP's
 //! `TextMeshPro/Distance Field` (`game_ui_text.wgsl`, M9u5d) with the
 //! font atlases the worker fills (sent again when glyphs are added). `uGUI/DepthClear` writes only depth,
 //! which our pass does not use: skipped (counted). Other shaders (`UI/Bar`,
@@ -62,6 +63,7 @@ use sn_ui::death::{DeathInputs, DeathScreens, DeathType};
 use sn_ui::depth::DepthCompass;
 use sn_ui::hud::{Hud, HudInputs, hud_mode};
 use sn_ui::messages::{MessageInputs, MessageLayout, Messages};
+use sn_ui::notifier::{FROM, Icon, Notifier};
 use sn_ui::reticle::{HAND, HAND_SUBSCRIPT, HandReticle, IconType, ReticleInputs, get_text};
 use sn_ui::scaler::{DEFAULT_UI_SCALE, Placement, UiCamera, place};
 use sn_ui::state::UiState;
@@ -74,6 +76,18 @@ const NEAR: f32 = 0.03;
 const FAR: f32 = 1700.0;
 /// Bytes per vertex: position (3 × f32), colour (4 × u8), uv, uv1.
 const VERTEX_BYTES: usize = 32;
+
+/// `UI/Icon`'s keywords whose variants are not ported (M9u7c1): a
+/// material with one is drawn as `UI/Default` and named in the log.
+const ICON_KEYWORDS: [&str; 7] = [
+    "ALPHA_PREMULTIPLY",
+    "FILL_HORIZONTAL",
+    "FILL_RADIAL",
+    "FILL_VERTICAL",
+    "GRAYSCALE",
+    "NOTIFICATION",
+    "SLICE_9_GRID",
+];
 
 /// Item flags (`game_ui.wgsl`).
 const SOFT_CLIP: u32 = 1;
@@ -240,10 +254,15 @@ enum Request {
     /// The window's size.
     Size([i32; 2]),
     /// A frame's inputs to the HUD's rules (M9u6b1), the hand's hover
-    /// (M9u6d2), the death screens' calls (M9u6e1) and `ErrorMessage`'s
-    /// (M9u7b: language keys, before and after `PDA.UpdateTime`).
-    Frame(HudInputs, HandFrame, DeathInputs, MessageKeys),
+    /// (M9u6d2), the death screens' calls (M9u6e1), `ErrorMessage`'s
+    /// (M9u7b: language keys, before and after `PDA.UpdateTime`) and
+    /// `uGUI_IconNotifier.Play`'s (M9u7c2: the tech types' names).
+    /// Boxed: the other variant is small.
+    Frame(Box<FrameInputs>),
 }
+
+/// [`Request::Frame`]'s inputs.
+type FrameInputs = (HudInputs, HandFrame, DeathInputs, MessageKeys, Vec<String>);
 
 /// This frame's `ErrorMessage` calls (M9u7b), as language keys.
 #[derive(Clone, Debug, Default)]
@@ -464,6 +483,37 @@ fn run_worker(
     let mut message_layout: Option<MessageLayout> = None;
     // Each shown message's entry → (text, first shown, last renewed).
     let mut message_log: HashMap<usize, (String, f32, f32)> = HashMap::new();
+    // The picked-up icons (M9u7c2): `uGUI_IconNotifier`, its icons made by
+    // code (`NotifierIcon` + its foreground) with `iconMaterial`, and the
+    // item sprites `SpriteManager` looks up.
+    let mut notifier = Notifier::new(assets.notifier_config(&layouts, &tree)?, 0x5eed_1c0f);
+    let icon_material = assets.icon_material(&catalog, &layouts)?;
+    let icon_template = sn_assets::UiScene::from_code(
+        "NotifierIcon",
+        sn_assets::notifier_icon_nodes(tree.nodes[notifier.config.canvas].layer, &icon_material),
+    )?;
+    let item_sprites = assets.sprites(&catalog)?;
+    {
+        let c = &notifier.config;
+        info!(
+            "game UI icons: canvas {}, interval {} s, iconSize {}; {} animators (durations {:?}); iconMaterial {} with keywords {:?}",
+            tree.nodes[c.canvas].path,
+            c.interval,
+            c.icon_size,
+            c.animators.len(),
+            c.animators.iter().map(|a| a.duration).collect::<Vec<_>>(),
+            icon_material.shader,
+            icon_material.keywords
+        );
+    }
+    // `canvas.rect`, read when first needed after a resize.
+    let mut notifier_rect: Option<sn_ui::layout::Rect> = None;
+    // Each shown icon's root: (sprite name, shown at).
+    let mut icon_log: HashMap<usize, (String, f32, f32)> = HashMap::new();
+    // The previous busy frame's step, for the release check.
+    let mut icon_last_step = 0.0f32;
+    // Each queued request's sprite name, in queue order.
+    let mut icon_names: std::collections::VecDeque<String> = std::collections::VecDeque::new();
     // The death timeline's marks (what, time), for the logs.
     let mut death_marks: Vec<(&str, f32)> = Vec::new();
     let mut black_full_logged = false;
@@ -497,7 +547,8 @@ fn run_worker(
                     resized |= screen != Some(s);
                     screen = Some(s);
                 }
-                Request::Frame(mut inputs, hand, death_inputs, keys) => {
+                Request::Frame(frame) => {
+                    let (mut inputs, hand, death_inputs, keys, plays) = *frame;
                     inputs.food = food;
                     inputs.water = water;
                     rules = hud.update(&inputs);
@@ -579,6 +630,68 @@ fn run_worker(
                             rules.apply(&messages.state);
                         }
                     }
+                    // `uGUI_IconNotifier` (M9u7c2): `Play(techType, From)`
+                    // from `Inventory.Pickup`, `SpriteManager.Get(techType)`.
+                    let mut icon_plays = Vec::new();
+                    for name in &plays {
+                        match item_sprites.item_icon(name) {
+                            Some(s) => {
+                                let id = scene.sprite_id(&s.object);
+                                icon_plays.push((id, [s.sprite.rect[2], s.sprite.rect[3]], FROM));
+                                icon_names.push_back(format!("{name} ({})", s.sprite.name));
+                                info!(
+                                    "game UI icons at {:.3} s: Play({name}, From): sprite {:?}, queue {}",
+                                    notifier.pda_time,
+                                    s.sprite.name,
+                                    notifier.queue.len() + icon_plays.len()
+                                );
+                            }
+                            None => warn!("game UI icons: {name}: no sprite and no Unknown"),
+                        }
+                    }
+                    let icons_busy = notifier.busy() || !icon_plays.is_empty();
+                    if icons_busy && notifier_rect.is_none() {
+                        let l = scene.layout_for(&assets, &set, &placements, &start_state)?;
+                        let r = l.rect(notifier.config.canvas);
+                        info!("game UI icons: canvas rect {r:?}");
+                        notifier_rect = Some(r);
+                    }
+                    match notifier_rect {
+                        Some(rect) if icons_busy => {
+                            let mut failed = None;
+                            let canvas = notifier.config.canvas;
+                            let mut make = || match scene.graft(&icon_template, canvas) {
+                                Ok(n) => Icon {
+                                    root: n,
+                                    foreground: n + 1,
+                                },
+                                Err(e) => {
+                                    failed = Some(e);
+                                    Icon {
+                                        root: usize::MAX,
+                                        foreground: usize::MAX,
+                                    }
+                                }
+                            };
+                            notifier.update(&icon_plays, inputs.delta_time, rect, &mut make);
+                            if let Some(e) = failed {
+                                return Err(format!("game UI icons: graft: {e}"));
+                            }
+                            for &n in &notifier.events.last_sibling {
+                                scene.set_as_last_sibling(n);
+                            }
+                            icons_log(
+                                &notifier,
+                                &mut icon_log,
+                                &mut icon_names,
+                                &mut icon_last_step,
+                                inputs.delta_time,
+                            );
+                        }
+                        // Nothing queued or shown: only `PDA.time` moves.
+                        _ => notifier.pda_time += inputs.delta_time,
+                    }
+                    rules.apply(&notifier.state);
                     let before = reticle.icon_type;
                     rules.apply(reticle.update(&reticle_inputs(
                         &reticle,
@@ -655,6 +768,7 @@ fn run_worker(
         };
         if resized {
             message_layout = None;
+            notifier_rect = None;
             placements.clear();
             for (node, s) in &scalers {
                 match place(s, &camera, fov, size, DEFAULT_UI_SCALE) {
@@ -791,6 +905,51 @@ fn messages_log(m: &Messages, log: &mut HashMap<usize, (String, f32, f32)>, dt: 
             if ok { "ok" } else { "DIFFERS" }
         );
     }
+}
+
+/// The icons' lives (M9u7c2): each shown (its sprite, `PDA.time`) and
+/// released, against its animator's duration: t steps by each frame's
+/// `deltaTime` ÷ duration from the shown frame on, and the icon goes on
+/// the first frame that finds t = 1, so the steps up to the frame before
+/// the release add up to at least the duration and less than it + the
+/// last of them. `names`: the queued requests' sprites.
+fn icons_log(
+    n: &Notifier,
+    log: &mut HashMap<usize, (String, f32, f32)>,
+    names: &mut std::collections::VecDeque<String>,
+    last: &mut f32,
+    dt: f32,
+) {
+    for icon in &n.events.released {
+        let Some((name, at, first)) = log.remove(&icon.root) else {
+            continue;
+        };
+        let rule = n.config.animators[FROM].duration;
+        // From the shown frame's step to the previous frame's.
+        let steps = (n.pda_time - dt) - (at - first);
+        let ok = steps + 1e-4 >= rule && steps < rule + *last + 1e-4;
+        info!(
+            "game UI icon at {:.3} s: released {name} (icon {}) {:.4} s after shown; steps until the frame before {steps:.4} s ({}: duration {rule} s, under one more step of {:.4} s)",
+            n.pda_time,
+            icon.root,
+            n.pda_time - at,
+            if ok { "ok" } else { "DIFFERS" },
+            *last
+        );
+    }
+    for &(icon, at) in &n.events.shown {
+        let name = names.pop_front().unwrap_or_default();
+        info!(
+            "game UI icon at {at:.3} s: shown {name} (icon {}, {} active, queue {}, pool {} of {})",
+            icon.root,
+            n.active.len(),
+            n.queue.len(),
+            n.pool.len(),
+            n.icons.len()
+        );
+        log.insert(icon.root, (name, at, dt));
+    }
+    *last = dt;
 }
 
 /// The death timeline's changes as they happen (M9u6e1), each against
@@ -1122,6 +1281,18 @@ fn convert(
                 flags |= HARD_CLIP | COMPASS;
                 *census.drawn.entry(m.shader.clone()).or_default() += 1;
             }
+            // `UI/Icon` (M9u7c1): its variant without keywords is
+            // `UI/Simple`'s program without premultiplying, blending by
+            // `_SrcFactor`/`_DstFactor` for colour and alpha.
+            sn_ui::icon::SHADER if !ICON_KEYWORDS.iter().any(|k| m.has_keyword(k)) => {
+                flags |= HARD_CLIP;
+                let f = |k: &str, default: f32| {
+                    if m.has(k) { m.float(k) } else { default }
+                };
+                let (src, dst) = (f("_SrcFactor", 5.0) as u8, f("_DstFactor", 10.0) as u8);
+                blend = [src, dst, src, dst];
+                *census.drawn.entry(m.shader.clone()).or_default() += 1;
+            }
             "UI/Simple" => {
                 flags |= HARD_CLIP;
                 if m.has_keyword("ALPHA_PREMULTIPLY") {
@@ -1309,7 +1480,35 @@ fn send_inputs(
         })
     });
     // `Inventory.main.equipment.GetCount(TechType.Compass) > 0`.
-    let compass = match (session, compass_tech) {
+    // `Inventory.Pickup`'s `uGUI_IconNotifier.Play(techType, From)`
+    // (M9u7c2): this frame's accepted pick-ups of our own player, by the
+    // tech type's name (`TechType.AsString`).
+    let plays: Vec<String> = match (&session, &text) {
+        (Some(s), Some(t)) => {
+            let me = s.player();
+            s.due
+                .iter()
+                .filter_map(|e| match &e.kind {
+                    sn_protocol::WorldEventKind::Item {
+                        player,
+                        event: sn_protocol::ItemEvent::PickedUp { class, .. },
+                        ..
+                    } if Some(*player) == me => s
+                        .with_items(|items, _| items.rules().pickups.get(class).map(|i| i.tech))
+                        .flatten(),
+                    _ => None,
+                })
+                .map(|tech| {
+                    t.0.tech_names
+                        .get(&tech)
+                        .cloned()
+                        .unwrap_or_else(|| tech.to_string())
+                })
+                .collect()
+        }
+        _ => Vec::new(),
+    };
+    let compass = match (&session, compass_tech) {
         (Some(s), Some(tech)) => {
             let me = s.player();
             s.with_items(|items, _| {
@@ -1323,7 +1522,7 @@ fn send_inputs(
         }
         _ => false,
     };
-    let _ = worker.requests.send(Request::Frame(
+    let _ = worker.requests.send(Request::Frame(Box::new((
         HudInputs {
             active: hud.shown,
             mode: hud_mode(false, false, false),
@@ -1361,7 +1560,8 @@ fn send_inputs(
             early: hud.messages_early.clone(),
             late: hud.messages_late.clone(),
         },
-    ));
+        plays,
+    ))));
 }
 
 fn receive_build(

@@ -76,7 +76,11 @@ pub fn run(game: &GameData) -> Result<ExitCode> {
     let parent = tree.nodes[original]
         .parent
         .ok_or("PlayerDepth has no parent")?;
-    let sub = assets.ui_tree("PlayerDepth", &tree.nodes[original].game_object)?;
+    let go = tree.nodes[original]
+        .game_object
+        .as_ref()
+        .ok_or("PlayerDepth: no GameObject")?;
+    let sub = assets.ui_tree("PlayerDepth", go)?;
     let len = sub.nodes.len();
     // The subtree is contiguous in the depth-first scene, in the same order.
     check(

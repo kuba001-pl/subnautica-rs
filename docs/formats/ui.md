@@ -1737,6 +1737,115 @@ character at its alpha, the hidden ones nothing, the stored nodes as
 before. Client drowning: "You died." at controls back, gone 6.0106 s
 later (rule 6 s + under a frame).
 
+## Picked-up icons (M9u7c) — confirmed (decompiled code, stored fields, `ui --icon-mesh`, `ui --icons`)
+
+Read on 2026-10-17 from the decompiled `uGUI_IconNotifier`,
+`uGUI_ItemIcon`, `uGUI_Icon`, `SpriteManager`, `RectTransformExtensions`,
+`MathExtensions`, `ShaderManager` and `Inventory` (read only, in `out/`),
+the stored fields and, for `UI/Icon`, UnityPy and `D3DDisassemble`
+(throwaway scripts in the ignored `out/m9u7c/`). Our port:
+`crates/sn-ui/src/icon.rs`, `crates/sn-ui/src/notifier.rs`,
+`crates/sn-assets/src/icons.rs`.
+
+- **`uGUI_IconNotifier`** (on `ScreenCanvas/HUD/Content/IconNotifications`,
+  its `canvas`; at 1920×1080 that rect is (−960, −540, 1920, 1080)):
+  `interval` 0.3 s, `iconSize` 64, two `IconAnimator`s, both 0.7 s,
+  every curve clamped and unweighted. **From** (index 0, the pick-up's):
+  x 0.5; y 0.5 → 0.475 at 0.4 → 0; scale 0.5 → 1 at 0.15 → 0.5; alpha
+  0 → 1 at 0.1 → 1 at 0.6 → 0; oscillation from 0, reduction 130,
+  frequency 5, × 4. **To** (batteries, crafting): y 0 → 0.5 at 0.5;
+  scale 0.5 → 1 at 0.5 → 0.5; alpha 0 → 1 at 0.2 → 1 at 0.8 → 0;
+  oscillation from 0.5, reduction 50, frequency 3, × 4. So a picked-up
+  icon starts at the screen's centre (x and y are × the canvas rect's
+  size from its bottom-left anchor) and sinks to the bottom edge.
+- **The rules:** `Play` queues; `Update` takes one request when `PDA.time
+  − time ≥ interval` (`time` starts at −interval), takes an icon from the
+  pool (`GetInstance` makes four at a time), sets its sprite
+  (`SpriteManager.Get(techType)`), `SetSize(64, 64)`, `SetAsLastSibling`,
+  shows it, draws a `Random.value` seed. Each active request (last
+  first) is animated at its t: anchored position (x, y) × the rect's
+  size; scale = the curve + `Oscillation(reduction, frequency, seed,
+  Clamp01(t − oscOffset) ÷ (1 − oscOffset) × duration)` × `oscScale`
+  (from `oscOffset` on); `SetAlpha` = the alpha curve. On the frame t = 1
+  it is released (hidden, back in the pool); otherwise t += `PDA.deltaTime`
+  ÷ duration, clamped. With 0.3 s between icons and 0.7 s each, at most
+  three are out at once: the first four icons are all the game makes.
+- **The icon** is made by code: `new GameObject("NotifierIcon")` +
+  `uGUI_ItemIcon` (a `Graphic` whose `OnPopulateMesh` clears: it draws
+  nothing), `Init`'s `SetParams(anchor (0, 0), pivot (0.5, 0.5), canvas)`;
+  its foreground (`CreateForeground`, on the first `SetForegroundSprite`)
+  is a child `"Foreground"` with a `uGUI_Icon` (anchors and pivot at the
+  centre, disabled until a sprite is set) and its own copy of
+  `iconMaterial` (`GRAYSCALE` off, `_Chroma` 1, `NOTIFICATION` off,
+  `_NotificationStrength` 0). `SetForegroundSize` fits the foreground to
+  the sprite's rect keeping its aspect (`RectTransformExtensions.Fit`);
+  `SetAlpha` sets the foreground's `CanvasRenderer` colour to white with
+  that alpha.
+- **`uGUI_Icon.OnPopulateMesh`** with a sprite (`GeneratePackedMesh`): the
+  sprite's own mesh (`SpriteManager.GetSpriteCache`: `sprite.vertices`,
+  `uv`, `triangles`), each vertex × (rect ÷ sprite size × pixels per
+  unit), not moved by the rect's position (the sprite's pivot is the
+  rect's origin); the colour is `Graphic.color` (white); the second UV is
+  the vertex position. Without a sprite, one quad over the rect, UVs
+  0…1. `GetPixelAdjustedRect` is the rect (no in-scope canvas is pixel
+  perfect).
+- **A sprite's mesh** is stored in `m_RD`: positions in stream 0 (float3,
+  units about the pivot) and 16-bit indices. The atlas sprites' stored UV
+  stream (stream 1) is all zeros. *Hypothesis* (Unity's native code): the
+  engine derives `uv` from the render data's `uvTransform`: u = (x ×
+  uvT.x + uvT.y) ÷ page width, v = (y × uvT.z + uvT.w) ÷ page height
+  (uvT = pixels per unit and the pivot's place in the page per axis;
+  titanium's is (100, 245, 100, 211) in a 1024×2048 page). `ui
+  --icon-mesh` supports it: every UV of 21 sprites is within 0.15 px of
+  its packed rect.
+- **`UI/Icon`** (`ShaderManager.preloadedShaders.UIIcon`, from the
+  Addressables key `Shaders/PreloadedShaders.asset`; in
+  `preloadedshaders.asset_….bundle`, path id 7276442034518759825). One
+  pass: blend `[_SrcFactor] [_DstFactor]` for colour and alpha (defaults
+  5, 10: `SrcAlpha OneMinusSrcAlpha`), no z write, `unity_GUIZTestMode`,
+  no culling, the stencil from `_Stencil…`. 128 + 128 variants over
+  `ALPHA_PREMULTIPLY`, `FILL_RADIAL`/`_HORIZONTAL`/`_VERTICAL`,
+  `GRAYSCALE`, `NOTIFICATION`, `SLICE_9_GRID`, `UNITY_UI_ALPHACLIP`. The
+  variant with no keyword (the notifier's) is `UI/Simple`'s program
+  without premultiplying: colour = vertex colour × `_Color`; (`_MainTex` +
+  `_TextureSampleAdd`) × colour, alpha × the hard clip on `_ClipRect`.
+  The others (fills, grayscale, the notification's god rays and overlay,
+  slice 9) are not ported: a material with one of those keywords is drawn
+  as `UI/Default` and named in the client's log. `iconMaterial` is `new
+  Material(UIIcon)`: the shader's defaults (`sn_assets::new_material`).
+  Its `_NotificationOverlayTex` (`Resources.Load("Sprites/
+  NotificationOverlay")`) is not read: only the `NOTIFICATION` variants
+  sample it.
+- **When in the frame:** `Inventory.Pickup` (from `GUIHand`, in
+  `ManagedUpdate`'s queue) calls `Play(techType, From)` unless
+  `noMessage`; `uGUI_IconNotifier.Update` is a plain `Update`.
+  `ManagedUpdate` and `uGUI_IconNotifier` both have execution order 0
+  (their `MonoScript`s, read with UnityPy), so Unity's order between them
+  is not defined. *Hypothesis:* the notifier runs after `PDA.UpdateTime`
+  (with a steady frame rate, only which frame's `deltaTime` is used
+  changes).
+- **What our client reaches:** our own player's accepted pick-ups (the
+  server's `PickedUp` event, so the icon starts when the event comes,
+  a round trip after the click, not on the click's frame). `To` (battery
+  swaps, crafting) and `Drillable`'s `From` (the exosuit's drill) are not
+  reached.
+- **`UnityEngine.Random`** is not reproduced: our generator (as M9u6b2).
+
+**Checked:** `ui --icon-mesh`, 12 of 12: a `NotifierIcon` made by code
+for each of 21 tech types (the last with no icon: `Unknown`) draws one
+item, its foreground's, with `UI/Icon` and no keyword, the sprite's own
+vertices (7 to 11) and triangles about one centre (to 0.00000), at most
+30.5 from it (inside the 64 fit), every UV within 0.15 px of the packed
+rect, the centres moving with the anchored positions; `SetAlpha(0.5)`
+gives vertex alpha 128; the stored nodes' 55 draws unchanged. `ui
+--icons`, 10 of 10: a scripted queue (three pick-ups in one frame, one
+later, five more over three frames, one `To`) at 0.0173 s frames, 400
+frames equal to a replay in doubles (position error ≤ 0.00017 canvas
+units, scale ≤ 0.000002, alpha ≤ 0.000001); shown 0.3114 s apart (the
+first frame past 0.3 s); at most three out, four icons made; 80 draws
+equal (one item per shown icon at its alpha, scale and place, in the
+order shown, none for pooled ones). Client (`sn-client --resolution 1920 1080 --start -197.3 -35.2 -10.2 --pick-up 3`): the three acid mushrooms picked up at 3 s give three `Play(AcidMushroom, From)` when the server's events come (one frame), shown 0.304 and 0.311 s apart; each released after its steps add up to 0.7092, 0.7107 and 0.7105 s (rule: at least 0.7 s, under one more step); 0 warnings; `out/m9u7c-pick.png` (3.5 s) shows the icon at the screen's centre.
+
 ## Script fields (M9u1) — confirmed
 
 A MonoBehaviour's fields follow its header (game object, enabled,

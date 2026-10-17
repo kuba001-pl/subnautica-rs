@@ -70,6 +70,20 @@ impl LoadedSprite {
     }
 }
 
+/// A node made by code (M9u7c1): `new GameObject(name)` with the
+/// `RectTransform` a script leaves it with, and the graphic it adds
+/// (`enabled` or not). A parent comes before its children.
+#[derive(Clone)]
+pub struct CodeNode {
+    pub name: String,
+    /// Within the same list.
+    pub parent: Option<usize>,
+    pub rect: RectTransform,
+    pub active_self: bool,
+    pub layer: u32,
+    pub graphic: Option<(UiGraphicKind, bool)>,
+}
+
 /// A UI tree read once, to draw for any state.
 pub struct UiScene {
     pub tree: UiTree,
@@ -99,6 +113,8 @@ struct Cache {
     /// Each font asset's own material.
     font_materials: HashMap<usize, Option<UiMaterial>>,
     sprites: HashMap<Key, LoadedSprite>,
+    /// Sprites as `uGUI_Icon` draws them (M9u7c1).
+    icon_sprites: HashMap<Key, (sn_ui::icon::IconSprite, Option<ObjectRef>)>,
     /// Materials made for texts: a text's after `LoadFontAsset` and
     /// `GetPaddingForMaterial`, and fallback ones.
     derived: Vec<Derived>,
@@ -300,6 +316,77 @@ impl Cache {
 }
 
 impl UiScene {
+    /// A template made by code (M9u7c1), to [`UiScene::graft`]: `nodes`
+    /// with no stored object, no canvas, group or mask, each graphic
+    /// maskable (`MaskableGraphic`'s default) and not culled when
+    /// transparent (a new `CanvasRenderer`'s). Node 0 is the root.
+    pub fn from_code(key: &str, nodes: Vec<CodeNode>) -> Result<UiScene> {
+        let bad = nodes.iter().enumerate().any(|(i, n)| match n.parent {
+            None => i != 0,
+            Some(p) => p >= i,
+        });
+        if nodes.is_empty() || bad {
+            return Err(format!(
+                "{key}: nodes made by code need one root first and parents before children"
+            ));
+        }
+        let mut tree = UiTree {
+            key: key.into(),
+            nodes: Vec::new(),
+        };
+        let mut layout = Vec::new();
+        let mut parts = UiDrawParts::default();
+        let mut graphics = Vec::new();
+        for (i, n) in nodes.iter().enumerate() {
+            let (path, active) = match n.parent {
+                Some(p) => (
+                    format!("{}/{}", tree.nodes[p].path, n.name),
+                    tree.nodes[p].active && n.active_self,
+                ),
+                None => (n.name.clone(), n.active_self),
+            };
+            tree.nodes.push(crate::UiNode {
+                name: n.name.clone(),
+                parent: n.parent,
+                path,
+                active_self: n.active_self,
+                active,
+                layer: n.layer,
+                components: Vec::new(),
+                game_object: None,
+            });
+            layout.push(sn_ui::layout::Node {
+                name: n.name.clone(),
+                parent: n.parent,
+                children: (i + 1..nodes.len())
+                    .filter(|&c| nodes[c].parent == Some(i))
+                    .collect(),
+                active_self: n.active_self,
+                rect: n.rect,
+                components: Vec::new(),
+            });
+            if let Some((kind, enabled)) = &n.graphic {
+                parts.maskable.insert(i, true);
+                parts.cull_transparent.insert(i, false);
+                graphics.push(UiGraphic {
+                    node: i,
+                    enabled: *enabled,
+                    kind: kind.clone(),
+                    material: None,
+                });
+            }
+        }
+        Ok(UiScene {
+            tree,
+            layout: Tree::new(layout),
+            parts,
+            graphics,
+            texts: Vec::new(),
+            cache: Cache::default(),
+            sprite_refs: HashMap::new(),
+        })
+    }
+
     /// The id a state uses for sprite `o` (`Image.sprite = o`).
     pub fn sprite_id(&mut self, o: &ObjectRef) -> SpriteId {
         let id = SpriteId(texture_key(o));
@@ -565,6 +652,56 @@ impl UiScene {
                 } => vec![texture.clone(), overlay.clone()],
                 _ => Vec::new(),
             };
+            if let UiGraphicKind::Icon {
+                sprite,
+                color,
+                material,
+            } = &kind
+            {
+                // `uGUI_Icon`: its mesh, `mainTexture` (the sprite's page,
+                // or white) and its own material instance.
+                let loaded = match sprite {
+                    Some(id) => {
+                        let path = &self.tree.nodes[node].path;
+                        let o = self
+                            .sprite_refs
+                            .get(id)
+                            .ok_or_else(|| format!("{path}: sprite {id:?} not given out"))?;
+                        let key = o.key();
+                        if !self.cache.icon_sprites.contains_key(&key) {
+                            let l = assets
+                                .icon_sprite(o)
+                                .map_err(|e| format!("{path}: sprite: {e}"))?;
+                            self.cache.icon_sprites.insert(key.clone(), l);
+                        }
+                        self.cache.icon_sprites.get(&key)
+                    }
+                    None => None,
+                };
+                let texture = match loaded.and_then(|(_, t)| t.as_ref()) {
+                    Some(t) => {
+                        textures.insert(texture_key(t), t.clone());
+                        texture_key(t)
+                    }
+                    None => 0,
+                };
+                let mut m = material.clone();
+                m.textures.insert("_MainTex".into(), texture);
+                if let Some(v) = state.material.get(&node) {
+                    apply_material_values(&mut m, v);
+                }
+                graphics.push(Graphic {
+                    node,
+                    mesh: sn_ui::icon::icon_mesh(rect, loaded.map(|(s, _)| s), *color),
+                    texture,
+                    material: materials.intern(m),
+                    maskable: maskable(node),
+                    cull_transparent: cull(node),
+                    alpha: alpha(node),
+                    kind: "uGUI_Icon".into(),
+                });
+                continue;
+            }
             for o in objects.into_iter().flatten() {
                 textures.insert(texture_key(&o), o);
             }
@@ -852,6 +989,9 @@ fn apply_to_layout(
         if let Some(s) = t.scale {
             n.rect.scale = s;
         }
+        if let Some(s) = t.size_delta {
+            n.rect.size_delta = s;
+        }
     }
     for (node, n) in tree.nodes.iter_mut().enumerate() {
         let enabled = state.enabled.get(&node);
@@ -930,6 +1070,15 @@ fn apply_to_graphic(
         UiGraphicKind::Compass { ring, .. } => {
             if let Some(c) = state.color.get(&node) {
                 ring.color = *c;
+            }
+            true
+        }
+        UiGraphicKind::Icon { sprite, color, .. } => {
+            if let Some(s) = state.sprite.get(&node) {
+                *sprite = *s;
+            }
+            if let Some(c) = state.color.get(&node) {
+                *color = *c;
             }
             true
         }
@@ -1055,6 +1204,7 @@ mod tests {
                 z: Some(-1.0),
                 rotation: Some(q),
                 scale: Some([2.0, 2.0, 1.0]),
+                size_delta: Some([12.0, 34.0]),
             },
         );
         let size = SpriteSize {
@@ -1073,6 +1223,7 @@ mod tests {
         assert_eq!(r.z, -1.0);
         assert_eq!(r.rotation, q);
         assert_eq!(r.scale, [2.0, 2.0, 1.0]);
+        assert_eq!(r.size_delta, [12.0, 34.0]);
         assert!(!tree.nodes[1].components[0].enabled);
         assert!(!tree.nodes[2].components[0].enabled);
         assert_eq!(

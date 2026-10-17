@@ -215,7 +215,9 @@ impl Assets<'_> {
         };
         let key = o.key();
         for (i, n) in tree.nodes.iter().enumerate() {
-            if n.game_object.key() == key || n.components.iter().any(|c| c.object.key() == key) {
+            if n.game_object.as_ref().is_some_and(|g| g.key() == key)
+                || n.components.iter().any(|c| c.object.key() == key)
+            {
                 return Ok(Some(i));
             }
         }

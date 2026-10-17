@@ -234,6 +234,11 @@ impl Default for BarState {
 pub struct Random(u32);
 
 impl Random {
+    /// A generator from `seed` (0 is made 1: xorshift stays at 0).
+    pub fn new(seed: u32) -> Random {
+        Random(seed.max(1))
+    }
+
     /// `Random.value`: 0…1.
     pub fn value(&mut self) -> f32 {
         let mut x = self.0;

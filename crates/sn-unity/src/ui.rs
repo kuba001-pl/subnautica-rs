@@ -200,6 +200,85 @@ pub struct SpriteMesh {
     pub vertex_data: Vec<u8>,
 }
 
+impl SpriteMesh {
+    fn invalid(what: String) -> crate::Error {
+        crate::Error {
+            offset: 0,
+            kind: ErrorKind::Invalid(format!("sprite mesh: {what}")),
+        }
+    }
+
+    /// `Sprite.vertices` and `Sprite.triangles` (M9u7c1): each vertex's x
+    /// and y (channel 0, float32, in units about the pivot), and the 16-bit
+    /// indices of every submesh, each checked against the vertex count.
+    /// Streams follow one another, each on a 16-byte boundary; the position
+    /// is in stream 0.
+    pub fn decode(&self) -> Result<(Vec<[f32; 2]>, Vec<u16>)> {
+        let Some(&[stream, offset, format, dimension]) = self.channels.first() else {
+            return Err(Self::invalid("no channels".into()));
+        };
+        if stream != 0 || format != 0 || (dimension & 0xF) < 2 {
+            return Err(Self::invalid(format!(
+                "position in stream {stream}, format {format}, dimension {dimension}"
+            )));
+        }
+        // Stream 0's stride: its channels' sizes (float32 4, float16 /
+        // 16-bit 2, 8-bit 1).
+        let mut stride = 0usize;
+        for &[s, _, f, d] in &self.channels {
+            if s != 0 || d & 0xF == 0 {
+                continue;
+            }
+            let size = match f {
+                0 | 10 | 11 => 4,
+                1 | 4 | 5 | 8 | 9 => 2,
+                2 | 3 | 6 | 7 => 1,
+                _ => return Err(Self::invalid(format!("vertex format {f}"))),
+            };
+            stride += size * usize::from(d & 0xF);
+        }
+        let n = self.vertex_count as usize;
+        let mut positions = Vec::with_capacity(n.min(self.vertex_data.len()));
+        for v in 0..n {
+            let at = v
+                .checked_mul(stride)
+                .and_then(|x| x.checked_add(usize::from(offset)))
+                .ok_or_else(|| Self::invalid("vertex offset overflows".into()))?;
+            let b = self
+                .vertex_data
+                .get(at..at + 8)
+                .ok_or_else(|| Self::invalid(format!("vertex {v} past the data")))?;
+            let f = |k: usize| f32::from_le_bytes([b[k], b[k + 1], b[k + 2], b[k + 3]]);
+            positions.push([f(0), f(4)]);
+        }
+        let mut indices = Vec::new();
+        for (i, &(first_byte, count)) in self.submeshes.iter().enumerate() {
+            let start = first_byte as usize;
+            let end = (count as usize)
+                .checked_mul(2)
+                .and_then(|l| l.checked_add(start))
+                .ok_or_else(|| Self::invalid(format!("submesh {i}: size overflows")))?;
+            let bytes = self
+                .index_buffer
+                .get(start..end)
+                .ok_or_else(|| Self::invalid(format!("submesh {i}: indices out of bounds")))?;
+            for c in bytes.chunks_exact(2) {
+                let k = u16::from_le_bytes([c[0], c[1]]);
+                if usize::from(k) >= n {
+                    return Err(Self::invalid(format!(
+                        "submesh {i}: index {k} ≥ {n} vertices"
+                    )));
+                }
+                indices.push(k);
+            }
+        }
+        if indices.len() % 3 != 0 {
+            return Err(Self::invalid(format!("{} indices", indices.len())));
+        }
+        Ok((positions, indices))
+    }
+}
+
 /// `Sprite`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Sprite {
@@ -744,5 +823,52 @@ mod tests {
         for len in [0, 20, 100, b.len() - 1] {
             assert!(Sprite::parse(&b[..len], false).is_err(), "{len}");
         }
+    }
+
+    /// Positions in stream 0 (float3 + an 8-bit colour: stride 16), the
+    /// UVs in stream 1, as the game's sprites store them.
+    fn sprite_mesh() -> SpriteMesh {
+        let mut vertex_data = Vec::new();
+        for p in [[-0.5f32, -0.5], [-0.5, 0.5], [0.5, 0.5]] {
+            for v in [p[0], p[1], 0.0] {
+                vertex_data.extend_from_slice(&v.to_le_bytes());
+            }
+            vertex_data.extend_from_slice(&[255; 4]);
+        }
+        vertex_data.extend_from_slice(&[0; 16 + 24]);
+        let mut channels = vec![[0, 0, 0, 3], [0, 0, 0, 0], [0, 0, 0, 0], [0, 12, 2, 4]];
+        channels.push([1, 0, 0, 2]);
+        SpriteMesh {
+            submeshes: vec![(0, 3)],
+            index_buffer: vec![2, 0, 1, 0, 0, 0],
+            vertex_count: 3,
+            channels,
+            vertex_data,
+        }
+    }
+
+    #[test]
+    fn decodes_a_sprite_mesh() {
+        let m = sprite_mesh();
+        let (positions, indices) = m.decode().unwrap();
+        assert_eq!(positions, [[-0.5, -0.5], [-0.5, 0.5], [0.5, 0.5]]);
+        assert_eq!(indices, [2, 1, 0]);
+        // An index past the vertices, indices past the buffer, too little
+        // vertex data, a position not in float32.
+        let mut bad = m.clone();
+        bad.index_buffer[0] = 3;
+        assert!(bad.decode().is_err());
+        let mut bad = m.clone();
+        bad.submeshes[0].1 = 4;
+        assert!(bad.decode().is_err());
+        let mut bad = m.clone();
+        bad.vertex_data.truncate(39);
+        assert!(bad.decode().is_err());
+        let mut bad = m.clone();
+        bad.channels[0] = [0, 0, 1, 3];
+        assert!(bad.decode().is_err());
+        let mut bad = m;
+        bad.channels.clear();
+        assert!(bad.decode().is_err());
     }
 }

@@ -6,7 +6,8 @@
 
 use std::collections::BTreeMap;
 
-/// A sprite a script assigns (`Image.sprite`), by the id the scene gave it.
+/// A sprite a script assigns (`Image.sprite`, `uGUI_Icon.sprite`), by the
+/// id the scene gave it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct SpriteId(pub u64);
 
@@ -19,6 +20,9 @@ pub struct LocalTransform {
     /// A unit quaternion (x, y, z, w).
     pub rotation: Option<[f32; 4]>,
     pub scale: Option<[f32; 3]>,
+    /// `sizeDelta` (M9u7c1: `SetSizeWithCurrentAnchors` with equal
+    /// anchors sets it to the size).
+    pub size_delta: Option<[f32; 2]>,
 }
 
 /// Values a script writes into its graphic's own material instance
@@ -62,7 +66,7 @@ pub struct UiState {
     pub enabled: BTreeMap<usize, bool>,
     /// `Graphic.color`, as Unity's `Color` (stored, not linear).
     pub color: BTreeMap<usize, [f32; 4]>,
-    /// `Image.sprite` (`None`: no sprite).
+    /// `Image.sprite` or `uGUI_Icon.sprite` (`None`: no sprite).
     pub sprite: BTreeMap<usize, Option<SpriteId>>,
     /// `Image.fillAmount`.
     pub fill_amount: BTreeMap<usize, f32>,
@@ -97,6 +101,7 @@ impl UiState {
             e.z = t.z.or(e.z);
             e.rotation = t.rotation.or(e.rotation);
             e.scale = t.scale.or(e.scale);
+            e.size_delta = t.size_delta.or(e.size_delta);
         }
         for (k, m) in &other.material {
             self.material.entry(*k).or_default().apply(m);

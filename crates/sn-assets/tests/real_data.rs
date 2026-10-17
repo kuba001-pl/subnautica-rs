@@ -3271,6 +3271,60 @@ fn the_messages_are_read() {
     assert!(w > 0.0 && w < 500.0 && h > 20.0 && h < 40.0, "{w} {h}");
 }
 
+/// M9u7c: `uGUI_IconNotifier`'s fields (its canvas, 0.3 s, 64, two
+/// animators of 0.7 s), `iconMaterial` (`UI/Icon`'s defaults, no keyword)
+/// and an item sprite's mesh as `uGUI_Icon` draws it (its UVs inside the
+/// packed rect, to a pixel).
+#[test]
+#[ignore = "needs SUBNAUTICA_DIR pointing at a Subnautica install"]
+fn the_icon_notifier_is_read() {
+    let Some(dir) = std::env::var_os("SUBNAUTICA_DIR") else {
+        eprintln!("SUBNAUTICA_DIR not set; skipping");
+        return;
+    };
+    let game = GameData::locate(Some(PathBuf::from(dir))).unwrap();
+    let assets = Assets::index(&game).unwrap();
+    let assemblies = sn_assets::ScriptAssemblies::load(&game).unwrap();
+    let layouts = assemblies.layouts().unwrap();
+    let catalog = assets.catalog().unwrap();
+    let root = assets.ugui_root(&catalog).unwrap();
+    let ui = assets.ui_tree("uGUI.prefab", &root).unwrap();
+    let c = assets.notifier_config(&layouts, &ui).unwrap();
+    assert!(ui.nodes[c.canvas].path.ends_with("/IconNotifications"));
+    assert_eq!((c.interval, c.icon_size), (0.3, 64.0));
+    assert_eq!(c.animators.len(), 2);
+    for a in &c.animators {
+        assert!((a.duration - 0.7).abs() < 1e-6);
+        assert!(a.oscillate && a.osc_scale == 4.0);
+        assert_eq!((a.x.evaluate(0.0), a.alpha.evaluate(0.0)), (0.5, 0.0));
+    }
+    let m = assets.icon_material(&catalog, &layouts).unwrap();
+    assert_eq!(m.shader, sn_ui::icon::SHADER);
+    assert!(m.keywords.is_empty());
+    assert_eq!((m.float("_SrcFactor"), m.float("_DstFactor")), (5.0, 10.0));
+    let sprites = assets.sprites(&catalog).unwrap();
+    let s = sprites.item_icon("Titanium").unwrap();
+    let (mesh, page) = assets.icon_sprite(&s.object).unwrap();
+    assert_eq!((mesh.size, mesh.pixels_per_unit), ([128.0, 128.0], 100.0));
+    assert!(mesh.vertices.len() >= 3 && mesh.triangles.len() % 3 == 0);
+    assert_eq!(mesh.uv.len(), mesh.vertices.len());
+    assert!(page.is_some());
+    let r = s.packed.texture_rect;
+    let (_, td) = page.as_ref().unwrap().data().unwrap();
+    let t = sn_unity::Texture2D::parse(td, false).unwrap();
+    for uv in &mesh.uv {
+        let px = [uv[0] * t.width as f32, uv[1] * t.height as f32];
+        assert!(
+            px[0] > r[0] - 1.0 && px[0] < r[0] + r[2] + 1.0,
+            "{px:?} {r:?}"
+        );
+        assert!(
+            px[1] > r[1] - 1.0 && px[1] < r[1] + r[3] + 1.0,
+            "{px:?} {r:?}"
+        );
+    }
+}
+
 /// M9u6s: the start rules hide the screens the game hides at start (the
 /// feedback panel, the confirmation dialog, pop-ups, the vehicles' and
 /// cameras' screens), and the HUD's bars, player depth and the reticle's

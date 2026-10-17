@@ -2,6 +2,72 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-17 — M9u7c1–c2: the picked-up item icons (`uGUI_IconNotifier`)
+
+**What/why:** a picked-up item showed no icon. The game's icon is a node
+made by code with its own graphic (`uGUI_Icon`, a sprite's packed mesh)
+and shader (`UI/Icon`), which the scene could not draw. Facts in
+`docs/formats/ui.md` § Picked-up icons.
+- `sn-unity`: `SpriteMesh::decode` (a sprite's vertex positions and
+  indices, checked).
+- `sn-ui::icon` (new): `uGUI_Icon.OnPopulateMesh` (packed mesh or quad),
+  `RectTransformExtensions.Fit`, `Sprite.uv` from `uvTransform`
+  (*hypothesis*: the stored UV stream is zeros), `_FillRect`.
+- `sn-ui::notifier` (new): `uGUI_IconNotifier` (`Play`, `Update`'s queue
+  and pool, `Animate` with the curves, `Oscillation` and the release).
+  `sn-ui::state`: `LocalTransform::size_delta`; `hud::Random::new`.
+- `sn-assets`: `UiScene::from_code` (nodes made by code, grafted as
+  M9u7a's; `UiNode::game_object` is now optional), `UiGraphicKind::Icon`
+  (drawn with its own material and its sprite's mesh and page),
+  `icons.rs` (`notifier_config`, `preloaded_shader`, `icon_material` =
+  `new Material(UIIcon)` from the shader's defaults, `icon_sprite`,
+  `notifier_icon_nodes`); `sprite_render_data` shared with `sprite_info`.
+- `sn-client`: the frame's own accepted `PickedUp` events become
+  `Play(techType, From)` (the tech's name → `SpriteManager.Get`); the UI
+  worker runs the notifier, grafts the icons, logs each one's life;
+  `UI/Icon`'s variant without keywords is drawn by `UI/Simple`'s path
+  (other variants named in the log). `Request::Frame` boxed (clippy).
+- `sn-inspect ui --icon-mesh` and `ui --icons` (new); a real-data test
+  `the_icon_notifier_is_read`.
+No new dependencies.
+
+**Verified** (`SUBNAUTICA_DIR` set):
+- `ui --icon-mesh`: 12 of 12; 21 icons (20 tech types and `Unknown`)
+  each draw one item with `UI/Icon`, their sprites' vertices and
+  triangles about one centre, UVs within 0.15 px of the packed rects;
+  `SetAlpha(0.5)` → vertex alpha 128; 55 stored draws unchanged.
+- `ui --icons`: 10 of 10; 400 frames, 0 differing from the replay
+  (position ≤ 0.00017 canvas units, scale ≤ 0.000002, alpha ≤
+  0.000001); 10 icons shown, ≥ 0.3 s apart; at most 3 out, 4 made; 80
+  draws, 0 differing.
+- Client, `sn-client --resolution 1920 1080 --start -197.3 -35.2 -10.2
+  --pick-up 3 --shot 9 m9u7c-after` (`out/m9u7c/client-pick3.log`): 3
+  acid mushrooms picked up → 3 `Play`s, shown 0.304 and 0.311 s apart,
+  each released when its steps reached 0.7092 / 0.7107 / 0.7105 s (ok:
+  0.7 s + under one step); 0 WARN/ERROR/panic. With `--shot 3.45
+  m9u7c-pick`: `out/m9u7c-pick.png` shows the icon at the screen's
+  centre.
+- **Fix on the way:** the client's first release check measured from the
+  frame after the shown one to the release frame and called two releases
+  short (0.6998, 0.6954 s); t steps from the shown frame to the frame
+  before the release, which the log now sums.
+- No regression: `ui --instantiate` 10 of 10; `--messages` 7 of 7;
+  `--death` 24 of 24; `--reticle` 22 of 22; `--compass` 644 / 0;
+  `--depth` 91,230 / 0; `--bars` 300 / 0; `--start` 21 of 21;
+  `--tmp-sprites` 371 of 371; `--draw` 12 of 12 hashes equal; `--live`
+  start hash `efa1606eb7c79aff`; `--meshes` 0 failing. Real-data tests
+  (`sn-assets`): 55 passed.
+- `cargo test --workspace` (no `SUBNAUTICA_DIR`): 688 passed, 0 failed
+  (new: 1 sprite mesh, 4 icon, 5 notifier tests). fmt and clippy (`-D
+  warnings`) clean.
+
+**Not tested:** the `To` animation in the client (batteries, crafting:
+not ported; covered by `ui --icons`); a resize while an icon is shown;
+a UI scale other than 1; the order of `uGUI_IconNotifier.Update` and
+`PDA.UpdateTime` in the game (*hypothesis*). The icon starts when the
+server's event comes, not on the click's frame. Not compared against
+the original game on screen.
+
 ## 2026-10-17 — M9u7b: the HUD's text messages (`ErrorMessage`)
 
 **What/why:** the game's messages ("You died.", "Inventory full"…) were

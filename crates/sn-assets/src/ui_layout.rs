@@ -321,6 +321,14 @@ pub enum UiGraphicKind {
         ring: sn_ui::compass::Compass,
         texture: Option<ObjectRef>,
     },
+    /// `uGUI_Icon` made by code (M9u7c1, `uGUI_ItemIcon`'s foreground):
+    /// its sprite (by the id the scene gave it; `None` draws the quad),
+    /// `Graphic.color`, and its own material instance.
+    Icon {
+        sprite: Option<sn_ui::state::SpriteId>,
+        color: [f32; 4],
+        material: sn_ui::material::UiMaterial,
+    },
     /// Another graphic (the game's own `Graphic` subclasses), by script.
     Other(String),
 }
@@ -430,21 +438,31 @@ impl Assets<'_> {
         }
         let s =
             Sprite::parse(d, sprite.file.file().big_endian).map_err(|e| format!("Sprite: {e}"))?;
-        let mut rd = s.rd.clone();
-        if rd.texture.is_null() && !s.sprite_atlas.is_null() {
+        let (rd, page) = self.sprite_render_data(sprite, &s)?;
+        self.sprite_info_with(&s, &rd, page)
+    }
+
+    /// The render data sprite `s` (object `sprite`) is drawn with, and its
+    /// texture: its own, or for a sprite packed late (its own texture
+    /// null) its atlas's for it.
+    pub(crate) fn sprite_render_data(
+        &self,
+        sprite: &ObjectRef,
+        s: &Sprite,
+    ) -> Result<(sn_unity::SpriteRenderData, Option<ObjectRef>)> {
+        if s.rd.texture.is_null() && !s.sprite_atlas.is_null() {
             if let Some(a) = self.resolve(&sprite.file, s.sprite_atlas)? {
                 let (_, ad) = a.data()?;
                 let atlas = sn_unity::SpriteAtlas::parse(ad, a.file.file().big_endian)
                     .map_err(|e| format!("SpriteAtlas: {e}"))?;
                 if let Some(packed) = atlas.render_data_of(&s.render_data_key) {
-                    rd = packed.clone();
-                    let page = self.resolve(&a.file, rd.texture)?;
-                    return self.sprite_info_with(&s, &rd, page);
+                    let page = self.resolve(&a.file, packed.texture)?;
+                    return Ok((packed.clone(), page));
                 }
             }
         }
-        let page = self.resolve(&sprite.file, rd.texture)?;
-        self.sprite_info_with(&s, &rd, page)
+        let page = self.resolve(&sprite.file, s.rd.texture)?;
+        Ok((s.rd.clone(), page))
     }
 
     fn sprite_info_with(
