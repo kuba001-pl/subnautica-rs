@@ -41,7 +41,11 @@ pub enum AimAction {
     Request(Request),
     /// A click opens the lifepod's locker (`EscapePod.StorageOpen`).
     OpenLocker,
-    /// A click does nothing (no room, not pickupable).
+    /// No room: a click shows "inventory full" (M9u7b:
+    /// `Pickupable.OnHandClick`'s `ErrorMessage.AddWarning(InventoryFull)`
+    /// when `Inventory.Pickup` fails).
+    Full,
+    /// A click does nothing (not pickupable).
     None,
 }
 
@@ -99,7 +103,7 @@ pub fn aim(
                     subscript: text.get(INVENTORY_FULL).to_string(),
                     button: false,
                     icon: None,
-                    action: AimAction::None,
+                    action: AimAction::Full,
                 }
             } else {
                 Aim {
@@ -224,10 +228,11 @@ mod tests {
             })
         );
 
-        // No room: the name and "inventory full", no request.
+        // No room: the name and "inventory full", no request; a click
+        // shows the message.
         let a = aim(&t, &r, Some(&ti), false, |_| false).unwrap();
         assert_eq!((a.text.as_str(), a.subscript.as_str()), ("Ti", "Full"));
-        assert_eq!(a.action, AimAction::None);
+        assert_eq!(a.action, AimAction::Full);
         // No icon set (it stays `Default`), no button.
         assert_eq!((a.button, a.icon), (false, None));
 

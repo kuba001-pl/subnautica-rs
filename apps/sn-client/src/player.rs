@@ -80,6 +80,12 @@ pub struct Hud {
     pub respawn_show: bool,
     pub respawn_hide: bool,
     pub vignette: Option<sn_ui::death::DeathType>,
+    /// This frame's `ErrorMessage` calls (M9u7b), as language keys: made
+    /// from the hand before `PDA.UpdateTime` (`Pickupable.OnHandClick`'s
+    /// `InventoryFull`), and from coroutines after it
+    /// (`Player.ResetPlayerOnDeath`'s `YouDied` / `YouDiedLostStuff`).
+    pub messages_early: Vec<&'static str>,
+    pub messages_late: Vec<&'static str>,
     /// What the hand's hover set (M9d5: `HandReticle`; M9u6d2: its icon
     /// and button), when it is on something.
     pub hand: Option<HandHover>,
@@ -246,6 +252,9 @@ pub struct PlayerSim {
     last_life: Life,
     /// `Player.timeGrabbed` on the body's clock (0: never; M9d5).
     time_grabbed: f64,
+    /// The last death's `Inventory.LoseItems()` dropped something
+    /// (`ResetPlayerOnDeath`'s `lostStuff`, M9u7b).
+    lost_stuff: bool,
     /// Times the hand opened the lifepod's locker (M9d5; the panel reads
     /// it).
     pub locker_opened: u32,
@@ -452,6 +461,7 @@ impl PlayerSim {
             last_hatch: None,
             last_life: Life::Alive,
             time_grabbed: 0.0,
+            lost_stuff: false,
             locker_opened: 0,
             last_aim: None,
             use_item_at,
@@ -742,13 +752,14 @@ fn camera_of(s: &State) -> (V3, V3) {
 
 /// `ResetPlayerOnDeath`'s `Inventory.LoseItems()` (M9d6a): every item lost
 /// on death but the last, dropped from the camera, sent as one `Lose`.
-/// Nothing where dropping is not allowed (the lifepod).
+/// Nothing where dropping is not allowed (the lifepod). True if anything
+/// was dropped (its `lostStuff`).
 fn lose_items(
     state: &State,
     world: &World,
     session: &mut Session,
     draws: &mut sn_session::drops::Draws,
-) {
+) -> bool {
     let place = sn_sim::inventory::DropPlace {
         in_escape_pod: state.player.in_pod,
         ..Default::default()
@@ -777,7 +788,7 @@ fn lose_items(
             "player: LoseItems: nothing to drop (in pod {})",
             state.player.in_pod
         );
-        return;
+        return false;
     }
     let (camera, forward) = camera_of(state);
     let (origin, drops) = sn_session::drops::death_drops(world, camera, forward, &list, draws);
@@ -789,7 +800,9 @@ fn lose_items(
         camera.z,
         drops.iter().map(|d| d.offset).collect::<Vec<_>>()
     );
+    let lost = !drops.is_empty();
     session.request(sn_protocol::Request::Lose { origin, drops });
+    lost
 }
 
 /// `Player.camAnchor` in the world now (the player's transform without a
@@ -1375,6 +1388,8 @@ pub fn update(
         }
         _ => None,
     };
+    // This frame's `ErrorMessage` calls (M9u7b).
+    let (mut messages_early, mut messages_late) = (Vec::new(), Vec::new());
     hud.hand = item_aim
         .as_ref()
         .map(|a| HandHover {
@@ -1481,8 +1496,12 @@ pub fn update(
                         sim.locker_opened += 1;
                         info!("player: opened the lifepod's locker from {d:.2} m");
                     }
+                    Some(sn_assets::hand::AimAction::Full) => {
+                        info!("player: no room for the item at {d:.2} m: InventoryFull");
+                        messages_early.push("InventoryFull");
+                    }
                     Some(sn_assets::hand::AimAction::None) => {
-                        info!("player: the item cannot be taken (no room or not pickupable)");
+                        info!("player: the item cannot be taken (not pickupable)");
                     }
                     None => info!(
                         "player: nothing to use ({} at {d:.2} m; no item rule)",
@@ -1604,6 +1623,13 @@ pub fn update(
                     // the move, `Hide()` just before `ResetHealth`.
                     VitalsEvent::MoveToRespawn => respawn_show = true,
                     VitalsEvent::Restored => respawn_hide = true,
+                    // `ResetPlayerOnDeath`'s last line, once the controls
+                    // are back.
+                    VitalsEvent::ControlsBack => messages_late.push(if sim.lost_stuff {
+                        "YouDiedLostStuff"
+                    } else {
+                        "YouDied"
+                    }),
                     _ => {}
                 }
                 if e == VitalsEvent::Died
@@ -1614,7 +1640,8 @@ pub fn update(
                 if e == VitalsEvent::MoveToRespawn {
                     // `ResetPlayerOnDeath`: `LoseItems` first, then
                     // `MovePlayerToRespawnPoint`.
-                    lose_items(state, &sim.world, &mut session, &mut sim.drop_draws);
+                    sim.lost_stuff =
+                        lose_items(state, &sim.world, &mut session, &mut sim.drop_draws);
                     // `EscapePod.RespawnPlayer` (or the start point).
                     let (at, in_pod) = state.respawn;
                     state.player.teleport(&state.params, at, Some(in_pod));
@@ -1848,6 +1875,8 @@ pub fn update(
         respawn_hide,
         // Set by `body::death_events` after the animators.
         vignette: None,
+        messages_early,
+        messages_late,
         // Set above, this frame.
         hand: hud.hand.take(),
     };

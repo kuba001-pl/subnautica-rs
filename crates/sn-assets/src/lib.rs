@@ -25,6 +25,7 @@ mod item_rules;
 mod items;
 mod lifepod_light;
 mod marmo;
+mod messages;
 mod player_body;
 mod prefab;
 mod reticle;
@@ -82,6 +83,7 @@ pub use items::{
 };
 pub use lifepod_light::{ControlledLight, LifepodLighting};
 pub use marmo::{BiomeSky, MarmoSkies, marmo_skies};
+pub use messages::{message_layout, message_times};
 pub use player_body::{
     EquipmentSlot, FIXED_PARAMETERS, PlayerAnimation, PlayerBody, RULE_PARAMETERS, TECH_TYPE_NONE,
     equipment_changes,

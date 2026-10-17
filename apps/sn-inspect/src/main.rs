@@ -28,6 +28,7 @@ mod lods;
 mod materials;
 mod mesh;
 mod meshes;
+mod messages;
 mod octree;
 mod orient;
 mod pickup;
@@ -279,6 +280,8 @@ Commands:
   ui --instantiate       M9u7a: UI objects made at run time: a stored
                          subtree copied and moved, four message copies and
                          SetAsLastSibling, checked against the stored draws
+  ui --messages          M9u7b: ErrorMessage, the HUD's text messages,
+                         through a scripted timeline against a replay
   ui --layout <CLASS> [<NAME>]
                          M9u1: a script's layout and, for its first object
                          (named NAME), where each field starts and its value
@@ -505,6 +508,7 @@ fn run(mut args: Vec<String>) -> Result<ExitCode> {
         ["ui", "--reticle"] => reticle::run(&game),
         ["ui", "--death"] => death::run(&game),
         ["ui", "--instantiate"] => instantiate::run(&game),
+        ["ui", "--messages"] => messages::run(&game),
         ["ui", "--fonts"] => fonts::run(&game, false),
         ["ui", "--fonts", "--atlas"] => fonts::run(&game, true),
         ["ui", "--sprites"] => ui::sprites(&game, false),

@@ -18,6 +18,7 @@
 //! - [`hud`] (M9u6b1): the HUD's rules (`uGUI_SceneHUD`, the bars).
 //! - [`reticle`] (M9u6d2): `HandReticle`, the hand's icon and texts.
 //! - [`material`] (M9u5a): UI materials and TextMesh Pro's material rules.
+//! - [`messages`] (M9u7b): `ErrorMessage`, the HUD's text messages.
 //! - [`scaler`] (M9u5b): the UI camera and `uGUI_CanvasScaler`'s placement.
 //! - [`text`] (M9u4c): TextMesh Pro's text layout, auto-size and
 //!   preferred sizes.
@@ -36,6 +37,7 @@ pub mod hud;
 pub mod layout;
 pub mod material;
 pub mod mesh;
+pub mod messages;
 pub mod reticle;
 pub mod scaler;
 pub mod state;

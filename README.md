@@ -130,12 +130,17 @@ Tested on Windows 11 with game build 10 (Steam):
   animation's event (`uGUI_PlayerDeath`, its 6 s and fade out), and the
   respawn screen ("Loading...") shows and fades out over the game's 1 s
   (`uGUI_SceneRespawning`, `uGUI_Fader`); our own HUD of M9c (bars,
-  depth, hand text, fade) is gone. Messages are not driven yet (M9u7).
-  The texts are
+  depth, hand text, fade) is gone. The text messages follow
+  `ErrorMessage` (M9u7b: fly-in, 5 s, fade-out, "(x2)" for a repeat, the
+  column sliding up): "You died." (or "...lost some belongings.") once
+  the controls are back after a respawn, and "Inventory full" when the
+  hand clicks a pickup with no room (that one not seen in the client
+  yet). Picked-up item icons and notifications are not drawn yet
+  (M9u7c–d). The texts are
   untranslated.
   Checked by numbers (`ui --bars`, `ui --pulse`, `ui --start`,
   `ui --depth`, `ui --compass`, `ui --tmp-sprites`, `ui --reticle`,
-  `ui --death`, the
+  `ui --death`, `ui --messages`, the
   client's per-second log) and screenshots; not compared against the
   original game on screen.
 - Oxygen, suffocation, health, death and respawn in the lifepod, with

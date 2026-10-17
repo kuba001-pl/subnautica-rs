@@ -2,6 +2,59 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-17 — M9u7b: the HUD's text messages (`ErrorMessage`)
+
+**What/why:** the game's messages ("You died.", "Inventory full"…) were
+not drawn. Facts in `docs/formats/ui.md` § Text messages.
+- `sn-ui::messages` (new): `ErrorMessage` ported: `_AddMessage` (merging
+  into "(x{n})"), the pool of copies made four at a time, `OnLateUpdate`
+  (expiry with the game's skipping loop, the `offsetY` slide, the flight
+  and the fade with `EaseOutSine`, `GetYPos`), in the game's frame order
+  (hand calls before `PDA.UpdateTime`, coroutines after).
+- `sn-assets`: `messages_config` (stored fields, the times from the
+  constructor and `OnLateUpdate`'s constants from the IL, the template
+  read as a scene with its font colour), `message_layout`,
+  `message_times`; `UiScene::layout_for`, `preferred_size`,
+  `stored_rect` (`draw`'s layout step moved into a shared helper).
+- `sn-assets::hand`: `AimAction::Full` (a click with no room).
+- `sn-client`: the player sends the frame's message keys
+  (`YouDied`/`YouDiedLostStuff` at controls back, from `LoseItems`'s
+  result; `InventoryFull` on a click with no room); the UI worker runs
+  the rules, grafts the copies and logs each message's life; `convert`
+  reads the scene's grown tree.
+- `sn-inspect ui --messages` (new); a real-data test
+  `the_messages_are_read`.
+No new dependencies.
+
+**Verified** (`SUBNAUTICA_DIR` set):
+- `ui --messages`: 7 of 7; 900 frames, 0 differing from the replay
+  (position error ≤ 0.0075 canvas units, alpha ≤ 0.000043); 90 draws, 0
+  differing; pool 4 → 8; "(x4)"; two messages ending together go frames
+  547 and 548 (the game's loop).
+- Client drowning, `sn-client --resolution 1920 1080 --start 0 -3 0
+  --look 20 -3 20 --look-down 60 --hold-forward 3 --shot 61.5
+  m9u7b-youdied` (`out/m9u7b/drown.log`): `LoseItems: nothing to drop` →
+  "You died." added at controls back; 0 WARN/ERROR/panic;
+  `out/m9u7b-youdied.png` shows "You died." at the top left (140, 140 in).
+  The same with `--shot 68 m9u7b-gone` (`out/m9u7b/drown-long.log`):
+  shown 63.754 s, gone 69.764 s, 6.0106 s (ok: rule 6 s + under a
+  frame); 0 warnings.
+- No regression: `ui --instantiate` 10 of 10; `--death` 24 of 24;
+  `--reticle` 22 of 22; `--compass` 644 / 0; `--depth` 91,230 / 0;
+  `--bars` 300 / 0; `--start` 21 of 21; `--tmp-sprites` 371 of 371;
+  `--draw` 12 of 12 hashes equal; `--live` start hash
+  `efa1606eb7c79aff`. Real-data tests (`sn-assets`): 54 passed.
+- `cargo test --workspace` (no `SUBNAUTICA_DIR`): 678 passed, 0 failed,
+  59 ignored (new: 6 messages tests). fmt and clippy (`-D warnings`)
+  clean.
+
+**Not tested:** "Inventory full" in the client (filling the inventory in
+a scripted run is not set up; the rule is covered by the `hand::aim`
+test and `ui --messages`); "You died and lost some belongings." in the
+client (the drowning carried nothing); a resize while a message is
+shown (the layout is read again on the next frame that needs it); a UI
+scale other than 1. Not compared against the original game on screen.
+
 ## 2026-10-17 — M9u7a: UI objects made at run time
 
 **Plan:** M9u7 was split in `docs/DESIGN.md` into a (objects made at run

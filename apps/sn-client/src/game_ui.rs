@@ -61,6 +61,7 @@ use bevy::window::PrimaryWindow;
 use sn_ui::death::{DeathInputs, DeathScreens, DeathType};
 use sn_ui::depth::DepthCompass;
 use sn_ui::hud::{Hud, HudInputs, hud_mode};
+use sn_ui::messages::{MessageInputs, MessageLayout, Messages};
 use sn_ui::reticle::{HAND, HAND_SUBSCRIPT, HandReticle, IconType, ReticleInputs, get_text};
 use sn_ui::scaler::{DEFAULT_UI_SCALE, Placement, UiCamera, place};
 use sn_ui::state::UiState;
@@ -239,8 +240,16 @@ enum Request {
     /// The window's size.
     Size([i32; 2]),
     /// A frame's inputs to the HUD's rules (M9u6b1), the hand's hover
-    /// (M9u6d2) and the death screens' calls (M9u6e1).
-    Frame(HudInputs, HandFrame, DeathInputs),
+    /// (M9u6d2), the death screens' calls (M9u6e1) and `ErrorMessage`'s
+    /// (M9u7b: language keys, before and after `PDA.UpdateTime`).
+    Frame(HudInputs, HandFrame, DeathInputs, MessageKeys),
+}
+
+/// This frame's `ErrorMessage` calls (M9u7b), as language keys.
+#[derive(Clone, Debug, Default)]
+struct MessageKeys {
+    early: Vec<&'static str>,
+    late: Vec<&'static str>,
 }
 
 /// What the hand reticle's rules read (M9u6d2): this frame's
@@ -429,6 +438,32 @@ fn run_worker(
             c.overlays.len()
         );
     }
+    // The HUD's text messages (M9u7b): `ErrorMessage` and its
+    // `prefabMessage`, grafted four at a time as it asks.
+    let (message_config, message_template) =
+        assets.messages_config(&layouts, &tree, &code, &fonts, &tags.sorting_layers)?;
+    {
+        let t = message_config.times;
+        info!(
+            "game UI messages: canvas {}, offset {:?}, ySpacing {}; fly-in {} s, delay {} s, fade-out {} s, invisible {} s; slide × {}, snap {}",
+            tree.nodes[message_config.canvas].path,
+            message_config.offset,
+            message_config.y_spacing,
+            t.fly_in,
+            t.delay,
+            t.fade_out,
+            t.invisible,
+            t.slide_rate,
+            t.snap
+        );
+    }
+    let mut messages = Messages::new(message_config);
+    let scale_modes: HashMap<usize, i32> =
+        scalers.iter().map(|(n, s)| (*n, s.scale_mode)).collect();
+    // Read from the laid-out scene when first needed after a resize.
+    let mut message_layout: Option<MessageLayout> = None;
+    // Each shown message's entry → (text, first shown, last renewed).
+    let mut message_log: HashMap<usize, (String, f32, f32)> = HashMap::new();
     // The death timeline's marks (what, time), for the logs.
     let mut death_marks: Vec<(&str, f32)> = Vec::new();
     let mut black_full_logged = false;
@@ -462,7 +497,7 @@ fn run_worker(
                     resized |= screen != Some(s);
                     screen = Some(s);
                 }
-                Request::Frame(mut inputs, hand, death_inputs) => {
+                Request::Frame(mut inputs, hand, death_inputs, keys) => {
                     inputs.food = food;
                     inputs.water = water;
                     rules = hud.update(&inputs);
@@ -480,6 +515,70 @@ fn run_worker(
                         &mut death_marks,
                         &mut black_full_logged,
                     );
+                    // `ErrorMessage` (M9u7b).
+                    let text =
+                        |k: &&str| language.get(*k).cloned().unwrap_or_else(|| k.to_string());
+                    let message_inputs = MessageInputs {
+                        delta_time: inputs.delta_time,
+                        early: keys.early.iter().map(text).collect(),
+                        late: keys.late.iter().map(text).collect(),
+                    };
+                    let busy = !messages.messages.is_empty()
+                        || messages.offset_y != 0.0
+                        || !message_inputs.early.is_empty()
+                        || !message_inputs.late.is_empty();
+                    if busy && message_layout.is_none() {
+                        let l = sn_assets::message_layout(
+                            &assets,
+                            &mut scene,
+                            &set,
+                            &placements,
+                            &start_state,
+                            &messages.config,
+                            &message_template,
+                            &scale_modes,
+                            DEFAULT_UI_SCALE,
+                        )?;
+                        info!(
+                            "game UI messages: canvas rect {:?}, entry width {}, anchor point {:?}, inverse scale {}",
+                            l.canvas_rect, l.entry_width, l.anchor_base, l.inverse_scale
+                        );
+                        message_layout = Some(l);
+                    }
+                    match (busy, message_layout) {
+                        (true, Some(layout)) => {
+                            let mut failed = None;
+                            let measure = |t: &str| {
+                                message_template
+                                    .preferred_size(&set, 0, t, layout.entry_width)
+                                    .unwrap_or([0.0, 0.0])
+                            };
+                            let canvas = messages.config.canvas;
+                            let mut make = || match scene.graft(&message_template, canvas) {
+                                Ok(n) => n,
+                                Err(e) => {
+                                    failed = Some(e);
+                                    usize::MAX
+                                }
+                            };
+                            rules.apply(messages.update(
+                                &message_inputs,
+                                &layout,
+                                &measure,
+                                &mut make,
+                            ));
+                            if let Some(e) = failed {
+                                return Err(format!("game UI messages: graft: {e}"));
+                            }
+                            messages_log(&messages, &mut message_log, inputs.delta_time);
+                        }
+                        // Nothing shown: only `PDA.time` moves (the copies
+                        // stay hidden).
+                        _ => {
+                            messages.time += inputs.delta_time;
+                            rules.apply(&messages.state);
+                        }
+                    }
                     let before = reticle.icon_type;
                     rules.apply(reticle.update(&reticle_inputs(
                         &reticle,
@@ -555,6 +654,7 @@ fn run_worker(
             continue;
         };
         if resized {
+            message_layout = None;
             placements.clear();
             for (node, s) in &scalers {
                 match place(s, &camera, fov, size, DEFAULT_UI_SCALE) {
@@ -571,7 +671,8 @@ fn run_worker(
         let mut state = start_state.clone();
         state.apply(&rules);
         let d = scene.draw(&assets, &fonts, &set, &mut atlases, &placements, &state)?;
-        let mut build = convert(&tree, &d, size, fov, placements.clone(), resized);
+        // The scene's tree: the stored nodes and the copies grafted since.
+        let mut build = convert(&scene.tree, &d, size, fov, placements.clone(), resized);
         for (key, object) in &d.textures {
             if sent.contains(key) {
                 continue;
@@ -637,6 +738,59 @@ fn run_worker(
         }
     }
     Ok(())
+}
+
+/// The messages' changes as they happen (M9u7b): each added, renewed and
+/// gone, with how long it was shown against `ErrorMessage`'s times (gone
+/// on the first frame after its end, or the next one when the message
+/// before it went in the same frame).
+fn messages_log(m: &Messages, log: &mut HashMap<usize, (String, f32, f32)>, dt: f32) {
+    let t = m.config.times;
+    for msg in &m.messages {
+        let shown = m.state.text.get(&msg.entry).cloned().unwrap_or_default();
+        match log.get_mut(&msg.entry) {
+            None => {
+                info!(
+                    "game UI message at {:.3} s: {shown:?} (entry {}, {} shown, pool {} of {})",
+                    m.time,
+                    msg.entry,
+                    m.messages.len(),
+                    m.pool.len(),
+                    m.entries.len()
+                );
+                log.insert(msg.entry, (shown, m.time, m.time));
+            }
+            Some(e) if e.0 != shown => {
+                info!("game UI message at {:.3} s: renewed as {shown:?}", m.time);
+                (e.0, e.2) = (shown, m.time);
+            }
+            _ => {}
+        }
+    }
+    let gone: Vec<usize> = log
+        .keys()
+        .copied()
+        .filter(|e| !m.messages.iter().any(|msg| msg.entry == *e))
+        .collect();
+    for e in gone {
+        let Some((text, first, last)) = log.remove(&e) else {
+            continue;
+        };
+        // First shown: fly-in + delay + fade-out + invisible; renewed:
+        // without the fly-in.
+        let rule = if last > first {
+            t.delay + t.fade_out + t.invisible
+        } else {
+            t.fly_in + t.delay + t.fade_out + t.invisible
+        };
+        let took = m.time - last;
+        let ok = took > rule - 1e-4 && took <= rule + 2.0 * dt + 1e-4;
+        info!(
+            "game UI message gone at {:.3} s: {text:?} after {took:.4} s since shown or renewed ({}: rule {rule} s + under two frames, last step {dt:.4} s)",
+            m.time,
+            if ok { "ok" } else { "DIFFERS" }
+        );
+    }
 }
 
 /// The death timeline's changes as they happen (M9u6e1), each against
@@ -1202,6 +1356,10 @@ fn send_inputs(
             vignette: hud.vignette,
             respawn_show: hud.respawn_show,
             respawn_hide: hud.respawn_hide,
+        },
+        MessageKeys {
+            early: hud.messages_early.clone(),
+            late: hud.messages_late.clone(),
         },
     ));
 }

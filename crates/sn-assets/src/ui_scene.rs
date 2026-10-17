@@ -29,7 +29,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use sn_ui::draw::{DrawInput, Graphic, GroupInfo, draw_list, scale_y_in_root_canvas};
-use sn_ui::layout::{Component, SpriteSize, Tree, layout_with};
+use sn_ui::layout::{Component, RectTransform, SpriteSize, Tree, layout_with};
 use sn_ui::material::{UiMaterial, fallback_material, tmp_padding};
 use sn_ui::mesh::{SpriteInfo, graphic_quad, image_mesh, raw_image_mesh};
 use sn_ui::scaler::{Placement, apply_to_tree};
@@ -81,6 +81,14 @@ pub struct UiScene {
     cache: Cache,
     /// The sprites given ids ([`UiScene::sprite_id`]).
     sprite_refs: HashMap<SpriteId, ObjectRef>,
+}
+
+/// A state's tree laid out, with what the draw needs of it.
+struct Laid {
+    tree: Tree,
+    groups: HashMap<usize, GroupInfo>,
+    sprites: HashMap<usize, Option<LoadedSprite>>,
+    params: Vec<TextParams>,
 }
 
 /// What a draw reads from the install, kept after the first time.
@@ -393,23 +401,54 @@ impl UiScene {
         self.layout.nodes.len()
     }
 
+    /// A node's `RectTransform` as stored.
+    pub fn stored_rect(&self, node: usize) -> Option<&RectTransform> {
+        self.layout.nodes.get(node).map(|n| &n.rect)
+    }
+
     /// Sorting layer ids not in the TagManager.
     pub fn unknown_layers(&self) -> &[i32] {
         &self.parts.unknown_layers
     }
 
-    /// The draw list for `state`, with canvases placed as `placements`
-    /// say (by node, from `sn_ui::scaler::place`; empty: as stored).
-    /// Glyphs the texts need go into `atlases`.
-    pub fn draw(
+    /// The tree after `state`, the canvases' placements and the layout
+    /// system, as a draw lays it out (M9u7b: what a script reads of
+    /// `RectTransform.rect`).
+    pub fn layout_for(
         &mut self,
         assets: &Assets,
-        fonts: &FontAssets,
         set: &FontSet,
-        atlases: &mut GlyphAtlases,
         placements: &HashMap<usize, Placement>,
         state: &UiState,
-    ) -> Result<UiDraw> {
+    ) -> Result<Tree> {
+        Ok(self.laid_out(assets, set, placements, state)?.tree)
+    }
+
+    /// A text node's `preferredWidth` and `preferredHeight` with `text`
+    /// (M9u7b), in a rect `rect_width` wide; `None` if the node has no
+    /// text.
+    pub fn preferred_size(
+        &self,
+        set: &FontSet,
+        node: usize,
+        text: &str,
+        rect_width: f32,
+    ) -> Option<[f32; 2]> {
+        let t = self.texts.iter().find(|t| t.node == node)?;
+        let mut p = t.params.clone();
+        p.text = text.to_string();
+        p.source = Source::Code;
+        let margin_width = rect_width - p.margin[0] - p.margin[2];
+        Some(sn_ui::text::preferred_values(set, &p, margin_width))
+    }
+
+    fn laid_out(
+        &mut self,
+        assets: &Assets,
+        set: &FontSet,
+        placements: &HashMap<usize, Placement>,
+        state: &UiState,
+    ) -> Result<Laid> {
         let mut tree = self.layout.clone();
         let mut groups = self.parts.groups.clone();
         let mut sprites: HashMap<usize, Option<LoadedSprite>> = HashMap::new();
@@ -462,6 +501,32 @@ impl UiScene {
                 .collect(),
         };
         layout_with(&mut tree, &sizer);
+        Ok(Laid {
+            tree,
+            groups,
+            sprites,
+            params,
+        })
+    }
+
+    /// The draw list for `state`, with canvases placed as `placements`
+    /// say (by node, from `sn_ui::scaler::place`; empty: as stored).
+    /// Glyphs the texts need go into `atlases`.
+    pub fn draw(
+        &mut self,
+        assets: &Assets,
+        fonts: &FontAssets,
+        set: &FontSet,
+        atlases: &mut GlyphAtlases,
+        placements: &HashMap<usize, Placement>,
+        state: &UiState,
+    ) -> Result<UiDraw> {
+        let Laid {
+            tree,
+            groups,
+            sprites,
+            params,
+        } = self.laid_out(assets, set, placements, state)?;
         let mut materials = MaterialTable::new();
         let mut graphics = Vec::new();
         let mut textures = HashMap::new();

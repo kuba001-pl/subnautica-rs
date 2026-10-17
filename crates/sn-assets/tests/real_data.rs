@@ -3225,6 +3225,52 @@ fn the_death_screens_are_read() {
     assert_eq!(curve.evaluate(1.0), 1.0);
 }
 
+/// M9u7b: `ErrorMessage`'s canvas, stored fields, the times from its
+/// constructor and `OnLateUpdate`'s constants, and its template (one
+/// text node, white) with the preferred height of a one-line message.
+#[test]
+#[ignore = "needs SUBNAUTICA_DIR pointing at a Subnautica install"]
+fn the_messages_are_read() {
+    let Some(dir) = std::env::var_os("SUBNAUTICA_DIR") else {
+        eprintln!("SUBNAUTICA_DIR not set; skipping");
+        return;
+    };
+    let game = GameData::locate(Some(PathBuf::from(dir))).unwrap();
+    let assets = Assets::index(&game).unwrap();
+    let tags = sn_assets::physics_settings(&assets).unwrap().tags;
+    let assemblies = sn_assets::ScriptAssemblies::load(&game).unwrap();
+    let layouts = assemblies.layouts().unwrap();
+    let fonts = assets.font_assets(&assemblies).unwrap();
+    let set = assets.tmp_font_set(&fonts).unwrap();
+    let catalog = assets.catalog().unwrap();
+    let root = assets.ugui_root(&catalog).unwrap();
+    let ui = assets.ui_tree("uGUI.prefab", &root).unwrap();
+    let code = sn_assets::read_assembly(&game).unwrap();
+    let (c, template) = assets
+        .messages_config(&layouts, &ui, &code, &fonts, &tags.sorting_layers)
+        .unwrap();
+    assert!(ui.nodes[c.canvas].path.ends_with("/ErrorMessageCanvas"));
+    assert_eq!((c.offset, c.y_spacing), ([140.0, 140.0], 10.0));
+    let t = c.times;
+    assert_eq!(
+        (
+            t.fly_in,
+            t.delay,
+            t.fade_out,
+            t.invisible,
+            t.slide_rate,
+            t.snap
+        ),
+        (0.3, 5.0, 0.6, 0.1, 7.0, 1.0)
+    );
+    assert_eq!(template.node_count(), 1);
+    assert_eq!(c.font_color, [1.0; 4]);
+    let [w, h] = template
+        .preferred_size(&set, 0, "Inventory full", 500.0)
+        .unwrap();
+    assert!(w > 0.0 && w < 500.0 && h > 20.0 && h < 40.0, "{w} {h}");
+}
+
 /// M9u6s: the start rules hide the screens the game hides at start (the
 /// feedback panel, the confirmation dialog, pop-ups, the vehicles' and
 /// cameras' screens), and the HUD's bars, player depth and the reticle's

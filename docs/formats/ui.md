@@ -1689,6 +1689,54 @@ offset, after the original's; four `MessageInstance` copies under
 `SetAsLastSibling` on the first it draws last; the stored nodes' 55
 start-state draws are unchanged.
 
+## Text messages: `ErrorMessage` ported (M9u7b) — confirmed (`ui --messages`, client)
+
+- **Read:** `messageCanvas` is `ScreenCanvas/HUD/Content/ErrorMessageCanvas`
+  (at 1920×1080 its rect is (−960, −540, 1920, 1080)); `offset` (140, 140),
+  `ySpacing` 10 (stored); `timeFlyIn` 0.3, `timeDelay` 5, `timeFadeOut`
+  0.6, `timeInvisible` 0.1 (the constructor's initialisers, IL);
+  `OnLateUpdate`'s `offsetY * 7f` and `offsetY < 1f` (IL). `prefabMessage`
+  (`MessageInstance`): anchors and pivot at the top left (0, 1), size
+  (500, 10), `m_fontColor` white; "Inventory full" measures 134.95 × 26.08
+  (TMP's preferred size).
+- **A message's life:** added at `PDA.time` with its end at time + 6 s;
+  its entry flies from the canvas's centre (−½ min(500, preferred width),
+  ½ preferred height) to (left + 140, top − 140 − the heights and
+  spacings above) over 0.3 s with `EaseOutSine`; its alpha falls along
+  `EaseOutSine` from 5.3 s to 5.9 s; it is removed on the first frame
+  whose time is past its end, its height added to `offsetY`, which decays
+  as `offsetY −= 7 · offsetY · dt` (0 below 1), so the ones below slide
+  up. An equal text adds `" (x{n})"` and renews the end to time + 5.7 s
+  (no flight).
+- **The removal loop skips:** `messages.Remove` inside the `for` loop
+  moves the next message into the index just checked, so two messages
+  ending in the same frame go one frame apart (`ui --messages`: frames
+  547 and 548).
+- **`localPosition` from a `Vector2`** sets z to 0; the anchored position
+  is `localPosition` less the anchor point (the canvas's top left for
+  this template).
+- **When in the frame** (`ManagedUpdate.Queue`'s order): `GUIHand`'s
+  calls (`InventoryFull`) come before `PDA.UpdateTime`, coroutines'
+  (`YouDied`) after the `Update`s (*hypothesis*: Unity's documented
+  player loop), `OnLateUpdate` in `PreCanvasRectTransform`, before the
+  canvases draw.
+- **What our client reaches:** `Player.ResetPlayerOnDeath`'s last line,
+  `YouDiedLostStuff` if `Inventory.LoseItems` dropped anything, else
+  `YouDied`, once the controls are back; `Pickupable.OnHandClick`'s
+  `InventoryFull` when the hand clicks a pickup with no room.
+  `InventoryCantDropHere` comes only from `CanDropItemHere(notify: true)`,
+  which only held tools and deployables call (not ported).
+
+**Checked:** `ui --messages`, 7 of 7: 900 frames of a scripted timeline
+(the game's strings; one message, the same text to "(x4)", two in one
+frame, five at once, the pool growing from four to eight entries,
+expiry while others stay, an entry reused) equal to a replay in doubles
+(largest position error 0.0075 canvas units, f32 against double; alpha
+0.000043); 90 draws: each shown entry draws one quad per visible
+character at its alpha, the hidden ones nothing, the stored nodes as
+before. Client drowning: "You died." at controls back, gone 6.0106 s
+later (rule 6 s + under a frame).
+
 ## Script fields (M9u1) — confirmed
 
 A MonoBehaviour's fields follow its header (game object, enabled,
