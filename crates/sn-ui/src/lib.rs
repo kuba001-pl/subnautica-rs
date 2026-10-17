@@ -21,6 +21,7 @@
 //! - [`material`] (M9u5a): UI materials and TextMesh Pro's material rules.
 //! - [`messages`] (M9u7b): `ErrorMessage`, the HUD's text messages.
 //! - [`notifier`] (M9u7c2): `uGUI_IconNotifier`, the picked-up item icons.
+//! - [`popup`] (M9u7d1): `uGUI_PopupNotification`, the unlock pop-up.
 //! - [`scaler`] (M9u5b): the UI camera and `uGUI_CanvasScaler`'s placement.
 //! - [`text`] (M9u4c): TextMesh Pro's text layout, auto-size and
 //!   preferred sizes.
@@ -42,6 +43,7 @@ pub mod material;
 pub mod mesh;
 pub mod messages;
 pub mod notifier;
+pub mod popup;
 pub mod reticle;
 pub mod scaler;
 pub mod state;

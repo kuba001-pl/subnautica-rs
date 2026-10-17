@@ -1737,6 +1737,107 @@ character at its alpha, the hidden ones nothing, the stored nodes as
 before. Client drowning: "You died." at controls back, gone 6.0106 s
 later (rule 6 s + under a frame).
 
+## The unlock pop-up (M9u7d) — confirmed (decompiled code, stored fields, `ui --popup`)
+
+Read on 2026-10-17 from the decompiled `uGUI_PopupNotification`,
+`uGUI_PopupNotificationDefault`, `uGUI_PopupNotificationSkin`,
+`KnownTech`, `Inventory`, `NotificationManager`, `MathExtensions`,
+`RectTransformExtensions`, `ManagedUpdate` and the `Story` goals (read
+only, in `out/`), and the stored fields (our layouts; throwaway probes in
+the ignored `out/m9u7d/`). Our port: `crates/sn-ui/src/popup.rs`,
+`crates/sn-assets/src/popup.rs`.
+
+- **A pick-up never shows it.** `Inventory.Pickup` and `OnAddItem` call
+  `KnownTech.Analyze(techType, verbose: false)`: the analysis's unlocks
+  are added silently (no pop-up, no `Blueprints` notification).
+  `OnAnalyze` acts only when `KnownTech.Add(techType)` is verbose: the
+  added tech's own `analysisTech` entry is then analysed verbosely.
+  Verbose adds come from `PDAScanner.Unlock` (scanning), `BlueprintHandTarget`
+  (databoxes), `SpecimenAnalyzer`, `Rocket`, and story goals'
+  `UnlockBlueprintData` with `Available` (e.g. `ItemGoalData`'s
+  `OnCraftBattery` → `OnGoalUnlockData` unlocks the power cell;
+  `OnCraftTank` the double tank; `OnCraftComputerChip` the advanced wiring
+  kit; `OnConstructCyclops` the decoy and power upgrade modules). None of
+  them is ported yet. `ItemGoalData` (58 goals) and `OnGoalUnlockData`
+  (57 with a goal) are in the `main` scene bundle's shared file.
+- **`NotificationManager` shows nothing on the HUD.** Its only views are
+  `INotificationTarget`s (the PDA's item icons, blueprint, log and
+  encyclopedia entries, pings) and listeners and counts (the PDA tabs:
+  `uGUI_InventoryTab.notificationsCount` = `GetCount(Inventory)`).
+  `LateUpdate` counts a notification down only while its target is
+  visible; with a target registered but hidden, it is removed after more
+  than 1 s of its duration has passed. `Inventory.Pickup` adds
+  `(Inventory, the item's UniqueIdentifier id, 4 s)` unless `noMessage`;
+  `KnownTech`'s verbose adds add `(Blueprints, key, 3 s)` and the
+  `CraftTree`/`Builder` ones. Ported with the inventory tab (M9u8b).
+- **`uGUI_PopupNotification`** (on `ScreenCanvas/HUD/Content/
+  PopupNotification`: anchors y 0.4 stretched across, anchored (0, 108),
+  size delta (0, 1080), so its rect is the canvas's width × 1080): its own
+  `canvasGroup` (alpha 0 from `Awake`), `skins` `Unlock` and `Journal`
+  (`uGUI_PopupNotificationDefault` each), `defaultDuration` 5 s,
+  `ringDuration` 30 s (unused here). Sounds: `soundEncyUnlock` and others
+  (not ported).
+- **The skin** (`Unlock`: anchors and pivot (0, 0), 400 × 132; its own
+  `canvasGroup`; `ox` = `oy` = 40): children `Background` (an `Image`,
+  400 × 132), `Image` (256 × 128 at the left, the picture), `Text` (a TMP
+  text at x 250 with a `ContentSizeFitter`, preferred width; colour #77CDFF),
+  `Title` (above the top left; #B7DEFD) and `Controls` (below; empty for
+  an analysis). `defaultSprite` is the picture when the entry has none;
+  the skin's sounds are not set.
+- **`Enqueue`** drops the entry's sound if a queued entry has the same
+  one; **`Show`** sets the skin (`SetSkin`: each skin's group alpha 1 or
+  0), `OnShow` (title, the image's sprite or `defaultSprite`, text,
+  controls), `timeIn` 0.25, `timeDuration` = the entry's, `timeOut` 0.25,
+  starts its sound (or the skin's `defaultSound`), `Zero` from `None`, and
+  `start = PDA.time − timeIn × value` (so a shown pop-up does not jump).
+  **`Hide`**: `start = PDA.time − (timeIn + max(0, duration) + timeOut ×
+  (1 − value))`, the slide out from where it is. **`ShowNext`**: `Hide`
+  unless a voiced sound plays, then first in the queue.
+- **`OnUpdate`** (queue `UpdateAfterInput`, before `PDA.UpdateTime` in
+  `UpdatePDA`): num = `PDA.time − start`; the phase is `None` until the
+  first entry, else `Zero` (num < 0), `In` (< `timeIn`), `One` (< `timeIn`
+  + duration, or duration < 0), `Out` (< + `timeOut`), else `Done`. On a
+  change: the slide-in sound from `Zero`/`Done` to `In`/`One`, the
+  slide-out sound from `In`/`One` to `Out`; the group's alpha = 1 from `In`
+  to `Out`, else 0; `Out` stops the sound (fading); `Done` clears the
+  entry. The value is `Trapezoid(0, timeIn, duration, timeOut, num)`
+  (`Step` for a negative duration), kept unless not
+  `Mathf.Approximately` the old one, which subscribes `OnLayoutComplete`
+  (queue `UILayoutComplete`, later in the frame). At `None` or `Done` the
+  next queued entry is shown. **`SetTransition(value)`**: the skin's
+  anchored position = `Vector2.Lerp(p0, p1, EaseOutSine(value))` with
+  `GetRectPositions(parent rect, skin rect, MiddleLeft, ox, oy)`: p0 =
+  (−400, 474) beyond the left edge, p1 = (40, 474). An entry is up 0.25 +
+  5 + 0.25 s; the next starts on the frame the last is done.
+- **`OnAnalyze(analysis, verbose)`**: `Unlock` skin, `defaultDuration`,
+  title `Language.Get(unlockMessage)`, text `Language.Get(techType.
+  AsString())`, picture `unlockPopup`, sound `unlockSound`, then
+  `Enqueue`. `PDAData.analysisTech`: 126 entries, 120 tech types (6 listed
+  twice, the same; `Analyze` acts on the first), messages
+  `NotificationBlueprintUnlocked` ("NEW BLUEPRINT SYNTHESIZED" in English)
+  101, `NotificationCreatureDiscovered` 14, `NotificationBlueprintPickup` 5;
+  60 with a picture; every one with the sound
+  `event:/tools/scanner/new_blueprint`.
+- **What our client reaches:** nothing of the game's; `sn-client
+  --analyze <TechType>[,…]` is a test hook that calls `OnAnalyze` for
+  each entry once the HUD is active.
+
+**Checked:** `ui --popup`, 13 of 13: the config and skins read; four
+`OnAnalyze` entries (power cell, decoy tube with its own picture, double
+tank, and the advanced wiring kit by `ShowNext` at frame 450), titles and
+texts from the language file; 1200 frames at 0.0173 s equal a replay
+(value error 0.0000000, position ≤ 0.00004; the replay steps `PDA.time` as
+a float, as the game does: summed in doubles it drifts by 1e-4 s over
+19 s); shown in the order power cell, decoy, wiring kit, double tank, each
+0.25 + 5 + 0.25 s after the last (the decoy hidden 0.25 s after
+`ShowNext`); 240 draws: while shown, the background, picture, title and
+text (the empty `Controls` has no vertices; the `Journal` skin at alpha
+0), moving with the anchored position (≤ 0.0001); while hidden, none; the
+other nodes' draws unchanged. Client (`--analyze PowerCell,CyclopsDecoyModule`): both shown in turn,
+each done 5.5137 and 5.5010 s after it was shown (rule 5.5 s + under a
+step), 0 warnings; a screenshot while the decoy's is shown. Not compared
+against the game on screen.
+
 ## Picked-up icons (M9u7c) — confirmed (decompiled code, stored fields, `ui --icon-mesh`, `ui --icons`)
 
 Read on 2026-10-17 from the decompiled `uGUI_IconNotifier`,

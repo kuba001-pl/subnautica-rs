@@ -3498,3 +3498,50 @@ fn waterfall_caps_resolve_and_keep_their_height() {
     assert!(families >= 3);
     eprintln!("waterfall families checked: {families}");
 }
+
+/// M9u7d1: `uGUI_PopupNotification` and its two skins are read, and
+/// `PDAData.analysisTech`'s entries with them (counts on build 10).
+#[test]
+#[ignore = "needs SUBNAUTICA_DIR pointing at a Subnautica install"]
+fn the_unlock_popup_is_read() {
+    let Some(dir) = std::env::var_os("SUBNAUTICA_DIR") else {
+        eprintln!("SUBNAUTICA_DIR not set; skipping");
+        return;
+    };
+    let game = GameData::locate(Some(PathBuf::from(dir))).unwrap();
+    let assets = Assets::index(&game).unwrap();
+    let assemblies = sn_assets::ScriptAssemblies::load(&game).unwrap();
+    let layouts = assemblies.layouts().unwrap();
+    let fonts = assets.font_assets(&assemblies).unwrap();
+    let tags = sn_assets::physics_settings(&assets).unwrap().tags;
+    let catalog = assets.catalog().unwrap();
+    let root = assets.ugui_root(&catalog).unwrap();
+    let ui = assets.ui_tree("uGUI.prefab", &root).unwrap();
+    let mut scene = assets
+        .ui_scene(&layouts, &ui, &fonts, &tags.sorting_layers)
+        .unwrap();
+    let c = assets.popup_config(&layouts, &ui, &mut scene).unwrap();
+    assert!(
+        ui.nodes[c.root]
+            .path
+            .ends_with("HUD/Content/PopupNotification")
+    );
+    assert_eq!(c.group, c.root);
+    assert_eq!(c.default_duration, 5.0);
+    let names: Vec<&str> = c
+        .skins
+        .iter()
+        .map(|s| ui.nodes[s.root].name.as_str())
+        .collect();
+    assert_eq!(names, ["Unlock", "Journal"]);
+    for s in &c.skins {
+        assert_eq!((s.ox, s.oy), (40.0, 40.0));
+        assert!(s.image.is_some() && s.default_sprite.is_some());
+        assert_eq!(s.group, s.root);
+    }
+    let player = sn_assets::player_data(&assets).unwrap();
+    let a = assets.analysis_popups(&layouts, &player).unwrap();
+    assert_eq!(a.len(), 120);
+    assert_eq!(a.values().filter(|e| e.unlock_popup.is_some()).count(), 60);
+    assert!(a.values().all(|e| e.unlock_sound.is_some()));
+}

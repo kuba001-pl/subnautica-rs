@@ -281,6 +281,8 @@ pub struct PlayerData {
     pub ground_motor: GroundMotor,
     pub controller: PlayerController,
     pub pda: PdaData,
+    /// The `PDAData` object (its references resolve from its file).
+    pub pda_object: ObjectRef,
     /// The player's GameObject's physics layer.
     pub player_layer: u32,
     /// The player's `Rigidbody` (used by `UnderwaterMotor`).
@@ -424,6 +426,7 @@ pub fn player_data(assets: &Assets) -> Result<PlayerData> {
         camera,
         camera_node,
         pda,
+        pda_object: pda_ref,
     })
 }
 

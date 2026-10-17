@@ -138,13 +138,17 @@ Tested on Windows 11 with game build 10 (Steam):
   yet). A picked-up item's icon rises from the screen's centre and
   sinks away as `uGUI_IconNotifier` animates it (M9u7c: its curves and
   wobble, 0.3 s apart, drawn from the item sprite's own mesh with the
-  game's `UI/Icon` shader). Notifications and the blueprint pop-up are
-  not drawn yet (M9u7d). The texts are
+  game's `UI/Icon` shader). The "new blueprint" pop-up at the left
+  (`uGUI_PopupNotification`, M9u7d: its slide in and out, 5 s, the queue,
+  the picture) is ported, but nothing in the game we run shows it yet
+  (a pick-up never does; crafting and scanning would): `--analyze
+  <TechType>` shows it as a test. Notifications (the PDA's item and tab
+  marks) wait for the inventory tab (M9u8b). The texts are
   untranslated.
   Checked by numbers (`ui --bars`, `ui --pulse`, `ui --start`,
   `ui --depth`, `ui --compass`, `ui --tmp-sprites`, `ui --reticle`,
-  `ui --death`, `ui --messages`, `ui --icon-mesh`, `ui --icons`, the
-  client's per-second log) and screenshots; not compared against the
+  `ui --death`, `ui --messages`, `ui --icon-mesh`, `ui --icons`,
+  `ui --popup`, the client's per-second log) and screenshots; not compared against the
   original game on screen.
 - Oxygen, suffocation, health, death and respawn in the lifepod, with
   the game's numbers (45 units, 1 / 1.5 / 2 per second by depth, refill

@@ -2,6 +2,74 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-17 — M9u7d1–d2: the unlock pop-up (`uGUI_PopupNotification`)
+
+**What/why:** M9u7d's plan took "a pick-up that unlocks a blueprint" as
+the pop-up's input. The decompiled code says otherwise: `Inventory.Pickup`
+analyses with `verbose: false`, so a pick-up never shows the pop-up; only
+verbose `KnownTech.Add`s do (crafting's story goals, scanning, databoxes;
+none ported). And `NotificationManager` has no HUD view (the PDA's item
+icons and tab counts). DESIGN's M9u7d was rewritten (2026-10-17):
+`NotificationManager` moves to M9u8b; M9u7d1 ports the pop-up, M9u7d2
+shows it in the client through a test flag. Facts in `docs/formats/ui.md`
+§ The unlock pop-up.
+- `sn-ui::popup` (new): `Enqueue`, `Show`, `Hide`, `ShowNext`,
+  `OnUpdate`'s phases and value (`Trapezoid`, `Step`,
+  `Mathf.Approximately`), `SetSkin`, the default skin's `OnShow` and
+  `SetTransition` (`GetRectPositions` at `MiddleLeft`, `EaseOutSine`);
+  sounds named, not played.
+- `sn-assets::popup` (new): `popup_config` (the pop-up's and skins'
+  nodes and fields), `analysis_popups` (`PDAData.analysisTech`'s message,
+  picture and sound by tech type, first entry wins as in `Analyze`),
+  `analysis_entry` (`OnAnalyze`), `popup_layout`, `fmod_asset_name`;
+  `PlayerData::pda_object`; `Debug` for `ObjectRef` (logs).
+- `sn-client`: the UI worker runs the pop-up every frame (idle: only
+  `PDA.time` moves); `--analyze <TechType>[,…]` queues `OnAnalyze` for
+  each once the HUD is active; the log names each entry, phase and sound
+  and checks each entry's time up.
+- `sn-inspect ui --popup` (new); a real-data test
+  `the_unlock_popup_is_read`.
+No new dependencies.
+
+**Verified** (`SUBNAUTICA_DIR` set):
+- `ui --popup`: 13 of 13; 1200 frames, 0 differing from the replay (value
+  0.0000000, position ≤ 0.00004); shown power cell 0.0000, decoy 5.5014,
+  wiring kit (`ShowNext`) 8.0445, double tank 13.5458 s; 240 draws, 0
+  differing (four items while shown, moving with the skin ≤ 0.0001; none
+  while hidden; other nodes unchanged).
+- Client, `sn-client --resolution 1920 1080 --start -197.3 -35.2 -10.2
+  --analyze PowerCell,CyclopsDecoyModule --shot 15 m9u7d-after`
+  (`out/m9u7d/client-analyze.log`): "NEW BLUEPRINT SYNTHESIZED" / "Power
+  cell" (defaultSprite) at 1.574 s, done after 5.5137 s; "Cyclops Decoy
+  Tube Upgrade" (its picture) right after, done after 5.5010 s (both ok:
+  5.5 s + under a step); 0 WARN/ERROR/panic. The first went from `Zero`
+  to `One` without `In`: a 0.25 s start-up frame (the game's rule does the
+  same with such a step). With `--analyze CyclopsDecoyModule --shot 1.0
+  m9u7d-popup`: `out/m9u7d-popup.png` shows it at the left.
+- **Bugs found on the way:** `Popup::idle` called the pop-up idle on the
+  frame it was done and had just shown the next entry, so the client
+  stopped updating it and the second entry never slid in (`ui --popup`
+  updates every frame and missed it; a unit test now covers it). The
+  replay first summed `PDA.time` in doubles and differed from the game's
+  float sum by up to 4e-4 in value after 8 s; the replay now steps it as a
+  float.
+- No regression: `ui --instantiate` 10 of 10; `--messages` 7 of 7;
+  `--death` 24 of 24; `--reticle` 22 of 22; `--compass` 644 / 0;
+  `--depth` 91,230 / 0; `--bars` 300 / 0; `--start` 21 of 21;
+  `--tmp-sprites` 371 of 371; `--draw` 12 of 12 hashes equal; `--live`
+  start hash `efa1606eb7c79aff`; `--meshes` 0 failing; `--pulse` exit 0;
+  `--icon-mesh` 12 of 12; `--icons` 10 of 10. Real-data tests
+  (`sn-assets`): 56 passed.
+- `cargo test --workspace` (no `SUBNAUTICA_DIR`): 693 passed, 0 failed
+  (new: 5 pop-up tests). fmt and clippy
+  (`-D warnings`) clean.
+
+**Not tested:** the `Journal` skin, `OnEncyclopediaAdd` and
+`OnResourceDiscovered` (not ported: no encyclopedia or map room);
+`Hide` by itself; a resize or UI scale change while shown; a negative
+duration. The game's own sources of the pop-up are not ported. Not
+compared against the original game on screen.
+
 ## 2026-10-17 — M9u7c1–c2: the picked-up item icons (`uGUI_IconNotifier`)
 
 **What/why:** a picked-up item showed no icon. The game's icon is a node

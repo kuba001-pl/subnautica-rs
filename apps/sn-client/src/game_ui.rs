@@ -64,6 +64,7 @@ use sn_ui::depth::DepthCompass;
 use sn_ui::hud::{Hud, HudInputs, hud_mode};
 use sn_ui::messages::{MessageInputs, MessageLayout, Messages};
 use sn_ui::notifier::{FROM, Icon, Notifier};
+use sn_ui::popup::{Entry, Phase, Popup, PopupLayout, TIME_IN, TIME_OUT};
 use sn_ui::reticle::{HAND, HAND_SUBSCRIPT, HandReticle, IconType, ReticleInputs, get_text};
 use sn_ui::scaler::{DEFAULT_UI_SCALE, Placement, UiCamera, place};
 use sn_ui::state::UiState;
@@ -304,6 +305,9 @@ pub(crate) struct GameUiPlugin {
     /// The main camera's field of view (degrees), which the UI camera
     /// takes.
     pub field_of_view: f32,
+    /// `--analyze` (M9u7d2): tech types whose unlock pop-up is shown once
+    /// the HUD is active.
+    pub analyze: Vec<String>,
 }
 
 impl Plugin for GameUiPlugin {
@@ -315,9 +319,10 @@ impl Plugin for GameUiPlugin {
         let (worker_builds, builds) = channel();
         let game_dir = self.game_dir.clone();
         let fov = self.field_of_view;
+        let analyze = self.analyze.clone();
         std::thread::Builder::new()
             .name("game-ui".into())
-            .spawn(move || worker(game_dir, fov, worker_requests, worker_builds))
+            .spawn(move || worker(game_dir, fov, analyze, worker_requests, worker_builds))
             .expect("spawn the game UI worker");
         app.insert_resource(UiWorker {
             requests,
@@ -387,10 +392,11 @@ fn make_white(mut images: ResMut<Assets<Image>>, mut frame: ResMut<GameUiFrame>)
 fn worker(
     game_dir: Option<PathBuf>,
     fov: f32,
+    analyze: Vec<String>,
     requests: Receiver<Request>,
     builds: Sender<Result<UiBuild, String>>,
 ) {
-    if let Err(e) = run_worker(game_dir, fov, &requests, &builds) {
+    if let Err(e) = run_worker(game_dir, fov, analyze, &requests, &builds) {
         let _ = builds.send(Err(e));
     }
 }
@@ -398,6 +404,7 @@ fn worker(
 fn run_worker(
     game_dir: Option<PathBuf>,
     fov: f32,
+    analyze: Vec<String>,
     requests: &Receiver<Request>,
     builds: &Sender<Result<UiBuild, String>>,
 ) -> Result<(), String> {
@@ -514,6 +521,64 @@ fn run_worker(
     let mut icon_last_step = 0.0f32;
     // Each queued request's sprite name, in queue order.
     let mut icon_names: std::collections::VecDeque<String> = std::collections::VecDeque::new();
+    // The unlock pop-up (M9u7d1–d2): `uGUI_PopupNotification` and its
+    // skins. Its only input is `--analyze`: `OnAnalyze`'s sources
+    // (crafting, scanning, databoxes) are not ported.
+    let mut popup = Popup::new(assets.popup_config(&layouts, &tree, &mut scene)?);
+    info!(
+        "game UI pop-up: {}, defaultDuration {} s, skins {:?}",
+        tree.nodes[popup.config.root].path,
+        popup.config.default_duration,
+        popup
+            .config
+            .skins
+            .iter()
+            .map(|s| &tree.nodes[s.root].name)
+            .collect::<Vec<_>>()
+    );
+    // `OnAnalyze(analysis, verbose: true)`'s entries for `--analyze`, by
+    // tech name, shown once the HUD is active.
+    let mut analyze_entries: Vec<(String, Entry)> = Vec::new();
+    if !analyze.is_empty() {
+        let player = sn_assets::player_data(&assets)?;
+        let analysis = assets.analysis_popups(&layouts, &player)?;
+        let text = sn_assets::item_text(&game, &code, "English")?;
+        for name in &analyze {
+            let tech = text
+                .tech_names
+                .iter()
+                .find(|(_, n)| *n == name)
+                .map(|(t, _)| *t);
+            match tech.and_then(|t| analysis.get(&t)) {
+                Some(a) => {
+                    let e = sn_assets::analysis_entry(
+                        &popup.config,
+                        a,
+                        name,
+                        &text.strings,
+                        &mut scene,
+                    );
+                    info!(
+                        "game UI pop-up: --analyze {name}: title {:?}, text {:?}, picture {}, sound {:?}",
+                        e.title,
+                        e.text,
+                        a.unlock_popup
+                            .as_ref()
+                            .map_or("none (defaultSprite)".to_string(), |o| format!("{o:?}")),
+                        e.sound
+                    );
+                    analyze_entries.push((name.clone(), e));
+                }
+                None => {
+                    warn!("game UI pop-up: --analyze {name}: no tech type or no analysis entry")
+                }
+            }
+        }
+    }
+    // What `SetTransition` reads, when first needed after a resize.
+    let mut popup_layout: Option<PopupLayout> = None;
+    // The entry shown: (title / text, shown at).
+    let mut popup_shown: Option<(String, f32)> = None;
     // The death timeline's marks (what, time), for the logs.
     let mut death_marks: Vec<(&str, f32)> = Vec::new();
     let mut black_full_logged = false;
@@ -692,6 +757,48 @@ fn run_worker(
                         _ => notifier.pda_time += inputs.delta_time,
                     }
                     rules.apply(&notifier.state);
+                    // `uGUI_PopupNotification` (M9u7d1): `--analyze`'s
+                    // entries once the HUD is active, then `OnUpdate` and
+                    // `SetTransition`.
+                    let enqueue: Vec<Entry> = if inputs.active && !analyze_entries.is_empty() {
+                        let queued = popup.queue.len();
+                        analyze_entries
+                            .drain(..)
+                            .enumerate()
+                            .map(|(k, (name, e))| {
+                                info!(
+                                    "game UI pop-up at {:.3} s: OnAnalyze({name}), queue {}",
+                                    popup.time,
+                                    queued + k + 1
+                                );
+                                e
+                            })
+                            .collect()
+                    } else {
+                        Vec::new()
+                    };
+                    let popup_busy = !popup.idle() || !enqueue.is_empty();
+                    if popup_busy && popup_layout.is_none() {
+                        let l = sn_assets::popup_layout(
+                            &assets,
+                            &mut scene,
+                            &set,
+                            &placements,
+                            &start_state,
+                            &popup.config,
+                        )?;
+                        info!("game UI pop-up: rect {:?}, skins {:?}", l.parent, l.skins);
+                        popup_layout = Some(l);
+                    }
+                    match &popup_layout {
+                        Some(l) if popup_busy => {
+                            popup.update(&enqueue, inputs.delta_time, l);
+                            popup_log(&popup, &mut popup_shown, inputs.delta_time);
+                        }
+                        // Nothing queued or shown: only `PDA.time` moves.
+                        _ => popup.time += inputs.delta_time,
+                    }
+                    rules.apply(&popup.state);
                     let before = reticle.icon_type;
                     rules.apply(reticle.update(&reticle_inputs(
                         &reticle,
@@ -769,6 +876,7 @@ fn run_worker(
         if resized {
             message_layout = None;
             notifier_rect = None;
+            popup_layout = None;
             placements.clear();
             for (node, s) in &scalers {
                 match place(s, &camera, fov, size, DEFAULT_UI_SCALE) {
@@ -950,6 +1058,62 @@ fn icons_log(
         log.insert(icon.root, (name, at, dt));
     }
     *last = dt;
+}
+
+/// The pop-up's life (M9u7d2): each entry shown, each phase, the sounds
+/// not ported, and when one is done, how long it was up against the sum
+/// of `timeIn`, its duration and `timeOut` (done on the first `OnUpdate`
+/// past it, so under one step more).
+fn popup_log(p: &Popup, shown: &mut Option<(String, f32)>, dt: f32) {
+    // In `OnUpdate`'s order: the phase (the last one done), then the next
+    // one shown.
+    for (phase, at) in &p.events.phases {
+        info!(
+            "game UI pop-up at {at:.3} s: phase {phase:?}, group alpha {}",
+            if (Phase::In..=Phase::Out).contains(phase) {
+                1
+            } else {
+                0
+            }
+        );
+        if *phase != Phase::Done {
+            continue;
+        }
+        let Some((what, from)) = shown.take() else {
+            continue;
+        };
+        let took = at - from;
+        let rule = TIME_IN + p.config.default_duration + TIME_OUT;
+        let ok = took + 1e-4 >= rule && took <= rule + dt + 1e-4;
+        info!(
+            "game UI pop-up at {at:.3} s: {what} done after {took:.4} s ({}: {TIME_IN} + {} + {TIME_OUT} s + under a step, step {dt:.4} s)",
+            if ok { "ok" } else { "DIFFERS" },
+            p.config.default_duration
+        );
+    }
+    for (e, at) in &p.events.shown {
+        info!(
+            "game UI pop-up at {at:.3} s: shown {:?} / {:?} ({}), {} for {} s, queue {}",
+            e.title,
+            e.text,
+            if e.sprite.is_some() {
+                "its picture"
+            } else {
+                "defaultSprite"
+            },
+            if e.skin == sn_ui::popup::UNLOCK {
+                "Unlock"
+            } else {
+                "Journal"
+            },
+            e.duration,
+            p.queue.len()
+        );
+        *shown = Some((format!("{:?} / {:?}", e.title, e.text), *at));
+    }
+    for s in &p.events.sounds {
+        info!("game UI pop-up: sound not ported: {s}");
+    }
 }
 
 /// The death timeline's changes as they happen (M9u6e1), each against

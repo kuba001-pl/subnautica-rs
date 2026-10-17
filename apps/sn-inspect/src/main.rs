@@ -36,6 +36,7 @@ mod orient;
 mod pickup;
 mod pickups;
 mod png;
+mod popup;
 mod prefab;
 mod pulse;
 mod rects;
@@ -288,6 +289,8 @@ Commands:
                          uGUI_Icon, UI/Icon) drawn from their sprites' meshes
   ui --icons             M9u7c2: uGUI_IconNotifier, the picked-up icons,
                          through a scripted queue against a replay
+  ui --popup             M9u7d1: uGUI_PopupNotification, the unlock pop-up,
+                         through scripted OnAnalyze entries against a replay
   ui --layout <CLASS> [<NAME>]
                          M9u1: a script's layout and, for its first object
                          (named NAME), where each field starts and its value
@@ -517,6 +520,7 @@ fn run(mut args: Vec<String>) -> Result<ExitCode> {
         ["ui", "--messages"] => messages::run(&game),
         ["ui", "--icon-mesh"] => icon_mesh::run(&game),
         ["ui", "--icons"] => icons::run(&game),
+        ["ui", "--popup"] => popup::run(&game),
         ["ui", "--fonts"] => fonts::run(&game, false),
         ["ui", "--fonts", "--atlas"] => fonts::run(&game, true),
         ["ui", "--sprites"] => ui::sprites(&game, false),

@@ -28,6 +28,7 @@ mod lifepod_light;
 mod marmo;
 mod messages;
 mod player_body;
+mod popup;
 mod prefab;
 mod reticle;
 mod scene;
@@ -90,6 +91,7 @@ pub use player_body::{
     EquipmentSlot, FIXED_PARAMETERS, PlayerAnimation, PlayerBody, RULE_PARAMETERS, TECH_TYPE_NONE,
     equipment_changes,
 };
+pub use popup::{AnalysisPopup, analysis_entry, popup_layout};
 pub use prefab::waterfall_local;
 pub use prefab::{
     CullBox, ExteriorCull, NodeAnimator, PlaceholderGroup, Prefab, PrefabLodGroup, PrefabNode,
@@ -434,6 +436,13 @@ impl FileRef {
 pub struct ObjectRef {
     pub file: FileRef,
     pub path_id: i64,
+}
+
+/// Its file's name and path id (for logs; M9u7d1).
+impl std::fmt::Debug for ObjectRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ObjectRef({}, {})", self.file.name, self.path_id)
+    }
 }
 
 impl ObjectRef {

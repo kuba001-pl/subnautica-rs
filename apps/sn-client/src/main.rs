@@ -168,6 +168,10 @@ Usage: sn-client [--game-dir <PATH>] [--start <X> <Y> <Z>] [--look <X> <Y> <Z>]
   --drop         --drop <SECONDS>: after SECONDS of play, ask to drop the
                  first item held where the game drops it (a debug check,
                  M9d4b)
+  --analyze      --analyze <TECHTYPE>[,…]: once the HUD is active, show the
+                 unlock pop-up of each tech type's PDAData.analysisTech
+                 entry, as a verbose KnownTech.Add would (a test hook,
+                 M9u7d2: crafting and scanning are not ported)
   --host         --host [PORT]: open this game to other players on UDP PORT
                  (default 27420; experimental, M10h: no encryption, for
                  friends on trust)
@@ -266,6 +270,8 @@ struct Args {
     /// `--pick-up`, `--drop`: seconds of play (M9d4b).
     pick_up: Option<f32>,
     drop: Option<f32>,
+    /// `--analyze`: tech type names (M9u7d2).
+    analyze: Vec<String>,
     /// `--shot`: seconds of play, then `out/<name>.png`.
     shot: Option<(f32, String)>,
     /// `--lifepod-state`: the pod's `LightingController` state.
@@ -339,6 +345,7 @@ fn parse_args_from(raw: &[String]) -> Result<Args, String> {
         kill: None,
         pick_up: None,
         drop: None,
+        analyze: Vec::new(),
         shot: None,
         lifepod_state: sn_sim::lighting::DAMAGED,
         mode: session::Mode::Solo,
@@ -517,6 +524,10 @@ fn parse_args_from(raw: &[String]) -> Result<Args, String> {
             "--kill" => args.kill = Some(number(it.next(), "--kill")?),
             "--pick-up" => args.pick_up = Some(number(it.next(), "--pick-up")?),
             "--drop" => args.drop = Some(number(it.next(), "--drop")?),
+            "--analyze" => {
+                let v = it.next().ok_or("--analyze needs tech type names")?;
+                args.analyze = v.split(',').map(|t| t.trim().to_string()).collect();
+            }
             "--host" => {
                 let port = match it.peek().and_then(|v| v.parse::<u16>().ok()) {
                     Some(p) => {
@@ -1075,6 +1086,7 @@ fn main() -> AppExit {
         app.add_plugins(game_ui::GameUiPlugin {
             game_dir: args.game_dir.clone(),
             field_of_view: setup_fov,
+            analyze: args.analyze.clone(),
         });
     }
     if args.gpu_timings {
