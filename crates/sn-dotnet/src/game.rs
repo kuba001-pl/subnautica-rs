@@ -7,8 +7,8 @@
 
 use crate::assembly::{Assembly, FIELD_LITERAL, FIELD_STATIC};
 use crate::il::{
-    CALL, CALLVIRT, DUP, Instr, LDARG_0, LDC_R4, LDSFLD, LDSTR, MUL, NEWARR, NEWOBJ, Operand, RET,
-    STELEM_REF, STFLD, STSFLD, decode, opcode_name,
+    CALL, CALLVIRT, DUP, Instr, LDARG_0, LDC_R4, LDFLD, LDSFLD, LDSTR, MUL, NEWARR, NEWOBJ,
+    Operand, RET, STELEM_REF, STFLD, STSFLD, decode, opcode_name,
 };
 use crate::{Error, Result};
 
@@ -697,9 +697,28 @@ pub fn multiplier_f32(
     type_name: &str,
     method: &str,
 ) -> Result<f32> {
+    let found = multipliers_f32(asm, namespace, type_name, method)?;
+    match found[..] {
+        [v] => Ok(v),
+        _ => Err(err(format!(
+            "{type_name}.{method}: {} constant multipliers, expected 1",
+            found.len()
+        ))),
+    }
+}
+
+/// Every float constant a method multiplies by (`ldc.r4 v; mul`), in
+/// code order, e.g. `uGUI_PlayerDeath.Update`'s `Time.deltaTime * 5f`
+/// and `* 2f` (M9u6e1).
+pub fn multipliers_f32(
+    asm: &Assembly,
+    namespace: &str,
+    type_name: &str,
+    method: &str,
+) -> Result<Vec<f32>> {
     let ty = find_type(asm, namespace, type_name)?;
     let code = method_code(asm, ty, method)?;
-    let found: Vec<f32> = code
+    Ok(code
         .windows(2)
         .filter_map(|w| match (&w[0], &w[1]) {
             (
@@ -712,14 +731,93 @@ pub fn multiplier_f32(
             ) => Some(*v),
             _ => None,
         })
-        .collect();
-    match found[..] {
-        [v] => Ok(v),
-        _ => Err(err(format!(
-            "{type_name}.{method}: {} constant multipliers, expected 1",
-            found.len()
-        ))),
+        .collect())
+}
+
+/// Every `MonoBehaviour.Invoke(name, delay)` of a method, in code order,
+/// e.g. `uGUI_PlayerDeath.TriggerDeathVignette`'s `Invoke("BeginFadeOut",
+/// 6f)` (M9u6e1). Only constant arguments are accepted (`ldstr name;
+/// ldc.r4 delay; call Invoke`); any other `Invoke` is an error.
+pub fn invokes(
+    asm: &Assembly,
+    namespace: &str,
+    type_name: &str,
+    method: &str,
+) -> Result<Vec<(String, f32)>> {
+    let ty = find_type(asm, namespace, type_name)?;
+    let code = method_code(asm, ty, method)?;
+    let mut found = Vec::new();
+    for (k, i) in code.iter().enumerate() {
+        if i.opcode != CALL && i.opcode != CALLVIRT {
+            continue;
+        }
+        let m = asm.method_token(i.token().unwrap_or(0))?;
+        if (m.namespace.as_str(), m.type_name.as_str(), m.name.as_str())
+            != ("UnityEngine", "MonoBehaviour", "Invoke")
+        {
+            continue;
+        }
+        let at = |n: usize| k.checked_sub(n).and_then(|j| code.get(j));
+        match (m.params, at(2), at(1)) {
+            (
+                2,
+                Some(Instr {
+                    opcode: LDSTR,
+                    operand: Operand::Token(t),
+                    ..
+                }),
+                Some(Instr {
+                    opcode: LDC_R4,
+                    operand: Operand::F32(v),
+                    ..
+                }),
+            ) => found.push((asm.user_string(*t)?, *v)),
+            _ => {
+                return Err(err(format!(
+                    "{type_name}.{method}: Invoke pattern not recognised"
+                )));
+            }
+        }
     }
+    Ok(found)
+}
+
+/// Every float constant a method loads right after reading a field
+/// (`ldfld field; ldc.r4 v`), in code order: comparisons such as
+/// `uGUI_PlayerDeath.Update`'s `color.a < 0.98f` (M9u6e1). `field` is
+/// (namespace, type, name), e.g. `("UnityEngine", "Color", "a")`.
+pub fn field_compares_f32(
+    asm: &Assembly,
+    namespace: &str,
+    type_name: &str,
+    method: &str,
+    field: (&str, &str, &str),
+) -> Result<Vec<f32>> {
+    let ty = find_type(asm, namespace, type_name)?;
+    let code = method_code(asm, ty, method)?;
+    let mut found = Vec::new();
+    for w in code.windows(2) {
+        let (
+            Instr {
+                opcode: LDFLD,
+                operand: Operand::Token(t),
+                ..
+            },
+            Instr {
+                opcode: LDC_R4,
+                operand: Operand::F32(v),
+                ..
+            },
+        ) = (&w[0], &w[1])
+        else {
+            continue;
+        };
+        let f = asm.field_token(*t)?;
+        if (f.namespace.as_str(), f.type_name.as_str(), f.name.as_str()) == field {
+            found.push(*v);
+        }
+    }
+    Ok(found)
 }
 
 #[cfg(test)]
@@ -932,6 +1030,44 @@ mod tests {
             cctor = cctor.ldc_r4(45.0).stsfld(fov);
         }
         b.method(".cctor", 0, Some(&cctor.ret().0));
+
+        // `uGUI_PlayerDeath`'s shapes: `Invoke("Begin", 0f); Invoke("End",
+        // 6f);` and `if (c.a < 0.98f) … dt * 5f … dt * 2f … c.a < 0.02f`.
+        let behaviour = b.type_ref("UnityEngine", "MonoBehaviour");
+        let invoke = b.member_ref((Table::TYPE_REF, behaviour), "Invoke", Some(2));
+        let color = b.type_ref("UnityEngine", "Color");
+        let alpha = b.member_ref((Table::TYPE_REF, color), "a", None);
+        b.type_def("", "Vignette");
+        let (begin, end) = (b.user_string("Begin"), b.user_string("End"));
+        let mut code = Il::default()
+            .op(LDARG_0)
+            .ldstr(begin)
+            .ldc_r4(0.0)
+            .call(invoke)
+            .op(LDARG_0)
+            .ldstr(end)
+            .ldc_r4(6.0)
+            .call(invoke);
+        if o.bad_default {
+            code = code.op(LDARG_0).ldstr(end).op(LDNULL).call(invoke);
+        }
+        b.method("Trigger", 0, Some(&code.ret().0));
+        let code = Il::default()
+            .op(LDARG_0)
+            .ldfld(alpha)
+            .ldc_r4(0.98)
+            .pop()
+            .pop()
+            .ldc_r4(5.0)
+            .op(MUL_OP)
+            .ldc_r4(2.0)
+            .op(MUL_OP)
+            .op(LDARG_0)
+            .ldfld(alpha)
+            .ldc_r4(0.02)
+            .pop()
+            .pop();
+        b.method("Update", 0, Some(&code.ret().0));
         b.build()
     }
 
@@ -1105,6 +1241,41 @@ mod tests {
         assert!(e.message.contains("2 Random.Range calls"), "{e}");
         let e = multiplier_f32(&asm, "", "Exploder", "SetExplodeTime").unwrap_err();
         assert!(e.message.contains("2 constant multipliers"), "{e}");
+    }
+
+    #[test]
+    fn reads_invokes_multipliers_and_field_compares() {
+        let bytes = sample(&Options::default());
+        let asm = parse(&bytes);
+        assert_eq!(
+            invokes(&asm, "", "Vignette", "Trigger").unwrap(),
+            vec![("Begin".to_string(), 0.0), ("End".to_string(), 6.0)]
+        );
+        assert_eq!(
+            multipliers_f32(&asm, "", "Vignette", "Update").unwrap(),
+            vec![5.0, 2.0]
+        );
+        let alpha = ("UnityEngine", "Color", "a");
+        assert_eq!(
+            field_compares_f32(&asm, "", "Vignette", "Update", alpha).unwrap(),
+            vec![0.98, 0.02]
+        );
+        let red = ("UnityEngine", "Color", "r");
+        assert!(
+            field_compares_f32(&asm, "", "Vignette", "Update", red)
+                .unwrap()
+                .is_empty()
+        );
+        // No Invoke at all: none; a missing method: an error.
+        assert!(invokes(&asm, "", "Vignette", "Update").unwrap().is_empty());
+        assert!(invokes(&asm, "", "Vignette", "Missing").is_err());
+        // An Invoke whose delay is not a constant: an error, not a guess.
+        let bad = sample(&Options {
+            bad_default: true,
+            ..Options::default()
+        });
+        let e = invokes(&parse(&bad), "", "Vignette", "Trigger").unwrap_err();
+        assert!(e.message.contains("Invoke pattern"), "{e}");
     }
 
     #[test]

@@ -102,7 +102,8 @@ Tested on Windows 11 with game build 10 (Steam):
   (`ui --fonts`). Layout, image and text meshes, materials and the draw
   order (`ui --draw`), and the canvases placed as the game places them
   (`ui --canvas`).
-- Drawing the game's HUD (`sn-client --game-ui`, off by default): the
+- Drawing the game's HUD (`sn-client`, on by default since M9u6e2;
+  `--no-game-ui` turns it off and then no HUD is drawn): the
   images and TextMesh Pro texts of `uGUI.prefab`, with the game's own
   shaders ported (`UI/Default`, `UI/Simple`, `TextMeshPro/Distance
   Field` with outline and shadow, `Hidden/UI/CircularBar`), at any window
@@ -124,10 +125,17 @@ Tested on Windows 11 with game build 10 (Steam):
   hand or pack-up icon with its 0.1 s fade, the game's texts with the
   mouse-button icon (TMP's inline `<sprite>`, the button read from the
   game's input code), hidden while the PDA is open; our own hand text is
-  gone under `--game-ui`. Death and messages are not driven yet
-  (M9u6e–M9u7). The texts are untranslated.
+  gone. Running out of air darkens the screen along the
+  game's out-of-oxygen curve; death fades to black from the death
+  animation's event (`uGUI_PlayerDeath`, its 6 s and fade out), and the
+  respawn screen ("Loading...") shows and fades out over the game's 1 s
+  (`uGUI_SceneRespawning`, `uGUI_Fader`); our own HUD of M9c (bars,
+  depth, hand text, fade) is gone. Messages are not driven yet (M9u7).
+  The texts are
+  untranslated.
   Checked by numbers (`ui --bars`, `ui --pulse`, `ui --start`,
-  `ui --depth`, `ui --compass`, `ui --tmp-sprites`, `ui --reticle`, the
+  `ui --depth`, `ui --compass`, `ui --tmp-sprites`, `ui --reticle`,
+  `ui --death`, the
   client's per-second log) and screenshots; not compared against the
   original game on screen.
 - Oxygen, suffocation, health, death and respawn in the lifepod, with
@@ -135,9 +143,9 @@ Tested on Windows 11 with game build 10 (Steam):
   30 per second at the surface, 8 s to pass out). `sn-inspect dive` runs
   a dive to the seabed until the player dies and respawns, then a dive cut
   short by surfacing; seeds 1–5 pass. The mouse look uses the game's rule,
-  default sensitivity and ±87° pitch limit. `sn-client` shows a HUD of our
-  own: oxygen and health bars, depth, the black-out overlay. The HUD
-  layout and the look in play are not tested by the agent.
+  default sensitivity and ±87° pitch limit. `sn-client` shows them in
+  the game's own HUD (above). The look in play is not tested by the
+  agent.
 - `sn-client`: a desktop window (Bevy), first person or a fly camera. Terrain streams in
   and out as you move, with four levels of detail out to 1.2 km, textured
   with the game's own terrain materials, blended between neighbouring
@@ -243,7 +251,8 @@ shaders (actual particle lighting modes, sand and lava falls and other effect
 meshes not yet decoded are flat; matched original-game SIG rock/coral comparisons are not tested;
 `docs/formats/materials.md`), creatures (including the
 ~100,000 the spawn slots would add); the intro cinematic, tools, the PDA and IK, tanks and fins changing
-speeds, the game's own HUD and damage effects; audio,
+speeds, the game's other screens (messages, the PDA's tabs, menus) and
+damage effects; audio,
 multiplayer (so far the headless `sn-server` and bot players, also with
 the player's own rules and collision, over UDP on one machine; the game
 client runs its own in-process server even in solo play, and can host

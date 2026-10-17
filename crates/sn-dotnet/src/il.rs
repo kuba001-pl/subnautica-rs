@@ -64,6 +64,7 @@ pub const MUL: u16 = 0x5A;
 pub const CALLVIRT: u16 = 0x6F;
 pub const LDSTR: u16 = 0x72;
 pub const NEWOBJ: u16 = 0x73;
+pub const LDFLD: u16 = 0x7B;
 pub const STFLD: u16 = 0x7D;
 pub const LDSFLD: u16 = 0x7E;
 pub const STSFLD: u16 = 0x80;

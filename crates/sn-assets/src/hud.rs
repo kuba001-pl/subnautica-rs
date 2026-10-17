@@ -23,7 +23,7 @@ const CLAMP: i64 = 2;
 
 /// An `AnimationCurve` field: unweighted keys and clamped ends, the only
 /// kind the HUD's rules evaluate.
-fn curve_field(f: &Fields, name: &str) -> Result<Curve> {
+pub(crate) fn curve_field(f: &Fields, name: &str) -> Result<Curve> {
     let c = f
         .get(name)
         .and_then(Value::as_struct)

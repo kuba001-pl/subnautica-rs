@@ -2,6 +2,134 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-17 — M9u6e2: the game's UI by default; our HUD removed (closes M9u6)
+
+**What/why:** the game's own HUD now covers everything our M9c HUD
+showed, so it is the default and ours is gone.
+- `sn-client`: `--game-ui` is the default (still accepted);
+  `--no-game-ui` turns it off, and then no HUD is drawn. `hud.rs`
+  removed (bars, depth, hand text, fade); its `Hud` and `HandHover`
+  moved to `player.rs` as the player's feed to the game UI, without
+  `seconds_left` and `dead` (only our HUD read them). `GameUiPlugin`
+  creates the feed itself, so a fly-camera run (no player) works. The
+  baseline report records `game_ui=`.
+- README, the help text, `docs/DESIGN.md` (M9u6, M9u6e, M9u6e2 done).
+No new dependencies.
+
+**Verified** (`SUBNAUTICA_DIR` set):
+- `grep "hud::\|crate::hud"` over `apps/`: none in the client (the
+  remaining hits are `sn_ui::hud` and `sn_assets`' own `hud` module).
+- Default run `sn-client --resolution 1920 1080 --shot 8
+  m9u6e2-default`: 98 `game UI` log lines, 0 WARN/ERROR/panic;
+  `out/m9u6e2-default.png` shows the game's bars, depth and reticle.
+- `--no-game-ui --shot 8 m9u6e2-nogameui`: 0 `game UI` lines, 0
+  warnings.
+- `--free-cam --resolution 1280 720 --benchmark 120`: the game UI read,
+  0 warnings, no panic (overwrote `out/client-benchmark.png`).
+- `cargo test --workspace` (no `SUBNAUTICA_DIR`): 669 passed, 0 failed,
+  59 ignored. fmt and clippy (`-D warnings`) clean.
+
+**Not tested:** `--baseline` (only the report line was added); a
+`--join` client with the default UI.
+
+## 2026-10-17 — M9u6e1: death, respawn and the out-of-oxygen overlay
+
+**Plan:** M9u6e was split in `docs/DESIGN.md` into e1 (the three screens'
+rules) and e2 (`--game-ui` on by default, `hud.rs` removed). Research in
+`docs/formats/ui.md` § Death, respawn and overlays.
+
+**What/why:** under `--game-ui` the out-of-oxygen darkening, the death
+fade and the respawn screen are now the game's own screens driven by
+their scripts' rules; our M9c black fade no longer runs there.
+- `sn-ui::death` (new): `uGUI_PlayerDeath` (`TriggerDeathVignette`, its
+  `Invoke`s, `Update`'s lerps, `ResetOverlay`), `uGUI_Fader` (`FadeOut`
+  uses `fadeInTime`, as the code does), `uGUI_SceneRespawning` (`Show`,
+  `Hide`), `uGUI_Overlays` (`Set` through the curve). A frame runs the
+  `Update`s, then the due `Invoke`s, then the frame's calls (Unity's
+  order, *hypothesis*).
+- `sn-assets::death_config` (new): the nodes, the fader's fields, the
+  overlay's curve, `Loading`; `vignette_times` reads the delays, rates
+  and alpha limits from the IL. `curve_field` made `pub(crate)`.
+- `sn-dotnet`: `invokes` (`MonoBehaviour.Invoke` calls with constant
+  arguments), `multipliers_f32` (every `ldc.r4; mul`; `multiplier_f32`
+  now uses it), `field_compares_f32` (`ldfld f; ldc.r4 v`); `LDFLD`,
+  `Il::ldfld` for tests.
+- `sn-client`: the player's frame events (`Died` → `OnKill`,
+  `MoveToRespawn` → `Show`, `Restored` → `Hide`) and the suffocation
+  value go to the UI worker; `body::death_events` reads the local
+  player animator's `DeathFade` / `DeathCut` after the animators run;
+  the worker runs the rules and logs each step of the timeline against
+  the rules' times and the overlay each second. `send_inputs` (with
+  `request_build`, `receive_build`) moved to `PostUpdate` so a frame's
+  inputs include that frame's animator events. Under `--game-ui`,
+  `hud::update` no longer runs (our bars were already hidden; now our
+  fade too) and `hud::hide_bars` is gone.
+- `sn-inspect ui --death` (new).
+No new dependencies.
+
+**Findings:**
+- `player_death` plays `quick_death`, whose `DeathFade` is at 0 s: the
+  vignette starts on the death's next frame, not after a 1.7 s clip as
+  first assumed for `ui --death`'s script (that run keeps `drown_death`'s
+  1.675 s, the timing being scripted there).
+- `uGUI_Fader.FadeOut()` uses `fadeInTime` (1 s) and `FadeIn()` uses
+  `fadeOutTime` (0.5 s).
+- With the game's numbers and `quick_death`, the vignette starts fading
+  out (6 s after the event) just before the respawn screen's `Hide`, so
+  both fade together: in the client run the vignette was at 0.95 at
+  `Hide`, 0.12 when the respawn screen was clear, and reset 0.9 s later.
+- In our ported draw order (M9u4d) the respawn screen draws under the
+  black vignette and the out-of-oxygen overlay (`ui --death`: draw items
+  45, 50 and 56 of 57). After a drowning both are at 1 while the respawn
+  screen shows, so "Loading..." is covered and the screen stays black;
+  the screen is only seen through them as they fade. Kept as the data
+  gives it; not compared with the game on screen.
+
+**Dead end:** the first screenshot runs used the UI log's times (from
+the app's start) for `--shot`, which counts play time from the player's
+start (about 5 s later): "black" showed the respawned player and
+"respawning" the second dive. Re-shot at play times.
+
+**Verified** (`SUBNAUTICA_DIR` set):
+- `ui --death`: 24 of 24 checks; 9,840 frame checks over 1,800 frames
+  of a scripted drowning (our vitals) equal to the replay; black 0.783 s
+  after the event, fade out 6.000 s after it, fader clear 1.000 s after
+  `Hide`; 5 frames drawn, each screen drawn exactly while its alpha is
+  above 0 (the respawn screen: 2 draws); `CutToBlack` black at once; a
+  death by damage shows the overlay for one frame. Values read: Invoke
+  0 / 6 s, rates 5 / 2, limits 0.98 / 0.02, fader 1 / 0.5 s unscaled,
+  "Loading...", curve (0, 0) (0.8, 1) (1, 1).
+- Client drowning, `sn-client --game-ui --resolution 1920 1080 --start
+  0 -3 0 --look 20 -3 20 --look-down 60 --hold-forward 3 --shot 80
+  m9u6e1-respawned` (`out/m9u6e1/drown.log`, UI times from the app's
+  start): suffocating from 49 s; the overlay each second equals the
+  curve at the logged value, 85 of 85 seconds (checked by a script of
+  our own against the keys); `OnKill` 57.064 s; `DeathFade` 57.075 s
+  (layer 8, weight 0.105); black 57.876 s; `Show` 62.088 s; `BeginFadeOut`
+  6.006 s after the event (ok); `Hide` 63.103 s; fader clear 1.014 s
+  after it (ok); `ResetOverlay` 65.025 s; 0 WARN/ERROR/panic.
+- Screenshots (play times; the death is at 53.0 s of play in every
+  run): `out/m9u6e1-dying.png` (47 s: dimmed, overlay 0.48, O2 0),
+  `out/m9u6e1-black.png` (55 s: black), `out/m9u6e1-respawning.png`
+  (58.5 s: respawn fader at 1, black: covered, see Findings),
+  `out/m9u6e1-respawned.png` (61 s: clear, O2 45, the HUD back).
+- No regression: `ui --draw` 12 of 12 hashes equal; `ui --live` 0
+  failures (start hash `efa1606eb7c79aff`); `--start` 21 of 21;
+  `--bars` 300 / 0; `--pulse` 13,440 / 0 and 300 / 0; `--depth`
+  91,230 / 0; `--compass` 644 / 0; `--tmp-sprites` 371 of 371;
+  `--reticle` 22 of 22.
+- `cargo test --workspace` (no `SUBNAUTICA_DIR`): 669 passed, 0 failed,
+  59 ignored (new: 5 death rules, 1 IL reader). `cargo test --release -p
+  sn-assets --test real_data -- --ignored`: 53 of 53 (new:
+  `the_death_screens_are_read`). fmt and clippy (`-D warnings`) clean.
+
+**Not tested / not 1:1:** the other death triggers (fire, explosion:
+no such damage yet) and `CutToBlack` in the client (covered by `ui
+--death`); permadeath (`EndGame`); `UnstuckPlayer` and the ending's
+vignette; Unity's frame order and an event at a clip's time 0 firing on
+the state's first update are *hypotheses*. Not compared with the game on
+screen.
+
 ## 2026-10-14 — M9u6d2: the hand reticle's rules
 
 **What/why:** under `--game-ui` the hand's hover is now the game's own

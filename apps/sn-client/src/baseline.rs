@@ -142,7 +142,7 @@ impl Baseline {
              fog_unit={}\ngpu_timings={}\n\
              debug_colours={}\nno_objects={}\nno_local_lights={}\n\
              no_slots={}\nno_placeholders={}\nno_grass={}\nno_animation={}\n\
-             no_lod={}\nno_scenes={}\nno_water_fog={}\nno_water_surface={}\n\
+             no_lod={}\nno_scenes={}\nno_water_fog={}\nno_water_surface={}\ngame_ui={}\n\
              visual_time_policy=live; animation, waves and foam history are NOT deterministic\n\
              reference_comparison=not tested\nframe_time_source=Time<Real> (unclamped)\n\
              gpu_scope=recent Bevy diagnostic history at measurement end; not the full sample interval\n\
@@ -180,6 +180,7 @@ impl Baseline {
             args.scenes.is_none(),
             args.no_water_fog,
             args.no_water_surface,
+            args.game_ui,
         );
         let _ = writeln!(
             self.config,

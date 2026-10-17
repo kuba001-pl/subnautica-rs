@@ -10,7 +10,8 @@
 //! at most 10 per frame, the rest in the next frames).
 //!
 //! Oxygen, health, suffocation and respawn (`sn_sim::vitals`, M9c) run
-//! with the player at the same step and fill the HUD (`crate::hud`).
+//! with the player at the same step and fill the UI's feed ([`Hud`], read
+//! by `crate::game_ui`).
 //!
 //! The body (M9g4): the game's empty-hand rules (`sn_sim::body`) run every
 //! frame; they give the player's animator its parameters and place the
@@ -57,7 +58,44 @@ use sn_sim::vitals::{Situation, Vitals, VitalsEvent, VitalsParams, depth_of};
 use sn_sim::{Pose, Q, V3};
 
 use crate::body::BodyDrive;
-use crate::hud::Hud;
+
+/// What the player hands the game's UI each frame (M9c's HUD values;
+/// since M9u6e2 only `crate::game_ui` reads them): `player::update` fills
+/// it, `body::death_events` adds the animator's death event.
+#[derive(Resource, Default)]
+pub struct Hud {
+    /// The player runs (false: the fly camera; the HUD is inactive).
+    pub shown: bool,
+    pub oxygen: f64,
+    pub capacity: f64,
+    pub health: f64,
+    pub max_health: f64,
+    pub depth: f64,
+    /// `uGUI.main.overlays.Set(0, 1 − suffocation.t)`'s value.
+    pub overlay: f64,
+    /// This frame's calls to the death screens (M9u6e1): `Player.OnKill`,
+    /// the respawn screen's `Show` and `Hide`, and the player animator's
+    /// `DeathFade` / `DeathCut` (set after the animators run).
+    pub killed: bool,
+    pub respawn_show: bool,
+    pub respawn_hide: bool,
+    pub vignette: Option<sn_ui::death::DeathType>,
+    /// What the hand's hover set (M9d5: `HandReticle`; M9u6d2: its icon
+    /// and button), when it is on something.
+    pub hand: Option<HandHover>,
+}
+
+/// One frame's `OnHandHover` calls (M9u6d2).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct HandHover {
+    /// The hand text (translated) and its subscript.
+    pub text: String,
+    pub subscript: String,
+    /// The text ends in the left hand's button.
+    pub button: bool,
+    /// `SetIcon`'s icon; `None`: not called.
+    pub icon: Option<sn_ui::reticle::IconType>,
+}
 use crate::session::Session;
 
 /// The worker gets the player's position again after it moved this far.
@@ -1328,7 +1366,7 @@ pub fn update(
         (Some((_, hit)), Some(text)) if hit.body & HATCH_BODY != 0 => {
             let t = state.triggers.get(((hit.body >> 8) & 0xff) as usize);
             t.filter(|t| t.show_icon && !t.hand_text.is_empty())
-                .map(|t| crate::hud::HandHover {
+                .map(|t| HandHover {
                     text: text.0.get(&t.hand_text).to_string(),
                     subscript: String::new(),
                     button: true,
@@ -1339,7 +1377,7 @@ pub fn update(
     };
     hud.hand = item_aim
         .as_ref()
-        .map(|a| crate::hud::HandHover {
+        .map(|a| HandHover {
             text: a.text.clone(),
             subscript: a.subscript.clone(),
             button: a.button,
@@ -1483,6 +1521,9 @@ pub fn update(
         jump: keys.pressed(KeyCode::Space),
     };
 
+    // This frame's calls to the death screens (M9u6e1): `OnKill`,
+    // `respawning.Show()`, `respawning.Hide()`.
+    let (mut killed, mut respawn_show, mut respawn_hide) = (false, false, false);
     // Physics steps on the server's ticks, once the bodies around the
     // player are in.
     if sim.ready {
@@ -1557,6 +1598,14 @@ pub fn update(
                     state.player.position.y,
                     state.player.position.z
                 );
+                match e {
+                    VitalsEvent::Died => killed = true,
+                    // `ResetPlayerOnDeath`: `respawning.Show()` just before
+                    // the move, `Hide()` just before `ResetHealth`.
+                    VitalsEvent::MoveToRespawn => respawn_show = true,
+                    VitalsEvent::Restored => respawn_hide = true,
+                    _ => {}
+                }
                 if e == VitalsEvent::Died
                     && let Some((_, b)) = state.body.as_mut()
                 {
@@ -1790,12 +1839,15 @@ pub fn update(
         shown: true,
         oxygen: v.oxygen,
         capacity: state.vitals_params.oxygen_capacity,
-        seconds_left: v.seconds_left(),
         health: v.health,
         max_health: state.vitals_params.max_health,
         depth: depth_of(&state.vitals_params, p.y),
         overlay: v.overlay(),
-        dead: !v.controls_enabled(),
+        killed,
+        respawn_show,
+        respawn_hide,
+        // Set by `body::death_events` after the animators.
+        vignette: None,
         // Set above, this frame.
         hand: hud.hand.take(),
     };

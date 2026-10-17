@@ -1535,6 +1535,103 @@ the `Hand` icon and their text with the mouse icon; every fade done in
 Screenshots `out/m9u6d2-outcrop.png`, `out/m9u6d2-locker.png`. Not
 compared with the game on screen.
 
+## Death, respawn and overlays (M9u6e1) — confirmed (decompiled code, IL, stored fields, `ui --death`)
+
+Read on 2026-10-17 from the decompiled `uGUI_PlayerDeath`,
+`PlayerAnimationEventManager`, `uGUI_SceneRespawning`, `uGUI_Fader`,
+`uGUI_TextFade`, `uGUI_Text`, `uGUI_Overlays` and `Player` (`OnKill`,
+`ResetPlayerOnDeath`, `SuffocationUpdate`, `SuffocationReset`), read
+only, in `out/`. Our port: `crates/sn-ui/src/death.rs` (rules),
+`crates/sn-assets/src/death.rs` (config); the code is ours.
+
+**Stored** (`ui --death`, real-data test `the_death_screens_are_read`):
+- `uGUI_PlayerDeath.blackOverlay`: `ScreenCanvas/PlayerDeathVignette/
+  BlackOverlay`.
+- `uGUI_SceneRespawning`: `loadingText` `Respawning/RespawningScreen/
+  LoadingText`; `loadingBackground` a `uGUI_Fader` whose `canvasGroup` is
+  on `Respawning`; `fadeInTime` 1, `fadeOutTime` 0.5, `useUnscaledTime`
+  true, `initialState` false. `Loading` is "Loading..." in English.
+- `uGUI_Overlays.overlays`: one, `OverlayCanvas/Overlays/OutOfOxygen`;
+  its curve has keys (0, 0; slopes 3.148), (0.8, 1; 0), (1, 1; 0), clamped:
+  0.60 at 0.25, 0.90 at 0.5, 1 from 0.8 on.
+
+**The vignette** (`uGUI_PlayerDeath`; numbers read from the IL:
+`TriggerDeathVignette`'s `Invoke`s, `Update`'s `ldc.r4; mul` and its
+`Color.a` comparisons):
+- `Start` sets the colour to (0, 0, 0, 0).
+- `TriggerDeathVignette(type)` does nothing while `active`. `FadeToBlack`
+  → `Invoke("BeginDeathFade", 0)`; `CutToBlack` → `CutToBlack()` at once
+  (active, fading in, alpha 1, enabled); both `Invoke("BeginFadeOut", 6)`.
+  `BeginDeathFade`: fading in, active, enabled. `BeginFadeOut`: not fading
+  in.
+- `Update`, while active: fading in, a colour with `a < 0.98` lerps to
+  black by `Time.deltaTime × 5` (enabled each frame), else alpha 1;
+  fading out, it lerps to clear by `deltaTime × 2`, and when the colour
+  *before* the step is below 0.02, `ResetOverlay` (inactive, disabled,
+  alpha 0).
+- **Who triggers it:** the player animator's events, through
+  `PlayerAnimationEventManager.DeathFade` / `DeathCut`
+  (`SendMessage("TriggerDeathVignette", type)`). `Player.OnKill` sets the
+  trigger `player_death` (fire and explosions pick others), whose state
+  in layer 8 ("Death") plays `quick_death` (1 s, `DeathFade` at 0 s).
+  The other death clips' events: `burn_death2` 1.814 s, `choke_death`
+  1.687 s, `drown_death` 1.675 s (`DeathFade`), `explosion_death`
+  1.151 s, `player_view_reaper_attack` 1.667 s (`DeathCut`).
+  `cine_attack_kill`'s event is `deathCut` (lower case): no receiver has
+  that method. In our client the event fired on the death state's first
+  update (11 ms after the death, weight 0.105 inside the 0.1 s
+  transition). *Hypothesis:* Unity also fires an event at time 0 on the
+  state's first update.
+- `EndSequenceManager` also triggers it (the ending; not ported).
+
+**The respawn screen** (`uGUI_SceneRespawning`, `uGUI_Fader`):
+- `Show`: `loadingText.SetText(Language.Get("Loading"))`, then
+  `loadingBackground.SetState(true)` (`Sequence.ForceState`). `Hide`:
+  `loadingBackground.FadeOut()`.
+- `uGUI_Fader.FadeOut()` uses **`fadeInTime`** and `FadeIn()` uses
+  `fadeOutTime` (the names are swapped in the code), so the respawn
+  screen fades out over 1 s. `Update` (`ApplyState`), while the sequence
+  is active: `sequence.Update(unscaledDeltaTime)` (this fader uses
+  unscaled time), then `canvasGroup.alpha = 0.5 (1 − cos π t)`.
+- `Player.ResetPlayerOnDeath` (a coroutine from `OnKill`): 5 s, then
+  `respawning.Show()` just before `ToNormalMode` and the move to the
+  respawn point; 1 s later and once the world is settled,
+  `respawning.Hide()`, then `ResetHealth`, `oxygenMgr.Restore()` and
+  `SuffocationReset()`. `UnstuckPlayer` also shows and hides it (not
+  ported).
+
+**The overlay** (`uGUI_Overlays`): `Set(id, value)` → the curve at
+`value`, clamped to 0…1; above 0 the graphic is enabled and its
+`CanvasRenderer` alpha set, else it is disabled (the alpha left as it
+was). `Player.SuffocationUpdate` calls `Set(0, 1 − suffocation.t)` every
+`Player.Update` (also while dead), and `OnKill` calls `Set(0, 1)`. After
+a drowning the overlay stays at 1 until the respawn's
+`SuffocationReset`; after a death with oxygen left (a fall) it shows for
+the death's frame only (the next `Update` sets it back to 0).
+
+**Frame order** (*hypothesis*, Unity's documented player loop, not read
+from the engine): the scripts' `Update`s, then the delayed calls
+(`Invoke`, and the coroutines' `WaitForSeconds`, so `Show` / `Hide`),
+then the animators (their events). So a call changes what is drawn from
+the next frame's `Update`, and `BeginDeathFade` (delay 0) runs on the
+frame after the event, after that frame's `Update`.
+
+**Draw order** (our port of M9u4d's rules): the respawn screen
+(`ScreenCanvas/Respawning`) draws before the vignette
+(`ScreenCanvas/PlayerDeathVignette`) and both before `OverlayCanvas`
+(`ui --death`: items 45, 50 and 56 of 57). So after a drowning, with the
+overlay and the vignette at 1, "Loading..." is covered; it shows only
+through them as they fade. *Not compared with the game on screen.*
+
+**Checked:** `ui --death`, 24 of 24 checks and 9,840 frame checks over a
+scripted drowning against a replay (0 differ): black 0.783 s after the
+event at 60 fps, fade out 6.000 s after it, the fader clear 1.000 s after
+`Hide`; five frames drawn (the overlay, the black overlay and the respawn
+screen's 2 draws visible exactly while their alphas are above 0); a
+`CutToBlack` black on its frame; a death by damage shows the overlay on
+one frame. Client drowning: see MODLOG (M9u6e1). Not compared with the
+game on screen.
+
 ## Script fields (M9u1) — confirmed
 
 A MonoBehaviour's fields follow its header (game object, enabled,

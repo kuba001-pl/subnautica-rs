@@ -12,6 +12,7 @@ mod code;
 mod collision;
 mod compass;
 mod coop;
+mod death;
 mod density;
 mod depth;
 mod dive;
@@ -271,6 +272,9 @@ Commands:
   ui --compass           M9u6c2: the compass ring and labels: the labels'
                          stored places, 36 headings and an equip timeline
                          against a replay
+  ui --death             M9u6e1: the death vignette, the respawn screen and
+                         the out-of-oxygen overlay through a scripted
+                         drowning, against a replay
   ui --layout <CLASS> [<NAME>]
                          M9u1: a script's layout and, for its first object
                          (named NAME), where each field starts and its value
@@ -495,6 +499,7 @@ fn run(mut args: Vec<String>) -> Result<ExitCode> {
         ["ui", "--compass"] => compass::run(&game),
         ["ui", "--tmp-sprites"] => sprites_tmp::run(&game),
         ["ui", "--reticle"] => reticle::run(&game),
+        ["ui", "--death"] => death::run(&game),
         ["ui", "--fonts"] => fonts::run(&game, false),
         ["ui", "--fonts", "--atlas"] => fonts::run(&game, true),
         ["ui", "--sprites"] => ui::sprites(&game, false),

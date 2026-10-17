@@ -11,6 +11,8 @@
 //! - [`mesh`] (M9u4b): the meshes `Image` and `RawImage` build.
 //! - [`bar`] (M9u6b1): `uGUI_CircularBar`, the HUD's round bars.
 //! - [`compass`] (M9u6c2): `uGUI_Compass`, the HUD's compass ring.
+//! - [`death`] (M9u6e1): the death vignette, the respawn screen and the
+//!   out-of-oxygen overlay.
 //! - [`depth`] (M9u6c1): `uGUI_DepthCompass`, the depth readout's rules.
 //! - [`draw`] (M9u4d): the draw list: order, canvas space, alpha, clipping.
 //! - [`hud`] (M9u6b1): the HUD's rules (`uGUI_SceneHUD`, the bars).
@@ -26,6 +28,7 @@
 pub mod bar;
 pub mod clip;
 pub mod compass;
+pub mod death;
 pub mod depth;
 pub mod draw;
 pub mod font;

@@ -11,7 +11,6 @@ mod effects;
 mod game_light;
 mod game_ui;
 mod grass_look;
-mod hud;
 mod inventory;
 mod items;
 mod lifepod_light;
@@ -131,10 +130,12 @@ Usage: sn-client [--game-dir <PATH>] [--start <X> <Y> <Z>] [--look <X> <Y> <Z>]
                  the head (the player's body is drawn in either view)
   --look-down    the player's starting pitch, degrees (negative looks up;
                  clamped to the game's limits)
-  --game-ui      draw the game's own HUD from its UI files instead of our
-                 bars and depth: images and texts, the four bars driven by
-                 the game's rules (M9u6b1); the other screens still in
-                 their stored state; our hand text and fade stay
+  --no-game-ui   don't draw the game's own HUD (drawn by default from its
+                 UI files: the four bars, the depth and compass, the hand
+                 reticle, the death and respawn screens and the
+                 out-of-oxygen overlay driven by the game's rules, M9u6;
+                 other screens in their start state); then no HUD is
+                 drawn. --game-ui (the default) is still accepted
   --shot         --shot <SECONDS> <NAME>: after SECONDS of play, save
                  out/NAME.png and exit (a check for the human)
   --use-item     --use-item <SECONDS[,SECONDS…]>: at each time, turn to the
@@ -319,7 +320,7 @@ fn parse_args_from(raw: &[String]) -> Result<Args, String> {
         no_water_surface: false,
         water_quality: WaterQuality::High,
         gpu_timings: false,
-        game_ui: false,
+        game_ui: true,
         time: sky::NEW_GAME_HOURS,
         time_scale: 1.0,
         log_sky: false,
@@ -459,7 +460,9 @@ fn parse_args_from(raw: &[String]) -> Result<Args, String> {
                 }
             }
             "--gpu-timings" => args.gpu_timings = true,
+            // The default since M9u6e2; still accepted.
             "--game-ui" => args.game_ui = true,
+            "--no-game-ui" => args.game_ui = false,
             "--free-cam" => args.free_cam = true,
             "--third-person" => args.third_person = true,
             "--look-down" => args.look_down = number(it.next(), "--look-down")?,
@@ -1200,7 +1203,7 @@ fn main() -> AppExit {
                     items: Some(items.clone()),
                 };
                 app.insert_resource(player::PlayerSim::start(game, start))
-                    .init_resource::<hud::Hud>()
+                    .init_resource::<player::Hud>()
                     .init_resource::<body::BodyDrive>()
                     .add_systems(
                         Update,
@@ -1218,7 +1221,6 @@ fn main() -> AppExit {
                             .before(animation::animate)
                             .run_if(resource_exists::<ObjectStreamer>),
                     )
-                    .add_systems(Startup, hud::setup)
                     .add_systems(Startup, inventory::setup)
                     .insert_resource(inventory::Panel::new(
                         args.panel.clone(),
@@ -1227,16 +1229,12 @@ fn main() -> AppExit {
                     .add_systems(Update, inventory::input.before(player::update))
                     .add_systems(Update, inventory::hover)
                     .add_systems(Update, player::update.before(terrain::stream))
-                    .add_systems(Update, hud::update.after(player::update))
+                    // The death vignette's animation events (M9u6e1).
                     .add_systems(
                         Update,
-                        hud::hide_bars.after(hud::update).run_if(move || game_ui),
-                    )
-                    .add_systems(
-                        Update,
-                        hud::update_hand
-                            .after(player::update)
-                            .run_if(move || !game_ui),
+                        body::death_events
+                            .after(animation::animate)
+                            .run_if(move || game_ui),
                     )
                     .insert_resource(items::Text(text.clone()))
                     .insert_resource(items::ItemsView::new(

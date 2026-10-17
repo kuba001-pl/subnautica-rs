@@ -15,6 +15,35 @@ use sn_unity::name_hash;
 use crate::animation::AnimatedRig;
 use crate::objects::{PlayerBodyRig, ShadowsOnly};
 
+/// After the animators (M9u6e1): the local player's death events
+/// (`PlayerAnimationEventManager.DeathFade` / `DeathCut`, which call
+/// `uGUI_PlayerDeath.TriggerDeathVignette`), for the death vignette. Each
+/// is logged; the first of a frame is sent (a second one in the same frame
+/// would only queue the same calls again).
+pub fn death_events(
+    time: Res<Time>,
+    rigs: Query<&AnimatedRig, With<PlayerBodyRig>>,
+    mut hud: ResMut<crate::player::Hud>,
+) {
+    for rig in &rigs {
+        for e in &rig.animator.events {
+            let Some(kind) = sn_ui::death::DeathType::from_event(&e.function) else {
+                continue;
+            };
+            info!(
+                "body: animation event {} at {:.3} s (layer {}, state {:#010x}, clip {}, weight {:.3})",
+                e.function,
+                time.elapsed_secs(),
+                e.layer,
+                e.state,
+                e.clip,
+                e.weight
+            );
+            hud.vignette.get_or_insert(kind);
+        }
+    }
+}
+
 /// Seconds between the body's status lines.
 const LOG_EVERY: f32 = 10.0;
 

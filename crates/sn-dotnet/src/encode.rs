@@ -432,6 +432,9 @@ impl Il {
     pub fn stsfld(self, t: u32) -> Il {
         self.op_token(0x80, t)
     }
+    pub fn ldfld(self, t: u32) -> Il {
+        self.op_token(0x7B, t)
+    }
     pub fn stfld(self, t: u32) -> Il {
         self.op_token(0x7D, t)
     }

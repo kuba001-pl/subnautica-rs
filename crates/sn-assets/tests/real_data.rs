@@ -3174,6 +3174,57 @@ fn the_depth_compass_is_read() {
     assert_eq!(c.ring.mesh().vertices.len(), 4);
 }
 
+/// M9u6e1: the death, respawn and overlay screens are read: the vignette's
+/// numbers from the IL, the respawn fader's fields, the out-of-oxygen
+/// overlay's curve (0 at 0, 1 from 0.8 on) and `Loading` from the
+/// language file.
+#[test]
+#[ignore = "needs SUBNAUTICA_DIR pointing at a Subnautica install"]
+fn the_death_screens_are_read() {
+    let Some(dir) = std::env::var_os("SUBNAUTICA_DIR") else {
+        eprintln!("SUBNAUTICA_DIR not set; skipping");
+        return;
+    };
+    let game = GameData::locate(Some(PathBuf::from(dir))).unwrap();
+    let assets = Assets::index(&game).unwrap();
+    let assemblies = sn_assets::ScriptAssemblies::load(&game).unwrap();
+    let layouts = assemblies.layouts().unwrap();
+    let catalog = assets.catalog().unwrap();
+    let root = assets.ugui_root(&catalog).unwrap();
+    let ui = assets.ui_tree("uGUI.prefab", &root).unwrap();
+    let language = sn_assets::language(&game, "English").unwrap();
+    let code = sn_assets::read_assembly(&game).unwrap();
+    let c = assets
+        .death_config(&layouts, &ui, &code, &language)
+        .unwrap();
+    let v = c.vignette;
+    assert_eq!(
+        (v.begin_fade_delay, v.fade_out_delay, v.rate_in, v.rate_out),
+        (0.0, 6.0, 5.0, 2.0)
+    );
+    assert_eq!((v.full, v.clear), (0.98, 0.02));
+    assert!(
+        ui.nodes[c.black_overlay]
+            .path
+            .contains("/PlayerDeathVignette/")
+    );
+    assert!(ui.nodes[c.loading_text].path.contains("/Respawning/"));
+    let f = c.loading_background;
+    assert_eq!((f.fade_in_time, f.fade_out_time), (1.0, 0.5));
+    assert!(f.use_unscaled_time && !f.initial_state);
+    assert_eq!(Some(&c.loading), language.get("Loading"));
+    assert_eq!(c.overlays.len(), 1);
+    let curve = &c.overlays[0].curve;
+    assert!(
+        ui.nodes[c.overlays[0].graphic]
+            .path
+            .ends_with("/OutOfOxygen")
+    );
+    assert_eq!(curve.evaluate(0.0), 0.0);
+    assert!((curve.evaluate(0.8) - 1.0).abs() < 1e-6);
+    assert_eq!(curve.evaluate(1.0), 1.0);
+}
+
 /// M9u6s: the start rules hide the screens the game hides at start (the
 /// feedback panel, the confirmation dialog, pop-ups, the vehicles' and
 /// cameras' screens), and the HUD's bars, player depth and the reticle's

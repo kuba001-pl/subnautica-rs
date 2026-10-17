@@ -1,7 +1,6 @@
 //! The game's UI drawn as the game draws it (M9u5c; `docs/DESIGN.md` M9u
-//! plan, `docs/formats/ui.md`). `--game-ui` turns it on; until M9u6 removes
-//! our own HUD (`hud.rs`) it is off by default, so the two never draw
-//! together.
+//! plan, `docs/formats/ui.md`). On by default since M9u6e2, which removed
+//! our own HUD; `--no-game-ui` turns it off (then no HUD is drawn).
 //!
 //! - A worker thread reads the install once into a `sn_assets::UiScene`
 //!   (M9u6a) and draws `uGUI`'s draw list from it with its canvases placed for the
@@ -59,6 +58,7 @@ use bevy::render::texture::GpuImage;
 use bevy::render::view::{ExtractedView, ViewTarget};
 use bevy::render::{Render, RenderApp, RenderStartup, RenderSystems};
 use bevy::window::PrimaryWindow;
+use sn_ui::death::{DeathInputs, DeathScreens, DeathType};
 use sn_ui::depth::DepthCompass;
 use sn_ui::hud::{Hud, HudInputs, hud_mode};
 use sn_ui::reticle::{HAND, HAND_SUBSCRIPT, HandReticle, IconType, ReticleInputs, get_text};
@@ -238,16 +238,16 @@ pub(crate) struct UiBuild {
 enum Request {
     /// The window's size.
     Size([i32; 2]),
-    /// A frame's inputs to the HUD's rules (M9u6b1) and the hand's
-    /// hover (M9u6d2).
-    Frame(HudInputs, HandFrame),
+    /// A frame's inputs to the HUD's rules (M9u6b1), the hand's hover
+    /// (M9u6d2) and the death screens' calls (M9u6e1).
+    Frame(HudInputs, HandFrame, DeathInputs),
 }
 
 /// What the hand reticle's rules read (M9u6d2): this frame's
 /// `OnHandHover` calls.
 #[derive(Clone, Debug, Default)]
 struct HandFrame {
-    hover: Option<crate::hud::HandHover>,
+    hover: Option<crate::player::HandHover>,
 }
 
 /// The worker's ends of the channels.
@@ -297,13 +297,21 @@ impl Plugin for GameUiPlugin {
             requested: None,
         })
         .init_resource::<GameUiFrame>()
+        // The player's feed; a fly-camera run has no player, and the HUD
+        // stays inactive.
+        .init_resource::<crate::player::Hud>()
         .add_plugins((
             ExtractResourcePlugin::<GameUiFrame>::default(),
             ExtractComponentPlugin::<GameUiCamera>::default(),
         ))
         .add_systems(Startup, make_white)
         .add_systems(PostStartup, mark_camera)
-        .add_systems(Update, (request_build, send_inputs, receive_build).chain());
+        // After every `Update` system: the player, the animators (their
+        // death events) and the camera have run for this frame.
+        .add_systems(
+            PostUpdate,
+            (request_build, send_inputs, receive_build).chain(),
+        );
         let Some(render_app) = app.get_sub_app_mut(RenderApp) else {
             return;
         };
@@ -401,9 +409,32 @@ fn run_worker(
         "game UI reticle: FormatButton(LeftHand): binding {:?} → {:?} → {:?} → {:?}",
         left_hand.binding, left_hand.readable, left_hand.id, left_hand.text
     );
+    // Death, respawn and the overlays (M9u6e1).
+    let code = sn_assets::read_assembly(&game)?;
+    let mut death = DeathScreens::new(assets.death_config(&layouts, &tree, &code, &language)?);
+    {
+        let c = &death.config;
+        let v = c.vignette;
+        info!(
+            "game UI death: vignette Invoke {} s / {} s, rates {} / {}, limits {} / {}; respawn fader fade-in {} s, fade-out {} s (FadeOut uses fade-in), {:?}; {} overlays",
+            v.begin_fade_delay,
+            v.fade_out_delay,
+            v.rate_in,
+            v.rate_out,
+            v.full,
+            v.clear,
+            c.loading_background.fade_in_time,
+            c.loading_background.fade_out_time,
+            c.loading,
+            c.overlays.len()
+        );
+    }
+    // The death timeline's marks (what, time), for the logs.
+    let mut death_marks: Vec<(&str, f32)> = Vec::new();
+    let mut black_full_logged = false;
     // The icon's last change (time, icon), until its fade ends.
     let mut fading: Option<(f32, IconType)> = None;
-    let (food, water) = sn_assets::survival_start(&sn_assets::read_assembly(&game)?)?;
+    let (food, water) = sn_assets::survival_start(&code)?;
     info!(
         "game UI: uGUI read in {:.2} s; {} canvas scalers; HUD: {} bars, food {food}, water {water}",
         start.elapsed().as_secs_f64(),
@@ -431,11 +462,24 @@ fn run_worker(
                     resized |= screen != Some(s);
                     screen = Some(s);
                 }
-                Request::Frame(mut inputs, hand) => {
+                Request::Frame(mut inputs, hand, death_inputs) => {
                     inputs.food = food;
                     inputs.water = water;
                     rules = hud.update(&inputs);
                     rules.apply(depth.update(&inputs));
+                    let was = (
+                        death.death.active,
+                        death.death.fade_in,
+                        death.fader.sequence.active(),
+                    );
+                    rules.apply(&death.update(&death_inputs));
+                    death_log(
+                        &death,
+                        &death_inputs,
+                        was,
+                        &mut death_marks,
+                        &mut black_full_logged,
+                    );
                     let before = reticle.icon_type;
                     rules.apply(reticle.update(&reticle_inputs(
                         &reticle,
@@ -480,6 +524,16 @@ fn run_worker(
                     if second != logged_second {
                         logged_second = second;
                         info!("game UI bars at {second} s: {}", bars_line(&hud, &inputs));
+                        info!(
+                            "game UI death at {second} s: suffocation {:?} → overlay {:.4}; black {:.4} (enabled {:?}, active {}, fading in {}); respawn fader {:.4}",
+                            death.overlay_values.first().copied().flatten(),
+                            death.overlay_alpha(0),
+                            death.death.alpha,
+                            death.death.enabled,
+                            death.death.active,
+                            death.death.fade_in,
+                            death.fader.alpha.unwrap_or(0.0)
+                        );
                         info!(
                             "game UI depth at {second} s: {}",
                             depth_line(&depth, &inputs)
@@ -583,6 +637,89 @@ fn run_worker(
         }
     }
     Ok(())
+}
+
+/// The death timeline's changes as they happen (M9u6e1), each against
+/// the rules' times: the vignette's fade out 6 s after the event, the
+/// respawn fader clear `fadeInTime` after `Hide`.
+fn death_log(
+    d: &DeathScreens,
+    i: &DeathInputs,
+    (was_active, was_in, was_fading): (bool, bool, bool),
+    marks: &mut Vec<(&'static str, f32)>,
+    black_full_logged: &mut bool,
+) {
+    let mark = |marks: &mut Vec<(&'static str, f32)>, what: &'static str| {
+        info!(
+            "game UI death at {:.3} s: {what}; overlay {:.4}, black {:.4}, fader {:.4}",
+            i.time,
+            d.overlay_alpha(0),
+            d.death.alpha,
+            d.fader.alpha.unwrap_or(0.0)
+        );
+        marks.push((what, i.time));
+    };
+    let since = |marks: &[(&'static str, f32)], what: &str| {
+        marks
+            .iter()
+            .rev()
+            .find(|(w, _)| *w == what)
+            .map(|(_, t)| i.time - t)
+    };
+    if i.killed {
+        mark(marks, "OnKill");
+    }
+    if let Some(kind) = i.vignette {
+        mark(
+            marks,
+            match kind {
+                DeathType::FadeToBlack => "TriggerDeathVignette(FadeToBlack)",
+                DeathType::CutToBlack => "TriggerDeathVignette(CutToBlack)",
+            },
+        );
+        *black_full_logged = false;
+    }
+    if i.respawn_show {
+        mark(marks, "respawning.Show");
+    }
+    if i.respawn_hide {
+        mark(marks, "respawning.Hide");
+    }
+    if !was_active && d.death.active {
+        mark(marks, "BeginDeathFade");
+    }
+    if d.death.alpha >= 1.0 && !*black_full_logged {
+        *black_full_logged = true;
+        mark(marks, "black");
+    }
+    if was_in && !d.death.fade_in {
+        let after = since(marks, "TriggerDeathVignette(FadeToBlack)")
+            .or_else(|| since(marks, "TriggerDeathVignette(CutToBlack)"));
+        let rule = d.config.vignette.fade_out_delay;
+        let ok = after.is_some_and(|a| a + 1e-4 >= rule && a < rule + i.delta_time + 1e-3);
+        info!(
+            "game UI death: BeginFadeOut {after:?} s after the event ({}: rule {rule} s + under a frame, last step {:.4} s)",
+            if ok { "ok" } else { "DIFFERS" },
+            i.delta_time
+        );
+        mark(marks, "BeginFadeOut");
+    }
+    if was_active && !d.death.active {
+        mark(marks, "ResetOverlay");
+    }
+    if was_fading && !d.fader.sequence.active() && d.fader.alpha == Some(0.0) {
+        if let Some(after) = since(marks, "respawning.Hide") {
+            let rule = d.config.loading_background.fade_in_time;
+            // The sequence ends on the update after `t` reaches 0.
+            let ok = after + 1e-4 >= rule && after < rule + 2.0 * i.unscaled_delta_time + 1e-3;
+            info!(
+                "game UI death: respawn fader clear {after:.4} s after Hide ({}: rule {rule} s + under two frames, last step {:.4} s)",
+                if ok { "ok" } else { "DIFFERS" },
+                i.unscaled_delta_time
+            );
+            mark(marks, "fader clear");
+        }
+    }
 }
 
 /// Each bar's input, shown value (`_Value`) and text, for the log.
@@ -992,15 +1129,16 @@ fn request_build(mut worker: ResMut<UiWorker>, windows: Query<&Window, With<Prim
 }
 
 /// Each frame, what the HUD's rules read (M9u6b1): the player's oxygen and
-/// health (`crate::hud::Hud`, filled by the player), `Time`'s step and
+/// health (`crate::player::Hud`, filled by the player), `Time`'s step and
 /// clock, whether the PDA is open (M9u6b2: the icons turn), the depth
 /// (M9u6c1). The worker adds `Survival`'s food and water. Our player is
 /// never healed and never eats or drinks yet: no punch events.
 #[allow(clippy::too_many_arguments)]
 fn send_inputs(
     worker: Res<UiWorker>,
-    hud: Res<crate::hud::Hud>,
+    hud: Res<crate::player::Hud>,
     time: Res<Time>,
+    real: Res<Time<Real>>,
     panel: Option<Res<crate::inventory::Panel>>,
     session: Option<Res<crate::session::Session>>,
     text: Option<Res<crate::items::Text>>,
@@ -1053,6 +1191,17 @@ fn send_inputs(
         },
         HandFrame {
             hover: hud.hand.clone(),
+        },
+        DeathInputs {
+            delta_time: time.delta_secs(),
+            unscaled_delta_time: real.delta_secs(),
+            time: time.elapsed_secs(),
+            // `Player.Update` runs while the player exists.
+            suffocation: hud.shown.then_some(hud.overlay as f32),
+            killed: hud.killed,
+            vignette: hud.vignette,
+            respawn_show: hud.respawn_show,
+            respawn_hide: hud.respawn_hide,
         },
     ));
 }
