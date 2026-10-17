@@ -1632,6 +1632,63 @@ screen's 2 draws visible exactly while their alphas are above 0); a
 one frame. Client drowning: see MODLOG (M9u6e1). Not compared with the
 game on screen.
 
+## Messages (M9u7 research) — confirmed (decompiled code, stored fields)
+
+Read on 2026-10-17 from the decompiled `ErrorMessage`,
+`uGUI_IconNotifier`, `uGUI_PopupNotification`, `Inventory`,
+`Pickupable` and `Player` (read only, in `out/`).
+
+- **They make objects at run time.** `ErrorMessage.GetEntry`
+  instantiates `prefabMessage` four at a time under `messageCanvas`
+  (`SetParent(messageCanvas, false)`, inactive) and pools them;
+  `uGUI_IconNotifier.GetInstance` makes four `new GameObject
+  ("NotifierIcon")` with a `uGUI_ItemIcon` whose `Init` builds its own
+  children, and calls `SetAsLastSibling` on each icon it shows.
+- **The templates are other roots of `uGUI.prefab`'s file** (`sn-inspect
+  ui` lists 10): `prefabMessage` is `MessageInstance` (1 node, a TMP
+  text); `NotificationLabel` (2 nodes) is the notification count's.
+- **`ErrorMessage`** (on `uGUI`): `offset` (140, 140), `ySpacing` 10;
+  `messageCanvas` is `ScreenCanvas/HUD/Content/ErrorMessageCanvas` (an
+  override-sorting canvas). Times in the constructor: fly-in 0.3 s, delay
+  5 s, fade-out 0.6 s, invisible 0.1 s. An equal text already shown is
+  renewed and gets `" (x{n})"`. Every `AddError/Message/Warning/Debug` is
+  the same call.
+- **Who calls them in what we run:** `Player.ResetPlayerOnDeath` ends with
+  `AddWarning(YouDied` or `YouDiedLostStuff)`; `Pickupable.OnHandClick`
+  `AddWarning(InventoryFull)` when the pick-up fails;
+  `Inventory.CanDropItemHere` `AddError(InventoryCantDropHere)`;
+  `Inventory.Pickup` plays the icon (`uGUI_IconNotifier.Play(techType,
+  From)`) and adds a notification (`NotificationManager.Add(Inventory,
+  id, 4)`) unless `noMessage`.
+- **`uGUI_IconNotifier`** (`ScreenCanvas/HUD/Content/IconNotifications`):
+  `interval` 0.3 s, `iconSize` 64, two `IconAnimator`s (From, To) with
+  curves for x, y, scale, alpha and an oscillation.
+- **`uGUI_PopupNotification`**: the blueprint pop-up is `OnAnalyze`
+  (`KnownTech`'s analysis unlocks); skins `Unlock` and `Journal` under
+  `HUD/Content/PopupNotification`.
+
+## Objects made at run time (M9u7a) — confirmed (`ui --instantiate`)
+
+`UiScene::graft(template, parent)` is `Object.Instantiate(template)` then
+`SetParent(parent, false)`: the template (a tree read alone, as any other
+root of the file, with the same readers) is appended to the scene, its
+root becoming the parent's last child with its stored local values and
+the name `<name>(Clone)`. Appending keeps every stored index (the
+screens' configs hold node indices); the draw order follows each node's
+children list, not the node array, so the copy draws at its place in
+the hierarchy. `set_as_last_sibling` moves a node to the end of its
+parent's children. A subtree of `uGUI` read alone has the same
+depth-first order as in the scene.
+
+**Checked:** `ui --instantiate`, 10 of 10: a copy of `PlayerDepth` (6
+nodes) beside it, given the originals' start state and moved by (37,
+−23), draws 4 items equal to the original's 4 (node, kind, texture,
+material, indices, colours, UVs) with every vertex moved by exactly the
+offset, after the original's; four `MessageInstance` copies under
+`ErrorMessageCanvas` draw in sibling order, and after
+`SetAsLastSibling` on the first it draws last; the stored nodes' 55
+start-state draws are unchanged.
+
 ## Script fields (M9u1) — confirmed
 
 A MonoBehaviour's fields follow its header (game object, enabled,

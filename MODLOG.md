@@ -2,6 +2,42 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-17 — M9u7a: UI objects made at run time
+
+**Plan:** M9u7 was split in `docs/DESIGN.md` into a (objects made at run
+time), b (`ErrorMessage`), c (picked-up icons) and d (notifications and
+the unlock pop-up). Research in `docs/formats/ui.md` § Messages.
+
+**What/why:** the game's message screens instantiate templates, pool
+them and reorder siblings at run time; the scene could only draw the
+stored tree.
+- `sn-ui::layout::Tree::graft` (a copy appended under a parent as its
+  last child, no index moves) and `set_as_last_sibling`.
+- `sn-assets::UiScene::graft` (the template's tree, layout, draw parts,
+  graphics, texts and sprites offset and merged; the root named
+  `<name>(Clone)`), `set_as_last_sibling`, `node_count`; `UiText` is
+  `Clone`.
+- `sn-inspect ui --instantiate` (new).
+No new dependencies.
+
+**Verified** (`SUBNAUTICA_DIR` set):
+- `ui --instantiate`: 10 of 10 (see `docs/formats/ui.md` § Objects made
+  at run time): the copy's vertices equal the original's moved by the
+  offset (largest error 0.000000), sibling order and `SetAsLastSibling`
+  as expected, the 55 stored draws unchanged.
+- No regression: `ui --draw` 12 of 12 hashes equal; `ui --live` start
+  hash `efa1606eb7c79aff`; `--start` 21 of 21; `--bars` 300 / 0;
+  `--depth` 91,230 / 0; `--compass` 644 / 0; `--reticle` 22 of 22;
+  `--death` 24 of 24; `--tmp-sprites` 371 of 371.
+- `cargo test --workspace` (no `SUBNAUTICA_DIR`): 672 passed, 0 failed,
+  59 ignored (new: 3 layout tests). fmt and clippy (`-D warnings`)
+  clean.
+
+**Not tested:** objects with no stored template (`new GameObject` with
+components made by code), which `uGUI_ItemIcon` needs: moved to M9u7c,
+where its children are built. A template with its own canvas (none of
+the message templates has one).
+
 ## 2026-10-17 — M9u6e2: the game's UI by default; our HUD removed (closes M9u6)
 
 **What/why:** the game's own HUD now covers everything our M9c HUD

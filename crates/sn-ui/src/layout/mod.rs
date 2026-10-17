@@ -260,6 +260,57 @@ impl Tree {
         }
     }
 
+    /// `Object.Instantiate(other)` then `SetParent(parent, false)` (M9u7a):
+    /// a copy of `other` (its root is node 0) appended under `parent` as
+    /// its last child, its local values kept. Nodes are appended, so no
+    /// node of `self` changes index; the copy's node `i` is `offset + i`.
+    /// Returns the offset (the copy's root), or `None` when `parent` is not
+    /// a node or `other` is not one tree rooted at node 0.
+    pub fn graft(&mut self, other: &Tree, parent: usize) -> Option<usize> {
+        let n = other.nodes.len();
+        let rooted = other.nodes.first().is_some_and(|r| r.parent.is_none())
+            && other.nodes.iter().enumerate().skip(1).all(|(i, x)| {
+                x.parent
+                    .is_some_and(|p| p < n && other.nodes[p].children.contains(&i))
+            })
+            && other
+                .nodes
+                .iter()
+                .all(|x| x.children.iter().all(|&c| c < n && c != 0));
+        if parent >= self.nodes.len() || !rooted {
+            return None;
+        }
+        let offset = self.nodes.len();
+        for x in &other.nodes {
+            let mut x = x.clone();
+            x.parent = Some(x.parent.map_or(parent, |p| p + offset));
+            for c in &mut x.children {
+                *c += offset;
+            }
+            self.nodes.push(x);
+        }
+        self.nodes[parent].children.push(offset);
+        Some(offset)
+    }
+
+    /// `Transform.SetAsLastSibling`: `node` moves to the end of its
+    /// parent's children (drawn last among them). False for the root or a
+    /// node that is not one.
+    pub fn set_as_last_sibling(&mut self, node: usize) -> bool {
+        let Some(p) = self.nodes.get(node).and_then(|n| n.parent) else {
+            return false;
+        };
+        let Some(siblings) = self.nodes.get_mut(p).map(|n| &mut n.children) else {
+            return false;
+        };
+        let Some(k) = siblings.iter().position(|&c| c == node) else {
+            return false;
+        };
+        siblings.remove(k);
+        siblings.push(node);
+        true
+    }
+
     /// `activeInHierarchy`.
     pub fn active(&self, mut i: usize) -> bool {
         let mut guard = 0;

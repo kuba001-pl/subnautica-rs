@@ -23,6 +23,7 @@ fn flag(f: &Fields, name: &str) -> Result<bool> {
 }
 
 /// A text of a UI tree with its settings.
+#[derive(Clone)]
 pub struct UiText {
     pub node: usize,
     pub enabled: bool,

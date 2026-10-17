@@ -430,3 +430,64 @@ fn unported_components_are_counted_and_unknown() {
     assert!(t.nodes[1].rect.size_delta[0].is_nan());
     assert_eq!(report.unported.get("FlexibleGridLayout"), Some(&1));
 }
+
+#[test]
+fn a_grafted_copy_is_appended_under_its_parent_and_lays_out_like_the_template() {
+    let mut scene = tree(vec![
+        node("canvas", None, sized(400.0, 300.0), vec![]),
+        node("panel", Some(0), sized(100.0, 50.0), vec![]),
+        node("other", Some(0), sized(10.0, 10.0), vec![]),
+    ]);
+    // The template: a horizontal group of three, as `row` lays it out.
+    let template = row(hgroup());
+    let mut alone = template.clone();
+    layout(&mut alone);
+    let at = scene.graft(&template, 1).unwrap();
+    assert_eq!(at, 3);
+    assert_eq!(scene.nodes.len(), 7);
+    // Stored indices did not move; the copy is the panel's last child.
+    assert_eq!(scene.nodes[0].children, vec![1, 2]);
+    assert_eq!(scene.nodes[1].children, vec![3]);
+    assert_eq!(scene.nodes[3].parent, Some(1));
+    assert_eq!(scene.nodes[3].children, vec![4, 5, 6]);
+    assert_eq!(scene.nodes[6].parent, Some(3));
+    layout(&mut scene);
+    // The group fills its own 100 × 50 rect: its children land where the
+    // template alone puts them.
+    for i in 1..4 {
+        assert_eq!(scene.rect(3 + i), alone.rect(i), "child {i}");
+        assert_eq!(scene.local_position(3 + i), alone.local_position(i));
+    }
+    // A second copy goes after the first.
+    assert_eq!(scene.graft(&template, 1), Some(7));
+    assert_eq!(scene.nodes[1].children, vec![3, 7]);
+}
+
+#[test]
+fn set_as_last_sibling_moves_a_node_to_the_end_of_its_siblings() {
+    let mut t = row(hgroup());
+    assert!(t.set_as_last_sibling(1));
+    assert_eq!(t.nodes[0].children, vec![2, 3, 1]);
+    layout(&mut t);
+    // The group now places a (10 px) last: after b and c and two gaps.
+    assert!(close(
+        t.local_position(1)[0] - t.local_position(3)[0],
+        30.0 / 2.0 + 5.0 + 10.0 / 2.0
+    ));
+    assert!(!t.set_as_last_sibling(0), "the root has no siblings");
+    assert!(!t.set_as_last_sibling(9));
+}
+
+#[test]
+fn a_graft_refuses_a_bad_parent_or_template() {
+    let mut scene = row(hgroup());
+    let template = row(hgroup());
+    assert_eq!(scene.graft(&template, 99), None);
+    let mut two_roots = template.clone();
+    two_roots.nodes[2].parent = None;
+    assert_eq!(scene.graft(&two_roots, 0), None);
+    let mut cycle = template;
+    cycle.nodes[1].children.push(0);
+    assert_eq!(scene.graft(&cycle, 0), None);
+    assert_eq!(scene.nodes.len(), 4);
+}

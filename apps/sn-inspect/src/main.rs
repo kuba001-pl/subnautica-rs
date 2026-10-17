@@ -22,6 +22,7 @@ mod fonts;
 mod game;
 mod gameplay;
 mod grass;
+mod instantiate;
 mod live;
 mod lods;
 mod materials;
@@ -275,6 +276,9 @@ Commands:
   ui --death             M9u6e1: the death vignette, the respawn screen and
                          the out-of-oxygen overlay through a scripted
                          drowning, against a replay
+  ui --instantiate       M9u7a: UI objects made at run time: a stored
+                         subtree copied and moved, four message copies and
+                         SetAsLastSibling, checked against the stored draws
   ui --layout <CLASS> [<NAME>]
                          M9u1: a script's layout and, for its first object
                          (named NAME), where each field starts and its value
@@ -500,6 +504,7 @@ fn run(mut args: Vec<String>) -> Result<ExitCode> {
         ["ui", "--tmp-sprites"] => sprites_tmp::run(&game),
         ["ui", "--reticle"] => reticle::run(&game),
         ["ui", "--death"] => death::run(&game),
+        ["ui", "--instantiate"] => instantiate::run(&game),
         ["ui", "--fonts"] => fonts::run(&game, false),
         ["ui", "--fonts", "--atlas"] => fonts::run(&game, true),
         ["ui", "--sprites"] => ui::sprites(&game, false),

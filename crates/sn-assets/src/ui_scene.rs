@@ -299,6 +299,100 @@ impl UiScene {
         id
     }
 
+    /// `Object.Instantiate(template)` then `SetParent(parent, false)`
+    /// (M9u7a): a copy of `template` (a scene read from another root, e.g.
+    /// `uGUI.prefab`'s `MessageInstance`) grafted under `parent` as its last
+    /// child, its stored values kept and its root named `<name>(Clone)`, as
+    /// Unity names it. Its nodes are appended, so no index of this scene
+    /// moves; the copy's node `i` is `root + i`. Returns `root`.
+    pub fn graft(&mut self, template: &UiScene, parent: usize) -> Result<usize> {
+        let (Some(p), true) = (
+            self.tree.nodes.get(parent).cloned(),
+            template.tree.nodes.len() == template.layout.nodes.len(),
+        ) else {
+            return Err(format!(
+                "graft {}: parent {parent} not a node, or its tree and layout differ",
+                template.tree.key
+            ));
+        };
+        let off = self
+            .layout
+            .graft(&template.layout, parent)
+            .ok_or_else(|| format!("graft {}: not one tree", template.tree.key))?;
+        let root_name = format!("{}(Clone)", template.tree.nodes[0].name);
+        for (i, n) in template.tree.nodes.iter().enumerate() {
+            let mut n = n.clone();
+            let parent_active = match n.parent {
+                Some(q) => self.tree.nodes[q + off].active,
+                None => p.active,
+            };
+            n.parent = Some(n.parent.map_or(parent, |q| q + off));
+            n.path = match i {
+                0 => format!("{}/{root_name}", p.path),
+                _ => format!(
+                    "{}/{root_name}{}",
+                    p.path,
+                    n.path
+                        .strip_prefix(&template.tree.nodes[0].path)
+                        .unwrap_or(&n.path)
+                ),
+            };
+            if i == 0 {
+                n.name = root_name.clone();
+            }
+            n.active = parent_active && n.active_self;
+            self.tree.nodes.push(n);
+        }
+        self.layout.nodes[off].name = root_name;
+        let parts = &template.parts;
+        fn shift<V: Copy>(m: &HashMap<usize, V>, off: usize) -> Vec<(usize, V)> {
+            m.iter().map(|(k, v)| (k + off, *v)).collect()
+        }
+        self.parts.canvases.extend(shift(&parts.canvases, off));
+        self.parts.groups.extend(shift(&parts.groups, off));
+        self.parts.masks.extend(shift(&parts.masks, off));
+        self.parts.maskable.extend(shift(&parts.maskable, off));
+        self.parts
+            .cull_transparent
+            .extend(shift(&parts.cull_transparent, off));
+        for l in &parts.unknown_layers {
+            if !self.parts.unknown_layers.contains(l) {
+                self.parts.unknown_layers.push(*l);
+            }
+        }
+        for g in &template.graphics {
+            let mut g = g.clone();
+            g.node += off;
+            if let UiGraphicKind::Compass { ring, .. } = &mut g.kind {
+                for l in &mut ring.labels {
+                    l.node += off;
+                }
+            }
+            self.graphics.push(g);
+        }
+        for t in &template.texts {
+            let mut t = t.clone();
+            t.node += off;
+            self.texts.push(t);
+        }
+        self.sprite_refs
+            .extend(template.sprite_refs.iter().map(|(k, v)| (*k, v.clone())));
+        Ok(off)
+    }
+
+    /// `Transform.SetAsLastSibling` (M9u7a): `node` drawn last among its
+    /// siblings from now on. False for the root or an unknown node.
+    pub fn set_as_last_sibling(&mut self, node: usize) -> bool {
+        // `UiTree` keeps nodes in their stored order; only the layout tree's
+        // children (which the draw order follows) change.
+        self.layout.set_as_last_sibling(node)
+    }
+
+    /// The number of nodes (grafted ones included).
+    pub fn node_count(&self) -> usize {
+        self.layout.nodes.len()
+    }
+
     /// Sorting layer ids not in the TagManager.
     pub fn unknown_layers(&self) -> &[i32] {
         &self.parts.unknown_layers
