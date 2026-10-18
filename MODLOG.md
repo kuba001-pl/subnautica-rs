@@ -2,6 +2,198 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-18 — M9u8a4a: the PDA's screen on the PDA; its glass no longer see-through
+
+**What/why:** the user saw the PDA's screen almost transparent outside the
+pod (M9u8a3 drew the model only). DESIGN's M9u8a4 was split into a4a (the
+screen canvas) and a4b (the tab bar and clicks).
+- `sn-ui::pda` (new): `uGUI_PDA`'s states (`Awake`, `Initialize`,
+  `OnOpenPDA`, `OnPDAOpened`, `OnClosePDA`, `OnPDAClosed`, `OpenTab`; the
+  tabs' `content` groups or GameObjects; `UpdateCycleBtnText` with the
+  keyboard); 4 unit tests.
+- `sn-assets::pda_screen` (new): `pda_screen_tree`, `pda_screen_config`
+  (the script's nodes, each tab's `content`, the toolbar's gamepad labels).
+- `sn-client`: the UI worker grafts `uGUI_PDAScreen(Clone)` into the scene,
+  places its canvas at its stored size and scale and runs `uGUI_PDA`'s calls
+  from the PDA's flags; `pda_pose` (after the transforms propagate) gives the
+  render pass `ScreenAnchor`'s pose in the camera's space every frame
+  (`NamedNodes`, `RigDesc::named`). The PDA mesh's materials are the view
+  model (`MaterialDesc::view_model`); blended, they write depth
+  (`ObjectKey::depth_write`, our object material's first pipeline key).
+No new dependencies.
+
+**The see-through glass, found by experiments** (throwaway builds and
+probes, not kept): (1) the glass's texture alpha over the screen is 0.832
+(area-weighted), not 0: my first probe sampled the top-row-first decode
+upside down; (2) forced opaque, the screen showed the dark navy fill; (3)
+drawing its alpha as grey showed the glass drawn in the pod but missing
+under water, with or without the water fog and water surface; (4) cause:
+the terrain's blended layers sort by batch centre + rank, after objects
+near the camera, and with the glass writing no depth they painted over it;
+the sky (and the fog and water surface) do the same per pixel after the
+transparent pass. **Dead end:** moving the sky, fog, stars and water
+surface before the transparent pass (the game's order) fixed the sky but
+not the terrain, and leaves the terrain's blended layers unfogged; reverted.
+The fix kept: the view model's blended parts write depth (`materials.md`).
+
+**Verified** (`SUBNAUTICA_DIR` set; logs in `out/m9u8a/`, 0 WARN/ERROR/
+panic in all):
+- `sn-client --view 400 --resolution 960 540 --panel 3=open,6=close --shot 9`
+  (`a4-tab.log`): 402 nodes grafted, canvas 0.2531 × 0.2055 m; `OnOpenPDA`
+  at 5.095 s: canvas 1, content 1, toolbar 1, tabs shown [Inventory] of 8;
+  `OnPDAOpened` 0.521 s later; the pose at rest (0.0217, −0.0012, 0.1874) m,
+  +z 0.89° from the camera's (M9u8a2: the same); `OnClosePDA`: content 0,
+  no tab; `OnPDAClosed` 0.319 s later: canvas 0.
+- Screenshots `out/m9u8a4-pod.png`, `-water.png`, `-surface.png` (1920 ×
+  1080, `--panel 3=open --shot 6`): the screen dark blue glass with the
+  canvas on it in all three; the world faintly through it, as its 0.83 alpha
+  gives; no "?" labels.
+- `cargo test --workspace` 703 passed, 0 failed; clippy clean.
+- Not tested: against the game on screen; the toolbar's icons and tab
+  clicks (M9u8a4b); the screen's draw counts (its hidden groups stay in the
+  draw list at alpha 0, so a count says little).
+
+## 2026-10-18 — M9u8a3: the PDA in the hand (client)
+
+**What/why:** the third step of M9u8a (DESIGN): the client opens and
+closes the PDA by the game's rules (`sn_sim::pda`), draws its model in
+the left hand while it is active, runs the arms' animation and the
+camera's locked mode, and replaces M9d5b's own open/close flags.
+- `inventory.rs`: `Panel::pda` (an `sn_sim::pda::Pda`); Tab opens it
+  (`GUIHand`) and closes it once focused (`ManagedUpdate`); the locker's
+  PDA keeps its distance to `EscapePod.storagePivot` (M9d5b used the
+  locker collider's centre); `Activated` frees the cursor, `Close` locks
+  it; the panel (our stand-in for the inventory tab until M9u8b) shows
+  from `Open` to `Close` and takes clicks once focused; `--panel`'s clicks
+  wait while the PDA opens; death closes an opening or open PDA once and
+  ignores PDA input until the controls come back (`Player.OnKill`).
+- `player.rs`: the PDA in use locks the look (the pitch eased level by
+  `Look::ease_level`; the mouse before `Activated` turns the look-around
+  offset), turns the hand off and fills `BodyFrame`'s PDA fields;
+  `storage_pivot()`; `locker_centre()` removed (no user left);
+  `--hold-back <SECONDS>` (hold S, to walk away from the locker).
+- `objects.rs` / `animation.rs`: `RigDesc::switched` (nodes the game
+  switches on and off): the player's body is built with the PDA node
+  active and that node marked; it is spawned hidden and listed on the
+  rig's base (`SwitchedNodes`). `body.rs`: shows it while
+  `BodyDrive::pda_model`; `arm_states` logs the player's `Base Modes` and
+  `upperbody` transitions. Remote players' PDAs stay hidden (not ported).
+- `game_ui.rs`: the HUD's `pda_open` is `PDA.isInUse`.
+No new dependencies.
+
+**Verified** (`SUBNAUTICA_DIR` set; logs in `out/m9u8a/`, 0 WARN/ERROR/
+panic in all six):
+- `sn-client --view 400 --resolution 960 540 --panel 3=open,6=close --shot
+  8 m9u8a3-after` (`client-tab.log`): `PDA.Open` at 3.020 s, `Activated`
+  0.511 s later by `PDA.time`, `Close` at 6.020 s, `Deactivated` 0.300 s
+  later (+ a frame); `Walking → pda`, `New State → first_check → open`,
+  `open → idle` 0.946 s after the open; `idle → close`, `close → New
+  State` 0.382 s after the close (M9u8a2, 50 Hz: 0.980 / 0.400 s).
+- `--use-item 3 --panel 6=take-all,7=drop,9.5=close --shot 11
+  m9u8a3-locker` (`client-locker.log`): M9d5b's results: 6 left clicks
+  "switch", the right click "no drop in the lifepod"; the PDA opened 0.25
+  s after `storage_open`, `idle` 0.940 s and `New State` 0.377 s after.
+- `--use-item 3 --hold-back 6 --shot 10` (`client-walkaway.log`): opened
+  2.56 m from `storagePivot` (limit √(2.56² + 1) = 2.75 m), closed by
+  distance at 2.79 m 0.12 s after S was held, `storage_open` off.
+- `--use-item 3 --kill 6 --panel 20=open,21=close` (`client-death.log`):
+  one close at the death ("the controls went off"), the model hidden
+  0.300 s later; after the respawn Tab-style open and close work.
+- Screenshots at 1920 × 1080: `out/m9u8a3-midway.png` (0.35 s into the
+  opening: the hand bringing the PDA up), `out/m9u8a3-open.png` (open:
+  the PDA fills the view; its screen is the bare `PDA_screen` glass, the
+  screen canvas comes in M9u8a4; the health icon shows its numbers).
+- **Bug found on the way:** my first death rule called `Close` every
+  frame while the controls were off, and the game's `Close` runs again
+  while closing, so it logged a close per frame. Now it follows
+  `Player.OnKill`: one close, then input ignored.
+- Not tested: the arms and the model against the game on screen;
+  keyboard and mouse play by hand.
+
+## 2026-10-18 — M9u8a2: the arms with the PDA (`walk --pda`)
+
+**What/why:** the second step of M9u8a (DESIGN): run the player's
+animator with the PDA's rules, headless, and check the arms' states and
+the screen anchor's place before the client draws them.
+- `sn-inspect walk --pda` (new, `walk_pda.rs`): stands in the pod, opens
+  the PDA, holds it 2 s, closes it, waits 1 s; leaves through the hatch,
+  swims 5 s, does it again under water. Checks each cycle's `Activated` /
+  `Deactivated` times, the model's active span, the `upperbody` layer's
+  transitions and their times, each phase's states (written in DESIGN
+  before the run), and logs the screen anchor in the eye's space.
+- `walk`'s `Run` steps an `sn_sim::pda::Pda` before the body (the locked
+  mode's look easing; `using_pda` and `pda_in_use` into the body);
+  `BodyRun` watches the four arm layers too and gives the PDA's and the
+  anchor's poses; `check_body` takes its "never" list.
+- `sn-assets::PlayerAnimation` gains the PDA's and `screenAnchor`'s posed
+  nodes.
+No new dependencies.
+
+**Verified** (`SUBNAUTICA_DIR` set; logs in `out/m9u8a/`):
+- `sn-inspect walk --pda`: RUN OK. Both cycles: `Activated` 0.520 s after
+  the open, `Deactivated` 0.340 s after the close (rule: 0.5 / 0.3 s + one
+  or two 0.02 s steps); the model active exactly in between; `upperbody`
+  `New State → first_check → open → idle` with `idle` starting 0.980 s
+  after the open (expected about 0.93 s), `idle → close → New State` with
+  `New State` 0.400 s after the close (expected about 0.375 s); base layer
+  `Walking`/`pda` in the pod, only `Swim` under water; the other arm
+  layers in their defaults. At rest, the screen anchor at (0.0217,
+  −0.0012, 0.1874) m from the eye, its +z 0.89° from the eye's; camera
+  pitch 0, offset z 0.1800 m. 1162 steps, 0 NaNs, worst |q| − 1 1.2e-7.
+- No regression: `walk` RUN OK (12 checks ok), `dive` RUN OK (31 ok);
+  `cargo test --workspace` 699 passed, 0 failed; clippy clean.
+- Not tested: the arms against the game on screen (M9u8a3 shows them).
+
+## 2026-10-18 — M9u8a1: the PDA's rules and data (plan for M9u8a)
+
+**What/why:** M9u8a ("the PDA itself") was planned from the decompiled
+`PDA`, `uGUI_PDA`, `uGUI_CanvasScaler`, `uGUI_Toolbar`, `uGUI_PDATab`,
+`ArmsController`, `MainCameraControl` and `Sequence`, a throwaway probe of
+the main scene and `sn-inspect anim scene:main --states`, and split into
+M9u8a1–a4 in DESIGN. This first step is headless: the PDA's open and
+close and the camera's locked mode as pure rules, and the data the
+client will need. Facts in `docs/formats/gameplay.md` § The PDA.
+- `sn-sim::pda` (new): the game's `Sequence` in floats with `Activated` /
+  `Deactivated`, `PDA.state`, `Open` (refused in use, with input ignored
+  or in a cinematic; `activeSqrDistance`), `Close` (runs again while
+  closing, as the game's), `PerformUpdate` / `ManagedUpdate` (only while
+  the model is active; the button when focused; the distance close),
+  `PDA.time`.
+- `sn-sim::body`: the locked mode of `MainCameraControl.OnUpdate`
+  (`BodyFrame::pda_in_use`, `locked_look`): `camRoot`'s and
+  `cameraUPTransform`'s pitch eased level, the look-around offset on
+  `cameraOffsetTransform` (±60°, pulled back), its z moved up to
+  `camPDAZOffset`, no bob; `CameraPose` gains the offset's angles and z
+  (in `rotate`, `eye`, `camera`, `camera_pitch`); `using_pda` comes from
+  the frame (`BodyFrame::using_pda`) and moved from `FIXED_PARAMETERS` to
+  `RULE_PARAMETERS`. `Look::ease_level`.
+- `sn-assets`: `PlayerBody::pda` (`PlayerPda`: the `PDA` script's node,
+  its mesh node, `screenAnchor`'s node, `prefabScreen`);
+  `LifepodLocker::storage_pivot`. `sn-unity::EscapePod` reads up to
+  `storagePivot`.
+- The client and `sn-inspect walk` pass "PDA not in use" until M9u8a2–a3.
+No new dependencies.
+
+**Verified:**
+- `cargo test --workspace`: 699 passed, 0 failed (new: 5 `pda` tests,
+  `the_pda_locks_the_camera`, the longer `EscapePod` in
+  `escape_pod_and_spawners`); `cargo clippy --workspace --all-targets`
+  clean; `cargo fmt` applied.
+- Real data (`SUBNAUTICA_DIR` set; `cargo test --release -p sn-assets
+  --test real_data -- --ignored the_pda_in_the_hand script_layouts_agree
+  hand_targets_follow`): 3 passed. The PDA at
+  `…/hand_L/attachL/PlayerPDA`, inactive, materials `PDA`, `PDA_border`,
+  `PDA_screen` (all MarmosetUBER), `ScreenAnchor` at (−0.20517, 0, 0),
+  rotation (0, 1, 0, 0), scale 0.1; 10 objects agree with the generic
+  reader (new: `EscapePod` with `storagePivot`); `storagePivot` at
+  (−130.009, 0.782, −49.769), 0.000 m from the locker's hand-target node.
+- **Found on the way:** M9d5b's "the PDA's place is the player's
+  position" is the game's own rule, not a stand-in; its other stand-in
+  (the hand collider's centre for `storagePivot`) is replaced in M9u8a3.
+  A test of mine expected `Close` to refuse while closing; the game's does
+  not, so the test was wrong and now checks the game's behaviour.
+- Not tested yet: anything on screen (M9u8a3–a4).
+
 ## 2026-10-17 — M9u7d1–d2: the unlock pop-up (`uGUI_PopupNotification`)
 
 **What/why:** M9u7d's plan took "a pick-up that unlocks a blueprint" as

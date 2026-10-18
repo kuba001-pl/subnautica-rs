@@ -2298,13 +2298,21 @@ fn hand_targets_follow_the_items() {
     assert!(pickups > 0 && outcrops > 0);
     let pod = loader.lifepod(&layers, point).unwrap();
     let locker = pod.locker.as_ref().expect("the lifepod's locker");
+    let d = V3::from_f32(locker.storage_pivot) - V3::from_f32(locker.at);
     println!(
-        "lifepod locker at {:?}: {} colliders, {} bodies",
+        "lifepod locker at {:?}: {} colliders, {} bodies; storagePivot at {:?} ({:.3} m from it)",
         locker.at,
         locker.colliders,
-        locker.bodies.len()
+        locker.bodies.len(),
+        locker.storage_pivot,
+        d.length()
     );
     assert!(!locker.bodies.is_empty());
+    assert!(
+        d.length() < 2.0,
+        "storagePivot {:.3} m from the locker",
+        d.length()
+    );
 
     // Cast down at each target from above its bodies; count those hit
     // first (others may sit under rock or another object).
@@ -2620,8 +2628,80 @@ fn script_layouts_agree_with_hand_written_readers() {
         }
         compared += 1;
     }
+    // M9u8a1: the lifepod's `EscapePod` up to `storagePivot`.
+    let pod_scene = assets.scene("escapepod").unwrap();
+    for o in pod_scene.behaviours(&assets, "EscapePod") {
+        let h = sn_unity::EscapePod::parse(o.data().unwrap().1, false).unwrap();
+        let g = generic(&o);
+        assert_eq!(pptr_of(&g, "bottomHatchEntrance"), h.bottom_hatch_entrance);
+        assert_eq!(pptr_of(&g, "playerSpawn"), h.player_spawn);
+        assert_eq!(pptr_of(&g, "storagePivot"), h.storage_pivot);
+        assert!(!h.storage_pivot.is_null());
+        compared += 1;
+    }
     eprintln!("{compared} objects compared");
-    assert!(compared >= 9, "{compared}");
+    assert!(compared >= 10, "{compared}");
+}
+
+/// M9u8a1: the PDA in the player's hand (`docs/formats/gameplay.md`
+/// § The PDA).
+#[test]
+#[ignore = "needs SUBNAUTICA_DIR pointing at a Subnautica install"]
+fn the_pda_in_the_hand() {
+    let Some(dir) = std::env::var_os("SUBNAUTICA_DIR") else {
+        eprintln!("SUBNAUTICA_DIR not set; skipping");
+        return;
+    };
+    let game = GameData::locate(Some(PathBuf::from(dir))).unwrap();
+    let assets = Assets::index(&game).unwrap();
+    let body = assets.player_body().unwrap();
+    let nodes = &body.prefab.nodes;
+    let path = |mut i: usize| {
+        let mut names = vec![nodes[i].name.as_str()];
+        while let Some(p) = nodes[i].parent {
+            names.push(nodes[p].name.as_str());
+            i = p;
+        }
+        names.reverse();
+        names[1..].join("/")
+    };
+    let pda = &body.pda;
+    let p = path(pda.node);
+    println!(
+        "PDA: {p}; mesh {}; anchor {}",
+        path(pda.mesh_node),
+        path(pda.screen_anchor_node)
+    );
+    assert!(p.ends_with("hand_L/attachL/PlayerPDA"), "{p}");
+    let n = &nodes[pda.node];
+    assert!(!n.active_self && !n.active, "stored inactive");
+    assert_eq!(n.layer, 8);
+    let mesh = &nodes[pda.mesh_node];
+    assert_eq!(mesh.parent, Some(pda.node));
+    assert!(mesh.active_self && !mesh.skinned);
+    let mats: Vec<(String, String)> = mesh
+        .materials
+        .iter()
+        .flatten()
+        .map(|m| {
+            let (_, d) = m.data().unwrap();
+            let name = sn_unity::Material::parse(d, false).unwrap().name;
+            (name, assets.shader_name(m).unwrap())
+        })
+        .collect();
+    println!("PDA materials: {mats:?}");
+    let names: Vec<&str> = mats.iter().map(|m| m.0.as_str()).collect();
+    assert_eq!(names, ["PDA", "PDA_border", "PDA_screen"]);
+    assert!(mats.iter().all(|m| m.1 == "MarmosetUBER"));
+    let anchor = &nodes[pda.screen_anchor_node];
+    assert_eq!(anchor.parent, Some(pda.node));
+    assert_eq!(anchor.name, "ScreenAnchor");
+    let l = anchor.local;
+    println!("ScreenAnchor local: {l:?}");
+    assert!((l.position[0] + 0.205).abs() < 1e-3 && l.position[1] == 0.0 && l.position[2] == 0.0);
+    // Turned 180° about y.
+    assert!((l.rotation[1].abs() - 1.0).abs() < 1e-6);
+    assert_eq!(l.scale, [0.1; 3]);
 }
 
 /// M9u2: the sprite atlases `SpriteManager` loads and its lookup rule.

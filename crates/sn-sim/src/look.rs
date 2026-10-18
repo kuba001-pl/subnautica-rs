@@ -55,6 +55,13 @@ impl Look {
         self.rotation_y = (self.rotation_y + dy * k).clamp(params.minimum_y, params.maximum_y);
     }
 
+    /// `MainCameraControl.OnUpdate`'s locked mode (the PDA in use):
+    /// `rotationY = Mathf.LerpAngle(rotationY, 0, amount)`, with `amount`
+    /// = `PDA.deltaTime × 15`.
+    pub fn ease_level(&mut self, amount: f64) {
+        self.rotation_y = crate::lerp_angle(self.rotation_y, 0.0, amount);
+    }
+
     /// Yaw about +y, radians (`sn_sim::player::Input::yaw`).
     pub fn yaw(&self) -> f64 {
         self.rotation_x.to_radians()

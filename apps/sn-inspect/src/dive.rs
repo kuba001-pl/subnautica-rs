@@ -439,7 +439,7 @@ pub fn run(game: &GameData, seed: u64) -> Result<ExitCode> {
         "body: no NaN, unit quaternions, every parameter known",
         body_ok,
     );
-    let states_ok = check_body(&d.r.body, &DIVE_EXPECTED);
+    let states_ok = check_body(&d.r.body, &DIVE_EXPECTED, crate::walk::NEVER);
     check("body: states as expected", states_ok);
     let names: Vec<&str> = d.r.hatch_uses.iter().map(|h| h.name.as_str()).collect();
     check(

@@ -18,6 +18,7 @@ use sn_assets::{Lifepod, PodCinematics, SCENE_BODY};
 use sn_install::GameData;
 use sn_sim::cinematic::{CinematicFrame, HatchRun, Signal, apply, ease_tilt};
 use sn_sim::look::Look;
+use sn_sim::pda::{Event as PdaEvent, Pda};
 use sn_sim::player::{
     Event, HatchTrigger, Hatches, Input, Motor, Player, PlayerParams, hand_target,
 };
@@ -75,6 +76,10 @@ pub(crate) struct Run<'a, 'g> {
     pub(crate) hatch_uses: Vec<HatchDone>,
     /// M10f: every step's state, if recording (the bots replay it).
     pub(crate) record: Option<Vec<StepRecord>>,
+    /// The PDA (M9u8a2), stepped before the body; its events with the
+    /// time.
+    pub(crate) pda: Pda,
+    pub(crate) pda_events: Vec<(f64, PdaEvent)>,
 }
 
 /// The player after one step, as a multiplayer bot sends it (M10f).
@@ -289,7 +294,21 @@ impl Run<'_, '_> {
                 .vitals
                 .as_ref()
                 .is_none_or(|(_, v)| v.controls_enabled());
-        if !p.cinematic {
+        // `PDA.PerformUpdate` (M9u8a2) runs before the camera
+        // (**hypothesis**: `UpdatePDA` comes before
+        // `UpdateCameraTransform` in `ManagedUpdate`'s queues).
+        let at = self.t();
+        for e in self
+            .pda
+            .update(self.params.fixed_dt as f32, false, None, p.position)
+        {
+            self.pda_events.push((at, e));
+        }
+        if self.pda.in_use() {
+            // The locked mode: the mouse does not turn the look, its
+            // pitch eases level.
+            self.look.ease_level(self.params.fixed_dt * 15.0);
+        } else if !p.cinematic {
             self.look = self.body.look(input.yaw, input.pitch);
         }
         let frame = sn_sim::body::BodyFrame {
@@ -307,6 +326,9 @@ impl Run<'_, '_> {
             controls,
             bobbing: true,
             time_grabbed: 0.0,
+            pda_in_use: self.pda.in_use(),
+            using_pda: self.pda.using_pda(),
+            locked_look: (0.0, 0.0),
         };
         let world = &self.s.world;
         let mut ray =
@@ -694,6 +716,8 @@ pub(crate) fn start<'a, 'g>(s: &'a mut Streamed<'g>, seed: u64) -> Result<Run<'a
         death_camera: None,
         hatch_uses: Vec::new(),
         record: None,
+        pda: Pda::new(),
+        pda_events: Vec::new(),
     };
     for i in 0..r.pod.triggers.len() {
         if r.pod.triggers[i].active {
@@ -847,7 +871,7 @@ pub fn run(game: &GameData, seed: u64) -> Result<ExitCode> {
     );
     let penetrations = report(&r);
     let hatches_ok = check_hatches(&r) && r.hatch_uses.len() == 2;
-    let body_ok = r.body.report() & check_body(&r.body, &WALK_EXPECTED);
+    let body_ok = r.body.report() & check_body(&r.body, &WALK_EXPECTED, NEVER);
     crate::swim::print_load_stats(&s);
     let ok = ok && penetrations == 0 && body_ok && hatches_ok;
     println!(
@@ -873,7 +897,7 @@ pub(crate) struct Expected {
 }
 
 /// States no phase of the scripts may reach (`docs/DESIGN.md`).
-const NEVER: &[&str] = &[
+pub(crate) const NEVER: &[&str] = &[
     "Dive",
     "Dive_loops",
     "player_view_jump_loop",
@@ -939,8 +963,10 @@ const WALK_EXPECTED: [Expected; 9] = [
     },
 ];
 
-/// Checks the states seen against `expected` and [`NEVER`]; prints each.
-pub(crate) fn check_body(body: &BodyRun, expected: &[Expected]) -> bool {
+/// Checks the states seen against `expected` and `never` (base layer
+/// states no phase may reach, [`NEVER`] in the scripts without a PDA);
+/// prints each.
+pub(crate) fn check_body(body: &BodyRun, expected: &[Expected], never: &[&str]) -> bool {
     let mut ok = true;
     for e in expected {
         let seen = body.states_exact(e.phase, e.layer);
@@ -958,9 +984,9 @@ pub(crate) fn check_body(body: &BodyRun, expected: &[Expected]) -> bool {
         ok &= good;
     }
     let all = body.states("", "Base Modes");
-    let bad: Vec<&String> = all.iter().filter(|s| NEVER.contains(&s.as_str())).collect();
+    let bad: Vec<&String> = all.iter().filter(|s| never.contains(&s.as_str())).collect();
     println!(
-        "check: never in {NEVER:?}: {}",
+        "check: never in {never:?}: {}",
         if bad.is_empty() {
             "ok".to_string()
         } else {

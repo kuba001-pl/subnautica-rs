@@ -38,6 +38,14 @@ pub struct RigDesc {
     pub skins: Vec<SkinDesc>,
     /// Renderers whose blend shapes the animator drives.
     pub shapes: Vec<ShapeDesc>,
+    /// Nodes the game switches on and off while it runs (M9u8a3: the
+    /// player's PDA, stored inactive): spawned hidden, with their parts,
+    /// and listed on the rig's base ([`crate::objects::SwitchedNodes`]).
+    pub switched: Vec<u16>,
+    /// Nodes the client reads by name (M9u8a4a: the PDA's
+    /// `ScreenAnchor`), listed on the rig's base
+    /// ([`crate::objects::NamedNodes`]).
+    pub named: Vec<(u16, String)>,
     /// For logs: the prefab and the controller.
     pub name: String,
 }

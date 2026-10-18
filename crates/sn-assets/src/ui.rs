@@ -224,7 +224,10 @@ impl Assets<'_> {
 
 /// `PDA`'s serialized fields (`prefabScreen`, `screenAnchor`); every other
 /// field is static, a constant or private (`sn-inspect code --fields PDA`).
-fn pda_fields(data: &[u8], big_endian: bool) -> std::result::Result<(PPtr, PPtr), String> {
+pub(crate) fn pda_fields(
+    data: &[u8],
+    big_endian: bool,
+) -> std::result::Result<(PPtr, PPtr), String> {
     let header = MonoBehaviourHeader::parse(data, big_endian).map_err(|e| e.to_string())?;
     let at = header.fields_offset;
     let field = |i: usize| -> std::result::Result<PPtr, String> {

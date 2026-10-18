@@ -1163,6 +1163,9 @@ pub struct Lifepod {
 /// The lifepod's locker as a hand target.
 pub struct LifepodLocker {
     pub at: [f32; 3],
+    /// `EscapePod.storagePivot`'s world position (M9u8a1): the target the
+    /// locker's PDA keeps its distance to.
+    pub storage_pivot: [f32; 3],
     pub colliders: usize,
     pub bodies: Vec<sn_sim::collide::Body>,
 }
@@ -1195,12 +1198,25 @@ impl CollisionLoader<'_> {
         if let Some(n) = locker_node {
             nodes.push(n);
         }
+        // `EscapePod.storagePivot` (M9u8a1).
+        let pod = scene
+            .behaviours(assets, "EscapePod")
+            .into_iter()
+            .next()
+            .ok_or("escapepod: no EscapePod script")?;
+        let pod = sn_unity::EscapePod::parse(pod.data()?.1, scene.file.file().big_endian)
+            .map_err(|e| format!("EscapePod: {e}"))?;
+        let (pr, pn) = scene
+            .locate_transform(assets, pod.storage_pivot)?
+            .ok_or("EscapePod.storagePivot: not in the scene")?;
+        let storage_pivot = scene.roots[pr].world(pn).position;
         let (rest, mut per_trigger) = self.scene_split(&mut scene, &nodes)?;
         let locker = match locker_node {
             Some((r, n)) => {
                 let colliders = per_trigger.pop().unwrap_or_default();
                 Some(LifepodLocker {
                     at: scene.roots[r].world(n).position,
+                    storage_pivot,
                     colliders: colliders.len(),
                     bodies: bodies(&colliders, rules),
                 })

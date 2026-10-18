@@ -433,10 +433,23 @@ fn skinned_mesh_renderer() {
 #[test]
 fn escape_pod_and_spawners() {
     let mut b = behaviour();
-    b.pptr(0, 40).pptr(0, 41).pptr(0, 99);
+    b.pptr(0, 40).pptr(0, 41);
+    for i in 0..9 {
+        b.pptr(0, 50 + i);
+    }
+    // `fixPanelGoal`: delay, key (aligned), goal type.
+    b.f32(0.0).str("Goal").i32(1);
+    for i in 0..4 {
+        b.pptr(0, 60 + i);
+    }
+    b.pptr(0, 99);
     let pod = sn_unity::EscapePod::parse(&b.0, false).unwrap();
     assert_eq!(pod.bottom_hatch_entrance.path_id, 40);
     assert_eq!(pod.player_spawn.path_id, 41);
+    assert_eq!(pod.storage_pivot.path_id, 99);
+    for len in 0..b.0.len() {
+        assert!(sn_unity::EscapePod::parse(&b.0[..len], false).is_err());
+    }
 
     // PrefabSpawnBase fields as the game's escape pod stores them.
     let base = |b: &mut W, message: &str| {

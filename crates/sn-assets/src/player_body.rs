@@ -24,6 +24,9 @@ pub struct PlayerAnimation {
     pub defaults: Vec<f32>,
     pub cam_anchor: PosedNode,
     pub head_camera: PosedNode,
+    /// The PDA in the hand and its `screenAnchor` (M9u8a2).
+    pub pda: PosedNode,
+    pub pda_screen_anchor: PosedNode,
     /// `MainCameraControl.minimumY` / `maximumY`.
     pub look_limits: (f64, f64),
 }
@@ -41,7 +44,8 @@ pub const TECH_TYPE_NONE: i32 = 0;
 /// Parameters of the player's animator set every frame by the rules M9g
 /// ports (`ArmsController.Update`, `SetPlayerSpeedParameters`,
 /// `UpdateDiving`, `InstallAnimationRules`; `Player.Start` for `vr_active`,
-/// `Player.OnKill` for the death triggers), with values that change in play.
+/// `Player.OnKill` for the death triggers; `ArmsController.SetUsingPda`
+/// from `PDA.Open` / `Close`, M9u8a1), with values that change in play.
 pub const RULE_PARAMETERS: &[&str] = &[
     "move_speed",
     "move_speed_x",
@@ -57,6 +61,7 @@ pub const RULE_PARAMETERS: &[&str] = &[
     "verticalOffset",
     "cinematics_enabled",
     "vr_active",
+    "using_pda",
     "player_death",
     "player_death_fire",
     "player_death_explosion",
@@ -78,7 +83,6 @@ pub const FIXED_PARAMETERS: &[&str] = &[
     "in_exosuit",
     "cyclops_steering",
     "bleeder",
-    "using_pda",
     "using_builder",
 ];
 
@@ -130,6 +134,20 @@ pub struct PlayerBody {
     /// `CameraToPlayerManager.headCameraBone` (M9g5): the camera copies
     /// it after death.
     pub head_camera_node: usize,
+    /// The PDA in the hand (M9u8a1).
+    pub pda: PlayerPda,
+}
+
+/// The PDA in the player's hand (M9u8a1): the node with the `PDA` script
+/// (stored inactive; `PDA.Open` activates it), its one child with a mesh,
+/// `PDA.screenAnchor`'s node (all in [`PlayerBody::prefab`]) and
+/// `PDA.prefabScreen`.
+#[derive(Clone, Debug)]
+pub struct PlayerPda {
+    pub node: usize,
+    pub mesh_node: usize,
+    pub screen_anchor_node: usize,
+    pub prefab_screen: ObjectRef,
 }
 
 impl PlayerBody {
@@ -167,6 +185,7 @@ impl PlayerBody {
             view_model_roll: yaw * f64::from(c.camera_tilt_mod),
             camera_up_position: V3::from_f32(nodes[self.camera_up_node].local.position),
             camera_offset_position: V3::from_f32(nodes[self.camera_offset_node].local.position),
+            cam_pda_z_offset: f64::from(c.cam_pda_z_offset),
             ocean_level: f64::from(ocean_level),
         }
     }
@@ -350,6 +369,36 @@ impl Assets<'_> {
             "CameraToPlayerManager.headCameraBone",
         )?;
 
+        // The PDA (M9u8a1): its script's node, under the player.
+        let pdas = scene.behaviours(self, "PDA");
+        let [pda_ref] = pdas.as_slice() else {
+            return Err(format!(
+                "main scene: {} PDA scripts, expected 1",
+                pdas.len()
+            ));
+        };
+        let pda_node = behaviour_node(pda_ref, "PDA")?;
+        let (pda_screen, _) = self.pda_screen_refs(&scene)?;
+        let anchor_pptr = crate::ui::pda_fields(pda_ref.data()?.1, big_endian)
+            .map_err(|e| format!("PDA: {e}"))?
+            .1;
+        let screen_anchor_node = node_of_component(anchor_pptr, "PDA.screenAnchor")?;
+        let meshes: Vec<usize> = (0..prefab.nodes.len())
+            .filter(|&i| prefab.nodes[i].parent == Some(pda_node) && prefab.nodes[i].mesh.is_some())
+            .collect();
+        let [mesh_node] = meshes.as_slice() else {
+            return Err(format!(
+                "PDA: {} children with a mesh, expected 1",
+                meshes.len()
+            ));
+        };
+        let pda = PlayerPda {
+            node: pda_node,
+            mesh_node: *mesh_node,
+            screen_anchor_node,
+            prefab_screen: pda_screen,
+        };
+
         let mut body = PlayerBody {
             prefab,
             player,
@@ -367,6 +416,7 @@ impl Assets<'_> {
             slots,
             cam_anchor_node,
             head_camera_node,
+            pda,
         };
         body.equip(|_| TECH_TYPE_NONE);
         Ok(body)
@@ -396,6 +446,8 @@ impl Assets<'_> {
         };
         let cam_anchor = posed(body.cam_anchor_node, "camAnchor")?;
         let head_camera = posed(body.head_camera_node, "headCameraBone")?;
+        let pda = posed(body.pda.node, "the PDA")?;
+        let pda_screen_anchor = posed(body.pda.screen_anchor_node, "PDA.screenAnchor")?;
         let vm = &body.prefab.nodes[body.view_model_node];
         if vm.parent != Some(0)
             || vm.local.position != [0.0; 3]
@@ -408,6 +460,8 @@ impl Assets<'_> {
             defaults: binding.defaults,
             cam_anchor,
             head_camera,
+            pda,
+            pda_screen_anchor,
             look_limits: (
                 f64::from(body.camera.minimum_y),
                 f64::from(body.camera.maximum_y),
@@ -479,6 +533,7 @@ mod tests {
             view_model_roll: 0.0,
             camera_up_position: V3::ZERO,
             camera_offset_position: V3::ZERO,
+            cam_pda_z_offset: 0.18,
             ocean_level: 0.0,
         };
         let mut body = Body::new(&params);
@@ -497,6 +552,9 @@ mod tests {
             controls: true,
             bobbing: true,
             time_grabbed: 0.0,
+            pda_in_use: false,
+            using_pda: false,
+            locked_look: (0.0, 0.0),
         };
         let mut set: Vec<&str> = body
             .update(&params, &frame, &mut |_, _, _| false)

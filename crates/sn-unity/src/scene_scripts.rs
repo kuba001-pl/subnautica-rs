@@ -117,14 +117,35 @@ pub struct EscapePod {
     pub bottom_hatch_entrance: PPtr,
     /// Transform where the player is put (`RespawnPlayer`).
     pub player_spawn: PPtr,
+    /// Transform the locker's PDA keeps its distance to (M9u8a1:
+    /// `PDA.Open(Inventory, storagePivot, …)`).
+    pub storage_pivot: PPtr,
 }
 
 impl EscapePod {
+    /// The fields up to `storagePivot` (the rest is not read): nine more
+    /// references, `fixPanelGoal` (a `StoryGoal`: `delay`, `key`,
+    /// `goalType`), four references.
     pub fn parse(data: &[u8], big_endian: bool) -> Result<EscapePod> {
         let mut r = fields(data, big_endian)?;
+        let bottom_hatch_entrance = PPtr::read(&mut r)?;
+        let player_spawn = PPtr::read(&mut r)?;
+        // `introCinematic` … `fixPanelPowerUp`.
+        for _ in 0..9 {
+            PPtr::read(&mut r)?;
+        }
+        r.f32()?;
+        r.aligned_string()?;
+        r.i32()?;
+        // `animator`, `rigidbodyComponent`, `pingInstance`,
+        // `storageContainer`.
+        for _ in 0..4 {
+            PPtr::read(&mut r)?;
+        }
         Ok(EscapePod {
-            bottom_hatch_entrance: PPtr::read(&mut r)?,
-            player_spawn: PPtr::read(&mut r)?,
+            bottom_hatch_entrance,
+            player_spawn,
+            storage_pivot: PPtr::read(&mut r)?,
         })
     }
 }

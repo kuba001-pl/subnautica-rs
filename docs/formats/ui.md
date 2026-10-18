@@ -67,6 +67,47 @@ Hosts of the scripts M9u ports (paths from the root):
 `InventoryContainer`, `StorageContainer` and `TorpedoContainer1`–`4`.
 `uGUI_Equipment` is on `Content/InventoryTab/Equipment`.
 
+## The PDA's screen on the PDA (M9u8a4a) — confirmed (decompiled code, stored fields, client)
+
+`PDA.ui` instantiates `prefabScreen` (`uGUI_PDAScreen`, 402 nodes) once,
+calls `uGUI_CanvasScaler.SetAnchor(screenAnchor)` and `uGUI_PDA.Initialize`.
+Our client grafts a copy into the UI scene as `uGUI_PDAScreen(Clone)` and
+ports `uGUI_PDA`'s states in `sn_ui::pda`:
+- **Stored:** the canvas 1195 × 970 at scale 0.00021181 (0.2531 × 0.2055 m),
+  pivot (0.5, 0.5). `Inversed` with an anchor skips `UpdateFrustum`, so it
+  keeps that size and scale; its pose each frame is `ScreenAnchor`'s in the
+  main camera's space (§ Canvas placement). At rest (the arms in `idle`) that
+  is (0.0217, −0.0012, 0.1874) m, its +z 0.89° from the camera's (client and
+  `walk --pda` agree to 0.1 mm). Our client applies it in the render pass
+  each frame, not through the worker, so the screen does not lag the model.
+- **`Awake`:** `content` visible, `SetCanvasVisible(false)` (the canvas
+  group's alpha 0; the scaler inactive, the masks disabled).
+  **`Initialize`:** every tab's `Close`; the back button inactive;
+  `SetTabs(regularTabs)` (Inventory, Journal, Ping, Gallery, Log,
+  Encyclopedia). A regular tab's `Open`/`Close` is
+  `content.SetVisible(true/false)` (`CanvasGroup` alpha 1/0, interactable
+  and raycasts with it); `uGUI_IntroTab` and `uGUI_TimeCapsuleTab` set their
+  GameObject active/inactive instead (the intro's `Close` also sets the
+  background's alpha to 1).
+- **`OnOpenPDA(None)`** (from `PDA.Open`): the canvas visible, `content`
+  alpha 1 (not interactable until `OnPDAOpened`), then `OpenTab(tabPrev)`:
+  the open tab closed, the new one opened, the toolbar group visible when
+  the tab is on the toolbar. **`OnClosePDA`** (from `PDA.Close`): the open
+  tab closed, `SetTabs(regularTabs)`, `content` hidden. **`OnPDAClosed`**
+  (from `Deactivated`): the canvas invisible.
+- **`PDABackground`** (`uGUI_PDA.pdaBackground`): an `Image` with the default
+  material, white, alpha 1, sprite `PDABackground` (1195 × 970 RGBA32, its
+  own texture): alpha is 0 over most of it (1,079,822 of 1,159,150 texels),
+  so it is a glowing frame, not a fill. The screen's dark fill is the PDA
+  model's `PDA_screen` glass (`materials.md` § The view model's glass).
+- **`uGUI_Toolbar.UpdateCycleBtnText`** (`OnEnable`): with the keyboard as
+  the primary device `cycleLeftBtnText` and `cycleRightBtnText` are made
+  inactive (stored with "?" texts). Ported for the PDA's toolbar.
+- **Not ported yet (M9u8a4b):** the toolbar's icons (made by code),
+  `Select` and the tab clicks; the equipment slots' `UI/Circle` (drawn as
+  `UI/Default`); the inventory tab's containers (our M9d5b panel stands in,
+  M9u8b).
+
 ## Canvases and scalers — confirmed
 
 **`Canvas` (class 223), 55 bytes:** PPtr game object, `u8` enabled

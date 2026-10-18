@@ -18,8 +18,17 @@ use sn_unity::{AnimatorController, name_hash};
 use crate::Result;
 
 /// The layers whose states are collected: "Base Modes", "Death" and
-/// "Cinematics" (M9g5d).
-const WATCHED: [&str; 3] = ["Base Modes", "Death", "Cinematics"];
+/// "Cinematics" (M9g5d), and the arms' layers (M9u8a2: the PDA plays on
+/// "upperbody").
+const WATCHED: [&str; 7] = [
+    "Base Modes",
+    "Death",
+    "Cinematics",
+    "right arm",
+    "left",
+    "both",
+    "upperbody",
+];
 
 pub(crate) struct BodyRun {
     pub(crate) params: BodyParams,
@@ -45,6 +54,9 @@ pub(crate) struct BodyRun {
     /// `Player.camAnchor` and the death camera's bone (M9g5d).
     cam_anchor: PosedNode,
     head_camera: PosedNode,
+    /// The PDA and its `screenAnchor` (M9u8a2).
+    pda: PosedNode,
+    pda_screen_anchor: PosedNode,
     /// The values the rules gave the animator in the last step (M10f:
     /// the bots send them).
     pub(crate) last_values: Vec<(&'static str, AnimValue)>,
@@ -60,6 +72,7 @@ impl BodyRun {
         let program = pa.program.clone();
         let controller = program.controller.clone();
         let (cam_anchor, head_camera) = (pa.cam_anchor, pa.head_camera);
+        let (pda, pda_screen_anchor) = (pa.pda, pa.pda_screen_anchor);
         let layers = controller
             .layers
             .iter()
@@ -98,6 +111,8 @@ impl BodyRun {
             unknown: BTreeSet::new(),
             cam_anchor,
             head_camera,
+            pda,
+            pda_screen_anchor,
             last_values: Vec::new(),
         })
     }
@@ -132,6 +147,19 @@ impl BodyRun {
     /// `Player.camAnchor` in the world now.
     pub(crate) fn cam_anchor(&self, player: Pose) -> Pose {
         self.node_world(&self.cam_anchor, player)
+    }
+
+    /// The PDA and its `screenAnchor` in the world now (M9u8a2).
+    pub(crate) fn pda_poses(&self, player: Pose) -> (Pose, Pose) {
+        (
+            self.node_world(&self.pda, player),
+            self.node_world(&self.pda_screen_anchor, player),
+        )
+    }
+
+    /// `PDA.isInUse` and the body's camera pose, for logs.
+    pub(crate) fn camera_pose(&self) -> sn_sim::body::CameraPose {
+        self.body.pose
     }
 
     /// A node of the player's hierarchy in the world: the view model's

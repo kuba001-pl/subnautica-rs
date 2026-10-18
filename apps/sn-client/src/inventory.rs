@@ -1,13 +1,18 @@
-//! The inventory panel (M9d5b, `docs/DESIGN.md` "M9d5b plan"): our own
-//! Bevy UI standing in for the PDA's inventory tab until M9u. Tab opens
-//! it (the grid and the slots); the hand on the lifepod's locker opens it
-//! with the locker beside them, as `EscapePod.StorageOpen` does (the pod's
-//! `storage_open`, the panel 0.25 s later). While it is open the look and
-//! the hand are off and the cursor is free (`crate::player` asks
-//! [`Panel::open`]). A left click does the item's action by the game's
-//! rule (`sn_sim::inventory::item_action`), a right click drops it where
-//! the game would ([`drop_request`]). `--panel` does the same from a
-//! script, for checking from the logs.
+//! The PDA's open and close (M9u8a3, `sn_sim::pda`) and the inventory
+//! panel (M9d5b, `docs/DESIGN.md` "M9d5b plan"): our own Bevy UI standing
+//! in for the PDA's inventory tab until M9u8b. Tab opens the PDA
+//! (`GUIHand`'s `Button.PDA`) and closes it once focused
+//! (`PDA.ManagedUpdate`); the hand on the lifepod's locker opens it with
+//! the locker beside the grid, as `EscapePod.StorageOpen` does (the pod's
+//! `storage_open`, `PDA.Open` 0.25 s later, the target `storagePivot`).
+//! The panel shows from `Open` to `Close` (the screen's content) and takes
+//! clicks once the PDA is focused (`Activated`); the cursor is free from
+//! `Activated` to `Close`. `crate::player` reads [`Panel::pda`] for the
+//! look, the hand and the camera's locked mode, `crate::body` for the
+//! model. A left click does the item's action by the game's rule
+//! (`sn_sim::inventory::item_action`), a right click drops it where the
+//! game would ([`drop_request`]). `--panel` does the same from a script,
+//! for checking from the logs.
 
 use bevy::prelude::*;
 use bevy::window::{CursorGrabMode, CursorOptions};
@@ -16,6 +21,7 @@ use sn_protocol::{ItemId, MoveTarget, Request, Store};
 use sn_session::drops::{Draws, drop_at};
 use sn_sim::V3;
 use sn_sim::inventory::{self as inv, Button as Click, DropPlace, Place};
+use sn_sim::pda::{CloseReason, Event as PdaEvent, Pda, State as PdaState};
 
 use crate::body::BodyDrive;
 use crate::items::Text as ItemTextRes;
@@ -61,8 +67,8 @@ impl Scripted {
 
 #[derive(Resource)]
 pub struct Panel {
-    /// The PDA is open (`PDA.isInUse`).
-    pub open: bool,
+    /// The player's PDA (M9u8a3).
+    pub pda: Pda,
     /// Opened by the locker: the locker is the used storage.
     with_locker: bool,
     /// `EscapePod.storageSequence`: when it ends (play seconds) and
@@ -70,8 +76,11 @@ pub struct Panel {
     storage: Option<(f64, bool)>,
     /// `PlayerSim::locker_opened` last seen.
     locker_seen: u32,
-    /// `PDA.target` and `activeSqrDistance`.
-    target: Option<(V3, f64)>,
+    /// `PDA.target`'s position (`storagePivot`) while the locker's PDA is
+    /// open.
+    target: Option<V3>,
+    /// `PlayerSim::controls` last frame (death's edges, M9u8a3).
+    controls_seen: bool,
     /// The drops' draws (the game's `Random` is unseeded).
     draws: Draws,
     /// `--panel`, latest first.
@@ -81,10 +90,17 @@ pub struct Panel {
 }
 
 impl Panel {
+    /// The panel (the inventory tab's content) is shown: from `Open` to
+    /// `Close` (`content.SetVisible`).
+    pub fn shown(&self) -> bool {
+        self.pda.using_pda()
+    }
+
     pub fn new(mut script: Vec<(f64, Scripted)>, seed: u64) -> Panel {
         script.sort_by(|a, b| b.0.total_cmp(&a.0));
         Panel {
-            open: false,
+            pda: Pda::new(),
+            controls_seen: false,
             with_locker: false,
             storage: None,
             locker_seen: 0,
@@ -253,46 +269,68 @@ fn set_cursor(windows: &mut Query<(&Window, &mut CursorOptions)>, free: bool) {
     }
 }
 
-/// `PDA.Open`: refused while open, dead or in a cinematic.
-fn open(
-    panel: &mut Panel,
-    sim: &PlayerSim,
-    windows: &mut Query<(&Window, &mut CursorOptions)>,
-    with_locker: bool,
-) -> bool {
-    if panel.open || !sim.controls() {
+/// `PDA.Open`: refused while in use, dead or in a cinematic (our
+/// `controls`). With the locker, the target is `storagePivot`.
+fn open(panel: &mut Panel, sim: &PlayerSim, with_locker: bool) -> bool {
+    let target = if with_locker {
+        sim.storage_pivot()
+    } else {
+        None
+    };
+    let Some(player) = sim.position() else {
+        return false;
+    };
+    if !panel.pda.open(target, player, !sim.controls()) {
         info!(
-            "inventory: the panel cannot open now (open {}, controls {})",
-            panel.open,
+            "inventory: PDA.Open refused (in use {}, controls {})",
+            panel.pda.in_use(),
             sim.controls()
         );
         return false;
     }
-    panel.open = true;
     panel.with_locker = with_locker;
-    panel.target = if with_locker {
-        sim.locker_centre()
-            .zip(sim.position())
-            .map(|(t, p)| (t, (t - p).dot(t - p) + 1.0))
-    } else {
-        None
-    };
-    set_cursor(windows, true);
+    panel.target = target;
     info!(
-        "inventory: panel open{}",
-        match panel.target {
-            Some((_, d)) => format!(
-                " with the locker; closes beyond {:.2} m (activeSqrDistance {d:.2})",
-                d.sqrt()
-            ),
+        "inventory: PDA.Open at {:.3} s (PDA.time {:.3}){}; the model in the hand, using_pda on, the panel shown",
+        sim.play_seconds(),
+        panel.pda.time,
+        match target {
+            Some(t) => {
+                let d = (t - player).dot(t - player);
+                format!(
+                    " with the locker; closes beyond {:.2} m of storagePivot (activeSqrDistance {:.2})",
+                    (d + 1.0).sqrt(),
+                    d + 1.0
+                )
+            }
             None => String::new(),
         }
     );
     true
 }
 
-/// `PDA.Close`, then its callback: for the locker,
+/// After `PDA.Close` went through: the cursor locked again
+/// (`InterceptInput(false)`), then its callback: for the locker,
 /// `EscapePod.StorageOnClosePDA`.
+fn closed(
+    panel: &mut Panel,
+    sim: &mut PlayerSim,
+    drive: &mut BodyDrive,
+    windows: &mut Query<(&Window, &mut CursorOptions)>,
+    why: &str,
+) {
+    panel.target = None;
+    set_cursor(windows, false);
+    info!(
+        "inventory: PDA.Close at {:.3} s ({why}); using_pda off, the panel hidden, the model until Deactivated",
+        sim.play_seconds()
+    );
+    if std::mem::take(&mut panel.with_locker) {
+        storage_closed(panel, sim, drive);
+    }
+}
+
+/// `PDA.Close` called from outside `ManagedUpdate` (Escape, death).
 fn close(
     panel: &mut Panel,
     sim: &mut PlayerSim,
@@ -300,15 +338,8 @@ fn close(
     windows: &mut Query<(&Window, &mut CursorOptions)>,
     why: &str,
 ) {
-    if !panel.open {
-        return;
-    }
-    panel.open = false;
-    panel.target = None;
-    set_cursor(windows, false);
-    info!("inventory: panel closed ({why})");
-    if std::mem::take(&mut panel.with_locker) {
-        storage_closed(panel, sim, drive);
+    if panel.pda.close() {
+        closed(panel, sim, drive, windows, why);
     }
 }
 
@@ -325,6 +356,7 @@ fn storage_closed(panel: &mut Panel, sim: &mut PlayerSim, drive: &mut BodyDrive)
 /// and buttons it uses are taken, so the player does not see them.
 #[allow(clippy::too_many_arguments)]
 pub fn input(
+    time: Res<Time>,
     mut panel: ResMut<Panel>,
     mut keys: ResMut<ButtonInput<KeyCode>>,
     mut buttons: ResMut<ButtonInput<MouseButton>>,
@@ -358,40 +390,87 @@ pub fn input(
         panel.storage = None;
         // `StorageOnFlapOpened`: the locker as used storage, `PDA.Open`;
         // refused, `StorageOnClosePDA`.
-        if opens && !open(panel, &sim, &mut windows, true) {
+        if opens && !open(panel, &sim, true) {
             storage_closed(panel, &mut sim, &mut drive);
         }
     }
 
-    // Tab (`GameInput.Button.PDA`) toggles; Escape closes (ours).
-    if keys.clear_just_pressed(KeyCode::Tab) {
-        if panel.open {
-            close(panel, &mut sim, &mut drive, &mut windows, "Tab");
-        } else {
-            open(panel, &sim, &mut windows, false);
-        }
+    // `GUIHand.OnUpdate`: Tab (`Button.PDA`) opens the PDA while the
+    // avatar's input is on (not focused); `PDA.ManagedUpdate` below closes
+    // it with the same press once focused.
+    let tab = keys.clear_just_pressed(KeyCode::Tab);
+    if tab && !panel.pda.focused() && !panel.pda.in_use() {
+        open(panel, &sim, false);
     }
-    if panel.open && keys.clear_just_pressed(KeyCode::Escape) {
+    // Escape closes (ours: the game's Escape opens its menu); death too.
+    if panel.pda.in_use() && keys.clear_just_pressed(KeyCode::Escape) {
         close(panel, &mut sim, &mut drive, &mut windows, "Escape");
     }
-    if panel.open && !sim.controls() {
-        close(panel, &mut sim, &mut drive, &mut windows, "no controls");
-    }
-    // `PDA.ManagedUpdate`: too far from the target.
-    if let (true, Some((at, limit)), Some(p)) = (panel.open, panel.target, sim.position()) {
-        let d = (at - p).dot(at - p);
-        if d >= limit {
-            let why = format!(
-                "{:.2} m from the locker, limit {:.2} m",
-                d.sqrt(),
-                limit.sqrt()
+    // `Player.OnKill`: an opening or open PDA closes, then its input is
+    // ignored until `ResetPlayerOnDeath` (ours: while the controls are
+    // off, which also covers the cinematics, where `Open` is refused).
+    let controls = sim.controls();
+    if controls != panel.controls_seen {
+        panel.controls_seen = controls;
+        if !controls && matches!(panel.pda.state(), PdaState::Opening | PdaState::Opened) {
+            close(
+                panel,
+                &mut sim,
+                &mut drive,
+                &mut windows,
+                "the controls went off",
             );
-            close(panel, &mut sim, &mut drive, &mut windows, &why);
+        }
+        panel.pda.set_ignore_input(!controls);
+    }
+    // `PDA.PerformUpdate`: the sequence, the button and the distance.
+    if let Some(player) = sim.position() {
+        let state = panel.pda.state();
+        let events = panel
+            .pda
+            .update(time.delta_secs(), tab, panel.target, player);
+        for e in events {
+            match e {
+                PdaEvent::Activated => {
+                    // `Activated`: `UWE.Utils.lockCursor = false`.
+                    set_cursor(&mut windows, true);
+                    info!(
+                        "inventory: PDA Activated at {:.3} s (PDA.time {:.3}): focused, the cursor free, clicks taken",
+                        sim.play_seconds(),
+                        panel.pda.time
+                    );
+                }
+                PdaEvent::Deactivated => info!(
+                    "inventory: PDA Deactivated at {:.3} s (PDA.time {:.3}): the model hidden, not in use",
+                    sim.play_seconds(),
+                    panel.pda.time
+                ),
+                PdaEvent::Close(why) => {
+                    let why = match (why, panel.target) {
+                        (CloseReason::Distance, Some(t)) => {
+                            format!("{:.2} m from storagePivot", (t - player).length())
+                        }
+                        (CloseReason::Distance, None) => "the target is gone".into(),
+                        (CloseReason::Button, _) => "Tab".into(),
+                        (CloseReason::Call, _) => "a call".into(),
+                    };
+                    closed(panel, &mut sim, &mut drive, &mut windows, &why);
+                }
+                PdaEvent::Open => {}
+            }
+        }
+        if panel.pda.state() != state {
+            info!(
+                "inventory: PDA {:?} → {:?} at {:.3} s",
+                state,
+                panel.pda.state(),
+                sim.play_seconds()
+            );
         }
     }
 
-    // Clicks on an item.
-    if panel.open {
+    // Clicks on an item (the content is interactable once focused).
+    if panel.shown() && panel.pda.focused() {
         let pressed = [
             (MouseButton::Left, Click::Left),
             (MouseButton::Right, Click::Right),
@@ -412,11 +491,12 @@ pub fn input(
     }
 
     // `--panel`.
-    while panel
-        .script
-        .last()
-        .is_some_and(|&(t, _)| now >= t && sim.controls())
-    {
+    while panel.script.last().is_some_and(|&(t, step)| {
+        // A click waits while the PDA opens (not focused yet).
+        let waits = !matches!(step, Scripted::Open | Scripted::Close)
+            && panel.pda.state() == PdaState::Opening;
+        now >= t && sim.controls() && !waits
+    }) {
         let Some((t, step)) = panel.script.pop() else {
             break;
         };
@@ -466,10 +546,10 @@ pub fn input(
         let (grid, locker, equips, slots) = lists;
         match step {
             Scripted::Open => {
-                open(panel, &sim, &mut windows, false);
+                open(panel, &sim, false);
             }
             Scripted::Close => close(panel, &mut sim, &mut drive, &mut windows, "--panel"),
-            Scripted::TakeAll if panel.open && with_locker => {
+            Scripted::TakeAll if panel.shown() && with_locker => {
                 info!("inventory: taking {} items out of the locker", locker.len());
                 for item in locker {
                     click(&mut session, &sim, panel, text, item, Click::Left);
@@ -629,7 +709,7 @@ pub fn draw(
     let Ok((root, mut visibility)) = root.single_mut() else {
         return;
     };
-    let want = if panel.open {
+    let want = if panel.shown() {
         Visibility::Inherited
     } else {
         Visibility::Hidden
@@ -640,7 +720,7 @@ pub fn draw(
     let Some(text) = text else { return };
     let me = session.player();
     let with_locker = panel.with_locker;
-    let view = if panel.open {
+    let view = if panel.shown() {
         session
             .with_items(|items, _| {
                 let p = items.players.get(&me?)?;

@@ -647,6 +647,31 @@ is **not placed** in the world's batch or cell data, and we don't draw it.
 The game must spawn it at run time (how is not traced yet). The force field
 we do draw is `x_PrecursorWaterForceField` (8 placements, `UWE/Particles/UBER`).
 
+### The view model's glass (M9u8a4a) — confirmed from the material, implemented with a stand-in
+
+The PDA's `PDA_screen` (MarmosetUBER, `MARMO_ALPHA MARMO_SIMPLE_GLASS
+_ALPHAPREMULTIPLY_ON`, queue 3000, `_SrcBlend` 5 / `_DstBlend` 10, `_ZWrite`
+0) takes its alpha from `_MainTex` (`PDA`, 2048², BC3, repeat): over the
+screen's triangles 0.832 area-weighted (93 % of the area 0.8–0.9), so it is
+dark, mostly opaque glass. **Careful:** `Texture2D::decode_rgba` returns the
+top row first; a probe that samples it at `v × height` reads the image upside
+down (a first probe read alpha 0 that way).
+
+In the game it is the nearest transparent object, drawn after the skybox,
+the fog image effect (`WaterscapeVolumeOnCamera.OnRenderImage` is
+`[ImageEffectOpaque]`), the stars and the water surface. Our client draws
+the sky, the water fog and the water surface as full-screen passes after
+Bevy's transparent pass, each deciding per pixel from the depth buffer, and
+sorts the terrain's blended layers by their batch's centre plus their rank
+(`terrain_look.rs`), which puts them after objects near the camera. Without
+depth, the PDA's glass was painted over by all of them (see-through under
+water, the sky over it above). **Stand-in:** the view model's blended
+materials (`MaterialDesc::view_model`, the PDA mesh's three materials) write
+depth; at 0.19 m from the eye nothing of the game's draws behind them after
+them, so the picture matches. Moving the sky, fog and water passes before
+the transparent pass was tried and reverted: it left the terrain's blended
+layers unfogged.
+
 ### UBER materials without textures — not a fault on its own
 
 33 UBER materials (305 placements) have no `_MainTex`, e.g.

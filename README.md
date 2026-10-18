@@ -78,9 +78,17 @@ Tested on Windows 11 with game build 10 (Steam):
 - Items (M9d): the hand on a pickup says "Pick up *name*" (the
   language file's text) and E or a click picks it up; outcrops break in
   three hits into a resource; the lifepod's locker opens with the hand
-  (its `storage_open` animation, the panel 0.25 s later). Tab opens our
-  own inventory panel (the 6 × 8 grid, the 7 slots, the locker beside
-  them when open; not the game's PDA look yet): a left click does what
+  (its `storage_open` animation, the PDA 0.25 s later). Tab opens the
+  PDA (M9u8a3): the game's PDA model comes up in the left hand with the
+  arms' animation (0.5 s to open, 0.3 s to close, the camera eased level
+  and moved 0.18 m forward, the look locked; walking away from the
+  locker closes it at the game's distance). Its screen is the game's
+  `uGUI_PDAScreen` canvas on the PDA's screen anchor (M9u8a4a: shown at the
+  open, hidden at the close, the inventory tab's stored content); the tab
+  bar's icons and tab clicks are not done yet (M9u8a4b), and our own
+  inventory panel still stands in for the inventory tab's items (the 6 × 8
+  grid, the 7 slots, the locker beside them when open). The model and
+  screen are not compared with the game on screen. A left click does what
   the game's click does (take out of or put into the locker, equip,
   unequip), a right click drops the item where the game would (not in
   the lifepod). Checked from scripted runs' logs (`--use-item`,
@@ -262,8 +270,8 @@ animated lights, materials and script values, remaining unsupported object
 shaders (actual particle lighting modes, sand and lava falls and other effect
 meshes not yet decoded are flat; matched original-game SIG rock/coral comparisons are not tested;
 `docs/formats/materials.md`), creatures (including the
-~100,000 the spawn slots would add); the intro cinematic, tools, the PDA and IK, tanks and fins changing
-speeds, the game's other screens (messages, the PDA's tabs, menus) and
+~100,000 the spawn slots would add); the intro cinematic, tools and IK, tanks and fins changing
+speeds, the game's other screens (the PDA's screen and tabs, menus) and
 damage effects; audio,
 multiplayer (so far the headless `sn-server` and bot players, also with
 the player's own rules and collision, over UDP on one machine; the game

@@ -264,6 +264,7 @@ fn first_pass_material(
             ..default()
         },
         extension: ObjectExtension {
+            depth_write: false,
             params: ObjectParams {
                 normal_st: Vec4::from(l.albedo_st),
                 spec_st: identity,

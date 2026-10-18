@@ -27,6 +27,7 @@ mod items;
 mod lifepod_light;
 mod marmo;
 mod messages;
+mod pda_screen;
 mod player_body;
 mod popup;
 mod prefab;

@@ -3,9 +3,14 @@
 //! object shaders (MarmosetUBER and opaque SIG): normal, specular and glow
 //! maps, cap/side projections and the Marmoset sky where applicable.
 
-use bevy::pbr::{ExtendedMaterial, MaterialExtension};
+use bevy::mesh::MeshVertexBufferLayoutRef;
+use bevy::pbr::{
+    ExtendedMaterial, MaterialExtension, MaterialExtensionKey, MaterialExtensionPipeline,
+};
 use bevy::prelude::*;
-use bevy::render::render_resource::{AsBindGroup, ShaderType};
+use bevy::render::render_resource::{
+    AsBindGroup, RenderPipelineDescriptor, ShaderType, SpecializedMeshPipelineError,
+};
 use bevy::shader::ShaderRef;
 
 pub type ObjectMaterial = ExtendedMaterial<StandardMaterial, ObjectExtension>;
@@ -48,8 +53,33 @@ pub struct ObjectParams {
     pub has_illum: u32,
 }
 
+/// The object material's pipeline key.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct ObjectKey {
+    /// A blended material that writes depth (M9u8a4a): the player's view
+    /// model, see [`ObjectExtension::depth_write`].
+    pub depth_write: bool,
+}
+
+impl From<&ObjectExtension> for ObjectKey {
+    fn from(e: &ObjectExtension) -> ObjectKey {
+        ObjectKey {
+            depth_write: e.depth_write,
+        }
+    }
+}
+
 #[derive(Asset, AsBindGroup, Reflect, Debug, Clone)]
+#[bind_group_data(ObjectKey)]
 pub struct ObjectExtension {
+    /// A blended part of the player's view model (M9u8a4a: the PDA's glass
+    /// and border) writes depth. In the game it is the nearest transparent
+    /// object, drawn after the skybox, the fog, the water surface and every
+    /// other transparent object; ours draws the sky, the water and its fog
+    /// as full-screen passes after the transparent pass, and sorts the
+    /// terrain's blended layers by their batch's centre, so without its
+    /// depth those would paint over it (`docs/formats/materials.md`).
+    pub depth_write: bool,
     #[uniform(100)]
     pub params: ObjectParams,
     #[texture(101)]
@@ -89,6 +119,20 @@ impl MaterialExtension for ObjectExtension {
 
     fn deferred_fragment_shader() -> ShaderRef {
         "embedded://sn_client/object.wgsl".into()
+    }
+
+    fn specialize(
+        _pipeline: &MaterialExtensionPipeline,
+        descriptor: &mut RenderPipelineDescriptor,
+        _layout: &MeshVertexBufferLayoutRef,
+        key: MaterialExtensionKey<Self>,
+    ) -> Result<(), SpecializedMeshPipelineError> {
+        if key.bind_group_data.depth_write
+            && let Some(depth) = descriptor.depth_stencil.as_mut()
+        {
+            depth.depth_write_enabled = Some(true);
+        }
+        Ok(())
     }
 }
 

@@ -5,7 +5,9 @@
 //! triggers), and where the camera and the body's view model are
 //! (`MainCameraControl.OnUpdate` in normal play: look split between
 //! `camRoot` and `cameraUPTransform`, swim bob, landing bob, step amount,
-//! strafe tilt). Our own code after reading the game's; numbers that are
+//! strafe tilt), and its locked mode while the PDA is in use (M9u8a1:
+//! the look eased level, the look-around offset, the PDA's z offset).
+//! Our own code after reading the game's; numbers that are
 //! data come in [`BodyParams`], the ones in method bodies are named after
 //! their method. Facts in `docs/formats/gameplay.md` § The player's body.
 //!
@@ -13,7 +15,7 @@
 //! then x, then y; a positive x angle looks down.
 
 use crate::look::Look;
-use crate::{Pose, Q, V3};
+use crate::{Pose, Q, V3, lerp_angle};
 
 /// From the game's data (`sn-assets`' `body_params`).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -35,8 +37,12 @@ pub struct BodyParams {
     /// `cameraUPTransform`'s local position (below `camRoot`).
     pub camera_up_position: V3,
     /// `cameraOffsetTransform`'s local position below `cameraUPTransform`
-    /// (the main camera hangs here with identity locals, `AutoParent`).
+    /// (the main camera hangs here with identity locals, `AutoParent`);
+    /// its z is `camPDAZStart`.
     pub camera_offset_position: V3,
+    /// `MainCameraControl.camPDAZOffset`: how far `cameraOffsetTransform`
+    /// moves forward while the PDA is in use.
+    pub cam_pda_z_offset: f64,
     /// `Ocean.GetOceanLevel`.
     pub ocean_level: f64,
 }
@@ -73,8 +79,19 @@ pub struct BodyFrame {
     pub swimming: bool,
     /// `Player.IsInside` (the lifepod; no subs or bases yet).
     pub inside: bool,
-    /// The look angles after this frame's mouse movement.
+    /// The look angles after this frame's mouse movement. While the PDA
+    /// is in use the mouse does not move them and the caller eases the
+    /// pitch level first ([`Look::ease_level`] by `dt × 15`, the locked
+    /// branch of `MainCameraControl.OnUpdate`).
     pub look: Look,
+    /// `PDA.isInUse`: the camera's locked mode.
+    pub pda_in_use: bool,
+    /// `ArmsController.SetUsingPda`'s value (`using_pda`).
+    pub using_pda: bool,
+    /// The mouse's look delta (degrees, x right, y up) when the PDA is in
+    /// use and the avatar's input still on (its opening, before
+    /// `Activated` selects the screen): it turns the look-around offset.
+    pub locked_look: (f64, f64),
     /// `GameInput.GetMoveDirection().x`: strafe input, −1…1.
     pub strafe: f64,
     /// `PlayerController.inputEnabled` (off while dead).
@@ -95,8 +112,16 @@ pub struct CameraPose {
     pub root_pitch: f64,
     pub yaw: f64,
     pub roll: f64,
-    /// `cameraUPTransform.localEulerAngles.x` (looking up, ≤ 0).
+    /// `cameraUPTransform.localEulerAngles.x` (looking up, ≤ 0; eased
+    /// to 0 while the PDA is in use).
     pub up_pitch: f64,
+    /// `cameraOffsetTransform.localEulerAngles` x and y (the locked
+    /// mode's look-around offset; 0 in normal play once eased back).
+    pub offset_pitch: f64,
+    pub offset_yaw: f64,
+    /// `cameraOffsetTransform.localPosition.z − camPDAZStart` (0 …
+    /// `camPDAZOffset`).
+    pub offset_z: f64,
 }
 
 fn rot_x(deg: f64, v: V3) -> V3 {
@@ -116,26 +141,37 @@ fn rot_z(deg: f64, v: V3) -> V3 {
 
 impl CameraPose {
     /// The camera's rotation applied to `v` (camera space → the player's
-    /// space): `camRoot`'s `Euler(x, y, z)` then `cameraUPTransform`'s.
+    /// space): `camRoot`'s `Euler(x, y, z)`, then `cameraUPTransform`'s,
+    /// then `cameraOffsetTransform`'s.
     pub fn rotate(&self, v: V3) -> V3 {
+        let offset = rot_y(self.offset_yaw, rot_x(self.offset_pitch, v));
         rot_y(
             self.yaw,
-            rot_x(self.root_pitch, rot_z(self.roll, rot_x(self.up_pitch, v))),
+            rot_x(
+                self.root_pitch,
+                rot_z(self.roll, rot_x(self.up_pitch, offset)),
+            ),
         )
     }
 
     /// The inverse of [`CameraPose::rotate`] (`InverseTransformDirection`).
     pub fn inverse_rotate(&self, v: V3) -> V3 {
-        rot_x(
+        let up = rot_x(
             -self.up_pitch,
             rot_z(-self.roll, rot_x(-self.root_pitch, rot_y(-self.yaw, v))),
-        )
+        );
+        rot_x(-self.offset_pitch, rot_y(-self.offset_yaw, up))
+    }
+
+    /// `cameraOffsetTransform`'s local position.
+    pub fn offset_position(&self, params: &BodyParams) -> V3 {
+        params.camera_offset_position + V3::new(0.0, 0.0, self.offset_z)
     }
 
     /// The camera's position relative to the player's transform
     /// (`camPivot` and the player's rotation are identity).
     pub fn eye(&self, params: &BodyParams) -> V3 {
-        let below_up = rot_x(self.up_pitch, params.camera_offset_position);
+        let below_up = rot_x(self.up_pitch, self.offset_position(params));
         let root = |v: V3| rot_y(self.yaw, rot_x(self.root_pitch, rot_z(self.roll, v)));
         V3::new(0.0, self.root_y, 0.0) + root(params.camera_up_position + below_up)
     }
@@ -143,7 +179,7 @@ impl CameraPose {
     /// `MainCameraControl.GetCameraPitch`: the three x angles summed,
     /// in −180…180, negated (up positive).
     pub fn camera_pitch(&self) -> f64 {
-        let mut d = (self.root_pitch + self.up_pitch).rem_euclid(360.0);
+        let mut d = (self.root_pitch + self.up_pitch + self.offset_pitch).rem_euclid(360.0);
         if d > 180.0 {
             d -= 360.0;
         }
@@ -226,6 +262,11 @@ pub struct Body {
     impact_force: f64,
     step_amount: f64,
     strafe_tilt: f64,
+    /// `camRotationX` / `camRotationY` (the locked mode's look-around)
+    /// and `wasInLockedMode`.
+    cam_rotation_x: f64,
+    cam_rotation_y: f64,
+    was_locked: bool,
     /// The camera after the last frame.
     pub pose: CameraPose,
     /// Death trigger waiting for the next frame's parameters.
@@ -252,6 +293,9 @@ impl Body {
             impact_force: 0.0,
             step_amount: params.step_amount,
             strafe_tilt: 0.0,
+            cam_rotation_x: 0.0,
+            cam_rotation_y: 0.0,
+            was_locked: false,
             pose: CameraPose::default(),
             death_trigger: false,
             head_camera: false,
@@ -387,7 +431,7 @@ impl Body {
             f.position.y > level - 1.0 && f.position.y < level + 1.0 && !f.inside && f.swimming;
         out.push(("on_surface", AnimValue::Bool(on_surface)));
         out.push(("holding_welder", AnimValue::Bool(false)));
-        out.push(("using_pda", AnimValue::Bool(false)));
+        out.push(("using_pda", AnimValue::Bool(f.using_pda)));
         out.push(("using_builder", AnimValue::Bool(false)));
         // `Player.Start`, `Player.OnKill`.
         out.push(("vr_active", AnimValue::Bool(false)));
@@ -431,13 +475,45 @@ impl Body {
             params.camera_up_position,
             Q::euler(p.up_pitch, 0.0, 0.0),
         ))
-        .then(&Pose::new(params.camera_offset_position, Q::IDENTITY))
+        .then(&Pose::new(
+            p.offset_position(params),
+            Q::euler(p.offset_pitch, p.offset_yaw, 0.0),
+        ))
     }
 
-    /// `MainCameraControl.OnUpdate` in normal play (no PDA, vehicle,
-    /// cinematic or look-around; no camera shake).
+    /// `MainCameraControl.OnUpdate` in normal play and in the PDA's
+    /// locked mode (no vehicle, cinematic or look-around; no camera
+    /// shake). `PDA.deltaTime` is `dt` (no `pdaPause`).
     fn update_camera(&mut self, params: &BodyParams, f: &BodyFrame) {
         let dt = f.dt;
+        let locked = f.pda_in_use;
+        if locked != self.was_locked {
+            self.cam_rotation_x = 0.0;
+            self.cam_rotation_y = 0.0;
+            self.was_locked = locked;
+        }
+        let mut pose = self.pose;
+        if locked {
+            // `rotationY` is the caller's (`Look::ease_level`); `camRoot`
+            // keeps its yaw, and its pitch and `cameraUPTransform`'s ease
+            // level.
+            pose.root_pitch = lerp_angle(pose.root_pitch, 0.0, dt * 15.0);
+            pose.up_pitch = lerp_angle(pose.up_pitch, 0.0, dt * 15.0);
+        } else {
+            pose.offset_pitch = lerp_angle(pose.offset_pitch, 0.0, dt * 5.0);
+            pose.offset_yaw = lerp_angle(pose.offset_yaw, 0.0, dt * 5.0);
+        }
+        let toward = if locked { 1.0 } else { -1.0 };
+        pose.offset_z = (pose.offset_z + dt * toward * 0.25).clamp(0.0, params.cam_pda_z_offset);
+        if locked {
+            let (dx, dy) = f.locked_look;
+            self.cam_rotation_x = (self.cam_rotation_x + dx).clamp(-60.0, 60.0);
+            self.cam_rotation_y = (self.cam_rotation_y + dy).clamp(-60.0, 60.0);
+            self.cam_rotation_x = lerp_angle(self.cam_rotation_x, 0.0, dt * 10.0);
+            self.cam_rotation_y = lerp_angle(self.cam_rotation_y, 0.0, dt * 10.0);
+            pose.offset_pitch = -self.cam_rotation_y;
+            pose.offset_yaw = self.cam_rotation_x;
+        }
         self.swim_camera_animation = (self.swim_camera_animation
             + if self.tracker_underwater { dt } else { -dt })
         .clamp(0.0, 1.0);
@@ -448,7 +524,7 @@ impl Body {
         self.strafe_tilt = (self.strafe_tilt - dt * x * 12.0).clamp(-10.0, 10.0);
         self.strafe_tilt = move_towards(self.strafe_tilt, 0.0, dt * 4.0);
         let mut y = -params.skin;
-        if self.swim_camera_animation > 0.0 && f.bobbing {
+        if !locked && self.swim_camera_animation > 0.0 && f.bobbing {
             let to = (f.velocity.length() / 5.0).min(1.0);
             self.smoothed_speed = move_towards(self.smoothed_speed, to, dt);
             y += ((f.time * 6.0).sin() - 1.0)
@@ -466,13 +542,14 @@ impl Body {
         }
         self.step_amount +=
             (0.0 - self.step_amount) * (dt * self.step_amount.abs()).clamp(0.0, 1.0);
-        self.pose = CameraPose {
-            root_y: y,
-            root_pitch: (-rotation_y).max(0.0),
-            yaw: f.look.rotation_x,
-            roll: params.view_model_roll + self.strafe_tilt,
-            up_pitch: (-rotation_y).min(0.0),
-        };
+        pose.root_y = y;
+        pose.yaw = f.look.rotation_x;
+        pose.roll = params.view_model_roll + self.strafe_tilt;
+        if !locked {
+            pose.root_pitch = (-rotation_y).max(0.0);
+            pose.up_pitch = (-rotation_y).min(0.0);
+        }
+        self.pose = pose;
     }
 
     /// `swimCameraAnimation`, `impactBob` and `strafeTilt`, for logs.
@@ -499,6 +576,7 @@ mod tests {
             view_model_roll: 0.0,
             camera_up_position: V3::new(0.0, 0.063, -0.15),
             camera_offset_position: V3::ZERO,
+            cam_pda_z_offset: 0.18,
             ocean_level: 0.0,
         }
     }
@@ -518,6 +596,9 @@ mod tests {
             controls: true,
             bobbing: true,
             time_grabbed: 0.0,
+            pda_in_use: false,
+            using_pda: false,
+            locked_look: (0.0, 0.0),
         }
     }
 
@@ -900,5 +981,68 @@ mod tests {
         assert_eq!(grab(&mut body, 5.0, 4.9), AnimValue::Bool(true));
         assert_eq!(grab(&mut body, 5.39, 5.0), AnimValue::Bool(true));
         assert_eq!(grab(&mut body, 5.4, 5.0), AnimValue::Bool(false));
+    }
+
+    /// The PDA's locked mode (M9u8a1): the look's pitch eases level at
+    /// 15 / s on `camRoot` and `cameraUPTransform`, the yaw stays, the
+    /// offset moves 0.25 m/s forward up to `camPDAZOffset` and back after,
+    /// and there is no swim bob.
+    #[test]
+    fn the_pda_locks_the_camera() {
+        let p = params();
+        let mut b = Body::new(&p);
+        let mut f = frame();
+        f.velocity = V3::new(0.0, 0.0, 3.0);
+        f.look.rotation_x = 30.0;
+        f.look.rotation_y = -40.0;
+        run(&mut b, &p, &mut f, 50);
+        assert!((b.pose.root_pitch - 40.0).abs() < 1e-9);
+        f.look.rotation_y = 25.0;
+        run(&mut b, &p, &mut f, 1);
+        assert!((b.pose.up_pitch + 25.0).abs() < 1e-9);
+        // Open: 36 frames of 0.02 s move the offset 0.18 m.
+        f.pda_in_use = true;
+        f.using_pda = true;
+        let mut out = Vec::new();
+        for i in 0..36 {
+            f.look.ease_level(f.dt * 15.0);
+            b.fixed_step(f.time, f.underwater, f.grounded, false);
+            out = b.update(&p, &f, &mut |_, _, _| false);
+            f.time += f.dt;
+            if i < 35 {
+                assert!(b.pose.offset_z < 0.18 - 1e-9, "{i}: {}", b.pose.offset_z);
+            }
+        }
+        assert!((b.pose.offset_z - 0.18).abs() < 1e-9, "{}", b.pose.offset_z);
+        assert!(boolean(&out, "using_pda"));
+        assert!(b.pose.up_pitch.abs() < 1e-3, "{}", b.pose.up_pitch);
+        assert!(f.look.rotation_y.abs() < 1e-3, "{}", f.look.rotation_y);
+        assert_eq!(b.pose.yaw, 30.0);
+        // No swim bob while locked: `camRoot` stays at −skin.
+        let y = b.pose.root_y;
+        run(&mut b, &p, &mut f, 10);
+        assert_eq!(b.pose.root_y, y);
+        // The look-around offset: clamped to ±60°, pulled back at 10 / s.
+        f.locked_look = (100.0, 0.0);
+        run(&mut b, &p, &mut f, 1);
+        assert!((b.pose.offset_yaw - 60.0 * (1.0 - 0.2)).abs() < 1e-9);
+        f.locked_look = (0.0, 0.0);
+        run(&mut b, &p, &mut f, 200);
+        assert!(b.pose.offset_yaw.abs() < 1e-6);
+        // Close: back to the start in 0.72 s, then normal play again.
+        f.pda_in_use = false;
+        f.using_pda = false;
+        run(&mut b, &p, &mut f, 35);
+        assert!(b.pose.offset_z > 0.0);
+        run(&mut b, &p, &mut f, 1);
+        assert_eq!(b.pose.offset_z, 0.0);
+        f.look.rotation_y = -10.0;
+        run(&mut b, &p, &mut f, 1);
+        assert!((b.pose.root_pitch - 10.0).abs() < 1e-9);
+        // The eye moves with the offset.
+        let mut q = CameraPose::default();
+        let rest = q.eye(&p);
+        q.offset_z = 0.18;
+        assert!((q.eye(&p).z - rest.z - 0.18).abs() < 1e-12);
     }
 }

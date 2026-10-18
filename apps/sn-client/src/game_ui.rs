@@ -64,6 +64,7 @@ use sn_ui::depth::DepthCompass;
 use sn_ui::hud::{Hud, HudInputs, hud_mode};
 use sn_ui::messages::{MessageInputs, MessageLayout, Messages};
 use sn_ui::notifier::{FROM, Icon, Notifier};
+use sn_ui::pda::PdaScreen;
 use sn_ui::popup::{Entry, Phase, Popup, PopupLayout, TIME_IN, TIME_OUT};
 use sn_ui::reticle::{HAND, HAND_SUBSCRIPT, HandReticle, IconType, ReticleInputs, get_text};
 use sn_ui::scaler::{DEFAULT_UI_SCALE, Placement, UiCamera, place};
@@ -243,6 +244,9 @@ pub(crate) struct UiBuild {
     pub indices: Vec<u32>,
     pub draws: Vec<UiDrawCmd>,
     pub placements: HashMap<usize, Placement>,
+    /// The PDA screen's canvas node (M9u8a4a): its pose comes from
+    /// [`GameUiFrame::pda_pose`], not from `placements`.
+    pub pda_root: Option<usize>,
     /// Textures not sent before.
     pub textures: Vec<UiTexture>,
     pub seconds: f64,
@@ -263,7 +267,27 @@ enum Request {
 }
 
 /// [`Request::Frame`]'s inputs.
-type FrameInputs = (HudInputs, HandFrame, DeathInputs, MessageKeys, Vec<String>);
+type FrameInputs = (
+    HudInputs,
+    HandFrame,
+    DeathInputs,
+    MessageKeys,
+    Vec<String>,
+    PdaFlags,
+);
+
+/// The PDA's flags this frame (M9u8a4a, `sn_sim::pda::Pda`): their changes
+/// are `uGUI_PDA`'s calls.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct PdaFlags {
+    /// `using_pda`: up at `Open` (`OnOpenPDA`), down at `Close`
+    /// (`OnClosePDA`).
+    using: bool,
+    /// Focused: up at `Activated` (`OnPDAOpened`).
+    focused: bool,
+    /// The model active: down at `Deactivated` (`OnPDAClosed`).
+    active: bool,
+}
 
 /// This frame's `ErrorMessage` calls (M9u7b), as language keys.
 #[derive(Clone, Debug, Default)]
@@ -292,6 +316,11 @@ struct UiWorker {
 pub(crate) struct GameUiFrame {
     build: Option<Arc<UiBuild>>,
     generation: u64,
+    /// The PDA screen canvas's pose in the UI camera's space (Unity's
+    /// axes): `ScreenAnchor` taken into the main camera's space this frame
+    /// (`uGUI_CanvasScaler`'s Inversed mode, M9u8a4a). `None` while the PDA
+    /// is not active.
+    pda_pose: Option<([f32; 3], [f32; 4])>,
     images: Arc<HashMap<u64, (Handle<Image>, bool)>>,
     white: Handle<Image>,
 }
@@ -344,6 +373,13 @@ impl Plugin for GameUiPlugin {
         .add_systems(
             PostUpdate,
             (request_build, send_inputs, receive_build).chain(),
+        )
+        // The PDA screen's pose once this frame's transforms are final.
+        .add_systems(
+            PostUpdate,
+            pda_pose
+                .after(receive_build)
+                .after(bevy::transform::TransformSystems::Propagate),
         );
         let Some(render_app) = app.get_sub_app_mut(RenderApp) else {
             return;
@@ -575,6 +611,43 @@ fn run_worker(
             }
         }
     }
+    // The PDA's screen (M9u8a4a): `PDA.ui` instantiates `prefabScreen`;
+    // here a copy grafted into the scene, its canvas at its stored size
+    // and scale (Inversed with an anchor: `UpdateFrustum` is skipped).
+    let pda_tree = assets.pda_screen_tree()?;
+    let pda_config = assets.pda_screen_config(&layouts, &pda_tree)?;
+    let pda_template = assets.ui_scene(&layouts, &pda_tree, &fonts, &tags.sorting_layers)?;
+    let pda_rect = pda_template
+        .stored_rect(pda_config.root)
+        .cloned()
+        .ok_or("uGUI_PDAScreen: no RectTransform")?;
+    let pda_root = scene.graft(&pda_template, 0)?;
+    let mut pda_screen = PdaScreen::new(pda_config.shifted(pda_root));
+    let pda_placement = Placement {
+        position: [0.0; 3],
+        rotation: [0.0, 0.0, 0.0, 1.0],
+        size: pda_rect.size_delta,
+        scale: pda_rect.scale,
+        scale_factor: 1.0,
+    };
+    info!(
+        "game UI PDA screen: {} nodes grafted at {pda_root} ({}), canvas {}×{} at scale {} ({:.4} × {:.4} m); {} tabs {:?}",
+        pda_tree.nodes.len(),
+        scene.tree.nodes[pda_root].path,
+        pda_rect.size_delta[0],
+        pda_rect.size_delta[1],
+        pda_rect.scale[0],
+        pda_rect.size_delta[0] * pda_rect.scale[0],
+        pda_rect.size_delta[1] * pda_rect.scale[1],
+        pda_screen.config.tabs.len(),
+        pda_screen
+            .config
+            .tabs
+            .iter()
+            .map(|t| (t.tab, t.show))
+            .collect::<Vec<_>>()
+    );
+    let mut pda_seen = PdaFlags::default();
     // What `SetTransition` reads, when first needed after a resize.
     let mut popup_layout: Option<PopupLayout> = None;
     // The entry shown: (title / text, shown at).
@@ -613,7 +686,7 @@ fn run_worker(
                     screen = Some(s);
                 }
                 Request::Frame(frame) => {
-                    let (mut inputs, hand, death_inputs, keys, plays) = *frame;
+                    let (mut inputs, hand, death_inputs, keys, plays, pda) = *frame;
                     inputs.food = food;
                     inputs.water = water;
                     rules = hud.update(&inputs);
@@ -799,6 +872,9 @@ fn run_worker(
                         _ => popup.time += inputs.delta_time,
                     }
                     rules.apply(&popup.state);
+                    // `uGUI_PDA` (M9u8a4a): the PDA's calls.
+                    pda_screen_calls(&mut pda_screen, &mut pda_seen, pda, inputs.time);
+                    rules.apply(&pda_screen.state);
                     let before = reticle.icon_type;
                     rules.apply(reticle.update(&reticle_inputs(
                         &reticle,
@@ -886,6 +962,7 @@ fn run_worker(
                     Err(e) => warn!("game UI: {}: {e}", tree.nodes[*node].path),
                 }
             }
+            placements.insert(pda_root, pda_placement);
         } else if frames == 0 {
             continue;
         }
@@ -895,6 +972,7 @@ fn run_worker(
         let d = scene.draw(&assets, &fonts, &set, &mut atlases, &placements, &state)?;
         // The scene's tree: the stored nodes and the copies grafted since.
         let mut build = convert(&scene.tree, &d, size, fov, placements.clone(), resized);
+        build.pda_root = Some(pda_root);
         for (key, object) in &d.textures {
             if sent.contains(key) {
                 continue;
@@ -1114,6 +1192,59 @@ fn popup_log(p: &Popup, shown: &mut Option<(String, f32)>, dt: f32) {
     for s in &p.events.sounds {
         info!("game UI pop-up: sound not ported: {s}");
     }
+}
+
+/// `uGUI_PDA`'s calls from the PDA's flags' changes (M9u8a4a), logged:
+/// `OnOpenPDA` (`using_pda` up), `OnPDAOpened` (focused), `OnClosePDA`
+/// (`using_pda` down), `OnPDAClosed` (the model off).
+fn pda_screen_calls(s: &mut PdaScreen, seen: &mut PdaFlags, now: PdaFlags, time: f32) {
+    let shown = |s: &PdaScreen| {
+        let c = &s.config;
+        let alpha = |n: usize| s.state.group_alpha.get(&n).copied().unwrap_or(1.0);
+        let tabs: Vec<String> = c
+            .tabs
+            .iter()
+            .filter(|t| match t.show {
+                sn_ui::pda::TabShow::Content(n) => alpha(n) > 0.0,
+                sn_ui::pda::TabShow::Object(n) => s.state.active.get(&n) == Some(&true),
+            })
+            .map(|t| format!("{:?}", t.tab))
+            .collect();
+        format!(
+            "canvas alpha {}, content {}, toolbar {}; tabs shown {tabs:?} of {}",
+            alpha(c.canvas_group),
+            alpha(c.content),
+            alpha(c.toolbar_group),
+            c.tabs.len()
+        )
+    };
+    if now.using && !seen.using {
+        s.on_open_pda(None);
+        info!(
+            "game UI PDA screen at {time:.3} s: OnOpenPDA, tab {:?}: {}",
+            s.tab_open,
+            shown(s)
+        );
+    }
+    if now.focused && !seen.focused {
+        s.on_pda_opened();
+        info!("game UI PDA screen at {time:.3} s: OnPDAOpened");
+    }
+    if !now.using && seen.using {
+        s.on_close_pda();
+        info!(
+            "game UI PDA screen at {time:.3} s: OnClosePDA: {}",
+            shown(s)
+        );
+    }
+    if !now.active && seen.active {
+        s.on_pda_closed();
+        info!(
+            "game UI PDA screen at {time:.3} s: OnPDAClosed: {}",
+            shown(s)
+        );
+    }
+    *seen = now;
 }
 
 /// The death timeline's changes as they happen (M9u6e1), each against
@@ -1594,6 +1725,7 @@ fn convert(
         indices,
         draws,
         placements,
+        pda_root: None,
         textures: Vec::new(),
         seconds: 0.0,
         resized: log,
@@ -1698,7 +1830,7 @@ fn send_inputs(
             water: 0.0,
             delta_time: time.delta_secs(),
             time: time.elapsed_secs(),
-            pda_open: panel.is_some_and(|p| p.open),
+            pda_open: panel.as_ref().is_some_and(|p| p.pda.in_use()),
             healed: None,
             ate: None,
             drank: None,
@@ -1725,6 +1857,11 @@ fn send_inputs(
             late: hud.messages_late.clone(),
         },
         plays,
+        panel.as_ref().map_or(PdaFlags::default(), |p| PdaFlags {
+            using: p.pda.using_pda(),
+            focused: p.pda.focused(),
+            active: p.pda.active(),
+        }),
     ))));
 }
 
@@ -1810,6 +1947,54 @@ fn receive_build(
     frame.images = Arc::new(map);
     frame.build = Some(Arc::new(build));
     frame.generation += 1;
+}
+
+/// The PDA screen canvas's pose (M9u8a4a): `uGUI_CanvasScaler.UpdateTransform`
+/// in Inversed mode, `Inverse(cam.rotation) × (anchor − cam)` and
+/// `Inverse(cam.rotation) × anchor.rotation`, from this frame's final
+/// transforms, in Unity's axes (z mirrored). Logged each second while the
+/// PDA is active.
+fn pda_pose(
+    time: Res<Time>,
+    mut frame: ResMut<GameUiFrame>,
+    drive: Res<crate::body::BodyDrive>,
+    rigs: Query<&crate::objects::NamedNodes, With<crate::objects::PlayerBodyRig>>,
+    globals: Query<&GlobalTransform>,
+    camera: Query<&GlobalTransform, With<GameUiCamera>>,
+    mut logged: Local<i64>,
+) {
+    let anchor = rigs
+        .iter()
+        .flat_map(|n| n.0.iter())
+        .find(|(name, _)| name == "ScreenAnchor")
+        .and_then(|(_, e)| globals.get(*e).ok());
+    let pose = match (drive.pda_model, anchor, camera.single()) {
+        (true, Some(a), Ok(c)) => {
+            let rel = c.affine().inverse() * a.affine();
+            let (_, r, t) = rel.to_scale_rotation_translation();
+            Some(([t.x, t.y, -t.z], [-r.x, -r.y, r.z, r.w]))
+        }
+        _ => None,
+    };
+    if let Some((p, r)) = pose {
+        let second = time.elapsed_secs().floor() as i64;
+        if second != *logged {
+            *logged = second;
+            // The canvas's +z against the camera's.
+            let q = Quat::from_xyzw(r[0], r[1], r[2], r[3]);
+            let angle = (q * Vec3::Z).angle_between(Vec3::Z).to_degrees();
+            info!(
+                "game UI PDA screen pose at {:.3} s: ({:.4}, {:.4}, {:.4}) m in the camera's space, its +z {angle:.2}° from the camera's",
+                time.elapsed_secs(),
+                p[0],
+                p[1],
+                p[2]
+            );
+        }
+    }
+    if frame.pda_pose != pose {
+        frame.pda_pose = pose;
+    }
 }
 
 // ---- The render world ----
@@ -2135,7 +2320,8 @@ fn prepare_buffers(
         return;
     };
     let screen = [view.viewport.z, view.viewport.w];
-    if gpu.made_for == Some((screen, frame.generation)) {
+    // The PDA's screen moves every frame without a new build.
+    if gpu.made_for == Some((screen, frame.generation)) && frame.pda_pose.is_none() {
         return;
     }
     gpu.made_for = Some((screen, frame.generation));
@@ -2151,8 +2337,22 @@ fn prepare_buffers(
         projection.x_axis.x,
         projection.y_axis.y,
     );
+    let pda_placement = match (build.pda_root, frame.pda_pose) {
+        (Some(root), Some((position, rotation))) => {
+            build.placements.get(&root).map(|p| Placement {
+                position,
+                rotation,
+                ..*p
+            })
+        }
+        _ => None,
+    };
     for d in &build.draws {
-        let Some(p) = build.placements.get(&d.root) else {
+        let placed = match &pda_placement {
+            Some(p) if Some(d.root) == build.pda_root => Some(p),
+            _ => build.placements.get(&d.root),
+        };
+        let Some(p) = placed else {
             instances.push(u32::MAX);
             continue;
         };

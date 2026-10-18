@@ -53,6 +53,7 @@ mod ui;
 mod unity;
 mod voxel;
 mod walk;
+mod walk_pda;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -152,6 +153,10 @@ Commands:
                          in the lifepod, walk to the hatch, leave, swim
                          away 10 s and back, enter; positions, motor
                          changes, speeds next to the values read
+  walk --pda [--seed <N>]
+                         M9u8a2: the PDA opened, held and closed in the
+                         lifepod and under water: its times, the arms'
+                         states, the screen anchor's pose from the eye
   pickup [--seed <N>]    M9d6b: the items headless, with the player's rules,
                          an in-process server and client: the supplies
                          out of the locker, out of the pod, the nearest
@@ -455,6 +460,7 @@ fn run(mut args: Vec<String>) -> Result<ExitCode> {
         ["scene", "--startup"] => scene::startup(&game),
         ["scene", "--lifepod"] => scene::lifepod(&game, seed),
         ["walk"] => walk::run(&game, seed),
+        ["walk", "--pda"] => walk_pda::run(&game, seed),
         ["dive"] => dive::run(&game, seed),
         ["pickup"] => pickup::run(&game, seed),
         ["swim"] => swim::run(&game, seed, 600.0),

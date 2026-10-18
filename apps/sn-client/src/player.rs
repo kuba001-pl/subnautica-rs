@@ -134,6 +134,8 @@ struct Init {
     /// The lifepod locker's hand bodies and its node's place (M9d5).
     locker_bodies: Vec<Body>,
     locker_at: Option<V3>,
+    /// `EscapePod.storagePivot` (M9u8a3).
+    storage_pivot: Option<V3>,
     triggers: Vec<TriggerInfo>,
     hatches: Hatches,
     /// The body's numbers (`None`: no body; the camera at the player's
@@ -230,6 +232,7 @@ pub struct PlayerSim {
     use_hatch_at: Vec<f64>,
     hatch_name: Option<String>,
     hold_forward_from: Option<f64>,
+    hold_back_from: Option<f64>,
     /// `--turn`, degrees a second.
     turn: Option<f64>,
     kill_at: Option<f64>,
@@ -267,6 +270,8 @@ pub struct PlayerSim {
     /// `--use-item`: seconds of play, latest first (taken when done).
     use_item_at: Vec<f64>,
     locker_at: Option<V3>,
+    /// `EscapePod.storagePivot` (M9u8a3): the locker's PDA's target.
+    storage_pivot: Option<V3>,
     /// A death's drops' draws (M9d6a).
     drop_draws: sn_session::drops::Draws,
 }
@@ -291,6 +296,8 @@ pub struct Start {
     pub hatch_name: Option<String>,
     /// `--hold-forward`: hold W from this much play on.
     pub hold_forward: Option<f64>,
+    /// `--hold-back`: hold S from this much play on.
+    pub hold_back: Option<f64>,
     /// `--turn`: the look turns right at this many degrees a second.
     pub turn: Option<f64>,
     /// `--kill`: the player dies after this much play.
@@ -376,11 +383,10 @@ impl PlayerSim {
         &self.world
     }
 
-    /// The centre of the lifepod locker's hand collider (M9d5b: our
-    /// stand-in for `EscapePod.storagePivot`).
-    pub fn locker_centre(&self) -> Option<V3> {
-        let (lo, hi) = self.world.get(LOCKER_BODY).and_then(Body::bounds)?;
-        Some((lo + hi) * 0.5)
+    /// `EscapePod.storagePivot` (M9u8a3): where the locker's PDA keeps
+    /// its distance to.
+    pub fn storage_pivot(&self) -> Option<V3> {
+        self.storage_pivot
     }
 
     /// The player can act: alive, not respawning, not in a cinematic.
@@ -422,6 +428,7 @@ impl PlayerSim {
         let mut use_item_at = start.use_item.clone();
         use_item_at.sort_by(|a, b| b.total_cmp(a));
         let (hatch_name, hold_forward_from) = (start.hatch_name.clone(), start.hold_forward);
+        let hold_back_from = start.hold_back;
         let trace_hatches = !start.use_hatch.is_empty() || start.hold_forward.is_some();
         let (to_worker, rx) = channel();
         let (tx, from_worker) = channel();
@@ -449,6 +456,7 @@ impl PlayerSim {
             use_hatch_at,
             hatch_name,
             hold_forward_from,
+            hold_back_from,
             turn,
             kill_at,
             trace_until: 0.0,
@@ -463,6 +471,7 @@ impl PlayerSim {
             time_grabbed: 0.0,
             lost_stuff: false,
             locker_opened: 0,
+            storage_pivot: None,
             last_aim: None,
             use_item_at,
             locker_at: None,
@@ -553,6 +562,7 @@ fn worker(
                 pod: Some(V3::from_f32(point)),
                 pod_bodies: pod.bodies,
                 locker_at: pod.locker.as_ref().map(|l| V3::from_f32(l.at)),
+                storage_pivot: pod.locker.as_ref().map(|l| V3::from_f32(l.storage_pivot)),
                 locker_bodies: pod.locker.map(|l| l.bodies).unwrap_or_default(),
                 triggers: pod
                     .triggers
@@ -583,6 +593,7 @@ fn worker(
             pod_bodies: Vec::new(),
             locker_bodies: Vec::new(),
             locker_at: None,
+            storage_pivot: None,
             triggers: Vec::new(),
             hatches: Hatches::default(),
             body,
@@ -969,9 +980,15 @@ pub fn update(
     panel: Option<Res<crate::inventory::Panel>>,
 ) {
     let sim = &mut *sim;
-    // The inventory panel is open (M9d5b): the cursor is the panel's, the
-    // look and the hand are off.
-    let panel_open = panel.is_some_and(|p| p.open);
+    // The PDA (M9u8a3): in use, the look is locked and the hand off
+    // (`GUIHand`'s `isInUse` check); focused, the cursor is the screen's
+    // and the mouse no longer reaches the camera.
+    let pda = panel.as_ref().map(|p| &p.pda);
+    let pda_in_use = pda.is_some_and(|p| p.in_use());
+    let pda_focused = pda.is_some_and(|p| p.focused());
+    let using_pda = pda.is_some_and(|p| p.using_pda());
+    drive.pda_model = pda.is_some_and(|p| p.active());
+    let panel_open = pda_in_use;
     // Messages from the worker.
     let messages: Vec<FromWorker> = match sim.from_worker.lock() {
         Ok(rx) => rx.try_iter().collect(),
@@ -1013,6 +1030,7 @@ pub fn update(
                     init.locker_bodies.len()
                 );
                 sim.locker_at = init.locker_at;
+                sim.storage_pivot = init.storage_pivot;
                 info!(
                     "player: lifepod locker node at {:?}, collider bounds {:?}; player spawn {:?}",
                     init.locker_at,
@@ -1117,7 +1135,7 @@ pub fn update(
     // Mouse capture and look.
     let mut captured = false;
     for (window, mut cursor) in &mut windows {
-        if panel_open {
+        if pda_focused {
             continue;
         }
         if buttons.just_pressed(MouseButton::Left) && window.focused {
@@ -1133,7 +1151,19 @@ pub fn update(
     // Dead or respawning: no look, movement or use (`Player.OnKill`); in
     // a cinematic neither (`PlayerController` off).
     let controls = state.vitals.controls_enabled() && !state.player.cinematic;
-    if captured && controls && !panel_open {
+    let mut locked_look = (0.0, 0.0);
+    if pda_in_use {
+        // `MainCameraControl`'s locked mode: the look's pitch eases level;
+        // the mouse (while the avatar's input is on: before `Activated`)
+        // turns the look-around offset instead.
+        state.look.ease_level(f64::from(time.delta_secs()) * 15.0);
+        if captured && controls && !pda_focused {
+            let k = state.look_params.degrees_per_count();
+            let dy = -f64::from(motion.delta.y);
+            let dy = if state.look_params.invert { -dy } else { dy };
+            locked_look = (f64::from(motion.delta.x) * k, dy * k);
+        }
+    } else if captured && controls {
         // Bevy's mouse delta is y down, Unity's y up.
         let d = motion.delta;
         state
@@ -1519,9 +1549,11 @@ pub fn update(
 
     // Movement input.
     let held_w = sim.hold_forward_from.is_some_and(|t| play >= t);
+    let held_s = sim.hold_back_from.is_some_and(|t| play >= t);
     let key = |k: KeyCode| {
         if keys.pressed(k)
             || ((held_w || auto_walk) && k == KeyCode::KeyW)
+            || (held_s && k == KeyCode::KeyS)
             || (auto_strafe && k == KeyCode::KeyD)
         {
             1.0
@@ -1776,6 +1808,9 @@ pub fn update(
                 controls,
                 bobbing: true,
                 time_grabbed: sim.time_grabbed,
+                pda_in_use,
+                using_pda,
+                locked_look,
             };
             let world = &sim.world;
             let mut ray = |o: V3, d: V3, l: f64| world.cast(MOVE, o, d, 0.0, l).is_some();
@@ -1910,6 +1945,7 @@ mod tests {
             yaw: 135.0,
             roll: 4.0,
             up_pitch: -10.0,
+            ..Default::default()
         };
         let ahead = cam.rotate(V3::new(0.0, 0.0, 1.0));
         let q = Q::euler(cam.root_pitch, cam.yaw, cam.roll) * Q::euler(cam.up_pitch, 0.0, 0.0);

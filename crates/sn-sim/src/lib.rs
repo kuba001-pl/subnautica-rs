@@ -5,7 +5,8 @@
 //! (`look`, M9c), the Aurora's explosion and exterior cull (`aurora`,
 //! M7f4e), the lighting states of the lifepod (`lighting`, M7f4g), the
 //! player's body: its animator's values and the camera rig (`body`, M9g2),
-//! items, the inventory, outcrops and drops (`inventory`, M9d2).
+//! items, the inventory, outcrops and drops (`inventory`, M9d2), the PDA's
+//! open and close (`pda`, M9u8a1).
 //!
 //! Pure: no files, no network, no engine. Positions are Unity world
 //! coordinates (left-handed, y up), computed in `f64` so that a few
@@ -20,6 +21,7 @@ pub mod inventory;
 pub mod lighting;
 pub mod look;
 mod math;
+pub mod pda;
 pub mod player;
 pub mod vitals;
 

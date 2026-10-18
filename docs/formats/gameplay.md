@@ -924,13 +924,124 @@ overload) and `code --enum <TYPE>` (`Outer/Inner` for a nested enum).
   `PDA.ManagedUpdate` closes it on `Button.PDA` (when focused, not in the
   intro) and when the target is gone or (target − PDA)² ≥
   `activeSqrDistance`.
+- **Confirmed (code, M9u8a1):** "the PDA's place" in both rules is
+  `Player.main.transform.position`, the player's position: not a
+  stand-in. **Confirmed (real data, M9u8a1):** `EscapePod.storagePivot`
+  is the node of the locker's `GenericHandTarget` itself (0.000 m from
+  it), not the centre of its collider, which M9d5b used.
 - **Confirmed (real data, M9d5b run):** the escape pod's controller has
   the bool `storage_open` (layer "storage": `closed` ↔ `open`, 0.1 s
   transitions). With our stand-ins (the hand collider's centre for
   `storagePivot`, the player's position for the PDA's), the limit where
   the hand opens the locker is 2.75 m.
 - **Hypothesis:** `PDA.Open` does not stop the player's movement (the
-  distance rule needs it); not checked in the game.
+  distance rule needs it); not checked in the game. M9u8a1 read why: the
+  PDA's screen is selected with `lockMovement: false`
+  (`uGUI_InputGroup.Select`), so only the mouse look stops.
+
+## The PDA (M9u8a1)
+
+Read from the decompiled `PDA`, `Sequence`, `uGUI_InputGroup`,
+`ArmsController`, `MainCameraControl` and `uGUI_CanvasScaler`, a
+throwaway probe of the main scene, and `sn-inspect anim scene:main
+--states`. Ported in `sn-sim::pda` and `sn-sim::body`.
+
+- **Confirmed (real data):** the PDA is the main scene's
+  `Player/body/player_view/export_skeleton/…/hand_L/attachL/PlayerPDA`,
+  stored inactive, layer 8. It holds the `PDA` script. Its child `Mesh`
+  (not skinned, casts shadows) draws 3 MarmosetUBER materials: `PDA`
+  (`MARMO_EMISSION MARMO_SPECMAP _ZWRITE_ON`), `PDA_border` (adds
+  `WBOIT _ALPHAPREMULTIPLY_ON _NORMALMAP`) and `PDA_screen`
+  (`MARMO_ALPHA MARMO_SIMPLE_GLASS`, premultiplied). Its child
+  `ScreenAnchor` (`PDA.screenAnchor`) sits at (−0.205, 0, 0), turned 180°
+  about y, scale 0.1 (real-data test `the_pda_in_the_hand`).
+- **Confirmed (code):** `PDA.Open` sets the PDA's GameObject active and
+  `Deactivated` sets it inactive. While inactive, `PDA.PerformUpdate` only
+  runs `UpdateTime`; `ManagedUpdate` (the sequence and the closes) runs
+  only while it is active.
+- **Confirmed (code):** the sequence is UWE's `Sequence` in floats: `Set`
+  starts it from its `t`; each `Update` first checks whether `t` is at the
+  target (then it stops and calls back), else moves `t` by ±dT ÷ time,
+  clamped. So the callback runs on the update after `t` arrives: opening
+  (`timeDraw` 0.5 s, `Activated`) and closing (`timeHolster` 0.3 s,
+  `Deactivated`) last their time plus up to two frames at 60 Hz (unit
+  tests).
+- **Confirmed (code):** `state`: Opening/Opened while the sequence's target
+  is true (active or not); Closed when the GameObject is inactive or the
+  sequence stopped; else Closing. `isInUse` holds from `Open` to
+  `Deactivated`, so `Open` is refused while closing. `Close` does not look
+  at the state: called while closing it runs again (sound, callback),
+  and the sequence goes on from its `t`.
+- **Confirmed (code):** `isFocused` is the screen's input group selected
+  with its input dummy on the stack: `Activated` selects it, `OnClosePDA`
+  deselects it. So the PDA button cannot close the PDA while it opens.
+- **Confirmed (code):** `ArmsController.SetUsingPda` sets `using_pda` in
+  `Open` (true) and `Close` (false), so the arms start putting the PDA away
+  at once while the model stays until `Deactivated`. With the PDA in use
+  `ArmsController` sets no IK target (no tool, and world targets are
+  skipped while the PDA is active), so the arms' pose is the animation's.
+- **Confirmed (code), the camera's locked mode** (`MainCameraControl.OnUpdate`
+  while `PDA.isInUse`): `camRotationX/Y` reset when the mode changes; the
+  look's `rotationY` and `camRoot`'s and `cameraUPTransform`'s x angles
+  ease to 0 by `Mathf.LerpAngle(…, PDA.deltaTime × 15)`; `camRoot` keeps
+  its yaw; the mouse delta (only while the avatar's input is on, i.e.
+  before `Activated` selects the screen) goes to `camRotationX/Y`, clamped
+  to ±60°, pulled back by `LerpAngle(…, PDA.deltaTime × 10)` and set as
+  `cameraOffsetTransform`'s angles (−y, x, 0); out of locked mode those
+  angles ease back by `LerpEuler(…, deltaTime × 5)`.
+  `cameraOffsetTransform`'s z moves by ±0.25 m/s × `PDA.deltaTime`,
+  clamped to `camPDAZStart` … `camPDAZStart + camPDAZOffset` (0.18 m in
+  the scene): forward in 0.72 s while in use, back after. No swim bob in
+  locked mode. `GetCameraPitch` sums the three transforms' x angles.
+- **Confirmed (code):** `MiscSettings.pdaPause` defaults to false, so
+  `PDA.deltaTime` is `Time.deltaTime` and nothing pauses.
+- **Confirmed (code), the screen's place:** `PDA.ui` instantiates
+  `prefabScreen` and calls `uGUI_CanvasScaler.SetAnchor(screenAnchor)`
+  (spawn position and rotation identity). In Inversed mode
+  `UpdateTransform` puts the canvas at the anchor's world pose taken into
+  the main camera's space (`Inverse(cam.rotation) × (anchor − cam)`), for
+  the UI camera that sits at the origin, every frame (Inversed stays
+  dirty). `UpdateFrustum` is skipped for Inversed with an anchor, so the
+  canvas keeps its stored size and scale; the anchor's scale is not used.
+- **Confirmed (real data, `anim scene:main --states`):** the arms' PDA
+  states are on the `upperbody` layer (4, mask 94 paths): `New State` →
+  (`using_pda`, 0.1 s) `first_check` (`player_pda_start`, 0.004 s) → (0 s,
+  without `using_tool_first` or `vr_active`) `open` (`player_pda_equip`,
+  1.667 s at speed 2) → (exit time 1, 0.1 s) `idle` (`player_pda_idle`,
+  looped) → (not `using_pda`, 0 s) `close` (`player_pda_away`, 0.833 s at
+  speed 2) → (exit time 0.9, 0.1 s) the machine's exit → `New State`.
+  `open_first` (`player_pda_equip_first_V2`) plays with
+  `using_tool_first`. The base layer has a `pda` state
+  (`player_pda_start`) entered from `Walking` (speed 0.5) and
+  `surface swim` only; `Swim` has none. Layer 3 (`both`) has a copy of the
+  PDA machine; the only `using_pda` conditions on that layer are inside
+  it. **Confirmed (M9u8a2 run):** with empty hands it is not entered
+  (layer 3 stays in `nothing` with the PDA open).
+- **Confirmed (M9u8a2 run, `sn-inspect walk --pda`, our animator at the
+  50 Hz physics step):** on the open, `upperbody` goes `New State` →
+  `first_check` → `open` → `idle`, the last transition starting 0.980 s
+  after the open (0.1 s + 0.833 s + the steps); on the close `idle` →
+  `close` → `New State`, starting 0.400 s after (0.375 s + steps). The
+  base layer goes `Walking` → `pda` → `Walking` in the pod and stays in
+  `Swim` under water; `right arm`, `left` and `both` stay in `Nothing`,
+  `none`, `nothing`. With the arms in `idle`, the camera level and
+  `cameraOffsetTransform` 0.18 m forward, `ScreenAnchor` sits at
+  (0.0217, −0.0012, 0.1874) m in the eye's space, its +z 0.89° from the
+  eye's: the screen faces the camera, about 19 cm in front of it (the
+  same in the pod and under water). *Hypothesis:* `PDA.PerformUpdate`
+  runs before the camera in a frame (`ManagedUpdate` queue order not
+  read).
+- **Confirmed (code, M9u8a3):** `GUIHand.OnUpdate` opens the PDA on
+  `Button.PDA` (Tab) while the avatar's input is on (not focused, not in
+  the intro), and `PDA.ManagedUpdate` closes it with the same button once
+  focused, so a press while it opens or closes does nothing. `Activated`
+  frees the cursor (`lockCursor = false`); `OnClosePDA`'s `Deselect`
+  restores it. The HUD's checks (`uGUI_HealthBar` numbers,
+  `uGUI_DepthCompass`) read `isInUse`. `Player.OnKill` closes an opening
+  or open PDA once (input ignore off for that call), then ignores PDA
+  input until `ResetPlayerOnDeath` clears it. The game's Escape does not
+  close the PDA (it deselects the screen and opens the menu); ours
+  closes it (no menu yet).
 
 ## Death drops (M9d6a)
 

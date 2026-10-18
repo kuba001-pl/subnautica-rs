@@ -13,7 +13,7 @@ use sn_sim::body::AnimValue;
 use sn_unity::name_hash;
 
 use crate::animation::AnimatedRig;
-use crate::objects::{PlayerBodyRig, ShadowsOnly};
+use crate::objects::{PlayerBodyRig, ShadowsOnly, SwitchedNodes};
 
 /// After the animators (M9u6e1): the local player's death events
 /// (`PlayerAnimationEventManager.DeathFade` / `DeathCut`, which call
@@ -44,6 +44,40 @@ pub fn death_events(
     }
 }
 
+/// The layers whose transitions are logged (M9u8a3: the PDA's arms).
+const LOGGED_LAYERS: [&str; 2] = ["Base Modes", "upperbody"];
+
+/// After the animators (M9u8a3): the local player's transitions on
+/// [`LOGGED_LAYERS`], each with the time, for the PDA's checks.
+pub fn arm_states(time: Res<Time>, rigs: Query<&AnimatedRig, With<PlayerBodyRig>>) {
+    for rig in &rigs {
+        let controller = &rig.animator.program().controller;
+        for &(layer, from, to) in &rig.animator.started {
+            let Some(name) = controller
+                .layers
+                .get(layer)
+                .and_then(|l| controller.name_of(l.binding))
+            else {
+                continue;
+            };
+            if !LOGGED_LAYERS.contains(&name) {
+                continue;
+            }
+            let state = |h: u32| {
+                controller
+                    .name_of(h)
+                    .map_or_else(|| format!("#{h}"), str::to_string)
+            };
+            info!(
+                "body: {name:?}: {} → {} at {:.3} s",
+                state(from),
+                state(to),
+                time.elapsed_secs()
+            );
+        }
+    }
+}
+
 /// Seconds between the body's status lines.
 const LOG_EVERY: f32 = 10.0;
 
@@ -66,6 +100,9 @@ pub struct BodyDrive {
     pub pod_controller: String,
     /// CPU time of this frame's rules (`sn_sim::body`), µs.
     pub rules_micros: f32,
+    /// The PDA's GameObject is active (M9u8a3, `sn_sim::pda::Pda::active`):
+    /// its model in the hand is drawn.
+    pub pda_model: bool,
 }
 
 /// Counts for the log.
@@ -85,8 +122,17 @@ pub struct BodyLog {
 pub fn drive(
     time: Res<Time>,
     mut drive: ResMut<BodyDrive>,
-    mut rigs: Query<(&mut AnimatedRig, &mut Transform, &mut Visibility), With<PlayerBodyRig>>,
+    mut rigs: Query<
+        (
+            &mut AnimatedRig,
+            &mut Transform,
+            &mut Visibility,
+            Option<&SwitchedNodes>,
+        ),
+        With<PlayerBodyRig>,
+    >,
     mut others: Query<&mut AnimatedRig, Without<PlayerBodyRig>>,
+    mut switched: Query<&mut Visibility, Without<PlayerBodyRig>>,
     parts: Query<(&ViewVisibility, Option<&RenderLayers>, Has<ShadowsOnly>)>,
     globals: Query<&GlobalTransform>,
     locals: Query<&Transform, Without<PlayerBodyRig>>,
@@ -116,7 +162,7 @@ pub fn drive(
     }
     let mut rigs_seen = 0;
     let mut status = None;
-    for (mut rig, mut transform, mut visibility) in &mut rigs {
+    for (mut rig, mut transform, mut visibility, nodes) in &mut rigs {
         rigs_seen += 1;
         let want = if drive.shown {
             Visibility::Inherited
@@ -125,6 +171,24 @@ pub fn drive(
         };
         if *visibility != want {
             *visibility = want;
+        }
+        // The PDA in the hand: shown while its GameObject is active.
+        let want = if drive.pda_model {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        };
+        for &e in nodes.map_or(&[][..], |n| n.0.as_slice()) {
+            if let Ok(mut v) = switched.get_mut(e)
+                && *v != want
+            {
+                *v = want;
+                info!(
+                    "body: the PDA model {} at {:.3} s",
+                    if drive.pda_model { "shown" } else { "hidden" },
+                    time.elapsed_secs()
+                );
+            }
         }
         *transform = drive.view_model;
         for &(name, value) in &values {

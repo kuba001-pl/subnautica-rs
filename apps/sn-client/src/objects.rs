@@ -152,6 +152,9 @@ pub(crate) struct MaterialDesc {
     sig: Option<crate::sig::SigLook>,
     /// Values of a shader drawn by our effect pass (`effects.rs`).
     pub(crate) effect: Option<EffectLook>,
+    /// A material of the player's view model (M9u8a4a: the PDA's); blended,
+    /// it writes depth ([`crate::object_look::ObjectExtension::depth_write`]).
+    pub(crate) view_model: bool,
 }
 
 /// A MarmosetUBER material's values (the shader's defaults where the
@@ -433,6 +436,17 @@ pub struct ShadowsOnly;
 #[derive(Component)]
 pub struct PlayerBodyRig;
 
+/// On a rig's base: the node entities of [`RigDesc::switched`], spawned
+/// hidden (M9u8a3: `crate::body` shows the local player's PDA while the
+/// game's would be active).
+#[derive(Component)]
+pub struct SwitchedNodes(pub Vec<Entity>);
+
+/// On a rig's base: the node entities of [`RigDesc::named`] by name
+/// (M9u8a4a: the PDA's `ScreenAnchor`, where its screen's canvas sits).
+#[derive(Component)]
+pub struct NamedNodes(pub Vec<(String, Entity)>);
+
 /// The base of another player's body rig (M10h2), by player id:
 /// `crate::remote` moves it and sets its animator's parameters.
 #[derive(Component)]
@@ -673,6 +687,12 @@ struct Library {
     /// never reach the picture (e.g. the occluder shells on layer 27,
     /// `docs/formats/materials.md`).
     culling_mask: u32,
+    /// Prefab nodes `Library::rigs` marks as switched (M9u8a3) and by
+    /// name (M9u8a4a), set only while the player's body is built.
+    switch_nodes: Vec<usize>,
+    name_nodes: Vec<(usize, String)>,
+    /// The PDA's materials (M9u8a4a): [`MaterialDesc::view_model`].
+    view_model_materials: std::collections::HashSet<Key>,
     /// Shader object → its name and property defaults.
     shader_infos: HashMap<Key, Arc<ShaderInfo>>,
     /// Materials drawn by the effect pass, with their description.
@@ -1101,6 +1121,7 @@ impl Library {
         let (_, data) = object.data().ok()?;
         let material = Material::parse(data, object.file.file().big_endian).ok()?;
         let shader = self.shader_info(object, &material, out);
+        let view_model = self.view_model_materials.contains(&object.key());
         let slot = |name: &str| {
             material.texture(name).map(|t| {
                 (
@@ -1115,6 +1136,7 @@ impl Library {
             Some((self.texture(&target, srgb, out)?, st))
         };
         let mut desc = material_desc(&material, &mut texture);
+        desc.view_model = view_model;
         desc.cull_mode = shader_cull(&material, &shader);
         desc.sig = crate::sig::read(&material, &shader, &mut texture);
         if let Some(sig) = &desc.sig {
@@ -1630,6 +1652,16 @@ impl Library {
             let base = node
                 .parent
                 .map_or(Placement::default(), |p| prefab.nodes[p].in_prefab);
+            let switched = self
+                .switch_nodes
+                .iter()
+                .filter_map(|n| node_map.get(n).copied())
+                .collect();
+            let named = self
+                .name_nodes
+                .iter()
+                .filter_map(|(n, name)| Some((*node_map.get(n)?, name.clone())))
+                .collect();
             rigs.push(RigBuild {
                 animator: i,
                 node_map,
@@ -1644,6 +1676,8 @@ impl Library {
                     culling: a.component.culling_mode,
                     skins: Vec::new(),
                     shapes: shape_descs,
+                    switched,
+                    named,
                 },
             });
         }
@@ -2482,7 +2516,26 @@ impl Library {
                 .map_or("?", |n| n.name.as_str()),
             if options.head_visible { " drawn" } else { "" }
         );
+        // The PDA in the hand (M9u8a3): stored inactive, `PDA.Open`
+        // switches it on. Built active so its parts exist, its node
+        // marked switched (hidden until the client shows it).
+        body.prefab.set_active(body.pda.node, true);
+        self.switch_nodes = vec![body.pda.node];
+        if let Some(mesh) = body.prefab.nodes.get(body.pda.mesh_node) {
+            for m in mesh.materials.iter().flatten() {
+                if self.materials.contains_key(&m.key()) {
+                    out.push(Update::Warning(format!(
+                        "player body: the PDA's material {} was loaded before; it does not write depth",
+                        m.path_id
+                    )));
+                }
+                self.view_model_materials.insert(m.key());
+            }
+        }
+        self.name_nodes = vec![(body.pda.screen_anchor_node, "ScreenAnchor".into())];
         let prefab = self.prefab_parts_as(&body.prefab, false, out);
+        self.switch_nodes.clear();
+        self.name_nodes.clear();
         out.push(Update::Body {
             prefab,
             summary,
@@ -2747,6 +2800,7 @@ pub(crate) fn material_desc(
         effect: None,
         alpha,
         cull_mode: cull_mode(material.float("_MyCullVariable").unwrap_or(2.0)),
+        view_model: false,
     }
 }
 
@@ -2797,6 +2851,9 @@ fn worker(
             next_id: 0,
             slots: None,
             culling_mask: u32::MAX,
+            switch_nodes: Vec::new(),
+            name_nodes: Vec::new(),
+            view_model_materials: std::collections::HashSet::new(),
             shader_infos: HashMap::new(),
             effect_materials: HashMap::new(),
             glow_materials: HashMap::new(),
@@ -3642,6 +3699,7 @@ pub(crate) fn object_material(
     ObjectMaterial {
         base,
         extension: ObjectExtension {
+            depth_write: desc.view_model && matches!(desc.alpha, Alpha::Blend),
             params,
             normal_map: normal.unwrap_or_else(|| defaults.flat.clone()),
             spec_map: spec.unwrap_or_else(|| defaults.white.clone()),
@@ -4601,6 +4659,25 @@ impl ObjectStreamer {
                         .spawn((to_bevy(local), Visibility::default(), ChildOf(parent)))
                         .id(),
                 );
+            }
+            if !rig.switched.is_empty() {
+                let switched: Vec<Entity> = rig
+                    .switched
+                    .iter()
+                    .filter_map(|&n| nodes.get(usize::from(n)).copied())
+                    .collect();
+                for &e in &switched {
+                    s.commands.entity(e).insert(Visibility::Hidden);
+                }
+                s.commands.entity(base).insert(SwitchedNodes(switched));
+            }
+            if !rig.named.is_empty() {
+                let named = rig
+                    .named
+                    .iter()
+                    .filter_map(|(n, name)| Some((name.clone(), *nodes.get(usize::from(*n))?)))
+                    .collect();
+                s.commands.entity(base).insert(NamedNodes(named));
             }
             rig_entities.push((base, nodes, Vec::new(), Vec::new()));
         }

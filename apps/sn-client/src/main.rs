@@ -154,6 +154,8 @@ Usage: sn-client [--game-dir <PATH>] [--start <X> <Y> <Z>] [--look <X> <Y> <Z>]
                  trigger name contains TEXT (e.g. bot_out)
   --hold-forward --hold-forward <SECONDS>: from then on, hold W (a debug
                  check that the player moves)
+  --hold-back    --hold-back <SECONDS>: from then on, hold S (M9u8a3: walk
+                 away from the locker with the PDA open)
   --test-supply  --test-supply <TECH>[,<TECH>…]: a debug aid for a solo or
                  host run: one item of each tech type (by its name in the
                  game's code, e.g. Compass) put into the new world's
@@ -261,6 +263,8 @@ struct Args {
     hatch_name: Option<String>,
     /// `--hold-forward`: hold W from this much play on.
     hold_forward: Option<f32>,
+    /// `--hold-back` (M9u8a3): hold S from this much play on.
+    hold_back: Option<f32>,
     /// `--test-supply`: tech type names put into a new world's locker.
     test_supply: Vec<String>,
     /// `--turn`: the player's look turns at this many degrees a second.
@@ -340,6 +344,7 @@ fn parse_args_from(raw: &[String]) -> Result<Args, String> {
         panel: Vec::new(),
         hatch_name: None,
         hold_forward: None,
+        hold_back: None,
         test_supply: Vec::new(),
         turn: None,
         kill: None,
@@ -521,6 +526,7 @@ fn parse_args_from(raw: &[String]) -> Result<Args, String> {
             "--hold-forward" => {
                 args.hold_forward = Some(number(it.next(), "--hold-forward")?);
             }
+            "--hold-back" => args.hold_back = Some(number(it.next(), "--hold-back")?),
             "--kill" => args.kill = Some(number(it.next(), "--kill")?),
             "--pick-up" => args.pick_up = Some(number(it.next(), "--pick-up")?),
             "--drop" => args.drop = Some(number(it.next(), "--drop")?),
@@ -1210,6 +1216,7 @@ fn main() -> AppExit {
                     use_item: args.use_item.clone(),
                     hatch_name: args.hatch_name.clone(),
                     hold_forward: args.hold_forward.map(f64::from),
+                    hold_back: args.hold_back.map(f64::from),
                     turn: args.turn.map(f64::from),
                     kill: args.kill.map(f64::from),
                     items: Some(items.clone()),
@@ -1248,6 +1255,8 @@ fn main() -> AppExit {
                             .after(animation::animate)
                             .run_if(move || game_ui),
                     )
+                    // The arms' states with the PDA (M9u8a3).
+                    .add_systems(Update, body::arm_states.after(animation::animate))
                     .insert_resource(items::Text(text.clone()))
                     .insert_resource(items::ItemsView::new(
                         args.pick_up.map(f64::from),
