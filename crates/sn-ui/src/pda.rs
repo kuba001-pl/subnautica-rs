@@ -2,10 +2,12 @@
 //! `docs/formats/ui.md` § The PDA's screen): which of the screen's groups
 //! and objects show as the PDA opens and closes, and `OpenTab`. Our own
 //! code after reading the game's `uGUI_PDA`, `uGUI_PDATab` and its tabs,
-//! and `CanvasGroup.SetVisible`. The toolbar's icons (made by code) come
-//! with M9u8a4b.
+//! and `CanvasGroup.SetVisible`. The toolbar ([`crate::toolbar`],
+//! M9u8a4b) is attached after `new`: `SetTabs` at the end of `Initialize`
+//! and in `OnClosePDA`, `Select` in `OpenTab`, `OnToolbarClick`.
 
 use crate::state::UiState;
+use crate::toolbar::{IconSprite, Toolbar, ToolbarIcon};
 
 /// `PDATab` (the game's values, without `None`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -105,6 +107,10 @@ pub struct PdaScreen {
     pub current_tabs: Vec<Tab>,
     /// The changes to the screen's stored state.
     pub state: UiState,
+    /// `toolbar` and the tabs' sprites (`SpriteManager.Get(Group.Tab,
+    /// "Tab<name>")`, no fallback), once attached.
+    pub toolbar: Option<Toolbar>,
+    pub tab_sprites: Vec<(Tab, IconSprite)>,
 }
 
 impl PdaScreen {
@@ -118,6 +124,8 @@ impl PdaScreen {
             tab_prev: REGULAR_TABS[0],
             current_tabs: REGULAR_TABS.to_vec(),
             state: UiState::default(),
+            toolbar: None,
+            tab_sprites: Vec::new(),
         };
         s.set_visible(s.config.content, true);
         s.set_canvas_visible(false);
@@ -164,6 +172,48 @@ impl PdaScreen {
         }
     }
 
+    /// The toolbar, its icons made (`make`, one icon's nodes) for the
+    /// regular tabs, then `SetTabs(regularTabs)` as `Initialize` ends.
+    pub fn attach_toolbar(
+        &mut self,
+        mut toolbar: Toolbar,
+        tab_sprites: Vec<(Tab, IconSprite)>,
+        make: &mut dyn FnMut() -> ToolbarIcon,
+    ) {
+        toolbar.make_icons(REGULAR_TABS.len(), make);
+        self.toolbar = Some(toolbar);
+        self.tab_sprites = tab_sprites;
+        self.set_tabs();
+    }
+
+    /// `SetTabs(regularTabs)`: `currentTabs` and the toolbar's
+    /// `Initialize` with each tab's sprite.
+    fn set_tabs(&mut self) {
+        self.current_tabs = REGULAR_TABS.to_vec();
+        let content: Vec<Option<IconSprite>> = self
+            .current_tabs
+            .iter()
+            .map(|t| {
+                self.tab_sprites
+                    .iter()
+                    .find(|(k, _)| k == t)
+                    .map(|(_, s)| *s)
+            })
+            .collect();
+        if let Some(tb) = self.toolbar.as_mut() {
+            tb.initialize(&content, &mut self.state);
+        }
+    }
+
+    /// `OnToolbarClick(index, button)`: the left button (0) opens that
+    /// tab. True when a tab opened.
+    pub fn on_toolbar_click(&mut self, index: usize, button: u8) -> bool {
+        match self.current_tabs.get(index) {
+            Some(&t) if button == 0 => self.open_tab(t),
+            _ => false,
+        }
+    }
+
     fn tab_index(&self, tab: Tab) -> Option<usize> {
         self.config.tabs.iter().position(|t| t.tab == tab)
     }
@@ -194,7 +244,7 @@ impl PdaScreen {
         {
             self.show_tab(i, false);
         }
-        self.current_tabs = REGULAR_TABS.to_vec();
+        self.set_tabs();
         self.set_visible(self.config.content, false);
     }
 
@@ -224,8 +274,11 @@ impl PdaScreen {
         if REGULAR_TABS.contains(&tab) {
             self.tab_prev = tab;
         }
-        let on_toolbar = self.current_tabs.contains(&tab);
-        self.set_visible(self.config.toolbar_group, on_toolbar);
+        let at = self.current_tabs.iter().position(|&t| t == tab);
+        self.set_visible(self.config.toolbar_group, at.is_some());
+        if let (Some(i), Some(tb)) = (at, self.toolbar.as_mut()) {
+            tb.select(i, &mut self.state);
+        }
         true
     }
 }

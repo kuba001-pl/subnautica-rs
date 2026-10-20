@@ -140,3 +140,38 @@ fn the_canvas_rect_takes_the_size() {
     assert!(close(r.width, 1920.0, 1e-3) && close(r.height, 1200.0, 1e-3));
     assert_eq!(t.nodes[1].rect.scale, p.scale);
 }
+
+#[test]
+fn a_screen_point_finds_its_place_on_a_tilted_canvas() {
+    // The PDA's canvas: 0.19 m ahead, a little off the axis, turned 0.9°
+    // about y and 10° about x, at 0.000212 m per unit.
+    let cam = UiCamera::game(60.0, 0.03, 1700.0);
+    let (h, v) = (0.45f32.to_radians(), 5f32.to_radians());
+    let q = [
+        v.sin() * h.cos(),
+        h.sin() * v.cos(),
+        -v.sin() * h.sin(),
+        v.cos() * h.cos(),
+    ];
+    let p = Placement {
+        position: [0.0217, -0.0012, 0.1874],
+        rotation: q,
+        size: [1195.0, 970.0],
+        scale: [0.000212, 0.000212, 0.000212],
+        scale_factor: 1.0,
+    };
+    let m = p.world_from_canvas();
+    for point in [[0.0, 0.0], [-300.0, 420.0], [500.0, -400.0]] {
+        let world = apply(&m, [point[0], point[1], 0.0]);
+        let pixel = cam.project(world, [1920, 1080]).unwrap();
+        let back = p
+            .ray_point(cam.position, cam.screen_ray(pixel, [1920, 1080]))
+            .unwrap();
+        assert!(close(back[0], point[0], 0.05) && close(back[1], point[1], 0.05));
+    }
+    // Pixel (960, 540) is the camera's axis: dir (0, 0, 1).
+    let d = cam.screen_ray([960.0, 540.0], [1920, 1080]);
+    assert!(close(d[0], 0.0, 1e-6) && close(d[1], 0.0, 1e-6) && d[2] > 0.0);
+    // Behind: a ray away from the canvas misses.
+    assert_eq!(p.ray_point(cam.position, [0.0, 0.0, -1.0]), None);
+}

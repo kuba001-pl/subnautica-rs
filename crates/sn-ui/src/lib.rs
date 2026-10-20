@@ -51,4 +51,5 @@ pub mod reticle;
 pub mod scaler;
 pub mod state;
 pub mod text;
+pub mod toolbar;
 pub mod tween;

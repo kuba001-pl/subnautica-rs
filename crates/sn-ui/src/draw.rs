@@ -61,6 +61,42 @@ pub fn apply(m: &Affine, p: [f32; 3]) -> [f32; 3] {
     ]
 }
 
+/// The inverse of an affine matrix; `None` if it is singular.
+pub fn invert(m: &Affine) -> Option<Affine> {
+    let a = |r: usize, c: usize| m[r][c];
+    let det = a(0, 0) * (a(1, 1) * a(2, 2) - a(1, 2) * a(2, 1))
+        - a(0, 1) * (a(1, 0) * a(2, 2) - a(1, 2) * a(2, 0))
+        + a(0, 2) * (a(1, 0) * a(2, 1) - a(1, 1) * a(2, 0));
+    if det.abs() < 1e-30 {
+        return None;
+    }
+    let k = 1.0 / det;
+    let r = [
+        [
+            (a(1, 1) * a(2, 2) - a(1, 2) * a(2, 1)) * k,
+            (a(0, 2) * a(2, 1) - a(0, 1) * a(2, 2)) * k,
+            (a(0, 1) * a(1, 2) - a(0, 2) * a(1, 1)) * k,
+        ],
+        [
+            (a(1, 2) * a(2, 0) - a(1, 0) * a(2, 2)) * k,
+            (a(0, 0) * a(2, 2) - a(0, 2) * a(2, 0)) * k,
+            (a(0, 2) * a(1, 0) - a(0, 0) * a(1, 2)) * k,
+        ],
+        [
+            (a(1, 0) * a(2, 1) - a(1, 1) * a(2, 0)) * k,
+            (a(0, 1) * a(2, 0) - a(0, 0) * a(2, 1)) * k,
+            (a(0, 0) * a(1, 1) - a(0, 1) * a(1, 0)) * k,
+        ],
+    ];
+    let t = [m[0][3], m[1][3], m[2][3]];
+    let mut out = [[0.0; 4]; 3];
+    for row in 0..3 {
+        out[row][..3].copy_from_slice(&r[row]);
+        out[row][3] = -(r[row][0] * t[0] + r[row][1] * t[1] + r[row][2] * t[2]);
+    }
+    Some(out)
+}
+
 /// Translation · rotation (unit quaternion x, y, z, w) · scale.
 pub fn trs(t: [f32; 3], q: [f32; 4], s: [f32; 3]) -> Affine {
     let [x, y, z, w] = q;
@@ -239,7 +275,7 @@ fn local(tree: &Tree, i: usize) -> Affine {
 }
 
 /// From the node's space to `to`'s (an ancestor).
-fn to_ancestor(tree: &Tree, i: usize, to: usize) -> Affine {
+pub fn to_ancestor(tree: &Tree, i: usize, to: usize) -> Affine {
     let mut m = IDENTITY;
     let mut k = i;
     let mut guard = 0;

@@ -103,10 +103,62 @@ ports `uGUI_PDA`'s states in `sn_ui::pda`:
 - **`uGUI_Toolbar.UpdateCycleBtnText`** (`OnEnable`): with the keyboard as
   the primary device `cycleLeftBtnText` and `cycleRightBtnText` are made
   inactive (stored with "?" texts). Ported for the PDA's toolbar.
-- **Not ported yet (M9u8a4b):** the toolbar's icons (made by code),
-  `Select` and the tab clicks; the equipment slots' `UI/Circle` (drawn as
+- **Not ported yet:** the equipment slots' `UI/Circle` (drawn as
   `UI/Default`); the inventory tab's containers (our M9d5b panel stands in,
-  M9u8b).
+  M9u8b); the other tabs' own scripts (their stored content is drawn).
+
+## The PDA's toolbar (M9u8a4b) — confirmed (decompiled code, stored fields, `ui --pda`, client)
+
+`uGUI_PDA.toolbar` is the `uGUI_Toolbar` on `uGUI_PDAScreen/Content/Toolbar`
+(layer 5). Its stored fields: `backgroundSize` 143 × 54, `foregroundSize`
+64 × 64, `buttonSize` 127 × 54, `buttonStep` −16, `selectionMarker` its
+child `SelectionMarker` (anchors and pivot at the centre),
+`selectionMarkerOffset` (−10, −35.5), `notificationAnchor` 8,
+`notificationOffset` (−41.5, −3.5). `backgroundSpriteNormal` is
+`TabBackgroundNormal`, `backgroundSpriteSelected` `TabBackgroundSelected`,
+both 143 × 54 and not in `resources.assets` (so `SpriteManager.
+GetProceduralSlice9Grid` is false: `SLICE_9_GRID` off). The bar is stored
+with `sizeDelta` (0, 54), its anchors one point.
+
+- **`uGUI_PDA.SetTabs(tabs)`** (end of `Initialize`, and every
+  `OnClosePDA`): each tab's sprite is `SpriteManager.Get(Group.Tab,
+  "Tab<name>")` (the `Tabs` atlas, **no** fallback); all six regular tabs
+  have one, 64 × 64. Then `toolbar.Initialize(this, sprites)`.
+- **`uGUI_Toolbar.Initialize`** destroys the old icons and makes one
+  `uGUI_ItemIcon` per tab by code (`CreateIcon`): `new GameObject(
+  "ToolbarIcon")` on the toolbar's layer, `Init` (anchor (0, 0), pivot
+  (0.5, 0.5)), `SetForegroundSprite(tab)` (makes `Foreground`, a disabled
+  `uGUI_Icon` with its own `iconMaterial` copy, sized to the sprite),
+  `SetBackgroundSprite(normal)` (makes `Background`, placed first by
+  `RearrangeElements`), `SetActiveSize(buttonSize)`, `SetBackgroundSize(
+  backgroundSize, keepAspect: true)`, `SetForegroundSize(foregroundSize)`
+  (keeps the aspect), `SetPosition(½·bg.x + i·(bg.x + step), ½·bg.y)`. The
+  bar's width is `n·bg.x + (n − 1)·step` = 778 for six tabs, set with
+  `SetSizeWithCurrentAnchors`; the button rects are 127 wide at a 127
+  pitch, so they touch; the backgrounds (143) overlap by 16. The marker is
+  made last sibling and hidden; nothing is selected.
+- **`OpenTab`** calls `toolbar.Select(index)` when the tab is on the bar:
+  the old icon's background back to the normal sprite and the new one's to
+  the selected sprite, both through `SetBackgroundSprite`, which sizes the
+  background to `backgroundSize` **without** keeping the aspect (no
+  difference here: both sprites are 143 × 54); `selectionMarker.
+  localPosition` = the icon's `localPosition` + the offset, shown.
+- **A click:** `uGUI_ItemIcon.OnPointerClick` maps the left, right and
+  middle buttons to 0, 1, 2 and calls `uGUI_Toolbar.OnPointerClick`, which
+  calls `uGUI_PDA.OnToolbarClick(index, button)`: button 0 opens
+  `currentTabs[index]`. The icons' colours are white for normal, hovered
+  and pressed (never set by the toolbar), so hover shows nothing.
+  `SetNotificationsAmount(i, 0)` makes nothing (`SetNotificationAlpha(0)`
+  without a label); the counts are `NotificationManager`'s (M9u8b).
+- **Ours** (`sn_ui::toolbar`, `sn_assets::toolbar_icon_nodes`): the icon
+  nodes are made once and set again on each `Initialize` (same state, same
+  sibling order). The client hit-tests a click by the UI camera's ray
+  through the pixel onto the canvas at its pose, into the toolbar's
+  space, the later icon winning on a shared edge (`GraphicRaycaster`'s
+  depth order). Only the toolbar's icons are tested: `ui --pda` found no
+  graphic drawn over their centres. Tooltips (`TooltipFactory.Label(
+  "Tab<name>")`), the gamepad's tab cycling and hover sounds are not
+  ported.
 
 ## Canvases and scalers — confirmed
 

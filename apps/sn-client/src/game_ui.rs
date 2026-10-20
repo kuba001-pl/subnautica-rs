@@ -64,12 +64,14 @@ use sn_ui::depth::DepthCompass;
 use sn_ui::hud::{Hud, HudInputs, hud_mode};
 use sn_ui::messages::{MessageInputs, MessageLayout, Messages};
 use sn_ui::notifier::{FROM, Icon, Notifier};
-use sn_ui::pda::PdaScreen;
+use sn_ui::pda::{PdaScreen, REGULAR_TABS};
 use sn_ui::popup::{Entry, Phase, Popup, PopupLayout, TIME_IN, TIME_OUT};
 use sn_ui::reticle::{HAND, HAND_SUBSCRIPT, HandReticle, IconType, ReticleInputs, get_text};
 use sn_ui::scaler::{DEFAULT_UI_SCALE, Placement, UiCamera, place};
 use sn_ui::state::UiState;
+use sn_ui::toolbar::{Toolbar, ToolbarIcon, ToolbarSprites};
 
+use crate::inventory::ToolbarClick;
 use crate::textures::linear;
 
 /// The main camera's planes in the main scene; the UI camera takes them
@@ -274,7 +276,16 @@ type FrameInputs = (
     MessageKeys,
     Vec<String>,
     PdaFlags,
+    PdaClicks,
 );
+
+/// This frame's clicks for the PDA's toolbar (M9u8a4b) and the screen's
+/// pose they are made on (the last frame's [`GameUiFrame::pda_pose`]).
+#[derive(Clone, Debug, Default)]
+struct PdaClicks {
+    clicks: Vec<ToolbarClick>,
+    pose: Option<([f32; 3], [f32; 4])>,
+}
 
 /// The PDA's flags this frame (M9u8a4a, `sn_sim::pda::Pda`): their changes
 /// are `uGUI_PDA`'s calls.
@@ -647,6 +658,95 @@ fn run_worker(
             .map(|t| (t.tab, t.show))
             .collect::<Vec<_>>()
     );
+    // Its tab bar (M9u8a4b): `uGUI_Toolbar`, its icons made by code
+    // (`ToolbarIcon` + background + foreground) with `iconMaterial`, the
+    // tabs' sprites from the `Tabs` atlas; `SetTabs` as `Initialize` ends.
+    let toolbar_data = assets.pda_toolbar(&layouts, &pda_tree)?;
+    let mut toolbar_config = toolbar_data.config.clone();
+    toolbar_config.node += pda_root;
+    toolbar_config.marker = toolbar_config.marker.map(|m| m + pda_root);
+    {
+        let mut st = start_state.clone();
+        st.apply(&pda_screen.state);
+        let only_pda = HashMap::from([(pda_root, pda_placement)]);
+        toolbar_config.lay_out(&scene.layout_for(&assets, &set, &only_pda, &st)?);
+    }
+    let toolbar_template = sn_assets::UiScene::from_code(
+        "ToolbarIcon",
+        sn_assets::toolbar_icon_nodes(scene.tree.nodes[toolbar_config.node].layer, &icon_material),
+    )?;
+    let mut tab_sprites = Vec::new();
+    for tab in REGULAR_TABS {
+        match item_sprites.get_no_default(sn_assets::GROUP_TAB, &format!("Tab{tab:?}")) {
+            Some(s) => tab_sprites.push((
+                tab,
+                (
+                    scene.sprite_id(&s.object),
+                    [s.sprite.rect[2], s.sprite.rect[3]],
+                ),
+            )),
+            // `SpriteManager.Get(Group.Tab, …)` gives null: no foreground.
+            None => warn!("game UI PDA toolbar: Tab{tab:?}: not in the Tabs atlas"),
+        }
+    }
+    let toolbar_sprites = ToolbarSprites {
+        normal: (
+            scene.sprite_id(&toolbar_data.normal.0),
+            toolbar_data.normal.2,
+        ),
+        selected: (
+            scene.sprite_id(&toolbar_data.selected.0),
+            toolbar_data.selected.2,
+        ),
+    };
+    let toolbar_node = toolbar_config.node;
+    {
+        let mut failed = None;
+        let mut make = || match scene.graft(&toolbar_template, toolbar_node) {
+            Ok(n) => ToolbarIcon {
+                root: n,
+                background: n + 1,
+                foreground: n + 2,
+            },
+            Err(e) => {
+                failed = Some(e);
+                ToolbarIcon {
+                    root: usize::MAX,
+                    background: usize::MAX,
+                    foreground: usize::MAX,
+                }
+            }
+        };
+        pda_screen.attach_toolbar(
+            Toolbar::new(toolbar_config.clone(), toolbar_sprites),
+            tab_sprites,
+            &mut make,
+        );
+        if let Some(e) = failed {
+            return Err(format!("game UI PDA toolbar: graft: {e}"));
+        }
+    }
+    if let Some(tb) = &pda_screen.toolbar {
+        for &n in &tb.events.last_sibling {
+            scene.set_as_last_sibling(n);
+        }
+        let c = &tb.config;
+        info!(
+            "game UI PDA toolbar: {} icons at {:?}, bar {} wide (rule {} × {} + {} × {}), button {:?}, backgrounds {:?} / {:?}, marker {:?} (offset {:?}); tooltips (TooltipFactory.Label) and notification counts (NotificationManager, M9u8b) not ported",
+            tb.icons.len(),
+            tb.icons.iter().map(|i| i.root).collect::<Vec<_>>(),
+            tb.width,
+            tb.count,
+            c.background_size[0],
+            tb.count.saturating_sub(1),
+            c.button_step,
+            c.button_size,
+            toolbar_data.normal.1,
+            toolbar_data.selected.1,
+            c.marker.map(|m| &scene.tree.nodes[m].path),
+            c.marker_offset
+        );
+    }
     let mut pda_seen = PdaFlags::default();
     // What `SetTransition` reads, when first needed after a resize.
     let mut popup_layout: Option<PopupLayout> = None;
@@ -686,7 +786,7 @@ fn run_worker(
                     screen = Some(s);
                 }
                 Request::Frame(frame) => {
-                    let (mut inputs, hand, death_inputs, keys, plays, pda) = *frame;
+                    let (mut inputs, hand, death_inputs, keys, plays, pda, pda_clicks) = *frame;
                     inputs.food = food;
                     inputs.water = water;
                     rules = hud.update(&inputs);
@@ -875,6 +975,41 @@ fn run_worker(
                     // `uGUI_PDA` (M9u8a4a): the PDA's calls.
                     pda_screen_calls(&mut pda_screen, &mut pda_seen, pda, inputs.time);
                     rules.apply(&pda_screen.state);
+                    // The toolbar's clicks (M9u8a4b), on the canvas at this
+                    // frame's pose.
+                    if !pda_clicks.clicks.is_empty() {
+                        match (pda_clicks.pose, screen) {
+                            (Some((position, rotation)), Some(size)) => {
+                                let mut st = start_state.clone();
+                                st.apply(&rules);
+                                let mut ps = placements.clone();
+                                let placed = Placement {
+                                    position,
+                                    rotation,
+                                    ..pda_placement
+                                };
+                                ps.insert(pda_root, placed);
+                                let l = scene.layout_for(&assets, &set, &ps, &st)?;
+                                for click in &pda_clicks.clicks {
+                                    toolbar_click(
+                                        &mut pda_screen,
+                                        &l,
+                                        pda_root,
+                                        &placed,
+                                        &camera,
+                                        size,
+                                        *click,
+                                        inputs.time,
+                                    );
+                                }
+                                rules.apply(&pda_screen.state);
+                            }
+                            _ => info!(
+                                "game UI PDA toolbar: {} clicks with the screen not placed, ignored",
+                                pda_clicks.clicks.len()
+                            ),
+                        }
+                    }
                     let before = reticle.icon_type;
                     rules.apply(reticle.update(&reticle_inputs(
                         &reticle,
@@ -1245,6 +1380,85 @@ fn pda_screen_calls(s: &mut PdaScreen, seen: &mut PdaFlags, now: PdaFlags, time:
         );
     }
     *seen = now;
+}
+
+/// A click on the PDA screen (M9u8a4b): `GraphicRaycaster`'s ray from the
+/// UI camera through the pixel onto the canvas (placed at `placed`), into
+/// the toolbar's space, the icon under it (`uGUI_ItemIcon.OnPointerClick`
+/// → `uGUI_Toolbar` → `uGUI_PDA.OnToolbarClick`). Only the toolbar's
+/// icons are hit tested: `ui --pda` found nothing drawn over them. A
+/// scripted click starts from an icon's centre projected to the screen.
+#[allow(clippy::too_many_arguments)]
+fn toolbar_click(
+    s: &mut PdaScreen,
+    l: &sn_ui::layout::Tree,
+    root: usize,
+    placed: &Placement,
+    camera: &UiCamera,
+    screen: [i32; 2],
+    click: ToolbarClick,
+    time: f32,
+) {
+    use sn_ui::draw::{apply, invert, to_ancestor};
+    let Some(tb) = &s.toolbar else {
+        return;
+    };
+    let node = tb.config.node;
+    let (pixel, button) = match click {
+        ToolbarClick::At { pixel, button } => (pixel, button),
+        ToolbarClick::Icon(i) => {
+            let Some(icon) = tb.icons.get(i).filter(|_| i < tb.count) else {
+                info!("game UI PDA toolbar at {time:.3} s: --panel tab{i}: no such icon");
+                return;
+            };
+            let c = apply(&to_ancestor(l, icon.root, root), [0.0; 3]);
+            let w = apply(&placed.world_from_canvas(), c);
+            match camera.project(w, screen) {
+                Some(p) => (p, 0),
+                None => {
+                    info!("game UI PDA toolbar at {time:.3} s: icon {i} behind the camera");
+                    return;
+                }
+            }
+        }
+    };
+    let hit = placed
+        .ray_point(camera.position, camera.screen_ray(pixel, screen))
+        .and_then(|c| {
+            let to_bar = invert(&to_ancestor(l, node, root))?;
+            let p = apply(&to_bar, [c[0], c[1], 0.0]);
+            Some(([c[0], c[1]], [p[0], p[1]]))
+        });
+    let Some((canvas, bar)) = hit else {
+        info!("game UI PDA toolbar at {time:.3} s: click at {pixel:?} misses the screen");
+        return;
+    };
+    let index = tb.hit(bar, l.rect(node));
+    let before = s.tab_open;
+    let opened = index.is_some_and(|i| s.on_toolbar_click(i, button));
+    info!(
+        "game UI PDA toolbar at {time:.3} s: {click:?}: pixel ({:.1}, {:.1}), canvas ({:.1}, {:.1}), bar ({:.1}, {:.1}): icon {index:?}, button {button}; {}",
+        pixel[0],
+        pixel[1],
+        canvas[0],
+        canvas[1],
+        bar[0],
+        bar[1],
+        if opened {
+            format!(
+                "OpenTab {:?} → {:?}{}",
+                before,
+                s.tab_open,
+                match s.tab_open {
+                    Some(sn_ui::pda::Tab::Inventory) | None => "",
+                    // Their stored content only.
+                    Some(_) => " (its content is not ported: drawn as stored)",
+                }
+            )
+        } else {
+            "nothing opened".into()
+        }
+    );
 }
 
 /// The death timeline's changes as they happen (M9u6e1), each against
@@ -1760,12 +1974,20 @@ fn send_inputs(
     hud: Res<crate::player::Hud>,
     time: Res<Time>,
     real: Res<Time<Real>>,
-    panel: Option<Res<crate::inventory::Panel>>,
+    mut panel: Option<ResMut<crate::inventory::Panel>>,
     session: Option<Res<crate::session::Session>>,
     text: Option<Res<crate::items::Text>>,
     camera: Query<&Transform, With<GameUiCamera>>,
+    frame: Res<GameUiFrame>,
     mut compass_tech: Local<Option<Option<i32>>>,
 ) {
+    let pda_clicks = PdaClicks {
+        clicks: panel
+            .as_mut()
+            .map(|p| std::mem::take(&mut p.toolbar_clicks))
+            .unwrap_or_default(),
+        pose: frame.pda_pose,
+    };
     // `TechType.Compass`, by its name in the game's code.
     let compass_tech = *compass_tech.get_or_insert_with(|| {
         text.as_ref().and_then(|t| {
@@ -1862,6 +2084,7 @@ fn send_inputs(
             focused: p.pda.focused(),
             active: p.pda.active(),
         }),
+        pda_clicks,
     ))));
 }
 

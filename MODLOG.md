@@ -2,6 +2,58 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-20 — M9u8a4b: the PDA's tab bar and tab clicks
+
+**What/why:** the last step of M9u8a (DESIGN): the PDA screen's toolbar
+as the game makes it, and clicks on its tabs.
+- `sn-ui::toolbar` (new): `uGUI_Toolbar`'s `Initialize` (icons placed
+  by the rule, the bar's width, the marker hidden), `Select` (the
+  backgrounds' sprites, the marker at the icon's `localPosition` + offset),
+  the click hit test; `ToolbarConfig::lay_out`. `sn-ui::pda`:
+  `attach_toolbar`, `SetTabs` (at `Initialize` and `OnClosePDA`),
+  `Select` from `OpenTab`, `on_toolbar_click`. `sn-ui::scaler`:
+  `UiCamera::screen_ray`, `Placement::ray_point`; `sn-ui::draw`:
+  `invert`, `to_ancestor` made public. 6 new unit tests.
+- `sn-assets`: `pda_toolbar` (the stored fields, the two background
+  sprites), `toolbar_icon_nodes` (`ToolbarIcon` + `Background` +
+  `Foreground`, made by code), `GROUP_TAB`.
+- `sn-inspect ui --pda` (new, `pda_tabs.rs`): the headless check below.
+- `sn-client`: the UI worker grafts the six icons and attaches the
+  toolbar; a mouse click on the PDA (not on our panel) and `--panel …
+  tabN` go to the worker, which hit-tests it on the canvas at the frame's
+  pose and calls `OnToolbarClick`.
+No new dependencies.
+
+**Found:** the bar is 778 wide (6 × 143 − 5 × 16); its sprites
+`TabBackgroundNormal`/`Selected` are 143 × 54, not Resources sprites
+(`SLICE_9_GRID` off); `SetBackgroundSprite` resizes without keeping the
+aspect (no visible difference with these sprites). On the way I noticed
+that M9u7c's notifier sets `_FillRect` from the fitted foreground size,
+where the game uses the desired size (`SetSize`'s); our `UI/Icon` shader
+does not read `_FillRect`, so nothing drawn changes; not fixed here.
+
+**Verified** (`SUBNAUTICA_DIR` set; logs in `out/m9u8a/`):
+- `sn-inspect ui --pda` (`ui-pda.log`): RUN OK, 173 of 173 checks.
+- `sn-client --view 400 --resolution 960 540 --panel 3=open,4.5=tab1,
+  5.5=tab4,6.5=tab0,7.5=tab3,8.5=close,10.5=open,12=close --shot 14
+  m9u8a4b-after` (`a4b-tabs.log`): 6 icons grafted, bar 778; each click
+  logged with its pixel, canvas point (e.g. icon 1 at canvas
+  (−190.5, 400.0), bar x −190.5 = −389 + 71.5 + 127) and the tab opened
+  (Journal, Log, Inventory, Gallery); the reopen opened Gallery
+  (`tabPrev`); 0 WARN/ERROR/panic.
+- Screenshots `out/m9u8a4b-inventory.png`, `out/m9u8a4b-log.png` (1920 ×
+  1080): the six tab icons on their slanted backgrounds, the open tab's
+  background highlighted with the marker under it; after the Log click
+  the highlight and marker moved and the inventory tab's content went.
+- No regression: `ui --icons` 10/10, `--icon-mesh` 12/12, `--draw` 12 of
+  12 hashes equal, `--popup` 13/13; `cargo test --workspace` 709 passed,
+  0 failed; clippy clean.
+- Not tested: a click with the real mouse (only scripted clicks, which
+  take the same ray path from a projected pixel); the bar against the game
+  on screen. Our M9d5b panel still shows on every tab, and two round
+  gauges and an arrow block on the right show on every tab too (also before this
+  change; not identified yet).
+
 ## 2026-10-18 — M9u8a4a: the PDA's screen on the PDA; its glass no longer see-through
 
 **What/why:** the user saw the PDA's screen almost transparent outside the

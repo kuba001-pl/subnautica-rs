@@ -33,6 +33,7 @@ mod meshes;
 mod messages;
 mod octree;
 mod orient;
+mod pda_tabs;
 mod pickup;
 mod pickups;
 mod png;
@@ -296,6 +297,8 @@ Commands:
                          through a scripted queue against a replay
   ui --popup             M9u7d1: uGUI_PopupNotification, the unlock pop-up,
                          through scripted OnAnalyze entries against a replay
+  ui --pda               M9u8a4b: the PDA screen's tab bar (uGUI_Toolbar),
+                         its icons, OpenTab and clicks against the rule
   ui --layout <CLASS> [<NAME>]
                          M9u1: a script's layout and, for its first object
                          (named NAME), where each field starts and its value
@@ -527,6 +530,7 @@ fn run(mut args: Vec<String>) -> Result<ExitCode> {
         ["ui", "--icon-mesh"] => icon_mesh::run(&game),
         ["ui", "--icons"] => icons::run(&game),
         ["ui", "--popup"] => popup::run(&game),
+        ["ui", "--pda"] => pda_tabs::run(&game),
         ["ui", "--fonts"] => fonts::run(&game, false),
         ["ui", "--fonts", "--atlas"] => fonts::run(&game, true),
         ["ui", "--sprites"] => ui::sprites(&game, false),

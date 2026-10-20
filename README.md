@@ -84,10 +84,13 @@ Tested on Windows 11 with game build 10 (Steam):
   and moved 0.18 m forward, the look locked; walking away from the
   locker closes it at the game's distance). Its screen is the game's
   `uGUI_PDAScreen` canvas on the PDA's screen anchor (M9u8a4a: shown at the
-  open, hidden at the close, the inventory tab's stored content); the tab
-  bar's icons and tab clicks are not done yet (M9u8a4b), and our own
-  inventory panel still stands in for the inventory tab's items (the 6 × 8
-  grid, the 7 slots, the locker beside them when open). The model and
+  open, hidden at the close, the inventory tab's stored content). Its tab
+  bar (M9u8a4b) is the game's: six tab icons made as the game makes them,
+  the open tab highlighted with its marker; a click on a tab opens it
+  (the other tabs show their stored content only, their scripts are not
+  ported) and the PDA reopens on the last tab. Our own inventory panel
+  still stands in for the inventory tab's items (the 6 × 8 grid, the 7
+  slots, the locker beside them when open) and shows on every tab. The model and
   screen are not compared with the game on screen. A left click does what
   the game's click does (take out of or put into the locker, equip,
   unequip), a right click drops the item where the game would (not in

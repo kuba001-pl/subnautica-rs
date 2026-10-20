@@ -285,3 +285,23 @@ fn scale_in_the_root_canvas_leaves_the_canvas_out() {
     // Without canvases: up to the tree root (its scale left out too).
     assert!((scale_y_in_root_canvas(&t, &HashMap::new(), 2) - 1.5).abs() < 1e-5);
 }
+
+#[test]
+fn an_affine_matrix_inverts() {
+    let m = trs(
+        [1.0, -2.0, 0.5],
+        [0.1, 0.2, 0.3, 0.927_362],
+        [2.0, 0.5, 3.0],
+    );
+    let inv = invert(&m).unwrap();
+    for p in [[0.0, 0.0, 0.0], [1.0, 2.0, 3.0], [-4.0, 0.5, 9.0]] {
+        let q = apply(&inv, apply(&m, p));
+        for k in 0..3 {
+            assert!((q[k] - p[k]).abs() < 1e-4, "{p:?} → {q:?}");
+        }
+    }
+    assert_eq!(
+        invert(&trs([0.0; 3], [0.0, 0.0, 0.0, 1.0], [1.0, 0.0, 1.0])),
+        None
+    );
+}

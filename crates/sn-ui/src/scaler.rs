@@ -17,7 +17,7 @@
 //! Unity's conventions: left handed, forward +z, up +y; screen pixels from
 //! the bottom left. VR (`XRSettings.enabled`) is not ported.
 
-use crate::draw::{Affine, apply, trs};
+use crate::draw::{Affine, apply, invert, trs};
 use crate::layout::Tree;
 
 /// `uGUI_CanvasScaler.Mode`.
@@ -97,6 +97,20 @@ impl UiCamera {
             (ndc[1] + 1.0) * 0.5 * screen[1] as f32,
         ])
     }
+
+    /// The direction (world, not normalized) of the ray from the camera
+    /// through `pixel` (from the bottom left; `Camera.ScreenPointToRay`'s
+    /// direction, M9u8a4b): [`UiCamera::project`]'s inverse.
+    pub fn screen_ray(&self, pixel: [f32; 2], screen: [i32; 2]) -> [f32; 3] {
+        let tan = (self.field_of_view.to_radians() * 0.5).tan();
+        let aspect = screen[0] as f32 / screen[1] as f32;
+        let ndc = [
+            2.0 * pixel[0] / screen[0] as f32 - 1.0,
+            2.0 * pixel[1] / screen[1] as f32 - 1.0,
+        ];
+        let c = [ndc[0] * tan * aspect, ndc[1] * tan, 1.0];
+        apply(&trs([0.0; 3], self.rotation, [1.0; 3]), c)
+    }
 }
 
 /// Where the scaler puts a canvas.
@@ -116,6 +130,27 @@ impl Placement {
     /// From the canvas's space (its pivot at the origin) to the world.
     pub fn world_from_canvas(&self) -> Affine {
         trs(self.position, self.rotation, self.scale)
+    }
+
+    /// Where the ray from `origin` along `dir` meets the canvas's plane,
+    /// in the canvas's space (its pivot at the origin); `None` parallel to
+    /// it or behind the origin (M9u8a4b: a click on a world-space canvas,
+    /// as `GraphicRaycaster` finds it).
+    pub fn ray_point(&self, origin: [f32; 3], dir: [f32; 3]) -> Option<[f32; 2]> {
+        let m = self.world_from_canvas();
+        let to_canvas = invert(&m)?;
+        let o = apply(&to_canvas, origin);
+        // A direction: the linear part only.
+        let at = apply(
+            &to_canvas,
+            [origin[0] + dir[0], origin[1] + dir[1], origin[2] + dir[2]],
+        );
+        let d = [at[0] - o[0], at[1] - o[1], at[2] - o[2]];
+        if d[2].abs() < 1e-12 {
+            return None;
+        }
+        let s = -o[2] / d[2];
+        (s >= 0.0).then(|| [o[0] + s * d[0], o[1] + s * d[1]])
     }
 
     /// The canvas rect's corners in the world (bottom left, top left, top

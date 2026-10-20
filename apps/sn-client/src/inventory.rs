@@ -11,8 +11,10 @@
 //! look, the hand and the camera's locked mode, `crate::body` for the
 //! model. A left click does the item's action by the game's rule
 //! (`sn_sim::inventory::item_action`), a right click drops it where the
-//! game would ([`drop_request`]). `--panel` does the same from a script,
-//! for checking from the logs.
+//! game would ([`drop_request`]). A click elsewhere goes to the PDA
+//! screen's toolbar (M9u8a4b, [`ToolbarClick`]; hit tested by the UI
+//! worker). `--panel` does the same from a script, for checking from the
+//! logs.
 
 use bevy::prelude::*;
 use bevy::window::{CursorGrabMode, CursorOptions};
@@ -49,6 +51,20 @@ pub enum Scripted {
     Drop,
     /// A left click on the first item in the slots (M9u6c2).
     Unequip,
+    /// A left click at the centre of the PDA toolbar's icon N (M9u8a4b),
+    /// `tabN`.
+    Tab(u8),
+}
+
+/// A click for the PDA screen's toolbar (M9u8a4b), taken by
+/// `crate::game_ui`'s worker.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ToolbarClick {
+    /// The mouse: physical pixels from the bottom left (Unity's screen
+    /// space) and `PointerEventData`'s button (0 left, 1 right, 2 middle).
+    At { pixel: [f32; 2], button: u8 },
+    /// `--panel tabN`: the left button at icon N's centre, projected.
+    Icon(usize),
 }
 
 impl Scripted {
@@ -60,7 +76,7 @@ impl Scripted {
             "equip" => Scripted::Equip,
             "drop" => Scripted::Drop,
             "unequip" => Scripted::Unequip,
-            _ => return None,
+            _ => Scripted::Tab(s.strip_prefix("tab")?.parse().ok()?),
         })
     }
 }
@@ -87,6 +103,9 @@ pub struct Panel {
     script: Vec<(f64, Scripted)>,
     /// What the UI shows (rebuilt when it changes).
     drawn: Option<String>,
+    /// Clicks for the PDA's toolbar since the last frame sent to the UI
+    /// worker.
+    pub toolbar_clicks: Vec<ToolbarClick>,
 }
 
 impl Panel {
@@ -108,6 +127,7 @@ impl Panel {
             draws: Draws(seed),
             script,
             drawn: None,
+            toolbar_clicks: Vec::new(),
         }
     }
 }
@@ -486,6 +506,20 @@ pub fn input(
                 .map(|(_, b)| b.0);
             if let Some(item) = over {
                 click(&mut session, &sim, panel, text, item, click_kind);
+            } else if let Some((window, _)) = windows.iter().next()
+                && let Some(c) = window.physical_cursor_position()
+            {
+                // Not on our panel: the PDA screen's (only its toolbar
+                // takes clicks so far).
+                let button = match b {
+                    MouseButton::Left => 0,
+                    MouseButton::Right => 1,
+                    _ => 2,
+                };
+                let pixel = [c.x, window.physical_height() as f32 - c.y];
+                panel
+                    .toolbar_clicks
+                    .push(ToolbarClick::At { pixel, button });
             }
         }
     }
@@ -568,6 +602,12 @@ pub fn input(
                 Some(&item) => click(&mut session, &sim, panel, text, item, Click::Left),
                 None => info!("inventory: nothing in the slots"),
             },
+            Scripted::Tab(i) if panel.shown() && panel.pda.focused() => {
+                panel
+                    .toolbar_clicks
+                    .push(ToolbarClick::Icon(usize::from(i)));
+            }
+            Scripted::Tab(_) => info!("inventory: the PDA is not open"),
         }
     }
 }
@@ -835,6 +875,8 @@ mod tests {
         assert_eq!(Scripted::parse("take-all"), Some(Scripted::TakeAll));
         assert_eq!(Scripted::parse("drop"), Some(Scripted::Drop));
         assert_eq!(Scripted::parse("unequip"), Some(Scripted::Unequip));
+        assert_eq!(Scripted::parse("tab3"), Some(Scripted::Tab(3)));
+        assert_eq!(Scripted::parse("tab"), None);
         assert_eq!(Scripted::parse("nope"), None);
     }
 }

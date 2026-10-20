@@ -88,6 +88,7 @@ pub use items::{
 pub use lifepod_light::{ControlledLight, LifepodLighting};
 pub use marmo::{BiomeSky, MarmoSkies, marmo_skies};
 pub use messages::{message_layout, message_times};
+pub use pda_screen::{PdaToolbar, toolbar_icon_nodes};
 pub use player_body::{
     EquipmentSlot, FIXED_PARAMETERS, PlayerAnimation, PlayerBody, RULE_PARAMETERS, TECH_TYPE_NONE,
     equipment_changes,
@@ -108,7 +109,8 @@ pub use skin::{Mat4, skin};
 pub use slots::{LootTable, entity_infos, loot_table, parse_loot_table};
 pub use sn_ui::state::{LocalTransform, MaterialValues, SpriteId, UiState, color32};
 pub use sprites::{
-    AtlasSprite, GROUP_ATLASES, GROUP_ITEM, LoadedAtlas, SPRITE_ATLASES_LABEL, Sprites, cut,
+    AtlasSprite, GROUP_ATLASES, GROUP_ITEM, GROUP_TAB, LoadedAtlas, SPRITE_ATLASES_LABEL, Sprites,
+    cut,
 };
 pub use terrain::{
     BlendSettings, BlockSource, GrassLook, GrassShader, SurfaceLayer, TerrainGrass,

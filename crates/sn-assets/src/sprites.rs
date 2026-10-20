@@ -36,6 +36,7 @@ pub const GROUP_ATLASES: [&str; 8] = [
     "ItemActions",
 ];
 pub const GROUP_ITEM: usize = 1;
+pub const GROUP_TAB: usize = 5;
 
 /// A packed sprite: its own data and where its atlas put it.
 #[derive(Clone)]
