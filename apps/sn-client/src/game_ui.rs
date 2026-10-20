@@ -62,6 +62,7 @@ use bevy::window::PrimaryWindow;
 use sn_ui::death::{DeathInputs, DeathScreens, DeathType};
 use sn_ui::depth::DepthCompass;
 use sn_ui::hud::{Hud, HudInputs, hud_mode};
+use sn_ui::inventory_tab::{InventoryTab, UsedStorage};
 use sn_ui::messages::{MessageInputs, MessageLayout, Messages};
 use sn_ui::notifier::{FROM, Icon, Notifier};
 use sn_ui::pda::{PdaScreen, REGULAR_TABS};
@@ -298,6 +299,8 @@ struct PdaFlags {
     focused: bool,
     /// The model active: down at `Deactivated` (`OnPDAClosed`).
     active: bool,
+    /// Opened with the lifepod's locker as the used storage (M9u8b1).
+    with_locker: bool,
 }
 
 /// This frame's `ErrorMessage` calls (M9u7b), as language keys.
@@ -747,6 +750,58 @@ fn run_worker(
             c.marker_offset
         );
     }
+    // The inventory tab's containers and the doll (M9u8b1):
+    // `uGUI_InventoryTab` and its `Awake`s, `Start` with the player's
+    // container; the locker's size and label from the lifepod.
+    let item_code = sn_assets::item_code(&code)?;
+    let pod = sn_assets::player_items(&assets)?;
+    let mut tab_config = assets.inventory_tab_config(
+        &layouts,
+        &pda_tree,
+        &language,
+        &[pod.pod_locker.storage_label.as_str()],
+    )?;
+    {
+        let off = pda_root;
+        let c = &mut tab_config;
+        for k in std::iter::once(&mut c.inventory)
+            .chain(std::iter::once(&mut c.storage))
+            .chain(c.torpedo.iter_mut())
+        {
+            k.node += off;
+            k.grid = k.grid.map(|g| g + off);
+        }
+        c.equipment += off;
+        for sl in &mut c.slots {
+            sl.node += off;
+            sl.background += off;
+            sl.hint = sl.hint.map(|h| h + off);
+        }
+        c.inventory_label += off;
+        c.storage_label += off;
+        let mut st = start_state.clone();
+        st.apply(&pda_screen.state);
+        let only_pda = HashMap::from([(pda_root, pda_placement)]);
+        c.lay_out(&scene.layout_for(&assets, &set, &only_pda, &st)?);
+    }
+    let mut inventory_tab = InventoryTab::new(tab_config);
+    inventory_tab.start((item_code.inventory_size[0], item_code.inventory_size[1]));
+    let locker_storage = UsedStorage::Container {
+        size: (pod.pod_locker.width, pod.pod_locker.height),
+        label: pod.pod_locker.storage_label.clone(),
+    };
+    let player_equipment = UsedStorage::Equipment(item_code.player_slots.clone());
+    info!(
+        "game UI PDA inventory tab: inventory {:?} ({}), {} named slots (the player's {:?}), locker {}×{} ({:?} → {:?}); the items' icons are not drawn yet (M9u8b2)",
+        item_code.inventory_size,
+        scene.tree.nodes[inventory_tab.config.inventory.node].path,
+        inventory_tab.config.slots.len(),
+        item_code.player_slots,
+        pod.pod_locker.width,
+        pod.pod_locker.height,
+        pod.pod_locker.storage_label,
+        inventory_tab.config.text(&pod.pod_locker.storage_label)
+    );
     let mut pda_seen = PdaFlags::default();
     // What `SetTransition` reads, when first needed after a resize.
     let mut popup_layout: Option<PopupLayout> = None;
@@ -973,8 +1028,21 @@ fn run_worker(
                     }
                     rules.apply(&popup.state);
                     // `uGUI_PDA` (M9u8a4a): the PDA's calls.
-                    pda_screen_calls(&mut pda_screen, &mut pda_seen, pda, inputs.time);
+                    let used = if pda.with_locker {
+                        &locker_storage
+                    } else {
+                        &player_equipment
+                    };
+                    pda_screen_calls(
+                        &mut pda_screen,
+                        &mut inventory_tab,
+                        used,
+                        &mut pda_seen,
+                        pda,
+                        inputs.time,
+                    );
                     rules.apply(&pda_screen.state);
+                    rules.apply(&inventory_tab.state);
                     // The toolbar's clicks (M9u8a4b), on the canvas at this
                     // frame's pose.
                     if !pda_clicks.clicks.is_empty() {
@@ -1332,7 +1400,14 @@ fn popup_log(p: &Popup, shown: &mut Option<(String, f32)>, dt: f32) {
 /// `uGUI_PDA`'s calls from the PDA's flags' changes (M9u8a4a), logged:
 /// `OnOpenPDA` (`using_pda` up), `OnPDAOpened` (focused), `OnClosePDA`
 /// (`using_pda` down), `OnPDAClosed` (the model off).
-fn pda_screen_calls(s: &mut PdaScreen, seen: &mut PdaFlags, now: PdaFlags, time: f32) {
+fn pda_screen_calls(
+    s: &mut PdaScreen,
+    tab: &mut InventoryTab,
+    used: &UsedStorage,
+    seen: &mut PdaFlags,
+    now: PdaFlags,
+    time: f32,
+) {
     let shown = |s: &PdaScreen| {
         let c = &s.config;
         let alpha = |n: usize| s.state.group_alpha.get(&n).copied().unwrap_or(1.0);
@@ -1354,6 +1429,18 @@ fn pda_screen_calls(s: &mut PdaScreen, seen: &mut PdaFlags, now: PdaFlags, time:
         )
     };
     if now.using && !seen.using {
+        // `uGUI_PDA.OnOpenPDA`: each tab's `OnOpenPDA`, then `OpenTab`.
+        tab.on_open_pda(used.clone());
+        info!(
+            "game UI PDA inventory tab at {time:.3} s: OnOpenPDA with {}: storage label {:?}",
+            match used {
+                UsedStorage::Equipment(slots) =>
+                    format!("the equipment ({} slots shown)", slots.len()),
+                UsedStorage::Container { size, .. } =>
+                    format!("the locker ({}×{})", size.0, size.1),
+            },
+            tab.state.text.get(&tab.config.storage_label)
+        );
         s.on_open_pda(None);
         info!(
             "game UI PDA screen at {time:.3} s: OnOpenPDA, tab {:?}: {}",
@@ -1367,6 +1454,7 @@ fn pda_screen_calls(s: &mut PdaScreen, seen: &mut PdaFlags, now: PdaFlags, time:
     }
     if !now.using && seen.using {
         s.on_close_pda();
+        tab.on_close_pda();
         info!(
             "game UI PDA screen at {time:.3} s: OnClosePDA: {}",
             shown(s)
@@ -2083,6 +2171,7 @@ fn send_inputs(
             using: p.pda.using_pda(),
             focused: p.pda.focused(),
             active: p.pda.active(),
+            with_locker: p.with_locker(),
         }),
         pda_clicks,
     ))));

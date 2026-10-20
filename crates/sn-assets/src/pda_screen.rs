@@ -4,7 +4,10 @@
 //! `uGUI_Toolbar` (M9u8a4b, [`PdaToolbar`]) and the icons it makes by
 //! code ([`toolbar_icon_nodes`]).
 
+use std::collections::{BTreeMap, HashMap};
+
 use sn_ui::icon::NEW_RECT_SIZE;
+use sn_ui::inventory_tab::{ContainerNodes, InventoryTabConfig, SlotNodes};
 use sn_ui::layout::{RectTransform, V2};
 use sn_ui::material::UiMaterial;
 use sn_ui::pda::{PdaScreenConfig, Tab, TabNodes, TabShow};
@@ -124,7 +127,158 @@ pub fn toolbar_icon_nodes(layer: u32, material: &UiMaterial) -> Vec<CodeNode> {
     ]
 }
 
+/// `uGUI_InventoryTab`'s language keys (`OnLanguageChanged`, the
+/// equipment's label, the default storage label).
+pub const INVENTORY_TAB_KEYS: [&str; 3] = ["InventoryLabel", "StorageLabel", "EquipmentLabel"];
+
+/// The node whose GameObject `p` points at (from `from`'s file).
+fn game_object_node(
+    assets: &Assets,
+    tree: &UiTree,
+    from: &ObjectRef,
+    p: PPtr,
+    what: &str,
+) -> Result<usize> {
+    let o = assets
+        .resolve(&from.file, p)?
+        .ok_or_else(|| format!("{what}: not set"))?;
+    tree.nodes
+        .iter()
+        .position(|n| n.game_object.as_ref().is_some_and(|g| g.key() == o.key()))
+        .ok_or_else(|| format!("{what}: not in the tree"))
+}
+
+fn below(tree: &UiTree, mut node: usize, ancestor: usize) -> bool {
+    let mut guard = 0;
+    while let Some(p) = tree.nodes[node].parent {
+        if p == ancestor {
+            return true;
+        }
+        node = p;
+        guard += 1;
+        if guard > tree.nodes.len() {
+            return false;
+        }
+    }
+    false
+}
+
 impl Assets<'_> {
+    /// `uGUI_InventoryTab` in `tree` (the screen prefab): its containers
+    /// (`inventory`, `storage`, `torpedoStorage`, each with its `grid`),
+    /// `equipment` and its named `uGUI_EquipmentSlot`s (hierarchy order:
+    /// `GetComponentsInChildren`), the two labels; `language` gives the
+    /// texts of [`INVENTORY_TAB_KEYS`] and `extra_keys` (the locker's
+    /// label). The containers' layout fields are 0 until
+    /// [`InventoryTabConfig::lay_out`].
+    pub fn inventory_tab_config(
+        &self,
+        layouts: &Layouts,
+        tree: &UiTree,
+        language: &HashMap<String, String>,
+        extra_keys: &[&str],
+    ) -> Result<InventoryTabConfig> {
+        const TAB: &str = "uGUI_InventoryTab";
+        let (_, c) = tree.scripts(TAB).next().ok_or("no uGUI_InventoryTab")?;
+        let (_, f) = self.script_fields(layouts, c)?;
+        let e = |m: String| format!("{TAB}.{m}");
+        let node = |name: &str| {
+            node_of(
+                self,
+                tree,
+                &c.object,
+                pptr(&f, name).map_err(e)?,
+                &e(name.into()),
+            )
+        };
+        let container = |p: PPtr, what: String| -> Result<ContainerNodes> {
+            let n = node_of(self, tree, &c.object, p, &what)?;
+            let script = self
+                .resolve(&c.object.file, p)?
+                .ok_or_else(|| format!("{what}: not set"))?;
+            let (_, cf) = self.object_fields(layouts, &script)?;
+            let grid = match pptr(&cf, "grid") {
+                Ok(g) if !g.is_null() => {
+                    Some(node_of(self, tree, &script, g, &format!("{what}.grid"))?)
+                }
+                _ => None,
+            };
+            Ok(ContainerNodes::new(n, grid))
+        };
+        let inventory = container(pptr(&f, "inventory").map_err(e)?, e("inventory".into()))?;
+        let storage = container(pptr(&f, "storage").map_err(e)?, e("storage".into()))?;
+        let mut torpedo = Vec::new();
+        for (k, v) in f
+            .get("torpedoStorage")
+            .and_then(Value::as_array)
+            .ok_or_else(|| e("torpedoStorage: not read".into()))?
+            .iter()
+            .enumerate()
+        {
+            let p = v
+                .as_pptr()
+                .ok_or_else(|| e(format!("torpedoStorage[{k}]: not a reference")))?;
+            if !p.is_null() {
+                torpedo.push(container(p, e(format!("torpedoStorage[{k}]")))?);
+            }
+        }
+        let equipment = node("equipment")?;
+        let mut slots = Vec::new();
+        for (n, sc) in tree.scripts("uGUI_EquipmentSlot") {
+            if !below(tree, n, equipment) {
+                continue;
+            }
+            let (_, sf) = self.script_fields(layouts, sc)?;
+            let what = format!("uGUI_EquipmentSlot {}", tree.nodes[n].path);
+            let slot = sf
+                .get("slot")
+                .and_then(Value::as_str)
+                .ok_or_else(|| format!("{what}.slot: not read"))?;
+            if slot.is_empty() {
+                continue;
+            }
+            let background = node_of(
+                self,
+                tree,
+                &sc.object,
+                pptr(&sf, "background").map_err(|m| format!("{what}.{m}"))?,
+                &format!("{what}.background"),
+            )?;
+            let hint = match pptr(&sf, "hint") {
+                Ok(h) if !h.is_null() => Some(game_object_node(
+                    self,
+                    tree,
+                    &sc.object,
+                    h,
+                    &format!("{what}.hint"),
+                )?),
+                _ => None,
+            };
+            slots.push(SlotNodes {
+                slot: slot.to_string(),
+                node: n,
+                background,
+                hint,
+            });
+        }
+        let mut texts = BTreeMap::new();
+        for k in INVENTORY_TAB_KEYS.iter().chain(extra_keys) {
+            if let Some(v) = language.get(*k) {
+                texts.insert(k.to_string(), v.clone());
+            }
+        }
+        Ok(InventoryTabConfig {
+            inventory,
+            storage,
+            torpedo,
+            equipment,
+            slots,
+            inventory_label: node("inventoryLabel")?,
+            storage_label: node("storageLabel")?,
+            language: texts,
+        })
+    }
+
     /// `uGUI_PDA.toolbar` in `tree` (the screen prefab): its node,
     /// `selectionMarker`'s (which must be the toolbar's child: `Select`
     /// sets its `localPosition`), the stored sizes and the background

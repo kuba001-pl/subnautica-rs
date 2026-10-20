@@ -2,6 +2,40 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-20 — M9u8b1: the inventory tab's containers and doll (plan for M9u8b)
+
+**What/why:** M9u8b (the inventory tab) was planned from the decompiled
+`uGUI_InventoryTab`, `uGUI_ItemsContainer`, `uGUI_Equipment`,
+`uGUI_EquipmentSlot` and `uGUI_ItemIcon` and split into M9u8b1–b5 in
+DESIGN. This first step runs the tab's `Awake`s, `Start`, `OnOpenPDA` and
+`OnClosePDA`, without icons. It explains what M9u8a4b left open: the "round
+gauges and arrow block" seen on every tab are the doll's slot art.
+`uGUI_Equipment.Awake` hides all 38 slots, and we did not run it.
+- `sn-ui::inventory_tab` (new; 4 unit tests); `UiState::uv_rect`
+  (`RawImage.uvRect`, applied when drawn).
+- `sn-assets`: `inventory_tab_config` (containers, grids, the doll's
+  named slots, labels, the language texts), `INVENTORY_TAB_KEYS`.
+- `sn-inspect ui --inventory` (new).
+- `sn-client`: the worker builds the tab (the locker's size and label from
+  the lifepod, the player's slots and container size from the game's
+  code) and calls it from the PDA's flags; `PdaFlags::with_locker`.
+No new dependencies.
+
+**Verified** (`SUBNAUTICA_DIR` set; logs in `out/m9u8a/`):
+- `sn-inspect ui --inventory` (`ui-inventory.log`): RUN OK, 22 of 22. My
+  first run failed one check of my own: I compared the shown slots in the
+  player's list order, but the game shows them in hierarchy order. Now
+  compared as sets.
+- Client `--panel 3=open --shot 6 m9u8b1-equipment` and `--use-item 3
+  --shot 6.5 m9u8b1-locker` (`b1-*.log`, 0 WARN/ERROR/panic): the doll
+  shows only the player's slots under "EQUIPPED"; with the locker the
+  doll is hidden and the 4 × 8 grid is under "STORAGE".
+- `cargo test --workspace` 713 passed, 0 failed; clippy clean; `ui
+  --pda`, `--draw`, `--icons` unchanged.
+- Not tested: against the game on screen. The slots' `UI/Circle` art is
+  still drawn as `UI/Default` (M9u8b2). Our Bevy panel still covers part
+  of the tab.
+
 ## 2026-10-20 — M9u8a4b: the PDA's tab bar and tab clicks
 
 **What/why:** the last step of M9u8a (DESIGN): the PDA screen's toolbar

@@ -115,6 +115,11 @@ impl Panel {
         self.pda.using_pda()
     }
 
+    /// Opened with the locker as the used storage (M9u8b1).
+    pub fn with_locker(&self) -> bool {
+        self.with_locker
+    }
+
     pub fn new(mut script: Vec<(f64, Scripted)>, seed: u64) -> Panel {
         script.sort_by(|a, b| b.0.total_cmp(&a.0));
         Panel {

@@ -1055,9 +1055,12 @@ fn apply_to_graphic(
             }
             true
         }
-        UiGraphicKind::RawImage { color, .. } => {
+        UiGraphicKind::RawImage { color, uv_rect, .. } => {
             if let Some(c) = state.color.get(&node) {
                 *color = *c;
+            }
+            if let Some(r) = state.uv_rect.get(&node) {
+                *uv_rect = *r;
             }
             true
         }

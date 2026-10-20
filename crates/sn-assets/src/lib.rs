@@ -88,7 +88,7 @@ pub use items::{
 pub use lifepod_light::{ControlledLight, LifepodLighting};
 pub use marmo::{BiomeSky, MarmoSkies, marmo_skies};
 pub use messages::{message_layout, message_times};
-pub use pda_screen::{PdaToolbar, toolbar_icon_nodes};
+pub use pda_screen::{INVENTORY_TAB_KEYS, PdaToolbar, toolbar_icon_nodes};
 pub use player_body::{
     EquipmentSlot, FIXED_PARAMETERS, PlayerAnimation, PlayerBody, RULE_PARAMETERS, TECH_TYPE_NONE,
     equipment_changes,

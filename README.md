@@ -88,7 +88,11 @@ Tested on Windows 11 with game build 10 (Steam):
   bar (M9u8a4b) is the game's: six tab icons made as the game makes them,
   the open tab highlighted with its marker; a click on a tab opens it
   (the other tabs show their stored content only, their scripts are not
-  ported) and the PDA reopens on the last tab. Our own inventory panel
+  ported) and the PDA reopens on the last tab. The inventory tab's
+  containers and paper doll follow the game's rules (M9u8b1): the doll
+  shows only the player's seven slots and the "EQUIPPED" label, or the
+  locker's 4 × 8 grid under "STORAGE" when the locker is open; the items'
+  own icons are not drawn on it yet (M9u8b2). Our own inventory panel
   still stands in for the inventory tab's items (the 6 × 8 grid, the 7
   slots, the locker beside them when open) and shows on every tab. The model and
   screen are not compared with the game on screen. A left click does what

@@ -70,6 +70,8 @@ pub struct UiState {
     pub sprite: BTreeMap<usize, Option<SpriteId>>,
     /// `Image.fillAmount`.
     pub fill_amount: BTreeMap<usize, f32>,
+    /// `RawImage.uvRect` (x, y, width, height; M9u8b1).
+    pub uv_rect: BTreeMap<usize, [f32; 4]>,
     /// TMP's `text`.
     pub text: BTreeMap<usize, String>,
     pub transform: BTreeMap<usize, LocalTransform>,
@@ -93,6 +95,8 @@ impl UiState {
             .extend(other.sprite.iter().map(|(k, v)| (*k, *v)));
         self.fill_amount
             .extend(other.fill_amount.iter().map(|(k, v)| (*k, *v)));
+        self.uv_rect
+            .extend(other.uv_rect.iter().map(|(k, v)| (*k, *v)));
         self.text
             .extend(other.text.iter().map(|(k, v)| (*k, v.clone())));
         for (k, t) in &other.transform {

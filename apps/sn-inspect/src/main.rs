@@ -25,6 +25,7 @@ mod grass;
 mod icon_mesh;
 mod icons;
 mod instantiate;
+mod inventory_tab;
 mod live;
 mod lods;
 mod materials;
@@ -299,6 +300,8 @@ Commands:
                          through scripted OnAnalyze entries against a replay
   ui --pda               M9u8a4b: the PDA screen's tab bar (uGUI_Toolbar),
                          its icons, OpenTab and clicks against the rule
+  ui --inventory         M9u8b1: the PDA's inventory tab without icons:
+                         containers, the doll's slots, labels
   ui --layout <CLASS> [<NAME>]
                          M9u1: a script's layout and, for its first object
                          (named NAME), where each field starts and its value
@@ -531,6 +534,7 @@ fn run(mut args: Vec<String>) -> Result<ExitCode> {
         ["ui", "--icons"] => icons::run(&game),
         ["ui", "--popup"] => popup::run(&game),
         ["ui", "--pda"] => pda_tabs::run(&game),
+        ["ui", "--inventory"] => inventory_tab::run(&game),
         ["ui", "--fonts"] => fonts::run(&game, false),
         ["ui", "--fonts", "--atlas"] => fonts::run(&game, true),
         ["ui", "--sprites"] => ui::sprites(&game, false),

@@ -160,6 +160,46 @@ with `sizeDelta` (0, 54), its anchors one point.
   "Tab<name>")`), the gamepad's tab cycling and hover sounds are not
   ported.
 
+## The inventory tab (M9u8b1) — confirmed (decompiled code, stored fields, `ui --inventory`, client)
+
+`uGUI_InventoryTab` is on `uGUI_PDAScreen/Content/InventoryTab`. Its
+`inventory` and `storage` are the `uGUI_ItemsContainer`s
+`InventoryContainer` and `StorageContainer` (each with a `RawImage` `Grid`),
+`torpedoStorage` four more (`TorpedoContainer1–4`), `equipment` the
+`uGUI_Equipment` on `Equipment` with **38** named `uGUI_EquipmentSlot`s:
+the player's (Head, Foots, Chip1, Chip2, Tank, Gloves, Body, in that
+hierarchy order), the cyclops' `Module1–6`, `SeamothModule1–4`,
+`NuclearReactor1–4`, `ExosuitModule1–4`, `ExosuitArmLeft`/`Right`,
+`BatteryCharger1–4`, `PowerCellCharger1–2`, `DecoySlot1–5`; every name is
+in `Equipment.slotMapping`.
+
+- **`Awake`s:** each `uGUI_ItemsContainer` makes its object inactive;
+  `uGUI_Equipment` makes every named slot inactive (`SetActive` acts only
+  on a change; a slot starts active) and then itself; each slot's `Awake`
+  tints its `background` by its state, default = white at alpha 127
+  (`tintDefault`). Without these the stored doll shows all 38 slots' art
+  on every tab (what M9u8a4a drew).
+- **`Start`:** `inventory.Init(Inventory.main.container)` (6 × 8, from
+  `Inventory.Awake`'s code): `OnResize` sets the rect to 71·w × 71·h
+  (`SetSizeWithCurrentAnchors`) and `grid.uvRect` to (0, 0, w, h), then
+  active.
+- **`OnOpenPDA`:** with one used storage `storage.Init(it)`; with none
+  `equipment.Init(Inventory.main.equipment)`: each slot the equipment has
+  active (the player's seven: `Inventory.UnlockDefaultEquipmentSlots`),
+  then the doll. The storage label is `Language.Get(container.label)`:
+  `EquipmentLabel` ("EQUIPPED") for the equipment, the locker's
+  `StorageContainer.storageLabel` `EscapePodStorageLabel` ("STORAGE"),
+  else `StorageLabel`; a missing key reads as itself. The lifepod's
+  locker is 4 × 8. Two or more used storages fill the torpedo containers
+  (not reached by our game).
+- **`OnClosePDA`:** `storage.Uninit` and the torpedo containers' (inactive),
+  `equipment.Uninit` when it was `Init` (every slot and the doll
+  inactive). The inventory container stays active.
+- **`OnLanguageChanged`** (from `uGUI_PDA.Start`): `inventoryLabel` =
+  "INVENTORY".
+- Not yet (M9u8b2–b5): the items' icons, the slots' icons and hints,
+  `UI/Circle`, hover, clicks, drag and drop, notifications.
+
 ## Canvases and scalers — confirmed
 
 **`Canvas` (class 223), 55 bytes:** PPtr game object, `u8` enabled
