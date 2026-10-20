@@ -14,6 +14,12 @@
 //   1|), t = saturate((the clockwise angle of p from +y as a fraction of a
 //   turn − `_AlphaFrom`) ÷ (`_AlphaTo` − `_AlphaFrom`)). Its pass culls
 //   back faces; the mesh faces the camera, so nothing is culled here.
+// - `UI/Icon` with `SLICE_9_GRID` (M9u8b2b, flag 32; `st` = `_Radius`,
+//   `_Size`): the UV mapped round a rounded border onto a strip texture
+//   (`sn_ui::icon::slice9_uv`, which this mirrors); then as `UI/Icon`.
+// - `UI/Circle` (M9u8b2b, flag 64; `st` = `_TileX`, `_TileY`, `_Size`): the
+//   UV mapped to angle and radius (`sn_ui::icon::circle_uv`); the hard clip.
+// Both read `_MainTex_TexelSize.w` as the bound texture's height.
 // Vertex colours arrive as stored (sRGB bytes) and are made linear, as
 // Unity does in a linear project (*hypothesis*, `docs/formats/ui.md`).
 
@@ -31,7 +37,7 @@ struct Item {
     // `_UIMaskSoftnessX`, `_UIMaskSoftnessY`, flags, unused. Flags: 1 the
     // soft clip (`UNITY_UI_CLIP_RECT`), 2 the hard clip (`UI/Simple`), 4
     // premultiply (`ALPHA_PREMULTIPLY`), 8 `_MainTex_ST` applies, 16
-    // `uGUI/Compass`.
+    // `uGUI/Compass`, 32 `SLICE_9_GRID`, 64 `UI/Circle`.
     softness: vec4<f32>,
     // `_ScreenParams.xy`, the projection's [0][0] and [1][1].
     pixel: vec4<f32>,
@@ -70,6 +76,45 @@ fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
     let low = c / 12.92;
     let high = pow((c + 0.055) / 1.055, vec3<f32>(2.4));
     return select(high, low, c <= vec3<f32>(0.04045));
+}
+
+// `sn_ui::icon::slice9_uv`.
+fn slice9_uv(uv: vec2<f32>, radius: f32, size: vec2<f32>, h: f32) -> vec2<f32> {
+    let r = min(min(size.y, size.x) * 0.5, radius);
+    let b = r / size;
+    let left = uv.x <= b.x;
+    let not_right = uv.x <= 1.0 - b.x;
+    let mid_u = (uv.x - b.x) / (1.0 - 2.0 * b.x);
+    let t_left = 1.0 - uv.x / b.x;
+    let t_right = (uv.x - (1.0 - b.x)) / b.x;
+    var st: vec2<f32>;
+    if uv.y <= b.y {
+        let t_bottom = 1.0 - uv.y / b.y;
+        st = select(vec2<f32>(0.5, length(vec2<f32>(t_right, t_bottom))), vec2<f32>(mid_u, t_bottom), not_right);
+        st = select(st, vec2<f32>(0.5, length(vec2<f32>(t_left, t_bottom))), left);
+    } else if uv.y <= 1.0 - b.y {
+        let mid_v = (uv.y - b.y) / (1.0 - 2.0 * b.y);
+        st = select(vec2<f32>(mid_v, t_right), vec2<f32>(0.5, 0.0), not_right);
+        st = select(st, vec2<f32>(mid_v, t_left), left);
+    } else {
+        let t_top = (uv.y - (1.0 - b.y)) / b.y;
+        st = select(vec2<f32>(0.5, length(vec2<f32>(t_top, t_right))), vec2<f32>(mid_u, t_top), not_right);
+        st = select(st, vec2<f32>(0.5, length(vec2<f32>(t_top, t_left))), left);
+    }
+    let k = (r - h) / r;
+    return vec2<f32>(st.x, (st.y - k) / (1.0 - k));
+}
+
+// `sn_ui::icon::circle_uv`.
+fn circle_uv(uv: vec2<f32>, tile: vec2<f32>, size: f32, h: f32) -> vec2<f32> {
+    let p = uv * 2.0 - 1.0;
+    let fold = p.x < 0.0;
+    let q = select(p, -p, fold);
+    let half = select(0.0, 0.5, fold);
+    let u = (atan2(q.y, q.x) * 0.159155 + half) * tile.x;
+    let k = (size - 2.0 * h) / size;
+    let v = saturate((length(p) - k) / (1.0 - k)) * tile.y;
+    return vec2<f32>(u, v);
 }
 
 @vertex
@@ -112,7 +157,14 @@ fn fragment(in: VertexOut) -> @location(0) vec4<f32> {
     let window = sin(1.0 - abs(2.0 * t - 1.0));
     let sc = vec2<f32>(sin(it.st.x), cos(it.st.x));
     let turned = vec2<f32>(sc.y * p.x + sc.x * p.y, -sc.x * p.x + sc.y * p.y) * 0.5 + 0.5;
-    let uv = select(in.uv, turned, compass);
+    let h = f32(textureDimensions(main_tex).y);
+    var uv = select(in.uv, turned, compass);
+    if has(it.softness.z, 32u) {
+        uv = slice9_uv(in.uv, it.st.x, it.st.yz, h);
+    }
+    if has(it.softness.z, 64u) {
+        uv = circle_uv(in.uv, it.st.xy, it.st.z, h);
+    }
     var c = (textureSample(main_tex, main_sampler, uv) + it.texture_add) * in.color;
     if compass {
         c.a = c.a * window;

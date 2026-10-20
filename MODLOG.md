@@ -2,6 +2,35 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-20 — M9u8b2b: the icons' round backgrounds and the doll's circles
+
+**What/why:** the second half of M9u8b2 (DESIGN). The item icons'
+backgrounds are 2-pixel strips that only `UI/Icon`'s `SLICE_9_GRID`
+program turns into the rounded, shaded tile. The doll's slots use
+`UI/Circle`. Both drew as `UI/Default`.
+- `sn-ui::icon`: `slice9_uv` and `circle_uv`, Rust references of the two
+  fragment programs' sample coordinates (read from M9u7c's and M9u5's
+  D3D11 disassembly); 2 unit tests with values worked by hand.
+- `game_ui.wgsl`: the same two mappings (flags 32 and 64; their values
+  in `st`; the texture's height from `textureDimensions`).
+- `game_ui.rs`: `UI/Icon` with only `SLICE_9_GRID` and `UI/Circle` take
+  those flags; the census is logged again whenever its shader set changes
+  (the PDA's draws come after the first build).
+No new dependencies.
+
+**Verified** (`SUBNAUTICA_DIR` set; logs in `out/m9u8a/`):
+- Client `--use-item 3 --panel 6=take-all,7=close,9=open,10=tab4 --shot
+  11.5 m9u8b2b-census` (`b2b-census.log`, 0 WARN/ERROR/panic, no GPU
+  validation error): "census changed: … UI/Circle 7 … UI/Icon SLICE_9_GRID
+  6 …; drawn as UI/Default {UI/Bar (LoadingBar): 1}" (the loading bar,
+  not in scope).
+- Screenshots `out/m9u8b2b-grid.png` and `-locker.png`: round blue icons
+  with a shaded rim, and the doll's slots as circles.
+- `cargo test --workspace` 720 passed, 0 failed; clippy clean; `ui
+  --inventory`, `--pda`, `--draw`, `--icons`, `--icon-mesh` unchanged.
+- Not tested: the WGSL against the Rust reference by execution (it is a
+  line-by-line mirror); the look against the game on screen.
+
 ## 2026-10-20 — M9u8b2a: the inventory tab's item and slot icons
 
 **What/why:** the next step of M9u8b (DESIGN). M9u8b2 was split into

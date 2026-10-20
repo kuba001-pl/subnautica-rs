@@ -234,6 +234,22 @@ in `Equipment.slotMapping`.
 - **Bars and grey are not drawn by us:** `GetBarValue` ≥ 0 only for an
   `EnergyMixin`, an `IBattery` or decaying food; grey only for a disabled
   item. Our sim has a battery's charge but not the rest (DESIGN M9u8b2).
+- **`UI/Icon` with `SLICE_9_GRID`** (M9u8b2b; its D3D11 fragment program,
+  M9u7c's dump, blob 160): R = min(½·min(`_Size`), `_Radius`), b = R ÷
+  `_Size` in UV. The quad's UV becomes a strip coordinate (s, t). Along
+  an edge, s runs along it between the corners and t goes 0 → 1 from
+  the border's inner line to the outer edge. In a corner, s = ½ and t is
+  the distance from the corner's inner point in border widths. Inside,
+  (½, 0). Then t' = (t − k) ÷ (1 − k), k = (R − h) ÷ R, h =
+  `_MainTex_TexelSize.w` (the texture's height), so the strip's h texels
+  cover the outer h units. The sample is `UI/Icon`'s (+ `_TextureSampleAdd`,
+  × vertex colour, the hard clip). With the 2 × 33 Normal strip and R =
+  33, a 1 × 1 icon is a disc whose shading runs from the rim inward.
+- **`UI/Circle`** (M9u8b2b; M9u5's dump, blob 2): p = 2·UV − 1 folded to
+  the right half (q = −p and + ½ turn when p.x < 0); u = (atan2(q.y, q.x)
+  ÷ 2π + that) × `_TileX`; v = saturate((|p| − k) ÷ (1 − k)) × `_TileY`, k
+  = (`_Size` − 2h) ÷ `_Size`; the same sample and hard clip. The doll's
+  slot backgrounds are circles drawn with it.
 - **Ours** (`sn_ui::item_icons`, `InventoryTab::sync_items`): a destroyed
   icon's nodes are hidden and reused for the next new icon. The game makes
   a new one, last among its siblings. Icons never overlap, so the draw

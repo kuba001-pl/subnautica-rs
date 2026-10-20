@@ -20,12 +20,12 @@
 //! ui_start_state`: faders, overlays, the game-over blocker), not its
 //! stored one, which is black.
 //!
-//! Shaders: `UI/Default`, `UI/Simple` and `UI/Icon`'s base variant
-//! (`game_ui.wgsl`), and TMP's
+//! Shaders: `UI/Default`, `UI/Simple`, `UI/Icon`'s base and `SLICE_9_GRID`
+//! variants and `UI/Circle` (`game_ui.wgsl`, M9u8b2b), and TMP's
 //! `TextMeshPro/Distance Field` (`game_ui_text.wgsl`, M9u5d) with the
 //! font atlases the worker fills (sent again when glyphs are added). `uGUI/DepthClear` writes only depth,
 //! which our pass does not use: skipped (counted). Other shaders (`UI/Bar`,
-//! `uGUI/WorldCursor`, `UI/Circle`) are drawn as `UI/Default` and named in
+//! `uGUI/WorldCursor`) are drawn as `UI/Default` and named in
 //! the log until their steps port them.
 
 use std::collections::{BTreeMap, HashMap};
@@ -101,6 +101,8 @@ const HARD_CLIP: u32 = 2;
 const PREMULTIPLY: u32 = 4;
 const MAIN_TEX_ST: u32 = 8;
 const COMPASS: u32 = 16;
+const SLICE_9: u32 = 32;
+const CIRCLE: u32 = 64;
 
 /// A clip rect that clips nothing (`UI/Simple` always tests `_ClipRect`;
 /// *hypothesis*: Unity's native default covers everything).
@@ -847,6 +849,8 @@ fn run_worker(
             .collect::<Vec<_>>()
     );
     let mut tab_seen = TabContents::default();
+    // The census's shader sets last logged.
+    let mut census_seen: Option<(Vec<String>, Vec<String>)> = None;
     let mut pda_seen_icons = PdaFlags::default();
     let mut pda_seen = PdaFlags::default();
     // What `SetTransition` reads, when first needed after a resize.
@@ -1322,7 +1326,15 @@ fn run_worker(
         state.apply(&rules);
         let d = scene.draw(&assets, &fonts, &set, &mut atlases, &placements, &state)?;
         // The scene's tree: the stored nodes and the copies grafted since.
-        let mut build = convert(&scene.tree, &d, size, fov, placements.clone(), resized);
+        let mut build = convert(
+            &scene.tree,
+            &d,
+            size,
+            fov,
+            placements.clone(),
+            resized,
+            &mut census_seen,
+        );
         build.pda_root = Some(pda_root);
         for (key, object) in &d.textures {
             if sent.contains(key) {
@@ -1949,6 +1961,7 @@ fn convert(
     field_of_view: f32,
     placements: HashMap<usize, Placement>,
     log: bool,
+    seen: &mut Option<(Vec<String>, Vec<String>)>,
 ) -> UiBuild {
     let mut vertices = Vec::new();
     let mut indices = Vec::new();
@@ -2058,17 +2071,32 @@ fn convert(
                 flags |= HARD_CLIP | COMPASS;
                 *census.drawn.entry(m.shader.clone()).or_default() += 1;
             }
+            // `UI/Circle` (M9u8b2b): one pass, `SrcAlpha OneMinusSrcAlpha`.
+            "UI/Circle" => {
+                flags |= HARD_CLIP | CIRCLE;
+                *census.drawn.entry(m.shader.clone()).or_default() += 1;
+            }
             // `UI/Icon` (M9u7c1): its variant without keywords is
             // `UI/Simple`'s program without premultiplying, blending by
-            // `_SrcFactor`/`_DstFactor` for colour and alpha.
-            sn_ui::icon::SHADER if !ICON_KEYWORDS.iter().any(|k| m.has_keyword(k)) => {
+            // `_SrcFactor`/`_DstFactor` for colour and alpha; with
+            // `SLICE_9_GRID` (M9u8b2b) the UV first goes round the border.
+            sn_ui::icon::SHADER
+                if !ICON_KEYWORDS
+                    .iter()
+                    .any(|k| *k != "SLICE_9_GRID" && m.has_keyword(k)) =>
+            {
                 flags |= HARD_CLIP;
+                let mut key = m.shader.clone();
+                if m.has_keyword("SLICE_9_GRID") {
+                    flags |= SLICE_9;
+                    key.push_str(" SLICE_9_GRID");
+                }
                 let f = |k: &str, default: f32| {
                     if m.has(k) { m.float(k) } else { default }
                 };
                 let (src, dst) = (f("_SrcFactor", 5.0) as u8, f("_DstFactor", 10.0) as u8);
                 blend = [src, dst, src, dst];
-                *census.drawn.entry(m.shader.clone()).or_default() += 1;
+                *census.drawn.entry(key).or_default() += 1;
             }
             "UI/Simple" => {
                 flags |= HARD_CLIP;
@@ -2108,6 +2136,15 @@ fn convert(
                 m.float("_AlphaTo"),
                 0.0,
             ]
+        } else if flags & SLICE_9 != 0 {
+            let size = m
+                .colors
+                .get("_Size")
+                .copied()
+                .unwrap_or([100.0, 100.0, 0.0, 0.0]);
+            [m.float("_Radius"), size[0], size[1], 0.0]
+        } else if flags & CIRCLE != 0 {
+            [m.float("_TileX"), m.float("_TileY"), m.float("_Size"), 0.0]
         } else {
             m.colors
                 .get("_MainTex_ST")
@@ -2179,6 +2216,19 @@ fn convert(
         g.1 += it.vertices.len();
         g.2.insert(it.texture);
     }
+    // The shaders drawn and the fallbacks, logged again when either set
+    // changes (M9u8b2b: the PDA's draws come later than the first build).
+    let sets = (
+        census.drawn.keys().cloned().collect::<Vec<_>>(),
+        census.as_default.keys().cloned().collect::<Vec<_>>(),
+    );
+    if !log && seen.as_ref() != Some(&sets) {
+        info!(
+            "game UI census changed: by shader {:?}; drawn as UI/Default (not ported yet) {:?}",
+            census.drawn, census.as_default
+        );
+    }
+    *seen = Some(sets);
     if log {
         info!(
             "game UI {}×{}: {} draws, {} vertices, {} indices; by shader {:?}; drawn as UI/Default (not ported yet) {:?}; texts {} (TextMeshPro/Distance Field); skipped: {} DepthClear (depth only), {} without a placed canvas",

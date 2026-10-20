@@ -122,6 +122,76 @@ pub fn fill_rect(background: V2, foreground: V2) -> [f32; 4] {
     [-0.5 * v[0], -0.5 * v[1], v[0], v[1]]
 }
 
+/// `UI/Icon`'s `SLICE_9_GRID` fragment program's sample coordinate (M9u8b2b,
+/// from its D3D11 disassembly; `game_ui.wgsl` mirrors it): the quad's UV
+/// mapped onto a strip texture `tex_height` texels tall wrapped round a
+/// rounded border. The border is R = min(½·min(size), `_Radius`) units, b =
+/// R ÷ `_Size` of the UV. Along an edge s runs along it (0…1 between the
+/// corners) and t goes from 0 at the border's inner line to 1 at the edge.
+/// In a corner s = ½ and t is the distance from the corner's inner point
+/// (in border widths). Inside, (½, 0). Then t is rescaled so the strip's
+/// height covers the outer `tex_height` units: t' = (t − k) ÷ (1 − k), k =
+/// (R − h) ÷ R.
+pub fn slice9_uv(uv: V2, radius: f32, size: V2, tex_height: f32) -> V2 {
+    let r = (size[1].min(size[0]) * 0.5).min(radius);
+    let b = [r / size[0], r / size[1]];
+    let (left, not_right) = (uv[0] <= b[0], uv[0] <= 1.0 - b[0]);
+    let mid_u = (uv[0] - b[0]) / (1.0 - 2.0 * b[0]);
+    let t_left = 1.0 - uv[0] / b[0];
+    let t_right = (uv[0] - (1.0 - b[0])) / b[0];
+    let len = |a: f32, c: f32| (a * a + c * c).sqrt();
+    let st = if uv[1] <= b[1] {
+        let t_bottom = 1.0 - uv[1] / b[1];
+        if left {
+            [0.5, len(t_left, t_bottom)]
+        } else if not_right {
+            [mid_u, t_bottom]
+        } else {
+            [0.5, len(t_right, t_bottom)]
+        }
+    } else if uv[1] <= 1.0 - b[1] {
+        let mid_v = (uv[1] - b[1]) / (1.0 - 2.0 * b[1]);
+        if left {
+            [mid_v, t_left]
+        } else if not_right {
+            [0.5, 0.0]
+        } else {
+            [mid_v, t_right]
+        }
+    } else {
+        let t_top = (uv[1] - (1.0 - b[1])) / b[1];
+        if left {
+            [0.5, len(t_top, t_left)]
+        } else if not_right {
+            [mid_u, t_top]
+        } else {
+            [0.5, len(t_top, t_right)]
+        }
+    };
+    let k = (r - tex_height) / r;
+    [st[0], (st[1] - k) / (1.0 - k)]
+}
+
+/// `UI/Circle`'s fragment program's sample coordinate (M9u8b2b, from its
+/// D3D11 disassembly; `game_ui.wgsl` mirrors it): p = 2·UV − 1, folded to
+/// the right half (q = −p and + ½ turn on the left); u = (atan2(q.y, q.x)
+/// ÷ 2π + that half turn) × `_TileX`; v = saturate((|p| − k) ÷ (1 − k)) ×
+/// `_TileY`, k = (`_Size` − 2·h) ÷ `_Size` (h the texture's height): the
+/// texture covers the outer 2h units of the radius.
+pub fn circle_uv(uv: V2, tile: V2, size: f32, tex_height: f32) -> V2 {
+    let p = [2.0 * uv[0] - 1.0, 2.0 * uv[1] - 1.0];
+    let (q, half) = if p[0] < 0.0 {
+        ([-p[0], -p[1]], 0.5)
+    } else {
+        (p, 0.0)
+    };
+    let u = (q[1].atan2(q[0]) * 0.159_155 + half) * tile[0];
+    let k = (size - 2.0 * tex_height) / size;
+    let r = (p[0] * p[0] + p[1] * p[1]).sqrt();
+    let v = ((r - k) / (1.0 - k)).clamp(0.0, 1.0) * tile[1];
+    [u, v]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -180,6 +250,70 @@ mod tests {
         assert_eq!(fit([64.0, 64.0], [128.0, 64.0], false), [64.0, 64.0]);
         assert_eq!(fit([-1.0, 32.0], [128.0, 64.0], true), [64.0, 32.0]);
         assert_eq!(fit([32.0, -1.0], [128.0, 64.0], true), [32.0, 16.0]);
+    }
+
+    fn near(a: V2, b: V2) -> bool {
+        (a[0] - b[0]).abs() < 1e-4 && (a[1] - b[1]).abs() < 1e-4
+    }
+
+    #[test]
+    fn slice9_maps_the_border() {
+        // A 1 × 1 icon (66 units, radius 33): the border is the whole half;
+        // the lower left quarter's point is a corner at √½.
+        let h = 33.0;
+        let s = slice9_uv([0.25, 0.25], 33.0, [66.0, 66.0], h);
+        assert!(near(s, [0.5, 0.5f32.sqrt()]), "{s:?}");
+        // 2 × 2 (137 units): b = 33 / 137 = 0.240876.
+        let sz = [137.0, 137.0];
+        let b = 33.0f32 / 137.0;
+        // Bottom edge, middle: along 0.5, across 1 − 0.1 / b.
+        assert!(near(
+            slice9_uv([0.5, 0.1], 33.0, sz, h),
+            [0.5, 1.0 - 0.1 / b]
+        ));
+        // Inside.
+        assert!(near(slice9_uv([0.5, 0.5], 33.0, sz, h), [0.5, 0.0]));
+        // Right edge: along (0.5 − b) / (1 − 2b) = 0.5, across (0.9 − (1 − b)) / b.
+        assert!(near(
+            slice9_uv([0.9, 0.5], 33.0, sz, h),
+            [0.5, (0.9 - (1.0 - b)) / b]
+        ));
+        // Top right corner: the distance in border widths.
+        let t = (0.95 - (1.0 - b)) / b;
+        assert!(near(
+            slice9_uv([0.95, 0.95], 33.0, sz, h),
+            [0.5, (2.0 * t * t).sqrt()]
+        ));
+        // A taller strip (68): k = (33 − 68) / 33; the inner line maps to
+        // −k / (1 − k) = 35 / 68.
+        let s = slice9_uv([0.5, 0.5], 33.0, sz, 68.0);
+        assert!(near(s, [0.5, 35.0 / 68.0]), "{s:?}");
+        // The radius is capped at half the smaller side.
+        let s = slice9_uv([0.5, 0.05], 100.0, [40.0, 20.0], 10.0);
+        // R = 10: b = (0.25, 0.5); t = 1 − 0.05 / 0.5 = 0.9; k = 0.
+        assert!(near(s, [0.5, 0.9]), "{s:?}");
+    }
+
+    #[test]
+    fn circle_maps_angle_and_radius() {
+        // Right of the centre, on the rim: angle 0, |p| = 1 → v 1.
+        assert!(near(
+            circle_uv([1.0, 0.5], [1.0, 1.0], 100.0, 10.0),
+            [0.0, 1.0]
+        ));
+        // Straight up, halfway out: u ¼; k = 0.8, |p| = 0.5 → v 0.
+        assert!(near(
+            circle_uv([0.5, 0.75], [1.0, 1.0], 100.0, 10.0),
+            [0.25, 0.0]
+        ));
+        // Left of the centre: folded, + ½ turn; |p| 0.9 → (0.9 − 0.8) / 0.2.
+        let c = circle_uv([0.05, 0.5], [2.0, 3.0], 100.0, 10.0);
+        assert!(near(c, [1.0, 0.5 * 3.0]), "{c:?}");
+        // Straight down: −¼ turn.
+        assert!(near(
+            circle_uv([0.5, 0.0], [1.0, 1.0], 100.0, 10.0),
+            [-0.25, 1.0]
+        ));
     }
 
     #[test]
