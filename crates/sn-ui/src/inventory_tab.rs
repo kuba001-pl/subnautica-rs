@@ -29,9 +29,18 @@
 //! The icons (M9u8b2a, [`crate::item_icons`]): [`InventoryTab::sync_items`]
 //! each frame with the containers' contents; `Uninit` destroys the
 //! storage's icons and clears the slots'.
+//!
+//! The pointer (M9u8b3a): [`InventoryTab::hit`] finds the icon or slot
+//! under a canvas point (`GraphicRaycaster` on the icons' and the slots'
+//! rects); [`InventoryTab::set_hovered`] is `OnPointerEnter` (`hoveredItem`,
+//! `HighlightSlots`: the slots compatible with the item's
+//! `EquipmentType` marked, tinted `tintHighlighted`) and `OnPointerExit`
+//! (`ExtinguishSlots`). Nothing is dragged yet (M9u8b4), so a slot's state
+//! is default or highlighted.
 
 use std::collections::BTreeMap;
 
+use crate::draw::{apply, invert, to_ancestor};
 use crate::item_icons::{ContainerIcons, IconNodes, SlotIcon, TabItem, slot_clear, slot_set_item};
 use crate::layout::{Tree, V2};
 use crate::state::UiState;
@@ -41,6 +50,27 @@ pub const CELL: f32 = 71.0;
 
 /// `uGUI_EquipmentSlot.tintDefault` (255, 255, 255, 127).
 pub const TINT_DEFAULT: [f32; 4] = [1.0, 1.0, 1.0, 127.0 / 255.0];
+/// `tintHighlighted` (255, 255, 255, 255).
+pub const TINT_HIGHLIGHTED: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
+
+/// What a pointer is over on the tab.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TabHit {
+    /// An item's icon in the inventory or the used storage.
+    Item(u64),
+    /// A slot (its item, if any).
+    Slot { slot: String, item: Option<u64> },
+}
+
+impl TabHit {
+    /// The item `OnPointerEnter` / `OnPointerClick` acts on.
+    pub fn item(&self) -> Option<u64> {
+        match self {
+            TabHit::Item(id) => Some(*id),
+            TabHit::Slot { item, .. } => *item,
+        }
+    }
+}
 
 /// A `uGUI_ItemsContainer`'s nodes.
 #[derive(Clone, Debug, PartialEq)]
@@ -151,6 +181,10 @@ pub struct InventoryTab {
     pub inventory_icons: ContainerIcons,
     pub storage_icons: ContainerIcons,
     pub slot_icons: BTreeMap<String, SlotIcon>,
+    /// `ItemDragManager.hoveredItem`.
+    pub hovered: Option<u64>,
+    /// The slots marked compatible.
+    pub highlighted: Vec<String>,
     pub state: UiState,
 }
 
@@ -173,6 +207,8 @@ impl InventoryTab {
             inventory_icons: ContainerIcons::default(),
             storage_icons: ContainerIcons::default(),
             slot_icons: BTreeMap::new(),
+            hovered: None,
+            highlighted: Vec::new(),
             state: UiState::default(),
         };
         let c = t.config.clone();
@@ -299,6 +335,84 @@ impl InventoryTab {
         }
     }
 
+    /// The icon or slot under `point` (in the canvas root `root`'s space)
+    /// in the laid-out tree `l`: the shown item icons (the used storage's,
+    /// then the inventory's), then the shown slots.
+    pub fn hit(&self, l: &Tree, root: usize, point: V2) -> Option<TabHit> {
+        let inside = |node: usize| -> bool {
+            if !l.active(node) {
+                return false;
+            }
+            let Some(m) = invert(&to_ancestor(l, node, root)) else {
+                return false;
+            };
+            let p = apply(&m, [point[0], point[1], 0.0]);
+            let r = l.rect(node);
+            p[0] >= r.x && p[0] <= r.x + r.width && p[1] >= r.y && p[1] <= r.y + r.height
+        };
+        for icons in [&self.storage_icons, &self.inventory_icons] {
+            for (id, (icon, _)) in &icons.icons {
+                if inside(icon.root) {
+                    return Some(TabHit::Item(*id));
+                }
+            }
+        }
+        self.config
+            .slots
+            .iter()
+            .find(|s| inside(s.node))
+            .map(|s| TabHit::Slot {
+                slot: s.slot.clone(),
+                item: self.slot_icons.get(&s.slot).and_then(|i| i.item),
+            })
+    }
+
+    /// `uGUI_Equipment.HighlightSlots`: `slots` marked compatible.
+    pub fn highlight_slots(&mut self, slots: &[String]) {
+        for s in self.config.slots.clone() {
+            if slots.contains(&s.slot) && !self.highlighted.contains(&s.slot) {
+                self.state.color.insert(s.background, TINT_HIGHLIGHTED);
+                self.highlighted.push(s.slot);
+            }
+        }
+    }
+
+    /// `ExtinguishSlots`: every slot back to the default tint.
+    pub fn extinguish_slots(&mut self) {
+        for s in self.config.slots.clone() {
+            if self.highlighted.contains(&s.slot) {
+                self.state.color.insert(s.background, TINT_DEFAULT);
+            }
+        }
+        self.highlighted.clear();
+    }
+
+    /// The pointer over `item` (with the slots compatible with it), or over
+    /// none: `OnPointerExit` then `OnPointerEnter` when it changes. True
+    /// when it changed.
+    pub fn set_hovered(&mut self, item: Option<(u64, &[String])>) -> bool {
+        let id = item.map(|(i, _)| i);
+        if id == self.hovered {
+            return false;
+        }
+        if self.hovered.is_some() {
+            self.hovered = None;
+            self.extinguish_slots();
+        }
+        if let Some((i, slots)) = item {
+            self.hovered = Some(i);
+            if self.equipment_init {
+                self.highlight_slots(slots);
+            }
+        }
+        true
+    }
+
+    /// After `OnPointerClick`'s action: `ExtinguishSlots`.
+    pub fn on_pointer_click(&mut self) {
+        self.extinguish_slots();
+    }
+
     fn clear_slot(&mut self, slot: &str) {
         let hint = self
             .config
@@ -315,6 +429,9 @@ impl InventoryTab {
     /// `OnClosePDA`: the storage and torpedo containers' `Uninit`, the
     /// equipment's when it was `Init`.
     pub fn on_close_pda(&mut self) {
+        // `ItemDragManager.hoveredItem = null`; `Uninit`'s `DeselectItem`.
+        self.hovered = None;
+        self.extinguish_slots();
         self.storage_icons.clear(&mut self.state);
         let filled: Vec<String> = self
             .slot_icons

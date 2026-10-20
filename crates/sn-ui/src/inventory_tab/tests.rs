@@ -106,3 +106,32 @@ fn opening_with_the_locker_shows_the_storage() {
     });
     assert_eq!(t.state.text[&51], "STORAGE");
 }
+
+#[test]
+fn hovering_lights_the_compatible_slots_and_leaving_clears_them() {
+    let mut t = InventoryTab::new(config());
+    t.start((6, 8));
+    t.on_open_pda(UsedStorage::Equipment(vec!["Head".into(), "Tank".into()]));
+    let tank = ["Tank".to_string()];
+    assert!(t.set_hovered(Some((5, &tank))));
+    assert_eq!(t.state.color[&142], TINT_HIGHLIGHTED);
+    assert_eq!(t.state.color[&141], TINT_DEFAULT);
+    assert!(!t.set_hovered(Some((5, &tank))), "unchanged");
+    // To another item: out, then in.
+    let head = ["Head".to_string()];
+    assert!(t.set_hovered(Some((6, &head))));
+    assert_eq!(t.state.color[&142], TINT_DEFAULT);
+    assert_eq!(t.state.color[&141], TINT_HIGHLIGHTED);
+    assert!(t.set_hovered(None));
+    assert_eq!(t.state.color[&141], TINT_DEFAULT);
+    assert_eq!(t.hovered, None);
+    // A click clears the highlight; so does the close.
+    t.set_hovered(Some((5, &tank)));
+    t.on_pointer_click();
+    assert_eq!(t.state.color[&142], TINT_DEFAULT);
+    t.set_hovered(None);
+    t.set_hovered(Some((5, &tank)));
+    t.on_close_pda();
+    assert_eq!(t.state.color[&142], TINT_DEFAULT);
+    assert_eq!(t.hovered, None);
+}

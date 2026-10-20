@@ -21,13 +21,20 @@
 //! `iconRect`), two draws per icon (its background with `SLICE_9_GRID`
 //! and its foreground); then a move, a removal and an unequip, and the
 //! close (the locker's icons and the slots' cleared).
+//!
+//! The pointer (M9u8b3a): a hit at each icon's and each filled slot's
+//! centre finds its item, at an empty cell nothing; hovering the equipped
+//! `Tank` tints exactly the slots of its `EquipmentType` (written in
+//! DESIGN before the run: the Tank slot only), `Titanium` none; nothing is
+//! drawn over an icon's centre after the icons.
 
 use std::collections::{BTreeSet, HashMap};
 use std::process::ExitCode;
 
 use sn_assets::{Assets, GlyphAtlases, UiScene, UiState};
 use sn_install::GameData;
-use sn_ui::inventory_tab::{CELL, InventoryTab, MakeIcon, UsedStorage};
+use sn_ui::draw::{apply, to_ancestor};
+use sn_ui::inventory_tab::{CELL, InventoryTab, MakeIcon, TINT_HIGHLIGHTED, TabHit, UsedStorage};
 use sn_ui::item_icons::{ContainerIcons, IconNodes, Sprite, TabItem, icon_position, icon_size};
 use sn_ui::layout::{Tree, V2};
 use sn_ui::pda::PdaScreen;
@@ -488,6 +495,129 @@ pub fn run(game: &GameData) -> Result<ExitCode> {
         slice9 == icon_nodes.len(),
         "every background with SLICE_9_GRID",
     );
+    // The pointer: hits at the icons' and slots' centres.
+    let root = pda_config.root;
+    let centre = |l: &Tree, n: usize| {
+        let r = l.rect(n);
+        let q = apply(
+            &to_ancestor(l, n, root),
+            [r.x + 0.5 * r.width, r.y + 0.5 * r.height, 0.0],
+        );
+        [q[0], q[1]]
+    };
+    let mut centres = Vec::new();
+    for (id, (icon, _)) in &tab.inventory_icons.icons {
+        let p = centre(&l, icon.root);
+        centres.push(p);
+        let hit = tab.hit(&l, root, p);
+        c.check(
+            hit == Some(TabHit::Item(*id)),
+            &format!("hit at item {id}'s centre: {hit:?}"),
+        );
+    }
+    for (slot, si) in &tab.slot_icons {
+        let Some(sc) = config.slots.iter().find(|s| &s.slot == slot) else {
+            continue;
+        };
+        let p = centre(&l, sc.node);
+        centres.push(p);
+        let hit = tab.hit(&l, root, p);
+        c.check(
+            hit.as_ref().and_then(TabHit::item) == si.item,
+            &format!("hit at slot {slot}'s centre: {hit:?}"),
+        );
+    }
+    // An empty cell: the last of the grid.
+    let inv = l.rect(config.inventory.node);
+    let empty = apply(
+        &to_ancestor(&l, config.inventory.node, root),
+        [inv.x + inv.width - 0.5 * CELL, inv.y + 0.5 * CELL, 0.0],
+    );
+    let hit = tab.hit(&l, root, [empty[0], empty[1]]);
+    c.check(hit.is_none(), &format!("hit at an empty cell: {hit:?}"));
+    // Nothing drawn over an icon's centre after the icons.
+    let last_icon = d
+        .list
+        .items
+        .iter()
+        .rposition(|it| {
+            icon_nodes
+                .iter()
+                .any(|i| i.background == it.node || i.foreground == it.node)
+        })
+        .unwrap_or(0);
+    let over: Vec<String> = d
+        .list
+        .items
+        .iter()
+        .skip(last_icon + 1)
+        .filter(|it| it.alpha > 0.0)
+        .filter(|it| {
+            let (mut lo, mut hi) = ([f32::MAX; 2], [f32::MIN; 2]);
+            for v in &it.vertices {
+                for a in 0..2 {
+                    lo[a] = lo[a].min(v.pos[a]);
+                    hi[a] = hi[a].max(v.pos[a]);
+                }
+            }
+            centres
+                .iter()
+                .any(|p| p[0] >= lo[0] && p[0] <= hi[0] && p[1] >= lo[1] && p[1] <= hi[1])
+        })
+        .map(|it| scene.tree.nodes[it.node].path.clone())
+        .collect();
+    println!("  drawn after the icons over a centre: {over:?}");
+    c.check(over.is_empty(), "nothing drawn over the icons");
+    // Hover: the compatible slots (`Equipment.GetSlots`: the player's
+    // slots whose type is the item's `EquipmentType`).
+    let slot_type = |s: &str| {
+        items
+            .slot_types
+            .iter()
+            .find(|(n, _)| n == s)
+            .map(|(_, t)| *t)
+    };
+    let compatible = |name: &str| -> Vec<String> {
+        let tech = gc
+            .tech_types
+            .iter()
+            .find(|(_, n)| n == name)
+            .map(|(v, _)| *v);
+        let et = tech
+            .and_then(|t| td.get(t))
+            .and_then(|e| e.equipment_type)
+            .unwrap_or(gc.tech_defaults.equipment_type);
+        items
+            .player_slots
+            .iter()
+            .filter(|s| slot_type(s) == Some(et))
+            .cloned()
+            .collect()
+    };
+    let lit = |tab: &InventoryTab| -> Vec<String> {
+        config
+            .slots
+            .iter()
+            .filter(|s| tab.state.color.get(&s.background) == Some(&TINT_HIGHLIGHTED))
+            .map(|s| s.slot.clone())
+            .collect()
+    };
+    let tank = compatible("Tank");
+    tab.set_hovered(Some((201, &tank)));
+    println!("  hover Tank: compatible {tank:?}, lit {:?}", lit(&tab));
+    c.check(
+        lit(&tab) == ["Tank"],
+        "hovering the Tank lights the Tank slot only",
+    );
+    let titanium = compatible("Titanium");
+    tab.set_hovered(Some((100, &titanium)));
+    println!(
+        "  hover Titanium: compatible {titanium:?}, lit {:?}",
+        lit(&tab)
+    );
+    c.check(lit(&tab).is_empty(), "hovering Titanium lights nothing");
+    tab.set_hovered(None);
+
     // A move and a removal in the grid, then an unequip.
     let mut grid2 = grid.clone();
     grid2[0].at = (5, 7);

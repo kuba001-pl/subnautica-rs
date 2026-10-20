@@ -1241,13 +1241,11 @@ fn main() -> AppExit {
                             .before(animation::animate)
                             .run_if(resource_exists::<ObjectStreamer>),
                     )
-                    .add_systems(Startup, inventory::setup)
                     .insert_resource(inventory::Panel::new(
                         args.panel.clone(),
                         sn_net::random_seed(),
                     ))
                     .add_systems(Update, inventory::input.before(player::update))
-                    .add_systems(Update, inventory::hover)
                     .add_systems(Update, player::update.before(terrain::stream))
                     // The death vignette's animation events (M9u6e1).
                     .add_systems(
@@ -1268,8 +1266,7 @@ fn main() -> AppExit {
                         items::sync
                             .after(player::update)
                             .before(objects::stream_objects),
-                    )
-                    .add_systems(Update, inventory::draw.after(items::sync));
+                    );
                 if let Some((seconds, name)) = args.shot.clone() {
                     app.insert_resource(PlayShot {
                         seconds: f64::from(seconds),

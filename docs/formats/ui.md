@@ -250,6 +250,22 @@ in `Equipment.slotMapping`.
   ÷ 2π + that) × `_TileX`; v = saturate((|p| − k) ÷ (1 − k)) × `_TileY`, k
   = (`_Size` − 2h) ÷ `_Size`; the same sample and hard clip. The doll's
   slot backgrounds are circles drawn with it.
+- **Hover and click** (M9u8b3a; `uGUI_InventoryTab`, `uGUI_ItemsContainer`,
+  `uGUI_Equipment`, `uGUI_EquipmentSlot`): the raycast targets are the
+  item icons (`uGUI_ItemIcon`, its rect) and the slots
+  (`uGUI_EquipmentSlot`, a `Graphic` that draws nothing; its own rect,
+  not `iconRect`). `OnPointerEnter` on an item (not dragging, the PDA in
+  use) sets `hoveredItem` and calls `HighlightSlots(TechData.
+  GetEquipmentType)`: every slot of the equipment whose type
+  `Equipment.IsCompatible` takes is marked compatible, its background
+  tinted `tintHighlighted` (white, alpha 255). `OnPointerExit` clears
+  `hoveredItem` and calls `ExtinguishSlots` (all back to `tintDefault`).
+  A slot passes its item, if any, to the same calls. `OnPointerClick`
+  (not dragging) runs `Inventory.GetItemAction(item, button)` and, if not
+  `None`, `ExecuteItemAction`, then `ExtinguishSlots`. The icons' own
+  hover and pressed colours are white (never set), so an icon shows no
+  hover of its own. `ui --inventory` found nothing drawn over an icon's
+  centre.
 - **Ours** (`sn_ui::item_icons`, `InventoryTab::sync_items`): a destroyed
   icon's nodes are hidden and reused for the next new icon. The game makes
   a new one, last among its siblings. Icons never overlap, so the draw

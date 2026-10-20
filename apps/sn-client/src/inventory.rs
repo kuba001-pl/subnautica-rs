@@ -1,20 +1,22 @@
-//! The PDA's open and close (M9u8a3, `sn_sim::pda`) and the inventory
-//! panel (M9d5b, `docs/DESIGN.md` "M9d5b plan"): our own Bevy UI standing
-//! in for the PDA's inventory tab until M9u8b. Tab opens the PDA
+//! The PDA's open and close (M9u8a3, `sn_sim::pda`) and the clicks on its
+//! screen (M9u8b3a; M9d5b's Bevy panel, which stood in for the inventory
+//! tab, is gone: `crate::game_ui`'s worker draws the game's tab and
+//! hit-tests the pointer on it). Tab opens the PDA
 //! (`GUIHand`'s `Button.PDA`) and closes it once focused
 //! (`PDA.ManagedUpdate`); the hand on the lifepod's locker opens it with
 //! the locker beside the grid, as `EscapePod.StorageOpen` does (the pod's
 //! `storage_open`, `PDA.Open` 0.25 s later, the target `storagePivot`).
-//! The panel shows from `Open` to `Close` (the screen's content) and takes
-//! clicks once the PDA is focused (`Activated`); the cursor is free from
-//! `Activated` to `Close`. `crate::player` reads [`Panel::pda`] for the
+//! The screen's content shows from `Open` to `Close` and takes clicks once
+//! the PDA is focused (`Activated`); the cursor is free from `Activated` to
+//! `Close`. `crate::player` reads [`Panel::pda`] for the
 //! look, the hand and the camera's locked mode, `crate::body` for the
 //! model. A left click does the item's action by the game's rule
 //! (`sn_sim::inventory::item_action`), a right click drops it where the
-//! game would ([`drop_request`]). A click elsewhere goes to the PDA
-//! screen's toolbar (M9u8a4b, [`ToolbarClick`]; hit tested by the UI
-//! worker). `--panel` does the same from a script, for checking from the
-//! logs.
+//! game would ([`drop_request`]). Each mouse click while focused goes to
+//! the UI worker ([`ScreenClick`]), which finds the toolbar icon, item icon
+//! or slot under it and sends an item's click back ([`item_clicks`]).
+//! `--panel` does the same from a script, clicking at the icons' centres,
+//! for checking from the logs.
 
 use bevy::prelude::*;
 use bevy::window::{CursorGrabMode, CursorOptions};
@@ -34,8 +36,6 @@ use crate::session::Session;
 const STORAGE_SEQUENCE: f64 = 0.25;
 /// The pod animator's bool.
 const STORAGE_OPEN: &str = "storage_open";
-/// A grid cell on screen (px; our layout).
-const CELL: f32 = 46.0;
 
 /// A `--panel` step.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -56,15 +56,19 @@ pub enum Scripted {
     Tab(u8),
 }
 
-/// A click for the PDA screen's toolbar (M9u8a4b), taken by
+/// A click on the PDA's screen (M9u8a4b, M9u8b3a), hit-tested by
 /// `crate::game_ui`'s worker.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub enum ToolbarClick {
+pub enum ScreenClick {
     /// The mouse: physical pixels from the bottom left (Unity's screen
     /// space) and `PointerEventData`'s button (0 left, 1 right, 2 middle).
     At { pixel: [f32; 2], button: u8 },
-    /// `--panel tabN`: the left button at icon N's centre, projected.
+    /// `--panel tabN`: the left button at toolbar icon N's centre,
+    /// projected.
     Icon(usize),
+    /// `--panel`'s item steps: `button` at item `id`'s icon (or slot)
+    /// centre, projected.
+    Item { id: u64, button: u8 },
 }
 
 impl Scripted {
@@ -101,11 +105,12 @@ pub struct Panel {
     draws: Draws,
     /// `--panel`, latest first.
     script: Vec<(f64, Scripted)>,
-    /// What the UI shows (rebuilt when it changes).
-    drawn: Option<String>,
-    /// Clicks for the PDA's toolbar since the last frame sent to the UI
+    /// Clicks on the PDA's screen since the last frame sent to the UI
     /// worker.
-    pub toolbar_clicks: Vec<ToolbarClick>,
+    pub screen_clicks: Vec<ScreenClick>,
+    /// The pointer (physical pixels from the bottom left) while the
+    /// screen takes clicks, for the worker's hover.
+    pub pointer: Option<[f32; 2]>,
 }
 
 impl Panel {
@@ -131,8 +136,8 @@ impl Panel {
             target: None,
             draws: Draws(seed),
             script,
-            drawn: None,
-            toolbar_clicks: Vec::new(),
+            screen_clicks: Vec::new(),
+            pointer: None,
         }
     }
 }
@@ -390,7 +395,7 @@ pub fn input(
     mut session: ResMut<Session>,
     mut drive: ResMut<BodyDrive>,
     text: Option<Res<ItemTextRes>>,
-    boxes: Query<(&Interaction, &ItemBox)>,
+    mut frame: Option<ResMut<crate::game_ui::GameUiFrame>>,
 ) {
     let panel = &mut *panel;
     let now = sim.play_seconds();
@@ -494,39 +499,42 @@ pub fn input(
         }
     }
 
-    // Clicks on an item (the content is interactable once focused).
+    // The screen takes clicks once focused: each mouse click to the
+    // worker; the item clicks it found come back (`item_clicks`).
+    panel.pointer = None;
     if panel.shown() && panel.pda.focused() {
-        let pressed = [
-            (MouseButton::Left, Click::Left),
-            (MouseButton::Right, Click::Right),
-            (MouseButton::Middle, Click::Middle),
-        ]
-        .into_iter()
-        .find(|(b, _)| buttons.just_pressed(*b));
-        if let Some((b, click_kind)) = pressed {
-            buttons.clear_just_pressed(b);
-            let over = boxes
-                .iter()
-                .find(|(i, _)| **i != Interaction::None)
-                .map(|(_, b)| b.0);
-            if let Some(item) = over {
-                click(&mut session, &sim, panel, text, item, click_kind);
-            } else if let Some((window, _)) = windows.iter().next()
-                && let Some(c) = window.physical_cursor_position()
-            {
-                // Not on our panel: the PDA screen's (only its toolbar
-                // takes clicks so far).
-                let button = match b {
-                    MouseButton::Left => 0,
-                    MouseButton::Right => 1,
-                    _ => 2,
-                };
-                let pixel = [c.x, window.physical_height() as f32 - c.y];
-                panel
-                    .toolbar_clicks
-                    .push(ToolbarClick::At { pixel, button });
+        let window = windows.iter().next().map(|(w, _)| w);
+        if let Some(w) = window
+            && let Some(c) = w.physical_cursor_position()
+        {
+            let pixel = [c.x, w.physical_height() as f32 - c.y];
+            panel.pointer = Some(pixel);
+            let pressed = [
+                (MouseButton::Left, 0u8),
+                (MouseButton::Right, 1),
+                (MouseButton::Middle, 2),
+            ]
+            .into_iter()
+            .find(|(b, _)| buttons.just_pressed(*b));
+            if let Some((b, button)) = pressed {
+                buttons.clear_just_pressed(b);
+                panel.screen_clicks.push(ScreenClick::At { pixel, button });
             }
         }
+        let clicks = frame
+            .as_mut()
+            .map(|f| std::mem::take(&mut f.item_clicks))
+            .unwrap_or_default();
+        for (id, button) in clicks {
+            let kind = match button {
+                0 => Click::Left,
+                1 => Click::Right,
+                _ => Click::Middle,
+            };
+            click(&mut session, &sim, panel, text, ItemId(id as u32), kind);
+        }
+    } else if let Some(f) = frame.as_mut() {
+        f.item_clicks.clear();
     }
 
     // `--panel`.
@@ -591,283 +599,39 @@ pub fn input(
             Scripted::TakeAll if panel.shown() && with_locker => {
                 info!("inventory: taking {} items out of the locker", locker.len());
                 for item in locker {
-                    click(&mut session, &sim, panel, text, item, Click::Left);
+                    panel.screen_clicks.push(ScreenClick::Item {
+                        id: u64::from(item.0),
+                        button: 0,
+                    });
                 }
             }
             Scripted::TakeAll => info!("inventory: the locker is not open"),
             Scripted::Equip => match equips.first() {
-                Some(&item) => click(&mut session, &sim, panel, text, item, Click::Left),
+                Some(&item) => panel.screen_clicks.push(ScreenClick::Item {
+                    id: u64::from(item.0),
+                    button: 0,
+                }),
                 None => info!("inventory: nothing in the grid equips"),
             },
             Scripted::Drop => match grid.first() {
-                Some(&item) => click(&mut session, &sim, panel, text, item, Click::Right),
+                Some(&item) => panel.screen_clicks.push(ScreenClick::Item {
+                    id: u64::from(item.0),
+                    button: 1,
+                }),
                 None => info!("inventory: nothing in the grid to drop"),
             },
             Scripted::Unequip => match slots.first() {
-                Some(&item) => click(&mut session, &sim, panel, text, item, Click::Left),
+                Some(&item) => panel.screen_clicks.push(ScreenClick::Item {
+                    id: u64::from(item.0),
+                    button: 0,
+                }),
                 None => info!("inventory: nothing in the slots"),
             },
             Scripted::Tab(i) if panel.shown() && panel.pda.focused() => {
-                panel
-                    .toolbar_clicks
-                    .push(ToolbarClick::Icon(usize::from(i)));
+                panel.screen_clicks.push(ScreenClick::Icon(usize::from(i)));
             }
             Scripted::Tab(_) => info!("inventory: the PDA is not open"),
         }
-    }
-}
-
-#[derive(Component)]
-pub struct PanelRoot;
-
-/// An item's box on the panel.
-#[derive(Component)]
-pub struct ItemBox(pub ItemId);
-
-pub fn setup(mut commands: Commands) {
-    commands.spawn((
-        Node {
-            position_type: PositionType::Absolute,
-            width: Val::Percent(100.0),
-            height: Val::Percent(100.0),
-            justify_content: JustifyContent::Center,
-            align_items: AlignItems::Center,
-            ..default()
-        },
-        GlobalZIndex(3),
-        Visibility::Hidden,
-        PanelRoot,
-    ));
-}
-
-/// An item as drawn: its place in a grid and its name.
-#[derive(Debug)]
-struct Boxed {
-    id: ItemId,
-    x: i32,
-    y: i32,
-    width: i32,
-    height: i32,
-    name: String,
-}
-
-#[derive(Debug)]
-struct View {
-    grid: ((i32, i32), Vec<Boxed>),
-    slots: Vec<(String, Option<(ItemId, String)>)>,
-    locker: Option<((i32, i32), Vec<Boxed>)>,
-}
-
-fn boxes(c: &inv::Container, text: &ItemText) -> ((i32, i32), Vec<Boxed>) {
-    let list = c
-        .layout()
-        .0
-        .iter()
-        .map(|p| Boxed {
-            id: ItemId(p.id.0 as u32),
-            x: p.x,
-            y: p.y,
-            width: p.width,
-            height: p.height,
-            name: c.get(p.id).map_or_else(String::new, |i| text.tech(i.tech)),
-        })
-        .collect();
-    (c.size(), list)
-}
-
-const BOX: Color = Color::srgba(0.18, 0.42, 0.55, 0.95);
-const BOX_HOVER: Color = Color::srgba(0.3, 0.62, 0.78, 0.95);
-
-fn grid_node(p: &mut ChildSpawnerCommands, title: &str, (size, list): &((i32, i32), Vec<Boxed>)) {
-    p.spawn(Node {
-        flex_direction: FlexDirection::Column,
-        row_gap: Val::Px(6.0),
-        ..default()
-    })
-    .with_children(|col| {
-        col.spawn((
-            Text::new(title),
-            TextFont::from_font_size(16.0),
-            TextColor(Color::WHITE),
-        ));
-        col.spawn((
-            Node {
-                width: Val::Px(size.0 as f32 * CELL),
-                height: Val::Px(size.1 as f32 * CELL),
-                ..default()
-            },
-            BackgroundColor(Color::srgba(0.05, 0.1, 0.14, 0.9)),
-        ))
-        .with_children(|g| {
-            for y in 0..size.1 {
-                for x in 0..size.0 {
-                    g.spawn((
-                        Node {
-                            position_type: PositionType::Absolute,
-                            left: Val::Px(x as f32 * CELL + 1.0),
-                            top: Val::Px(y as f32 * CELL + 1.0),
-                            width: Val::Px(CELL - 2.0),
-                            height: Val::Px(CELL - 2.0),
-                            ..default()
-                        },
-                        BackgroundColor(Color::srgba(1.0, 1.0, 1.0, 0.06)),
-                    ));
-                }
-            }
-            for b in list {
-                g.spawn((
-                    Node {
-                        position_type: PositionType::Absolute,
-                        left: Val::Px(b.x as f32 * CELL + 2.0),
-                        top: Val::Px(b.y as f32 * CELL + 2.0),
-                        width: Val::Px(b.width as f32 * CELL - 4.0),
-                        height: Val::Px(b.height as f32 * CELL - 4.0),
-                        padding: UiRect::all(Val::Px(2.0)),
-                        overflow: Overflow::clip(),
-                        ..default()
-                    },
-                    BackgroundColor(BOX),
-                    Interaction::None,
-                    ItemBox(b.id),
-                ))
-                .with_children(|i| {
-                    i.spawn((
-                        Text::new(b.name.clone()),
-                        TextFont::from_font_size(10.0),
-                        TextColor(Color::WHITE),
-                    ));
-                });
-            }
-        });
-    });
-}
-
-/// After the items: the panel shows the own grid, the slots and (when
-/// open by the locker) the locker, rebuilt when any of them changes.
-pub fn draw(
-    mut commands: Commands,
-    mut panel: ResMut<Panel>,
-    session: Res<Session>,
-    text: Option<Res<ItemTextRes>>,
-    mut root: Query<(Entity, &mut Visibility), With<PanelRoot>>,
-) {
-    let Ok((root, mut visibility)) = root.single_mut() else {
-        return;
-    };
-    let want = if panel.shown() {
-        Visibility::Inherited
-    } else {
-        Visibility::Hidden
-    };
-    if *visibility != want {
-        *visibility = want;
-    }
-    let Some(text) = text else { return };
-    let me = session.player();
-    let with_locker = panel.with_locker;
-    let view = if panel.shown() {
-        session
-            .with_items(|items, _| {
-                let p = items.players.get(&me?)?;
-                Some(View {
-                    grid: boxes(&p.inventory.container, &text.0),
-                    slots: p
-                        .inventory
-                        .equipment
-                        .slots()
-                        .map(|(s, i)| {
-                            (
-                                s.to_string(),
-                                i.map(|i| (ItemId(i.id.0 as u32), text.0.tech(i.tech))),
-                            )
-                        })
-                        .collect(),
-                    locker: with_locker.then(|| boxes(&items.locker, &text.0)),
-                })
-            })
-            .flatten()
-    } else {
-        None
-    };
-    let key = format!("{view:?}");
-    if panel.drawn.as_ref() == Some(&key) {
-        return;
-    }
-    panel.drawn = Some(key);
-    commands.entity(root).despawn_related::<Children>();
-    let Some(view) = view else { return };
-    commands.entity(root).with_children(|p| {
-        p.spawn((
-            Node {
-                flex_direction: FlexDirection::Row,
-                column_gap: Val::Px(28.0),
-                padding: UiRect::all(Val::Px(18.0)),
-                align_items: AlignItems::FlexStart,
-                ..default()
-            },
-            BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.7)),
-        ))
-        .with_children(|row| {
-            if let Some(locker) = &view.locker {
-                grid_node(row, "Locker", locker);
-            }
-            grid_node(row, "Inventory", &view.grid);
-            row.spawn(Node {
-                flex_direction: FlexDirection::Column,
-                row_gap: Val::Px(6.0),
-                ..default()
-            })
-            .with_children(|col| {
-                col.spawn((
-                    Text::new("Equipment"),
-                    TextFont::from_font_size(16.0),
-                    TextColor(Color::WHITE),
-                ));
-                for (slot, item) in &view.slots {
-                    let mut e = col.spawn((
-                        Node {
-                            width: Val::Px(3.0 * CELL),
-                            height: Val::Px(CELL * 0.6),
-                            padding: UiRect::all(Val::Px(3.0)),
-                            ..default()
-                        },
-                        BackgroundColor(if item.is_some() {
-                            BOX
-                        } else {
-                            Color::srgba(1.0, 1.0, 1.0, 0.06)
-                        }),
-                    ));
-                    if let Some((id, _)) = item {
-                        e.insert((Interaction::None, ItemBox(*id)));
-                    }
-                    let label = match item {
-                        Some((_, name)) => format!("{slot}: {name}"),
-                        None => slot.clone(),
-                    };
-                    e.with_children(|t| {
-                        t.spawn((
-                            Text::new(label),
-                            TextFont::from_font_size(11.0),
-                            TextColor(Color::WHITE),
-                        ));
-                    });
-                }
-            });
-        });
-    });
-}
-
-/// The hovered item's box lights up.
-#[allow(clippy::type_complexity)]
-pub fn hover(
-    mut q: Query<(&Interaction, &mut BackgroundColor), (Changed<Interaction>, With<ItemBox>)>,
-) {
-    for (i, mut c) in &mut q {
-        c.0 = if *i == Interaction::None {
-            BOX
-        } else {
-            BOX_HOVER
-        };
     }
 }
 

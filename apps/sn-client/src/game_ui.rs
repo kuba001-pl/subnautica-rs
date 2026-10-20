@@ -73,7 +73,7 @@ use sn_ui::scaler::{DEFAULT_UI_SCALE, Placement, UiCamera, place};
 use sn_ui::state::UiState;
 use sn_ui::toolbar::{Toolbar, ToolbarIcon, ToolbarSprites};
 
-use crate::inventory::ToolbarClick;
+use crate::inventory::ScreenClick;
 use crate::textures::linear;
 
 /// The main camera's planes in the main scene; the UI camera takes them
@@ -258,6 +258,8 @@ pub(crate) struct UiBuild {
     pub seconds: f64,
     /// Built for a new size (logged in full); a frame's build is not.
     pub resized: bool,
+    /// Item clicks found since the last build (M9u8b3a).
+    pub item_clicks: Vec<(u64, u8)>,
 }
 
 /// What the main world sends the worker.
@@ -285,13 +287,15 @@ type FrameInputs = (
 );
 
 /// One item for the inventory tab's icons (M9u8b2a): our id, tech type,
-/// place and size in cells.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// place and size in cells, and the player's slots that take it
+/// (`Equipment.GetSlots(TechData.GetEquipmentType)`, M9u8b3a's highlight).
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct TabEntry {
     id: u64,
     tech: i32,
     at: (i32, i32),
     size: (i32, i32),
+    compatible: Vec<String>,
 }
 
 /// Our player's containers this frame, for the inventory tab's icons.
@@ -307,8 +311,11 @@ struct TabContents {
 /// pose they are made on (the last frame's [`GameUiFrame::pda_pose`]).
 #[derive(Clone, Debug, Default)]
 struct PdaClicks {
-    clicks: Vec<ToolbarClick>,
+    clicks: Vec<ScreenClick>,
     pose: Option<([f32; 3], [f32; 4])>,
+    /// The pointer while the screen takes clicks (M9u8b3a), physical
+    /// pixels from the bottom left.
+    pointer: Option<[f32; 2]>,
 }
 
 /// The PDA's flags this frame (M9u8a4a, `sn_sim::pda::Pda`): their changes
@@ -360,6 +367,9 @@ pub(crate) struct GameUiFrame {
     pda_pose: Option<([f32; 3], [f32; 4])>,
     images: Arc<HashMap<u64, (Handle<Image>, bool)>>,
     white: Handle<Image>,
+    /// Item clicks the worker found on the PDA's inventory tab (M9u8b3a):
+    /// (item, button), for `crate::inventory` to act on.
+    pub(crate) item_clicks: Vec<(u64, u8)>,
 }
 
 /// Marks the camera the UI is drawn over.
@@ -852,6 +862,10 @@ fn run_worker(
     // The census's shader sets last logged.
     let mut census_seen: Option<(Vec<String>, Vec<String>)> = None;
     let mut pda_seen_icons = PdaFlags::default();
+    // The pointer last hit-tested (M9u8b3a) and the item clicks found since
+    // the last build.
+    let mut hover_seen: (Option<[f32; 2]>, bool) = (None, false);
+    let mut pending_item_clicks: Vec<(u64, u8)> = Vec::new();
     let mut pda_seen = PdaFlags::default();
     // What `SetTransition` reads, when first needed after a resize.
     let mut popup_layout: Option<PopupLayout> = None;
@@ -1102,7 +1116,9 @@ fn run_worker(
                     );
                     // The icons (M9u8b2a), when the contents changed or the
                     // PDA opened or closed.
+                    let mut icons_synced = false;
                     if tab_contents != tab_seen || pda != pda_seen_icons {
+                        icons_synced = true;
                         let mut to_items = |list: &[TabEntry]| -> Vec<TabItem> {
                             list.iter()
                                 .filter_map(|e| {
@@ -1195,9 +1211,14 @@ fn run_worker(
                     }
                     rules.apply(&pda_screen.state);
                     rules.apply(&inventory_tab.state);
-                    // The toolbar's clicks (M9u8a4b), on the canvas at this
-                    // frame's pose.
-                    if !pda_clicks.clicks.is_empty() {
+                    // The pointer on the screen (M9u8a4b's toolbar, M9u8b3a's
+                    // tab): the hover when the pointer, the icons or the PDA
+                    // change; the clicks.
+                    let hover_on = pda.focused && pda_clicks.pointer.is_some();
+                    let hover_key = (pda_clicks.pointer, pda.focused);
+                    let hover_dirty = hover_on && (hover_key != hover_seen || icons_synced);
+                    hover_seen = hover_key;
+                    if !pda_clicks.clicks.is_empty() || hover_dirty {
                         match (pda_clicks.pose, screen) {
                             (Some((position, rotation)), Some(size)) => {
                                 let mut st = start_state.clone();
@@ -1210,9 +1231,42 @@ fn run_worker(
                                 };
                                 ps.insert(pda_root, placed);
                                 let l = scene.layout_for(&assets, &set, &ps, &st)?;
+                                let compatible = |id: u64| -> Vec<String> {
+                                    tab_contents
+                                        .inventory
+                                        .iter()
+                                        .chain(&tab_contents.locker)
+                                        .chain(tab_contents.equipment.iter().map(|(_, e)| e))
+                                        .find(|e| e.id == id)
+                                        .map(|e| e.compatible.clone())
+                                        .unwrap_or_default()
+                                };
+                                if hover_dirty && let Some(pixel) = pda_clicks.pointer {
+                                    let over = (pda_screen.tab_open
+                                        == Some(sn_ui::pda::Tab::Inventory))
+                                    .then(|| {
+                                        placed.ray_point(
+                                            camera.position,
+                                            camera.screen_ray(pixel, size),
+                                        )
+                                    })
+                                    .flatten()
+                                    .and_then(|c| inventory_tab.hit(&l, pda_root, c))
+                                    .and_then(|h| h.item());
+                                    let slots = over.map(compatible).unwrap_or_default();
+                                    if inventory_tab
+                                        .set_hovered(over.map(|i| (i, slots.as_slice())))
+                                    {
+                                        info!(
+                                            "game UI PDA inventory tab at {:.3} s: hovered {over:?}, slots lit {:?}",
+                                            inputs.time, inventory_tab.highlighted
+                                        );
+                                    }
+                                }
                                 for click in &pda_clicks.clicks {
-                                    toolbar_click(
+                                    if let Some(c) = screen_click(
                                         &mut pda_screen,
+                                        &mut inventory_tab,
                                         &l,
                                         pda_root,
                                         &placed,
@@ -1220,16 +1274,22 @@ fn run_worker(
                                         size,
                                         *click,
                                         inputs.time,
-                                    );
+                                    ) {
+                                        pending_item_clicks.push(c);
+                                    }
                                 }
-                                rules.apply(&pda_screen.state);
                             }
                             _ => info!(
-                                "game UI PDA toolbar: {} clicks with the screen not placed, ignored",
+                                "game UI PDA screen: {} clicks with the screen not placed, ignored",
                                 pda_clicks.clicks.len()
                             ),
                         }
                     }
+                    if !hover_on && inventory_tab.hovered.is_some() {
+                        inventory_tab.set_hovered(None);
+                    }
+                    rules.apply(&pda_screen.state);
+                    rules.apply(&inventory_tab.state);
                     let before = reticle.icon_type;
                     rules.apply(reticle.update(&reticle_inputs(
                         &reticle,
@@ -1336,6 +1396,7 @@ fn run_worker(
             &mut census_seen,
         );
         build.pda_root = Some(pda_root);
+        build.item_clicks = std::mem::take(&mut pending_item_clicks);
         for (key, object) in &d.textures {
             if sent.contains(key) {
                 continue;
@@ -1662,83 +1723,113 @@ fn tab_item(
     })
 }
 
-/// A click on the PDA screen (M9u8a4b): `GraphicRaycaster`'s ray from the
-/// UI camera through the pixel onto the canvas (placed at `placed`), into
-/// the toolbar's space, the icon under it (`uGUI_ItemIcon.OnPointerClick`
-/// → `uGUI_Toolbar` → `uGUI_PDA.OnToolbarClick`). Only the toolbar's
-/// icons are hit tested: `ui --pda` found nothing drawn over them. A
-/// scripted click starts from an icon's centre projected to the screen.
+/// A click on the PDA screen (M9u8a4b, M9u8b3a): `GraphicRaycaster`'s ray
+/// from the UI camera through the pixel onto the canvas (placed at
+/// `placed`). The toolbar's icons first (`uGUI_Toolbar` →
+/// `uGUI_PDA.OnToolbarClick`), then, on the inventory tab, its item icons
+/// and slots (`OnPointerClick` → `uGUI_InventoryTab.OnPointerClick`: the
+/// item and button returned for the main thread's action;
+/// `ExtinguishSlots`). `ui --pda` and `ui --inventory` found nothing drawn
+/// over these. A scripted click starts from its target's centre projected
+/// to the screen.
 #[allow(clippy::too_many_arguments)]
-fn toolbar_click(
+fn screen_click(
     s: &mut PdaScreen,
+    tab: &mut InventoryTab,
     l: &sn_ui::layout::Tree,
     root: usize,
     placed: &Placement,
     camera: &UiCamera,
     screen: [i32; 2],
-    click: ToolbarClick,
+    click: ScreenClick,
     time: f32,
-) {
+) -> Option<(u64, u8)> {
     use sn_ui::draw::{apply, invert, to_ancestor};
-    let Some(tb) = &s.toolbar else {
-        return;
+    let tb = s.toolbar.as_ref()?;
+    let bar = tb.config.node;
+    // A node's centre on the screen.
+    let project = |node: usize| -> Option<[f32; 2]> {
+        let r = l.rect(node);
+        let c = apply(
+            &to_ancestor(l, node, root),
+            [r.x + 0.5 * r.width, r.y + 0.5 * r.height, 0.0],
+        );
+        camera.project(apply(&placed.world_from_canvas(), c), screen)
     };
-    let node = tb.config.node;
-    let (pixel, button) = match click {
-        ToolbarClick::At { pixel, button } => (pixel, button),
-        ToolbarClick::Icon(i) => {
-            let Some(icon) = tb.icons.get(i).filter(|_| i < tb.count) else {
-                info!("game UI PDA toolbar at {time:.3} s: --panel tab{i}: no such icon");
-                return;
-            };
-            let c = apply(&to_ancestor(l, icon.root, root), [0.0; 3]);
-            let w = apply(&placed.world_from_canvas(), c);
-            match camera.project(w, screen) {
-                Some(p) => (p, 0),
-                None => {
-                    info!("game UI PDA toolbar at {time:.3} s: icon {i} behind the camera");
-                    return;
-                }
-            }
+    let target = match click {
+        ScreenClick::At { pixel, button } => Some((pixel, button)),
+        ScreenClick::Icon(i) => tb
+            .icons
+            .get(i)
+            .filter(|_| i < tb.count)
+            .and_then(|icon| project(icon.root))
+            .map(|p| (p, 0)),
+        ScreenClick::Item { id, button } => {
+            let node = tab
+                .storage_icons
+                .icons
+                .get(&id)
+                .or_else(|| tab.inventory_icons.icons.get(&id))
+                .map(|(i, _)| i.root)
+                .or_else(|| {
+                    let slot = tab
+                        .slot_icons
+                        .iter()
+                        .find(|(_, v)| v.item == Some(id))
+                        .map(|(k, _)| k.clone())?;
+                    tab.config
+                        .slots
+                        .iter()
+                        .find(|x| x.slot == slot)
+                        .map(|x| x.node)
+                });
+            node.and_then(project).map(|p| (p, button))
         }
     };
-    let hit = placed
-        .ray_point(camera.position, camera.screen_ray(pixel, screen))
-        .and_then(|c| {
-            let to_bar = invert(&to_ancestor(l, node, root))?;
-            let p = apply(&to_bar, [c[0], c[1], 0.0]);
-            Some(([c[0], c[1]], [p[0], p[1]]))
-        });
-    let Some((canvas, bar)) = hit else {
-        info!("game UI PDA toolbar at {time:.3} s: click at {pixel:?} misses the screen");
-        return;
+    let Some((pixel, button)) = target else {
+        info!("game UI PDA screen at {time:.3} s: {click:?}: no such target on screen");
+        return None;
     };
-    let index = tb.hit(bar, l.rect(node));
-    let before = s.tab_open;
-    let opened = index.is_some_and(|i| s.on_toolbar_click(i, button));
-    info!(
-        "game UI PDA toolbar at {time:.3} s: {click:?}: pixel ({:.1}, {:.1}), canvas ({:.1}, {:.1}), bar ({:.1}, {:.1}): icon {index:?}, button {button}; {}",
-        pixel[0],
-        pixel[1],
-        canvas[0],
-        canvas[1],
-        bar[0],
-        bar[1],
-        if opened {
-            format!(
-                "OpenTab {:?} → {:?}{}",
-                before,
-                s.tab_open,
-                match s.tab_open {
-                    Some(sn_ui::pda::Tab::Inventory) | None => "",
-                    // Their stored content only.
-                    Some(_) => " (its content is not ported: drawn as stored)",
-                }
-            )
-        } else {
-            "nothing opened".into()
-        }
+    let Some(canvas) = placed.ray_point(camera.position, camera.screen_ray(pixel, screen)) else {
+        info!("game UI PDA screen at {time:.3} s: click at {pixel:?} misses the screen");
+        return None;
+    };
+    let in_bar = invert(&to_ancestor(l, bar, root))
+        .map(|m| apply(&m, [canvas[0], canvas[1], 0.0]))
+        .and_then(|p| tb.hit([p[0], p[1]], l.rect(bar)));
+    let at = format!(
+        "{click:?}: pixel ({:.1}, {:.1}), canvas ({:.1}, {:.1})",
+        pixel[0], pixel[1], canvas[0], canvas[1]
     );
+    if let Some(index) = in_bar {
+        let before = s.tab_open;
+        let opened = s.on_toolbar_click(index, button);
+        info!(
+            "game UI PDA toolbar at {time:.3} s: {at}: icon {index}, button {button}; {}",
+            if opened {
+                format!(
+                    "OpenTab {:?} → {:?}{}",
+                    before,
+                    s.tab_open,
+                    match s.tab_open {
+                        Some(sn_ui::pda::Tab::Inventory) | None => "",
+                        // Their stored content only.
+                        Some(_) => " (its content is not ported: drawn as stored)",
+                    }
+                )
+            } else {
+                "nothing opened".into()
+            }
+        );
+        return None;
+    }
+    let hit = (s.tab_open == Some(sn_ui::pda::Tab::Inventory))
+        .then(|| tab.hit(l, root, canvas))
+        .flatten();
+    info!("game UI PDA inventory tab at {time:.3} s: {at}: {hit:?}, button {button}");
+    let id = hit?.item()?;
+    tab.on_pointer_click();
+    Some((id, button))
 }
 
 /// The death timeline's changes as they happen (M9u6e1), each against
@@ -2261,6 +2352,7 @@ fn convert(
         textures: Vec::new(),
         seconds: 0.0,
         resized: log,
+        item_clicks: Vec::new(),
     }
 }
 
@@ -2305,6 +2397,15 @@ fn send_inputs(
             let me = s.player();
             s.with_items(|items, _| {
                 let p = items.players.get(&me?)?;
+                let techs = &items.rules().techs;
+                let eq = &p.inventory.equipment;
+                let compatible = |tech: i32| -> Vec<String> {
+                    let t = techs.equipment_type(tech);
+                    eq.slots()
+                        .filter(|(s, _)| eq.table().is_compatible(t, eq.table().slot_type(s)))
+                        .map(|(s, _)| s.to_string())
+                        .collect()
+                };
                 let entries = |c: &sn_sim::inventory::Container| -> Vec<TabEntry> {
                     let (placed, _) = c.layout();
                     placed
@@ -2316,6 +2417,7 @@ fn send_inputs(
                                 tech,
                                 at: (q.x, q.y),
                                 size: (q.width, q.height),
+                                compatible: compatible(tech),
                             })
                         })
                         .collect()
@@ -2333,6 +2435,7 @@ fn send_inputs(
                                 tech: i.tech,
                                 at: (0, 0),
                                 size: (1, 1),
+                                compatible: compatible(i.tech),
                             },
                         ))
                     })
@@ -2351,9 +2454,10 @@ fn send_inputs(
     let pda_clicks = PdaClicks {
         clicks: panel
             .as_mut()
-            .map(|p| std::mem::take(&mut p.toolbar_clicks))
+            .map(|p| std::mem::take(&mut p.screen_clicks))
             .unwrap_or_default(),
         pose: frame.pda_pose,
+        pointer: panel.as_ref().and_then(|p| p.pointer),
     };
     // `TechType.Compass`, by its name in the game's code.
     let compass_tech = *compass_tech.get_or_insert_with(|| {
@@ -2472,6 +2576,8 @@ fn receive_build(
     while let Ok(b) = rx.try_recv() {
         match b {
             Ok(mut b) => {
+                // Every build's item clicks.
+                frame.item_clicks.append(&mut b.item_clicks);
                 if let Some(old) = latest.take() {
                     let mut textures = old.textures;
                     textures.append(&mut b.textures);

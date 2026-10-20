@@ -2,6 +2,44 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-20 — M9u8b3a: hover and clicks on the game's inventory tab; our panel removed
+
+**What/why:** the next step of M9u8b (DESIGN). M9u8b3 was split: b3a
+(hover, clicks, our panel removed) and b3b (the tooltip, its own system).
+- `sn-ui::inventory_tab`: `hit` (the icons' and slots' rects on the
+  canvas), `set_hovered` (`OnPointerEnter`/`Exit`: `HighlightSlots`,
+  `ExtinguishSlots`, `tintHighlighted`), `on_pointer_click`; 1 unit test.
+- `sn-inspect ui --inventory`: hits at every icon and slot centre, an
+  empty cell, hover tints, nothing drawn over the icons.
+- `sn-client`: `inventory.rs`'s Bevy panel removed (`setup`, `draw`,
+  `hover`, the item boxes). Every mouse click while the PDA is focused
+  goes to the UI worker (`ScreenClick`, was `ToolbarClick`). So does the
+  pointer, for the hover. The worker hit-tests the toolbar, then the tab
+  (`screen_click`) and sends item clicks back (`UiBuild::item_clicks` →
+  `GameUiFrame::item_clicks`). `inventory::input` acts on them with
+  M9d5b's `click` (the game's item action). `--panel`'s item steps click
+  at the items' icon centres through the same path. Each item carries the
+  player's slots that take it (`TabEntry::compatible`, from the sim's slot
+  table).
+No new dependencies.
+
+**Verified** (`SUBNAUTICA_DIR` set; logs in `out/m9u8a/`):
+- `sn-inspect ui --inventory` (`ui-inventory-b3a.log`): RUN OK, 53 of
+  53.
+- Client `--use-item 3 --panel 6=take-all,7=drop,9.5=close --shot 11
+  m9u8b3a-locker` (`b3a-locker.log`, 0 WARN/ERROR/panic): six clicks
+  hit-tested on the canvas to `Item(4)`, `Item(5)`, `Item(0–3)`, each
+  "Left click on … (Storage): actions [switch] → switch"; the right click
+  hit `Item(4)` in the grid → "none", "no drop in the lifepod
+  (CanDropItemHere)": M9d5b's results.
+- Screenshot `out/m9u8b3a-tab.png` (`--panel 6=take-all --shot 7.5`):
+  the game's tab alone, the six icons in the grid, the locker empty.
+- `cargo test --workspace` 721 passed, 0 failed; clippy clean; `ui --pda`,
+  `--draw`, `--icons` unchanged.
+- Not tested: hover and clicks with a real mouse. In the scripted runs
+  the cursor never rested on an icon, so no hover was logged; hover is
+  checked only headless.
+
 ## 2026-10-20 — M9u8b2b: the icons' round backgrounds and the doll's circles
 
 **What/why:** the second half of M9u8b2 (DESIGN). The item icons'
