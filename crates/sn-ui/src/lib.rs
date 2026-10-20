@@ -41,6 +41,7 @@ pub mod font;
 pub mod hud;
 pub mod icon;
 pub mod inventory_tab;
+pub mod item_icons;
 pub mod layout;
 pub mod material;
 pub mod mesh;

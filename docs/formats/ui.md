@@ -197,8 +197,47 @@ in `Equipment.slotMapping`.
   inactive). The inventory container stays active.
 - **`OnLanguageChanged`** (from `uGUI_PDA.Start`): `inventoryLabel` =
   "INVENTORY".
-- Not yet (M9u8b2–b5): the items' icons, the slots' icons and hints,
-  `UI/Circle`, hover, clicks, drag and drop, notifications.
+- Not yet (M9u8b2b–b5): `UI/Circle` and the icons' `SLICE_9_GRID`
+  backgrounds in WGSL, hover, clicks, drag and drop, notifications.
+
+## The inventory tab's icons (M9u8b2a) — confirmed (decompiled code, Resources, `ui --inventory`, client)
+
+- **An item's icon** (`uGUI_ItemsContainer.OnAddItem`): `new
+  GameObject("Item Icon")` + `uGUI_ItemIcon` under the container,
+  `Init(anchor (0, 1), pivot (0, 1))`; `SetBackgroundSprite(
+  SpriteManager.GetBackground(techType))`; `SetBackgroundRadius(33)`;
+  `SetForegroundSprite(SpriteManager.Get(techType))`; `SetBarValue(
+  GetBarValue(item))`; `SetChroma(0)` when the item is disabled; `SetSize(
+  66·w + 5·(w − 1), 66·h + 5·(h − 1))` (w × h = `TechData.GetItemSize`);
+  `SetPosition(71·x + 1, −(71·y + 1))` from the container's top left;
+  inactive while x or y < 0. `OnRemoveItem` destroys it,
+  `OnChangeItemPosition` moves it.
+- **`SetSize`** sizes the icon, the background (`Fit` **without** keeping
+  the aspect: the full size) and the foreground (keeping the sprite's
+  aspect); `_Size` and `_FillRect` follow it.
+- **`GetBackground`** loads `Resources` sprites by `TechData`'s background
+  type: Normal → `Sprites/Backgrounds/Normal`, Blueprint → `…/Blueprint`,
+  PlantWater and PlantWaterSeed → `…/PlantWater`, PlantAir and
+  PlantAirSeed → `…/PlantAir`, ExosuitArm → `…/ExosuitArm`, others
+  Normal. All are in `resources.assets` and are **strips 2 pixels wide**:
+  Normal 2 × 33, Blueprint 2 × 68, PlantWater 2 × 33, PlantAir 2 × 54,
+  ExosuitArm 2 × 68. `GetResource` marks each `SetProceduralSlice9Grid`,
+  so their material has `SLICE_9_GRID`: the shader wraps the strip
+  around the icon's rounded border (`_Radius`, `_Size`; M9u8b2b).
+- **A slot's icon** (`uGUI_EquipmentSlot.SetItem`): `Equipment Slot Icon`
+  made on first use under `iconRect` (anchor and pivot at the centre, at
+  (0, 0), last sibling, not a raycast target), the item's sprites, radius
+  min(size) ÷ 2, foreground alpha 1, `SetSize(iconRect's size)`, shown;
+  the slot's `hint` hidden. The player's slots' `iconRect`s are 124 × 124
+  (radius 62). `ClearIcon` hides the icon and shows the hint;
+  `uGUI_Equipment.Uninit` clears every filled slot.
+- **Bars and grey are not drawn by us:** `GetBarValue` ≥ 0 only for an
+  `EnergyMixin`, an `IBattery` or decaying food; grey only for a disabled
+  item. Our sim has a battery's charge but not the rest (DESIGN M9u8b2).
+- **Ours** (`sn_ui::item_icons`, `InventoryTab::sync_items`): a destroyed
+  icon's nodes are hidden and reused for the next new icon. The game makes
+  a new one, last among its siblings. Icons never overlap, so the draw
+  order between them shows nothing.
 
 ## Canvases and scalers — confirmed
 

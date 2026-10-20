@@ -22,6 +22,7 @@ pub mod hand;
 mod host;
 mod hud;
 mod icons;
+mod item_icons;
 mod item_rules;
 mod items;
 mod lifepod_light;
@@ -80,6 +81,9 @@ pub use gameplay::{
 };
 pub use host::{Rules, aurora_countdown, build_number, lifepod_point, rules, rules_with};
 pub use icons::{PRELOADED_SHADERS_KEY, foreground_material, new_material, notifier_icon_nodes};
+pub use item_icons::{
+    BACKGROUND_PATHS, BackgroundSprites, ResourceSprite, item_icon_nodes, tech_icon,
+};
 pub use item_rules::{ItemRulesReport, item_rules, item_rules_with};
 pub use items::{
     ItemCode, ItemPrefab, ItemText, PlayerItems, TechLookup, TechSource, addressable_prefab,

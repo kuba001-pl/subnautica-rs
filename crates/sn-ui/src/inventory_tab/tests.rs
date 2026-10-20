@@ -10,6 +10,8 @@ fn config() -> InventoryTabConfig {
         node,
         background: node + 100,
         hint: None,
+        icon_rect: node + 200,
+        icon_size: [80.0, 80.0],
     };
     let mut language = BTreeMap::new();
     language.insert("InventoryLabel".into(), "INVENTORY".into());

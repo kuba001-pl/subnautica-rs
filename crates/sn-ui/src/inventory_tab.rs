@@ -25,9 +25,14 @@
 //!   the doll inactive).
 //! - `OnLanguageChanged` (from `uGUI_PDA.Start`): `inventoryLabel` =
 //!   `InventoryLabel`.
+//!
+//! The icons (M9u8b2a, [`crate::item_icons`]): [`InventoryTab::sync_items`]
+//! each frame with the containers' contents; `Uninit` destroys the
+//! storage's icons and clears the slots'.
 
 use std::collections::BTreeMap;
 
+use crate::item_icons::{ContainerIcons, IconNodes, SlotIcon, TabItem, slot_clear, slot_set_item};
 use crate::layout::{Tree, V2};
 use crate::state::UiState;
 
@@ -69,6 +74,9 @@ pub struct SlotNodes {
     /// `background` (an `Image`) and `hint`.
     pub background: usize,
     pub hint: Option<usize>,
+    /// `iconRect`'s node and laid-out size ([`InventoryTabConfig::lay_out`]).
+    pub icon_rect: usize,
+    pub icon_size: V2,
 }
 
 /// `uGUI_InventoryTab`'s nodes and the texts it shows.
@@ -103,6 +111,9 @@ impl InventoryTabConfig {
         for t in &mut self.torpedo {
             each(t);
         }
+        for s in &mut self.slots {
+            s.icon_size = tree.rect(s.icon_rect).size();
+        }
     }
 
     /// `Language.Get(key)`.
@@ -136,7 +147,19 @@ pub struct InventoryTab {
     pub used: Option<UsedStorage>,
     /// `uGUI_Equipment.equipment != null` (`Init` until `Uninit`).
     equipment_init: bool,
+    /// The containers' icons and the slots' (by slot name).
+    pub inventory_icons: ContainerIcons,
+    pub storage_icons: ContainerIcons,
+    pub slot_icons: BTreeMap<String, SlotIcon>,
     pub state: UiState,
+}
+
+/// Which icon `make` is asked for: an item's under a container's node, or
+/// a slot's under its `iconRect`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MakeIcon {
+    Item(usize),
+    Slot(usize),
 }
 
 impl InventoryTab {
@@ -147,6 +170,9 @@ impl InventoryTab {
             inventory_size: None,
             used: None,
             equipment_init: false,
+            inventory_icons: ContainerIcons::default(),
+            storage_icons: ContainerIcons::default(),
+            slot_icons: BTreeMap::new(),
             state: UiState::default(),
         };
         let c = t.config.clone();
@@ -218,9 +244,87 @@ impl InventoryTab {
         self.used = Some(used);
     }
 
+    /// The icons for the containers' contents now: the inventory's (once
+    /// `Start` ran), the used storage's, the equipment's (`(slot, item)`)
+    /// while it is `Init`. `make` makes an icon's nodes.
+    pub fn sync_items(
+        &mut self,
+        inventory: &[TabItem],
+        storage: &[TabItem],
+        equipment: &[(String, TabItem)],
+        make: &mut dyn FnMut(MakeIcon) -> IconNodes,
+    ) {
+        if self.inventory_size.is_some() {
+            let parent = self.config.inventory.node;
+            self.inventory_icons
+                .sync(inventory, &mut self.state, &mut || {
+                    make(MakeIcon::Item(parent))
+                });
+        }
+        if matches!(self.used, Some(UsedStorage::Container { .. })) {
+            let parent = self.config.storage.node;
+            self.storage_icons.sync(storage, &mut self.state, &mut || {
+                make(MakeIcon::Item(parent))
+            });
+        }
+        if !self.equipment_init {
+            return;
+        }
+        for slot in self.config.slots.clone() {
+            let want = equipment
+                .iter()
+                .find(|(s, _)| *s == slot.slot)
+                .map(|(_, i)| i);
+            let have = self.slot_icons.get(&slot.slot).and_then(|s| s.item);
+            match want {
+                // `OnEquip`: `SetItem`.
+                Some(item) if have != Some(item.id) => {
+                    let icon = match self.slot_icons.get(&slot.slot) {
+                        Some(s) => s.icon,
+                        None => make(MakeIcon::Slot(slot.icon_rect)),
+                    };
+                    slot_set_item(&mut self.state, icon, slot.hint, item, slot.icon_size);
+                    self.slot_icons.insert(
+                        slot.slot.clone(),
+                        SlotIcon {
+                            icon,
+                            item: Some(item.id),
+                        },
+                    );
+                }
+                // `OnUnequip`: `ClearIcon`.
+                None if have.is_some() => self.clear_slot(&slot.slot),
+                _ => {}
+            }
+        }
+    }
+
+    fn clear_slot(&mut self, slot: &str) {
+        let hint = self
+            .config
+            .slots
+            .iter()
+            .find(|s| s.slot == slot)
+            .and_then(|s| s.hint);
+        if let Some(s) = self.slot_icons.get_mut(slot) {
+            slot_clear(&mut self.state, Some(s.icon), hint);
+            s.item = None;
+        }
+    }
+
     /// `OnClosePDA`: the storage and torpedo containers' `Uninit`, the
     /// equipment's when it was `Init`.
     pub fn on_close_pda(&mut self) {
+        self.storage_icons.clear(&mut self.state);
+        let filled: Vec<String> = self
+            .slot_icons
+            .iter()
+            .filter(|(_, s)| s.item.is_some())
+            .map(|(k, _)| k.clone())
+            .collect();
+        for k in filled {
+            self.clear_slot(&k);
+        }
         self.state.active.insert(self.config.storage.node, false);
         for t in &self.config.torpedo {
             self.state.active.insert(t.node, false);

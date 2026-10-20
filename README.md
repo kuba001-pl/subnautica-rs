@@ -91,8 +91,10 @@ Tested on Windows 11 with game build 10 (Steam):
   ported) and the PDA reopens on the last tab. The inventory tab's
   containers and paper doll follow the game's rules (M9u8b1): the doll
   shows only the player's seven slots and the "EQUIPPED" label, or the
-  locker's 4 × 8 grid under "STORAGE" when the locker is open; the items'
-  own icons are not drawn on it yet (M9u8b2). Our own inventory panel
+  locker's 4 × 8 grid under "STORAGE" when the locker is open. The items
+  show on it as the game's icons, each at its cell and size, the
+  equipped ones on their slots (M9u8b2a); their rounded backgrounds are
+  still drawn as plain squares (M9u8b2b). Our own inventory panel
   still stands in for the inventory tab's items (the 6 × 8 grid, the 7
   slots, the locker beside them when open) and shows on every tab. The model and
   screen are not compared with the game on screen. A left click does what

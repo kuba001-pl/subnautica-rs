@@ -254,11 +254,20 @@ impl Assets<'_> {
                 )?),
                 _ => None,
             };
+            let icon_rect = node_of(
+                self,
+                tree,
+                &sc.object,
+                pptr(&sf, "iconRect").map_err(|m| format!("{what}.{m}"))?,
+                &format!("{what}.iconRect"),
+            )?;
             slots.push(SlotNodes {
                 slot: slot.to_string(),
                 node: n,
                 background,
                 hint,
+                icon_rect,
+                icon_size: [0.0, 0.0],
             });
         }
         let mut texts = BTreeMap::new();

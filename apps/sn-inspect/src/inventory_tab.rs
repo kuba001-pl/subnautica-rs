@@ -13,14 +13,23 @@
 //! - `OnOpenPDA` with the lifepod's locker: the storage's rect 71 × the
 //!   locker's size, the doll hidden, the label the locker's;
 //! - `OnClosePDA`: the storage and the doll hidden again.
+//!
+//! The icons (M9u8b2a): a scripted set of items (the grid, the player's
+//! slots, the locker; 1 × 1 and larger) through `sync_items`; each icon's
+//! laid-out rect against the rule (size 66·w + 5·(w − 1), top left 71·x + 1
+//! from the container's; a slot's icon centred on and sized to its
+//! `iconRect`), two draws per icon (its background with `SLICE_9_GRID`
+//! and its foreground); then a move, a removal and an unequip, and the
+//! close (the locker's icons and the slots' cleared).
 
 use std::collections::{BTreeSet, HashMap};
 use std::process::ExitCode;
 
 use sn_assets::{Assets, GlyphAtlases, UiScene, UiState};
 use sn_install::GameData;
-use sn_ui::inventory_tab::{CELL, InventoryTab, UsedStorage};
-use sn_ui::layout::Tree;
+use sn_ui::inventory_tab::{CELL, InventoryTab, MakeIcon, UsedStorage};
+use sn_ui::item_icons::{ContainerIcons, IconNodes, Sprite, TabItem, icon_position, icon_size};
+use sn_ui::layout::{Tree, V2};
 use sn_ui::pda::PdaScreen;
 use sn_ui::scaler::Placement;
 
@@ -28,6 +37,80 @@ use crate::Result;
 
 /// The player's slots as DESIGN's M9u8b1 row wrote them before the run.
 const EXPECTED_SLOTS: [&str; 7] = ["Head", "Body", "Gloves", "Foots", "Chip1", "Chip2", "Tank"];
+/// The scripted items: the grid's, the locker's, the slots'.
+const GRID: [&str; 4] = ["Titanium", "ScrapMetal", "Battery", "FilteredWater"];
+const LOCKER: [&str; 3] = ["Flare", "NutrientBlock", "FirstAidKit"];
+const EQUIPPED: [(&str, &str); 3] = [("Head", "Rebreather"), ("Tank", "Tank"), ("Foots", "Fins")];
+
+/// An item's size and sprite objects, by its tech type's name.
+type ItemLook = (
+    (i32, i32),
+    (sn_assets::ObjectRef, V2),
+    (sn_assets::ObjectRef, V2),
+);
+
+/// Our items for `names`, laid left to right on row 0 (`first` the first
+/// id), their sprites given ids by `scene`.
+fn items_of(
+    scene: &mut UiScene,
+    names: &[&str],
+    first: u64,
+    look: &dyn Fn(&str) -> Result<ItemLook>,
+) -> Result<Vec<TabItem>> {
+    let mut out = Vec::new();
+    let mut x = 0;
+    for (k, n) in names.iter().enumerate() {
+        let (size, (bg, bs), (fg, fs)) = look(n)?;
+        let background: Sprite = (scene.sprite_id(&bg), bs);
+        let foreground: Sprite = (scene.sprite_id(&fg), fs);
+        out.push(TabItem {
+            id: first + k as u64,
+            size,
+            at: (x, 0),
+            background,
+            foreground,
+        });
+        x += size.0;
+    }
+    Ok(out)
+}
+
+/// Every icon of `icons` (with its item) against the rule in the laid-out
+/// tree `l`: the container `parent`'s top left + the place, the size.
+fn check_container_icons(
+    c: &mut Checks,
+    l: &Tree,
+    parent: usize,
+    icons: &ContainerIcons,
+    items: &[TabItem],
+    what: &str,
+) {
+    let pr = l.rect(parent);
+    for it in items {
+        let Some((icon, _)) = icons.icons.get(&it.id) else {
+            c.check(false, &format!("{what}: item {} has no icon", it.id));
+            continue;
+        };
+        let want_size = icon_size(it.size);
+        let p = icon_position(it.at);
+        // Pivot (0, 1) at the anchor (0, 1): the parent's top left.
+        let want_at = [pr.x + p[0], pr.y + pr.height + p[1]];
+        let got_at = l.local_position(icon.root);
+        let got_size = l.rect(icon.root).size();
+        let good = (got_at[0] - want_at[0]).abs() < 1e-3
+            && (got_at[1] - want_at[1]).abs() < 1e-3
+            && (got_size[0] - want_size[0]).abs() < 1e-3
+            && (got_size[1] - want_size[1]).abs() < 1e-3
+            && l.active(icon.root);
+        c.check(
+            good,
+            &format!(
+                "{what}: item {} {:?} at {:?}: icon {got_size:?} at {got_at:?}, expected {want_size:?} at {want_at:?}",
+                it.id, it.size, it.at
+            ),
+        );
+    }
+}
 
 struct Checks {
     ok: usize,
@@ -248,6 +331,190 @@ pub fn run(game: &GameData) -> Result<ExitCode> {
     c.check(in_hidden == 0, "no draw of a hidden slot");
     c.check(in_doll > 0, "the doll draws");
 
+    // The icons: the grid and the slots.
+    let gc = sn_assets::game_code(&code)?;
+    let td = sn_assets::tech_data(&assets)?;
+    let catalog = assets.catalog()?;
+    let sprites = assets.sprites(&catalog)?;
+    let backgrounds = assets.background_sprites()?;
+    for (k, b) in backgrounds.0.iter().enumerate() {
+        println!(
+            "  background {k} ({}): {:?}",
+            sn_assets::BACKGROUND_PATHS[k],
+            b.as_ref().map(|b| (&b.name, b.size, &b.object.file.name))
+        );
+    }
+    c.check(
+        backgrounds.0.iter().all(Option::is_some),
+        "every background sprite found in Resources",
+    );
+    let material = assets.icon_material(&catalog, &layouts)?;
+    let layer = tree.nodes[config.inventory.node].layer;
+    let item_template = UiScene::from_code(
+        "Item Icon",
+        sn_assets::item_icon_nodes(layer, &material, false),
+    )?;
+    let slot_template = UiScene::from_code(
+        "Equipment Slot Icon",
+        sn_assets::item_icon_nodes(layer, &material, true),
+    )?;
+    let look = |name: &str| -> Result<ItemLook> {
+        let tech = gc
+            .tech_types
+            .iter()
+            .find(|(_, n)| n == name)
+            .map(|(v, _)| *v)
+            .ok_or_else(|| format!("no tech type {name}"))?;
+        let (size, bt) = sn_assets::tech_icon(&td, &gc.tech_defaults, tech);
+        let fg = sprites
+            .item_icon(name)
+            .ok_or_else(|| format!("{name}: no sprite"))?;
+        let bg = backgrounds
+            .get(bt)
+            .ok_or_else(|| format!("{name}: background {bt} not found"))?;
+        Ok((
+            size,
+            (bg.object.clone(), bg.size),
+            (fg.object.clone(), [fg.sprite.rect[2], fg.sprite.rect[3]]),
+        ))
+    };
+    let grid = items_of(&mut scene, &GRID, 100, &look)?;
+    let slot_items: Vec<&str> = EQUIPPED.iter().map(|(_, n)| *n).collect();
+    let equipped = items_of(&mut scene, &slot_items, 200, &look)?;
+    let equipment: Vec<(String, TabItem)> = EQUIPPED
+        .iter()
+        .zip(&equipped)
+        .map(|((s, _), it)| (s.to_string(), *it))
+        .collect();
+    for it in grid.iter().chain(&equipped) {
+        println!("  item {}: {:?} cells at {:?}", it.id, it.size, it.at);
+    }
+    let mut made = 0usize;
+    let mut graft_failed = None;
+    let mut make = |scene: &mut UiScene, m: MakeIcon| {
+        made += 1;
+        let (t, parent) = match m {
+            MakeIcon::Item(p) => (&item_template, p),
+            MakeIcon::Slot(p) => (&slot_template, p),
+        };
+        match scene.graft(t, parent) {
+            Ok(n) => IconNodes {
+                root: n,
+                background: n + 1,
+                foreground: n + 2,
+            },
+            Err(e) => {
+                graft_failed = Some(e);
+                IconNodes {
+                    root: usize::MAX,
+                    background: usize::MAX,
+                    foreground: usize::MAX,
+                }
+            }
+        }
+    };
+    tab.sync_items(&grid, &[], &equipment, &mut |m| make(&mut scene, m));
+    let st = state(&screen, &tab);
+    let l = lay(&mut scene, &st)?;
+    check_container_icons(
+        &mut c,
+        &l,
+        config.inventory.node,
+        &tab.inventory_icons,
+        &grid,
+        "grid",
+    );
+    for (slot, it) in &equipment {
+        let Some(sc) = config.slots.iter().find(|s| &s.slot == slot) else {
+            c.check(false, &format!("no slot {slot}"));
+            continue;
+        };
+        let Some(si) = tab.slot_icons.get(slot) else {
+            c.check(false, &format!("{slot}: no icon"));
+            continue;
+        };
+        let r = l.rect(sc.icon_rect);
+        let at = l.local_position(si.icon.root);
+        let size = l.rect(si.icon.root).size();
+        let good = si.item == Some(it.id)
+            && l.active(si.icon.root)
+            && (at[0] - (r.x + 0.5 * r.width)).abs() < 1e-3
+            && (at[1] - (r.y + 0.5 * r.height)).abs() < 1e-3
+            && (size[0] - r.width).abs() < 1e-3
+            && (size[1] - r.height).abs() < 1e-3
+            && sc.hint.is_none_or(|h| !l.active(h));
+        println!(
+            "  slot {slot}: iconRect {:?}, icon {size:?}, radius {:?}, hint {:?}",
+            r.size(),
+            st.material
+                .get(&si.icon.background)
+                .and_then(|m| m.floats.get("_Radius")),
+            sc.hint.map(|h| &tree.nodes[h].name)
+        );
+        c.check(
+            good,
+            &format!("{slot}'s icon centred on and sized to its iconRect, hint hidden"),
+        );
+    }
+    let d = scene.draw(&assets, &fonts, &set, &mut atlases, &placements, &st)?;
+    let icon_nodes: Vec<IconNodes> = tab
+        .inventory_icons
+        .icons
+        .values()
+        .map(|(i, _)| *i)
+        .chain(tab.slot_icons.values().map(|s| s.icon))
+        .collect();
+    let (mut drawn, mut slice9) = (0, 0);
+    for it in &d.list.items {
+        if let Some(icon) = icon_nodes
+            .iter()
+            .find(|i| i.background == it.node || i.foreground == it.node)
+        {
+            drawn += 1;
+            let m = d.materials.get(it.material);
+            if it.node == icon.background
+                && m.is_some_and(|m| m.keywords.iter().any(|k| k == "SLICE_9_GRID"))
+            {
+                slice9 += 1;
+            }
+        }
+    }
+    println!(
+        "  drawn: {drawn} icon graphics for {} icons, {slice9} backgrounds with SLICE_9_GRID",
+        icon_nodes.len()
+    );
+    c.check(drawn == 2 * icon_nodes.len(), "two draws per icon");
+    c.check(
+        slice9 == icon_nodes.len(),
+        "every background with SLICE_9_GRID",
+    );
+    // A move and a removal in the grid, then an unequip.
+    let mut grid2 = grid.clone();
+    grid2[0].at = (5, 7);
+    grid2.remove(1);
+    tab.sync_items(&grid2, &[], &equipment, &mut |m| make(&mut scene, m));
+    let ev = tab.inventory_icons.events.clone();
+    c.check(
+        ev.moved == [grid[0].id] && ev.removed == [grid[1].id] && ev.added.is_empty(),
+        &format!("move and removal: {ev:?}"),
+    );
+    let l = lay(&mut scene, &state(&screen, &tab))?;
+    check_container_icons(
+        &mut c,
+        &l,
+        config.inventory.node,
+        &tab.inventory_icons,
+        &grid2,
+        "grid after",
+    );
+    tab.sync_items(&grid2, &[], &equipment[1..], &mut |m| make(&mut scene, m));
+    let st = state(&screen, &tab);
+    let head = &tab.slot_icons["Head"];
+    c.check(
+        head.item.is_none() && st.active.get(&head.icon.root) == Some(&false),
+        "unequipped: the Head icon hidden",
+    );
+
     // With the locker.
     screen.on_close_pda();
     tab.on_close_pda();
@@ -276,10 +543,33 @@ pub fn run(game: &GameData) -> Result<ExitCode> {
         st.text.get(&config.storage_label) == Some(&label),
         "locker: its label",
     );
+    c.check(
+        tab.slot_icons.values().all(|s| s.item.is_none()),
+        "the slots were cleared at the close",
+    );
+    let stored = items_of(&mut scene, &LOCKER, 300, &look)?;
+    tab.sync_items(&grid2, &stored, &[], &mut |m| make(&mut scene, m));
+    let l = lay(&mut scene, &state(&screen, &tab))?;
+    check_container_icons(
+        &mut c,
+        &l,
+        config.storage.node,
+        &tab.storage_icons,
+        &stored,
+        "locker",
+    );
     screen.on_close_pda();
     tab.on_close_pda();
     let l = lay(&mut scene, &state(&screen, &tab))?;
     c.check(!l.active(config.storage.node), "closed: the storage hidden");
+    c.check(
+        tab.storage_icons.icons.is_empty(),
+        "closed: the locker's icons gone",
+    );
+    if let Some(e) = graft_failed {
+        return Err(format!("graft: {e}"));
+    }
+    println!("  icons made by code: {made}");
     c.check(
         l.active(config.inventory.node),
         "closed: the inventory stays",

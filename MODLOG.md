@@ -2,6 +2,41 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-20 — M9u8b2a: the inventory tab's item and slot icons
+
+**What/why:** the next step of M9u8b (DESIGN). M9u8b2 was split into
+b2a (the icons by the game's rules) and b2b (the shaders). `UI/IconBar`
+and `GRAYSCALE` were cut from b2 and recorded in DESIGN: our sim has a
+battery's charge but not tools' charge, food decay or disabled items.
+- `sn-ui::item_icons` (new): the cell rules, `ContainerIcons::sync`
+  (`OnAddItem`, `OnRemoveItem`, `OnChangeItemPosition`), the slots'
+  `SetItem`/`ClearIcon`; 5 unit tests. `sn-ui::inventory_tab`:
+  `sync_items`, `MakeIcon`, the slots' `iconRect`; `Uninit` clears.
+- `sn-assets::item_icons` (new): `background_sprites` (`Resources`),
+  `resource_sprite`, `tech_icon` (size and background type),
+  `item_icon_nodes`.
+- `sn-inspect ui --inventory`: the icon checks.
+- `sn-client`: each frame the player's container, the locker and the
+  equipment go to the UI worker (`TabContents`); the worker syncs the
+  icons when they or the PDA's flags change.
+No new dependencies.
+
+**Found:** the background sprites are 2-pixel strips (Normal 2 × 33,
+with 33 the icon radius). They only look right through `UI/Icon`'s
+`SLICE_9_GRID` program, so until b2b they draw as flat blue squares.
+
+**Verified** (`SUBNAUTICA_DIR` set; logs in `out/m9u8a/`):
+- `sn-inspect ui --inventory` (`ui-inventory-b2a.log`): RUN OK, 42 of 42.
+- Client `--use-item 3 --shot 6.5 m9u8b2a-locker` and `--use-item 3
+  --panel 6=take-all,7=close,9=open --shot 11 m9u8b2a-grid` (`b2a-*.log`,
+  0 WARN/ERROR/panic): "locker icons: 6 shown", then after take-all
+  "inventory icons: 6 shown", "locker icons: 0 shown"; the screenshots
+  show the icons in the locker's top row, then in the grid's.
+- `cargo test --workspace` 718 passed, 0 failed; clippy clean; `ui --pda`,
+  `--draw`, `--icons`, `--icon-mesh` unchanged.
+- Not tested: equipped items in the client (none of the starting items
+  equips); against the game on screen.
+
 ## 2026-10-20 — M9u8b1: the inventory tab's containers and doll (plan for M9u8b)
 
 **What/why:** M9u8b (the inventory tab) was planned from the decompiled

@@ -62,7 +62,8 @@ use bevy::window::PrimaryWindow;
 use sn_ui::death::{DeathInputs, DeathScreens, DeathType};
 use sn_ui::depth::DepthCompass;
 use sn_ui::hud::{Hud, HudInputs, hud_mode};
-use sn_ui::inventory_tab::{InventoryTab, UsedStorage};
+use sn_ui::inventory_tab::{InventoryTab, MakeIcon, UsedStorage};
+use sn_ui::item_icons::{IconNodes, TabItem};
 use sn_ui::messages::{MessageInputs, MessageLayout, Messages};
 use sn_ui::notifier::{FROM, Icon, Notifier};
 use sn_ui::pda::{PdaScreen, REGULAR_TABS};
@@ -278,7 +279,27 @@ type FrameInputs = (
     Vec<String>,
     PdaFlags,
     PdaClicks,
+    TabContents,
 );
+
+/// One item for the inventory tab's icons (M9u8b2a): our id, tech type,
+/// place and size in cells.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct TabEntry {
+    id: u64,
+    tech: i32,
+    at: (i32, i32),
+    size: (i32, i32),
+}
+
+/// Our player's containers this frame, for the inventory tab's icons.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct TabContents {
+    inventory: Vec<TabEntry>,
+    locker: Vec<TabEntry>,
+    /// (slot, item) of the player's equipped items.
+    equipment: Vec<(String, TabEntry)>,
+}
 
 /// This frame's clicks for the PDA's toolbar (M9u8a4b) and the screen's
 /// pose they are made on (the last frame's [`GameUiFrame::pda_pose`]).
@@ -802,6 +823,31 @@ fn run_worker(
         pod.pod_locker.storage_label,
         inventory_tab.config.text(&pod.pod_locker.storage_label)
     );
+    // The tab's icons (M9u8b2a): `Item Icon` / `Equipment Slot Icon` made
+    // by code, the backgrounds from Resources, each tech's size and
+    // background type.
+    let tech_code = sn_assets::game_code(&code)?;
+    let tech_data = sn_assets::tech_data(&assets)?;
+    let backgrounds = assets.background_sprites()?;
+    let icon_layer = scene.tree.nodes[inventory_tab.config.inventory.node].layer;
+    let item_icon_template = sn_assets::UiScene::from_code(
+        "Item Icon",
+        sn_assets::item_icon_nodes(icon_layer, &icon_material, false),
+    )?;
+    let slot_icon_template = sn_assets::UiScene::from_code(
+        "Equipment Slot Icon",
+        sn_assets::item_icon_nodes(icon_layer, &icon_material, true),
+    )?;
+    info!(
+        "game UI PDA inventory tab: backgrounds {:?}; bars (UI/IconBar) and grey (GRAYSCALE) not ported",
+        backgrounds
+            .0
+            .iter()
+            .map(|b| b.as_ref().map(|b| (b.name.clone(), b.size)))
+            .collect::<Vec<_>>()
+    );
+    let mut tab_seen = TabContents::default();
+    let mut pda_seen_icons = PdaFlags::default();
     let mut pda_seen = PdaFlags::default();
     // What `SetTransition` reads, when first needed after a resize.
     let mut popup_layout: Option<PopupLayout> = None;
@@ -841,7 +887,16 @@ fn run_worker(
                     screen = Some(s);
                 }
                 Request::Frame(frame) => {
-                    let (mut inputs, hand, death_inputs, keys, plays, pda, pda_clicks) = *frame;
+                    let (
+                        mut inputs,
+                        hand,
+                        death_inputs,
+                        keys,
+                        plays,
+                        pda,
+                        pda_clicks,
+                        tab_contents,
+                    ) = *frame;
                     inputs.food = food;
                     inputs.water = water;
                     rules = hud.update(&inputs);
@@ -1041,6 +1096,99 @@ fn run_worker(
                         pda,
                         inputs.time,
                     );
+                    // The icons (M9u8b2a), when the contents changed or the
+                    // PDA opened or closed.
+                    if tab_contents != tab_seen || pda != pda_seen_icons {
+                        let mut to_items = |list: &[TabEntry]| -> Vec<TabItem> {
+                            list.iter()
+                                .filter_map(|e| {
+                                    tab_item(
+                                        &mut scene,
+                                        &tech_code,
+                                        &tech_data,
+                                        &backgrounds,
+                                        &item_sprites,
+                                        e,
+                                    )
+                                })
+                                .collect()
+                        };
+                        let inv = to_items(&tab_contents.inventory);
+                        let locker = to_items(&tab_contents.locker);
+                        let equipment: Vec<(String, TabItem)> = tab_contents
+                            .equipment
+                            .iter()
+                            .filter_map(|(slot, e)| {
+                                tab_item(
+                                    &mut scene,
+                                    &tech_code,
+                                    &tech_data,
+                                    &backgrounds,
+                                    &item_sprites,
+                                    e,
+                                )
+                                .map(|i| (slot.clone(), i))
+                            })
+                            .collect();
+                        let mut failed = None;
+                        inventory_tab.sync_items(&inv, &locker, &equipment, &mut |m| {
+                            let (t, parent) = match m {
+                                MakeIcon::Item(p) => (&item_icon_template, p),
+                                MakeIcon::Slot(p) => (&slot_icon_template, p),
+                            };
+                            match scene.graft(t, parent) {
+                                Ok(n) => IconNodes {
+                                    root: n,
+                                    background: n + 1,
+                                    foreground: n + 2,
+                                },
+                                Err(e) => {
+                                    failed = Some(e);
+                                    IconNodes {
+                                        root: usize::MAX,
+                                        background: usize::MAX,
+                                        foreground: usize::MAX,
+                                    }
+                                }
+                            }
+                        });
+                        if let Some(e) = failed {
+                            return Err(format!("game UI PDA inventory tab: graft: {e}"));
+                        }
+                        for (what, c) in [
+                            ("inventory", &inventory_tab.inventory_icons),
+                            ("locker", &inventory_tab.storage_icons),
+                        ] {
+                            let ev = &c.events;
+                            if !ev.added.is_empty()
+                                || !ev.removed.is_empty()
+                                || !ev.moved.is_empty()
+                            {
+                                info!(
+                                    "game UI PDA inventory tab at {:.3} s: {what} icons: {} shown, added {:?}, removed {:?}, moved {:?}, {} made by code",
+                                    inputs.time,
+                                    c.icons.len(),
+                                    ev.added,
+                                    ev.removed,
+                                    ev.moved,
+                                    ev.made
+                                );
+                            }
+                        }
+                        let slots: Vec<(&String, Option<u64>)> = inventory_tab
+                            .slot_icons
+                            .iter()
+                            .map(|(k, v)| (k, v.item))
+                            .collect();
+                        if !slots.is_empty() {
+                            info!(
+                                "game UI PDA inventory tab at {:.3} s: slot icons {slots:?}",
+                                inputs.time
+                            );
+                        }
+                        tab_seen = tab_contents.clone();
+                        pda_seen_icons = pda;
+                    }
                     rules.apply(&pda_screen.state);
                     rules.apply(&inventory_tab.state);
                     // The toolbar's clicks (M9u8a4b), on the canvas at this
@@ -1468,6 +1616,38 @@ fn pda_screen_calls(
         );
     }
     *seen = now;
+}
+
+/// An item as the tab's icon shows it (M9u8b2a): its sprite
+/// (`SpriteManager.Get(techType)`, `Unknown` if none) and background
+/// (`GetBackground`, by `TechData`'s type). `None` (logged) without either.
+fn tab_item(
+    scene: &mut sn_assets::UiScene,
+    code: &sn_assets::GameCode,
+    data: &sn_assets::TechData,
+    backgrounds: &sn_assets::BackgroundSprites,
+    sprites: &sn_assets::Sprites,
+    e: &TabEntry,
+) -> Option<TabItem> {
+    let name = code.tech_name(e.tech).unwrap_or("");
+    let (_, bt) = sn_assets::tech_icon(data, &code.tech_defaults, e.tech);
+    let (Some(fg), Some(bg)) = (sprites.item_icon(name), backgrounds.get(bt)) else {
+        warn!(
+            "game UI PDA inventory tab: {name} ({}): no sprite or background",
+            e.tech
+        );
+        return None;
+    };
+    Some(TabItem {
+        id: e.id,
+        size: e.size,
+        at: e.at,
+        background: (scene.sprite_id(&bg.object), bg.size),
+        foreground: (
+            scene.sprite_id(&fg.object),
+            [fg.sprite.rect[2], fg.sprite.rect[3]],
+        ),
+    })
 }
 
 /// A click on the PDA screen (M9u8a4b): `GraphicRaycaster`'s ray from the
@@ -2069,6 +2249,55 @@ fn send_inputs(
     frame: Res<GameUiFrame>,
     mut compass_tech: Local<Option<Option<i32>>>,
 ) {
+    // Our player's containers for the tab's icons (M9u8b2a).
+    let tab_contents = match &session {
+        Some(s) => {
+            let me = s.player();
+            s.with_items(|items, _| {
+                let p = items.players.get(&me?)?;
+                let entries = |c: &sn_sim::inventory::Container| -> Vec<TabEntry> {
+                    let (placed, _) = c.layout();
+                    placed
+                        .iter()
+                        .filter_map(|q| {
+                            let tech = c.get(q.id)?.tech;
+                            Some(TabEntry {
+                                id: q.id.0,
+                                tech,
+                                at: (q.x, q.y),
+                                size: (q.width, q.height),
+                            })
+                        })
+                        .collect()
+                };
+                let equipment = p
+                    .inventory
+                    .equipment
+                    .slots()
+                    .filter_map(|(slot, item)| {
+                        let i = item?;
+                        Some((
+                            slot.to_string(),
+                            TabEntry {
+                                id: i.id.0,
+                                tech: i.tech,
+                                at: (0, 0),
+                                size: (1, 1),
+                            },
+                        ))
+                    })
+                    .collect();
+                Some(TabContents {
+                    inventory: entries(&p.inventory.container),
+                    locker: entries(&items.locker),
+                    equipment,
+                })
+            })
+            .flatten()
+            .unwrap_or_default()
+        }
+        None => TabContents::default(),
+    };
     let pda_clicks = PdaClicks {
         clicks: panel
             .as_mut()
@@ -2174,6 +2403,7 @@ fn send_inputs(
             with_locker: p.with_locker(),
         }),
         pda_clicks,
+        tab_contents,
     ))));
 }
 
