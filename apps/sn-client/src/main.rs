@@ -161,6 +161,8 @@ Usage: sn-client [--game-dir <PATH>] [--start <X> <Y> <Z>] [--look <X> <Y> <Z>]
                  check that the player moves)
   --hold-back    --hold-back <SECONDS>: from then on, hold S (M9u8a3: walk
                  away from the locker with the PDA open)
+  --craft        --craft SECONDS=TECH[,SECONDS=TECH…]; TECH=take collects
+                 finished output (debug hook, server checks the request)
   --test-supply  --test-supply <TECH>[,<TECH>…]: a debug aid for a solo or
                  host run: one item of each tech type (by its name in the
                  game's code, e.g. Compass) put into the new world's
@@ -272,6 +274,7 @@ struct Args {
     hold_back: Option<f32>,
     /// `--test-supply`: tech type names put into a new world's locker.
     test_supply: Vec<String>,
+    craft: Vec<(f64, String)>,
     /// `--turn`: the player's look turns at this many degrees a second.
     turn: Option<f32>,
     /// `--kill`: seconds of play before the player dies.
@@ -351,6 +354,7 @@ fn parse_args_from(raw: &[String]) -> Result<Args, String> {
         hold_forward: None,
         hold_back: None,
         test_supply: Vec::new(),
+        craft: Vec::new(),
         turn: None,
         kill: None,
         pick_up: None,
@@ -522,6 +526,22 @@ fn parse_args_from(raw: &[String]) -> Result<Args, String> {
             }
             "--hatch-name" => {
                 args.hatch_name = Some(it.next().ok_or("--hatch-name takes a name")?.clone());
+            }
+            "--craft" => {
+                let list = it.next().ok_or(
+                    "--craft takes SECONDS=TECH[,SECONDS=TECH]; TECH=take collects the result",
+                )?;
+                for entry in list.split(',') {
+                    let (at, name) = entry
+                        .split_once('=')
+                        .ok_or("--craft requires SECONDS=TECH")?;
+                    let at: f64 = at.parse().map_err(|_| "invalid --craft time")?;
+                    if !at.is_finite() || at < 0.0 {
+                        return Err("invalid --craft time".into());
+                    }
+                    args.craft.push((at, name.to_owned()));
+                }
+                args.craft.sort_by(|a, b| a.0.total_cmp(&b.0));
             }
             "--test-supply" => {
                 let list = it.next().ok_or("--test-supply takes TECH[,TECH…]")?;
@@ -1265,6 +1285,7 @@ fn main() -> AppExit {
                     .insert_resource(items::ItemsView::new(
                         args.pick_up.map(f64::from),
                         args.drop.map(f64::from),
+                        args.craft.clone(),
                     ))
                     .add_systems(
                         Update,

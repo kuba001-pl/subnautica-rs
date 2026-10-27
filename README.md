@@ -40,12 +40,21 @@ Tested on Windows 11 with game build 10 (Steam):
   triangle count.
 - Reading the biome map and the water settings of all 145 biomes
   (`sn-inspect biomes`, `sn-inspect biomes --at X Y Z`).
-- Reading gameplay data (headless, not used by the client yet): all 463
+- Reading gameplay data: all 463
   recipe/item entries of `Balance/TechData`, the prefab → tech type map,
   the player's numbers (oxygen, health, swim and walk speeds) and the
   starting blueprints and unlocks (`PDAData`) from the main scene
   (`sn-inspect techdata`, `sn-inspect player`), and every collider of the
   placed prefabs (`sn-inspect prefab --colliders`).
+- Fabricator recipes headless (`sn-inspect craft`): 100 tree nodes,
+  87 craft nodes, zero unresolved, 46 starting blueprints. Pure rules
+  check ingredients, blueprint and power; partial results wait when the
+  inventory fills. Scripted client crafting goes through the server:
+  `--test-supply ScrapMetal --use-item 3 --panel 6=take-all,7=close
+  --craft 8=Titanium,12=take,14=Titanium --shot 17 m9e2-solo`
+  consumed one salvage, produced four Titanium after 2.8 s, spent 5 power
+  and refused the next craft for missing ingredients. World hand/menu
+  integration and power regeneration are not implemented yet.
 - The player's body: the suit models the game shows in a new game,
   animated by the game's controller with its empty-hand rules (walking,
   swimming, surface, falling, death), turned and bobbed with the view as

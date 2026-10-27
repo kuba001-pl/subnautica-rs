@@ -172,7 +172,9 @@ impl WorldState {
                 self.players.remove(player).ok_or(unknown(*player))?;
             }
             WorldEventKind::Item { player, event, .. } => {
-                if !self.players.contains_key(player) {
+                if !self.players.contains_key(player)
+                    && !matches!(event, sn_protocol::ItemEvent::CraftDone { .. })
+                {
                     return Err(unknown(*player));
                 }
                 self.items

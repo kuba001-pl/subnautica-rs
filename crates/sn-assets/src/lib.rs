@@ -15,6 +15,7 @@ mod cinematics;
 mod code;
 mod collision;
 mod collision_world;
+mod crafting;
 mod death;
 mod fonts;
 mod gameplay;
@@ -72,6 +73,7 @@ pub use collision_world::{
     PlacedCollider, SCENE_BODY, SPAWNED, SceneCollider, SlotTables, TARGET_BODY, Target,
     TargetBody, TargetKind, bodies, body_kind, look_params, player_params, vitals_params,
 };
+pub use crafting::pod_crafting_power;
 pub use death::vignette_times;
 pub use fonts::{
     FONTS_BUNDLE, FontAssets, LoadedFont, LoadedFontAsset, LoadedSpriteAsset, StoredFontAsset,

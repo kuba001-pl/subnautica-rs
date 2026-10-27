@@ -48,6 +48,10 @@ pub struct OutcropInfo {
 /// same.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ItemRules {
+    /// Runtime fabricator recipes (M9e2), keyed by TechType.
+    pub recipes: BTreeMap<TechType, crate::craft::Recipe>,
+    /// Initial pod relay power; regeneration is not yet simulated.
+    pub pod_power: f32,
     pub techs: Techs,
     pub slots: SlotTable,
     /// `Inventory.UnlockDefaultEquipmentSlots`.

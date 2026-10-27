@@ -7,6 +7,46 @@ use sn_protocol::anim::{BOOLS, FLOATS, TRIGGERS};
 use sn_protocol::quant;
 use sn_protocol::*;
 
+#[test]
+fn crafting_messages_round_trip() {
+    for request in [
+        Request::Craft {
+            crafter: 0,
+            tech: 1001,
+        },
+        Request::TakeCrafted { crafter: u16::MAX },
+    ] {
+        let m = ClientMessage::Request { req: 42, request };
+        let b = m.encode();
+        assert_eq!(ClientMessage::decode(&b).unwrap(), m);
+        for n in 0..b.len() {
+            assert!(ClientMessage::decode(&b[..n]).is_err());
+        }
+    }
+    for event in [
+        ItemEvent::CraftStarted {
+            crafter: 0,
+            tech: 1001,
+            start_tick: 100,
+            end_tick: 240,
+        },
+        ItemEvent::CraftDone { crafter: 0 },
+        ItemEvent::CraftedTaken { crafter: 0 },
+    ] {
+        let m = ServerMessage::Event(WorldEvent {
+            seq: 3,
+            tick: Tick(100),
+            kind: WorldEventKind::Item {
+                player: PlayerId(0),
+                req: 42,
+                event,
+            },
+        });
+        let b = m.encode();
+        assert_eq!(ServerMessage::decode(&b).unwrap(), m);
+    }
+}
+
 /// A small seeded generator (splitmix64), so every run is the same.
 struct Rng(u64);
 
@@ -513,7 +553,7 @@ fn malformed_item_messages_name_their_offset() {
         origin: [0.0; 3],
         drops: death_drops(&mut rng, 1),
     });
-    bytes[2] = 5;
+    bytes[2] = 255;
     let e = ClientMessage::decode(&bytes).unwrap_err();
     assert_eq!(e.offset, 2, "{e}");
     let mut bytes = req(Request::Lose {
@@ -524,7 +564,7 @@ fn malformed_item_messages_name_their_offset() {
     bytes[n] = items::MAX_DROPS as u8 + 1;
     let e = ClientMessage::decode(&bytes).unwrap_err();
     assert_eq!(e.offset, n, "{e}");
-    let e = ServerMessage::decode(&[6, 0, 7]).unwrap_err();
+    let e = ServerMessage::decode(&[6, 0, 255]).unwrap_err();
     assert_eq!(e.offset, 2, "{e}");
 }
 

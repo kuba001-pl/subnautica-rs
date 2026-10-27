@@ -327,6 +327,20 @@ impl Server {
 
     /// Hello timeouts and closing rejected connections.
     pub fn update(&mut self, now_us: u64) {
+        let tick = self.clock(now_us).0;
+        if let Some(job) = self.world.items.fabricator.job.as_ref() {
+            if !job.done && tick.0 >= job.end {
+                let player = job.owner;
+                self.emit(
+                    tick,
+                    WorldEventKind::Item {
+                        player,
+                        req: u32::MAX,
+                        event: ItemEvent::CraftDone { crafter: 0 },
+                    },
+                );
+            }
+        }
         let mut close = Vec::new();
         for (&conn, stage) in &self.conns {
             match *stage {
@@ -661,6 +675,32 @@ impl Server {
             .is_some_and(|s| s.in_pod);
         let items = &self.world.items;
         let event = match q {
+            Request::Craft { crafter, tech } => {
+                if crafter != 0 || !in_pod || self.world.settings.lifepod.is_none() {
+                    return self.refuse(conn, player, req, RefuseReason::NotHere);
+                }
+                let Some(recipe) = items.rules().recipes.get(&tech) else {
+                    return self.refuse(conn, player, req, RefuseReason::Unknown);
+                };
+                let start_tick = self.clock(now_us).0.0;
+                let ticks =
+                    (f64::from(recipe.duration()) * 1e6 / self.config.tick_us as f64).ceil() as u32;
+                let Some(end_tick) = start_tick.checked_add(ticks) else {
+                    return self.refuse(conn, player, req, RefuseReason::NotAllowed);
+                };
+                ItemEvent::CraftStarted {
+                    crafter,
+                    tech,
+                    start_tick,
+                    end_tick,
+                }
+            }
+            Request::TakeCrafted { crafter } => {
+                if crafter != 0 || !in_pod {
+                    return self.refuse(conn, player, req, RefuseReason::NotHere);
+                }
+                ItemEvent::CraftedTaken { crafter }
+            }
             Request::PickUp { key, class } => {
                 let class = match &key {
                     EntityKey::Spawned(id) => match items.objects.get(id) {

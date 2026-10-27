@@ -336,6 +336,26 @@ bits. The server keeps the first report per batch and counts any later
 one that differs. Clients fill slots from the server's slot seed on their
 own, so this is the check that they filled them alike.
 
+## Crafting (protocol 5, M9e2)
+
+Requests add tags 5 (Craft: crafter u16 varint, tech signed i32 varint)
+and 6 (TakeCrafted: crafter). Only crafter 0 (the pod) is supported.
+Item world events add tags 5 (CraftStarted: crafter, tech, start tick u32,
+end tick u32), 6 (CraftDone: crafter) and 7 (CraftedTaken: crafter).
+The enclosing world event identifies the player and preserves sequence
+ordering. Start/end carry the server's duration rounded up to a tick.
+Refusal reasons append Busy, UnknownBlueprint, MissingIngredients, NoPower.
+
+The item snapshot/hash now includes pod power and the optional fabricator
+job: owner, start/end ticks, done flag, recipe tech, primary count left,
+linked index. Recipes stay in local install-derived rules and are not
+transmitted. The server schedules completion; requests cannot complete
+a craft early. A finished output blocks another craft until collected.
+Taking output can fill the inventory part-way and retain the rest.
+The server currently requires in_pod for both crafting and collecting;
+the hand/range integration belongs to M9e3. Initial pod power is runtime
+data; regeneration is not implemented (gameplay.md § Crafting).
+
 ## World state
 
 What every machine must hold identically (`crates/sn-session`,

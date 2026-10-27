@@ -2266,6 +2266,14 @@ fn item_rules_from_install() {
         rules.tech_class.len()
     );
     assert_eq!(rules.inventory_size, (6, 8));
+    assert_eq!(rules.recipes.len(), 87);
+    assert_eq!(rules.pod_power, 75.0);
+    for recipe in rules.recipes.values() {
+        for tech in std::iter::once(recipe.tech).chain(recipe.linked.iter().copied()) {
+            let class = rules.tech_class.get(&tech).unwrap();
+            assert_eq!(rules.pickups.get(class).unwrap().tech, tech);
+        }
+    }
     assert_eq!(rules.slots.slots.len(), 38);
     assert_eq!(rules.player_slots.len(), 7);
     assert_eq!(rules.analysis.len(), 126);

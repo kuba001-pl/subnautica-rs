@@ -1152,3 +1152,18 @@ the local ILSpy decompile (2026-10-27; not ields.py):
 
 **Hypothesis:** exact Unity frame/coroutine scheduling at completion;
 comparison with the original running game is **not tested**.
+
+**Confirmed by runtime reads (M9e2 research):** the escapepod's prefab
+spawners instantiate one Fabricator and three RegenPowerCell objects.
+Each cell's PowerSource stores power/maxPower 25/25; each
+RegeneratePowerSource stores threshold 25, interval 20 s, amount 1.
+The fabricated machine stores closeDistance 3, handOverText UseFabricator,
+pickupOutOfRange false. Read with the Rust assembly-derived ScriptLayout
+and read_script, all fields consumed; diagnostic logs in
+out/m9e2-pod-active.log. These scripts are on addressable spawns, so
+Scene.behaviours and the direct roots alone report zero of them.
+
+**Implementation limitation (M9e2):** initial pod power is read from those
+sources and summed. Regeneration/relay connection timing and repair are
+not yet simulated; this static reservoir is **not the game's power
+simulation**. Full source/relay behavior remains unimplemented.
