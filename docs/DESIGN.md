@@ -1460,11 +1460,11 @@ step-M9u4 oracle (saved driven rects) is a hypothesis. If it does not
 hold, layout is checked against hand-computed cases and the
 screenshots only, and the plan says so. Size: about M9g's, ten steps.
 
-#### M9e plan: crafting at the lifepod's fabricator (written 2026-10-27, after M9u; not started)
+#### M9e plan: crafting at the lifepod's fabricator (written 2026-10-27, after M9u; M9e1 done)
 
 **Why next:** the road (§ 4.3, Phase E) puts M9e after M9u, and both of
 its bases are done: the menus are read from the DLL (P1: 7 menus, the
-fabricator's 100 craft nodes), the recipes from TechData (P0), and the
+fabricator's 100 nodes (87 craft nodes)), the recipes from TechData (P0), and the
 client can draw, hit-test and animate the game's own canvases (M9u).
 Crafting is the first thing in the game that turns picked-up items into
 new ones, so the inventory, the locker and the notifications get their
@@ -1473,7 +1473,8 @@ saved.
 
 **What the game has** (class and field names checked 2026-10-27 with
 `sn-inspect code --fields`; the behaviour is read in the decompiled code
-in M9e1, so each line below is a *hypothesis* until then):
+in M9e1; confirmed rules and corrections are recorded in gameplay.md
+§ Crafting and ui.md § Crafting menu research):
 - `Fabricator` extends `GhostCrafter` extends `Crafter` extends
   `HandTarget`: the hand target (`handOverText`, `closeDistance`), the
   open/close animator, beams, sparks, light and sounds; `craftTree` picks
@@ -1496,7 +1497,7 @@ in M9e1, so each line below is a *hypothesis* until then):
 
 | Step | Work | Done when |
 |---|---|---|
-| **M9e1** | **Rules, headless.** Read `Crafter`, `GhostCrafter`, `CrafterLogic`, `Fabricator`, `uGUI_CraftingMenu`, `KnownTech` and the recipe checks in the decompiled code; record them in `docs/formats/gameplay.md` § Crafting (each fact marked). `sn-sim::craft` (pure): can-craft (known, ingredients in the inventory, power, room for the result and linked items), consume, the result and `craftAmount`, linked items, the craft time and its default, the energy cost. `sn-inspect craft`: every fabricator node resolved. | Unit tests on synthetic recipes (missing ingredient, unknown blueprint, no power, full inventory, `craftAmount` > 1, linked items); `sn-inspect craft` on the install: 100 fabricator craft nodes (= P1), each with ingredients, time and energy logged, 0 unresolved; the starting blueprints from `PDAData` counted; the default craft time settled with its source. |
+| **M9e1** ✅ (2026-10-27; see as built) | **Rules, headless.** Read `Crafter`, `GhostCrafter`, `CrafterLogic`, `Fabricator`, `uGUI_CraftingMenu`, `KnownTech` and the recipe checks in the decompiled code; record them in `docs/formats/gameplay.md` § Crafting (each fact marked). `sn-sim::craft` (pure): can-craft (known, ingredients in the inventory, power), room checked per output at pickup (confirmed in M9e1), consume, the result and `craftAmount`, linked items, the craft time and its default, the energy cost. `sn-inspect craft`: every fabricator node resolved. | Unit tests on synthetic recipes (missing ingredient, unknown blueprint, no power, full inventory, `craftAmount` > 1, linked items); `sn-inspect craft` on the install: 100 fabricator nodes, including 87 craft nodes (= P1; corrected count in M9e1), each with ingredients, time and energy logged, 0 unresolved; the starting blueprints from `PDAData` counted; the default craft time settled with its source. |
 | **M9e2** | **Server-authoritative crafting.** `sn-protocol`: `Request::Craft { crafter, tech }`, `Request::TakeCrafted { crafter }`; world events for a craft started (with its duration), done and taken; the fabricator's state and the pod's power in the world state and its hash. `sn-session` checks with `sn-sim::craft`; one craft at a time per fabricator, shared by all players. A `--craft SECONDS=TECH` test hook. | Protocol round-trip tests; a scripted solo run crafts one real recipe (e.g. Titanium from Scrap metal picked up nearby): inventory counts before/after, the duration equal to the rule, the energy drop logged; a refused craft (no ingredients) logged with its reason; 0 warnings. |
 | **M9e3** | **The fabricator in the world.** The hand on it (`handOverText` from the language file, `closeDistance`), its animator's open and close, the result shown in the fabricator until taken (the item's model at `itemSpawnPoint`); beams, sparks and `CrafterGhostModel`'s shader drawn if they fit, otherwise kept drawn plainly and logged (never hidden). | Client run: hand text logged; open at the hand, close beyond `closeDistance` (distances logged against the stored value); the crafted item drawn at the spawn point during the craft and gone when taken; 0 warnings; a screenshot for the user. |
 | **M9e4** | **The crafting menu.** `uGUI_CraftingMenu` on `CraftingCanvas`: the fabricator tree's nodes as icons (made as the game makes them), expand and craft sprites, grey for unknown/unaffordable, the punch animations, the recipe tooltip; hover and clicks through the existing hit-test; a click sends `Request::Craft`. The unlock pop-up and `Blueprints` notifications if crafting unlocks anything. `sn-inspect ui --crafting`. | `ui --crafting`: node count and layout of the top level and one sub-menu against a replay of the decompiled code, N/N; client: open the menu, hover a recipe (tooltip text logged), click it: the same craft as M9e2, the item taken into the inventory with its notification; 0 warnings; a screenshot. |
@@ -1506,6 +1507,15 @@ in M9e1, so each line below is a *hypothesis* until then):
 the original row's checks hold (rules unit-tested on synthetic recipes,
 one real recipe crafted in a scripted run with counts before/after
 logged, the menu's node count equal to P1's).
+
+**M9e1 as built (2026-10-27):** pure recipe validation/consumption and
+incremental output collection, runtime TechData conversion, `sn-inspect
+craft` and an opt-in install test. Corrections to the hypotheses: P1's
+100 is all nodes (87 craft, 12 category, 1 root); room is checked during
+pickup, which can leave partial output; the default animation is 2.7 s
+and the logic adds 0.1 s; energy is 5 per craft. The original code
+automatically tries pickup in range, and a busy hand click has no text
+refusal (progress reticle only). M9e2–5 must preserve these rules.
 
 **Out of scope:** the other crafting machines (Constructor and the
 Mobile Vehicle Bay, Workbench, upgrade consoles, the Cyclops fabricator:

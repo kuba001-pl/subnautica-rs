@@ -17,6 +17,7 @@ pub mod aurora;
 pub mod body;
 pub mod cinematic;
 pub mod collide;
+pub mod craft;
 pub mod inventory;
 pub mod lighting;
 pub mod look;

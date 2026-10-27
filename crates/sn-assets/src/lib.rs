@@ -78,8 +78,8 @@ pub use fonts::{
     TmpSettings,
 };
 pub use gameplay::{
-    Ingredient, PhysicsSettings, PlayerData, TechData, TechEntry, ent_tech_data, parse_tech_data,
-    physics_settings, player_data, tech_data,
+    Ingredient, PhysicsSettings, PlayerData, TechData, TechEntry, craft_recipe, ent_tech_data,
+    parse_tech_data, physics_settings, player_data, tech_data,
 };
 pub use host::{Rules, aurora_countdown, build_number, lifepod_point, rules, rules_with};
 pub use icons::{PRELOADED_SHADERS_KEY, foreground_material, new_material, notifier_icon_nodes};

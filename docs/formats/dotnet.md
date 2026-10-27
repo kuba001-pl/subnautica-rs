@@ -95,7 +95,7 @@ to the console only).
   other instruction, so a changed game is reported, not misread.
 - `TreeAction` (`None` 0, `Expand` 1, `Craft` 2) is read from its enum.
 - **Confirmed (real data):** 159 nodes: 7 roots (`None`), 18 groups
-  (`Expand`), 134 craft nodes. Per menu: Fabricator 100, Constructor 7,
+  (`Expand`), 134 craft nodes. Total nodes per menu (not craft-only; clarified M9e1): Fabricator 100, Constructor 7,
   Workbench 13, SeamothUpgrades 22, MapRoom 5, Centrifuge 3,
   CyclopsFabricator 9. Every craft node's tech type has a TechData entry.
 

@@ -2,6 +2,47 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-27 — M9e1: fabricator rules, headless
+
+**What/why:** direct source research (local ILSpy decompile, read only)
+settled the plan's hypotheses. `sn-sim::craft` validates known tech,
+grid ingredients and power, consumes with the existing item selection,
+and retains partial primary/linked outputs when pickup runs out of room.
+Five synthetic tests cover missing/unknown/power/full/amount/linked,
+timing, malformed recipes and atomic refusal. `sn-assets::craft_recipe`
+maps runtime TechData; `sn-inspect craft` and ignored `fabricator_recipes`
+check every craft node. Research in gameplay.md and ui.md; DESIGN and
+dotnet.md corrected. No dependencies or ignore changes.
+
+**Found/dead end:** the first install run failed its planned count of
+100 craft nodes. Existing `sn-inspect code --trees`, its P1 test and the
+decompiled tree all agree: 100 total nodes, 87 craft, 12 categories,
+1 root. Corrected the check and the plan, then reran successfully. The
+plan's up-front room check also differed from the source: the game checks
+each result during pickup, and attempts pickup automatically in range.
+Default animation 2.7 s, logic completion 2.8 s; energy 5. There is no
+busy hand refusal message (progress only). Initial compile caught a
+missing re-export/private module use; corrected before verification.
+
+**Verified** (PowerShell; logs `out/m9e1-*.log`):
+- `cargo fmt --all`, `cargo fmt --all -- --check`: clean.
+- `cargo test --workspace` (SUBNAUTICA_DIR unset): 748 passed, 0 failed,
+  64 ignored.
+- `cargo clippy --workspace --all-targets -- -D warnings`: pass.
+- `$env:SUBNAUTICA_DIR='D:\SteamLibrary\steamapps\common\Subnautica'`;
+  `cargo run --release -p sn-inspect -- craft`: 100 total nodes, 87 craft,
+  56 absent craftTime, 0 unresolved, 46 starting blueprints (46 unique),
+  every recipe's ingredients/amount/linked/time/energy logged; RUN OK.
+- With the same environment: `cargo test -p sn-assets fabricator_recipes
+  -- --ignored --nocapture`: 1 passed.
+- `git diff --check`: pass; status contains only our Rust and docs.
+
+**Not tested:** original-game screen comparison, client crafting,
+network crafting, serialized pod power/repair interactions, Linux/macOS.
+These remain M9e2–5 work. No game assets committed. Refused requests
+validate before spending energy; the original's direct GhostCrafter call
+spends energy before resource validation (the UI normally prevents it).
+
 ## 2026-10-27 — Plan: M9e (crafting at the lifepod's fabricator)
 
 **What/why:** with M9u done, DESIGN's road (§ 4.3, Phase E) has M9e next.

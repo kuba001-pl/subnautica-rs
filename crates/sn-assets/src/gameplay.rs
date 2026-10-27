@@ -26,6 +26,29 @@ pub struct Ingredient {
     pub amount: i32,
 }
 
+/// Convert runtime TechData into the pure fabricator rules. This does not
+/// interpret TechData.energyCost: GhostCrafter uses a fixed cost instead.
+pub fn craft_recipe(
+    entry: &TechEntry,
+    defaults: &crate::code::TechDefaults,
+) -> Result<sn_sim::craft::Recipe> {
+    let count = |n: i32| {
+        u32::try_from(n)
+            .map_err(|_| format!("TechData {}: negative crafting count {n}", entry.tech_type))
+    };
+    Ok(sn_sim::craft::Recipe {
+        tech: entry.tech_type,
+        ingredients: entry
+            .ingredients
+            .iter()
+            .map(|i| Ok((i.tech_type, count(i.amount)?)))
+            .collect::<Result<_>>()?,
+        amount: count(entry.craft_amount.unwrap_or(defaults.craft_amount))?,
+        linked: entry.linked_items.clone(),
+        time: entry.craft_time,
+    })
+}
+
 /// One entry of `Balance/TechData`. `None`: the key is absent and the game
 /// uses its default (`TechData.defaults`, in the code; read in P1).
 #[derive(Clone, Debug, Default, PartialEq)]

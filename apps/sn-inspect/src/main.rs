@@ -12,6 +12,7 @@ mod code;
 mod collision;
 mod compass;
 mod coop;
+mod craft;
 mod death;
 mod density;
 mod depth;
@@ -209,6 +210,7 @@ Commands:
                          namespace), with the type each extends
   code --extends <BASE> [<ASSEMBLY>]
                          The types whose base type is named BASE
+  craft                  Resolve all fabricator recipes, timings and energy
   techdata               Recipes and item data (Balance/TechData) and the
                          prefab → tech type map (EntTechData), with checks
   player                 The player's numbers from the main scene (oxygen,
@@ -514,6 +516,7 @@ fn run(mut args: Vec<String>) -> Result<ExitCode> {
         ["code", "--extends", name, asm] => code::extends(&game, name, Some(asm)),
         ["code", "--implements", name] => code::implements(&game, name, None),
         ["code", "--implements", name, asm] => code::implements(&game, name, Some(asm)),
+        ["craft"] => craft::run(&game),
         ["techdata"] => gameplay::techdata(&game),
         ["player"] => gameplay::player(&game),
         ["pickups"] => pickups::run(&game),

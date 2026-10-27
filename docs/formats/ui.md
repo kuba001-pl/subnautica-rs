@@ -2525,3 +2525,30 @@ own player's state and from the world events every machine replays
 - The original game has no multiplayer, so who sees what is our rule
   (`docs/DESIGN.md` Phase D: shared world, own player's UI), not a fact
   about the game.
+
+## Crafting menu research (M9e1)
+
+**Confirmed by direct reading** of uGUI_CraftingMenu and
+TooltipFactory.CraftRecipe in the local ILSpy decompile (2026-10-27):
+unknown Hidden recipes are omitted; partially unlocked Locked recipes
+remain visible. Category filters remove Survival outside survival mode
+and Submarine outside a submarine. A category without visible children
+is omitted. Craft actions require both unlock and ingredients; unavailable
+icons are grey. Background sprites are categoryNormal/categoryHovered
+and craftNormal/craftHovered from SpriteManager.Background.
+
+**Confirmed by the same source:** siblings form one column if any sibling
+is a category, otherwise a square-ish grid (columns = ceil(sqrt(count))).
+At depth d, size = max(40, 92 / 1.18^(d−1)); x = (column+0.5) × size
+plus half the parent's width if positive; y = ((rows−1)/2−row) × size.
+Expand collapses siblings, exposes children, punches them at amplitude 1
+with stagger 0.1 × index/count. A click punches at amplitude 0.5,
+frequency 5, duration 1 with random scatter 0.2.
+
+**Confirmed by the same source:** a locked recipe's tooltip has its title
+and LockedRecipeHint. An available recipe has its runtime localized title
+(using CraftMultipleFormat for amount > 1), description, ingredient icons,
+a craft hint when affordable, and pin/unpin hints. These are research
+findings; the menu and recipe tooltip are **not implemented/not tested**
+in M9e1. Busy clicks play the deny sound; GhostCrafter's hand click while
+crafting returns without a message, correcting the M9e5 plan hypothesis.

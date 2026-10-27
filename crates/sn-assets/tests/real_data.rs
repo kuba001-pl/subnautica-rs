@@ -10,6 +10,51 @@ use sn_install::GameData;
 
 #[test]
 #[ignore = "needs SUBNAUTICA_DIR pointing at a Subnautica install"]
+fn fabricator_recipes() {
+    let Some(dir) = std::env::var_os("SUBNAUTICA_DIR") else {
+        return;
+    };
+    let game = GameData::locate(Some(PathBuf::from(dir))).unwrap();
+    let assets = Assets::index(&game).unwrap();
+    let code = sn_assets::game_code(&sn_assets::read_assembly(&game).unwrap()).unwrap();
+    let data = sn_assets::tech_data(&assets).unwrap();
+    let player = sn_assets::player_data(&assets).unwrap();
+    let tree = code
+        .craft_trees
+        .iter()
+        .find(|t| t.id == "Fabricator")
+        .unwrap();
+    assert_eq!(tree.root.walk().len(), 100);
+    let nodes: Vec<_> = tree
+        .root
+        .walk()
+        .into_iter()
+        .filter(|n| Some(n.action) == code.tree_action("Craft"))
+        .collect();
+    assert_eq!(nodes.len(), 87);
+    let mut absent = 0;
+    for node in nodes {
+        let entry = data.get(node.tech_type).unwrap();
+        let r = sn_assets::craft_recipe(entry, &code.tech_defaults).unwrap();
+        absent += usize::from(r.time.is_none());
+        assert!(!r.ingredients.is_empty());
+        assert!(r.duration().is_finite() && r.duration() >= 2.8);
+        for tech in r
+            .ingredients
+            .iter()
+            .map(|i| i.0)
+            .chain(r.linked)
+            .chain([r.tech])
+        {
+            assert!(code.tech_name(tech).is_some());
+        }
+    }
+    assert_eq!(absent, 56);
+    assert_eq!(player.pda.default_tech.len(), 46);
+}
+
+#[test]
+#[ignore = "needs SUBNAUTICA_DIR pointing at a Subnautica install"]
 fn atmosphere_all_placed_prefabs_and_colliders() {
     use sn_sim::{V3, atmosphere::contains, collide::Shape};
     use sn_world::{Transform, VOXEL_WORLD_OFFSET};

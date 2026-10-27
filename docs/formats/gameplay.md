@@ -1097,3 +1097,58 @@ throwaway probe of the main scene, and `sn-inspect anim scene:main
   with that text (`LanguageCache.GetPickupText`).
 - **Confirmed (real data):** `English.json` starts with `//` comments
   (our JSON reader skips them) and parses to 3,818 string keys.
+
+## Crafting (M9e1)
+
+**Confirmed by direct reading** of Crafter, GhostCrafter,
+CrafterLogic, Fabricator, KnownTech, Inventory and TechData in
+the local ILSpy decompile (2026-10-27; not ields.py):
+
+- The inheritance is Fabricator → GhostCrafter → Crafter → HandTarget.
+  GhostCrafter selects the Fabricator tree; hand text uses handOverText
+  (initializer UseFabricator). Its range uses the player's transform,
+  strictly less than closeDistance (initializer 3 m). Serialized values
+  override initializers; actual pod values are not measured in M9e1.
+- The UI checks known blueprints and ingredients. Survival ingredients
+  come exclusively from Inventory.container, not equipment or nearby
+  storage. Consumption calls DestroyItem in recipe order, which removes
+  the last item or emptiest trailing battery (the existing container rule).
+- GhostCrafter spends 5 energy, regardless of TechData.energyCost. It
+  consumes power before resources; a direct invalid call can therefore
+  spend power before reporting missing ingredients. Our public rule
+  validates the UI conditions first, so a refused request is atomic.
+- TechData.GetCraftTime returns false when the key is absent (its out
+  value is defaultCraftTime, 0). GhostCrafter then uses the sum of its
+  spawn animation delay 1 s and duration 1.7 s, **2.7 s**, not Crafter's
+  generic 3 s. Explicit times are clamped to at least 2.7 s. CrafterLogic
+  adds **0.1 s** to the end time: completion takes 2.8 s by default.
+- CrafterLogic starts with craftAmount primary outputs, then one output
+  for each linkedItems entry, in order (including duplicates). A zero
+  primary amount can still produce linked items. Room is **not** checked
+  at craft start; pickup checks each item separately. When room runs out,
+  the primary count/linked index remains in the machine for later pickup.
+  This settles and corrects the plan's proposed up-front room check.
+- On completion GhostCrafter attempts pickup automatically if the player
+  is within closeDistance or pickupOutOfRange is true. Otherwise it
+  posts CraftingEnd. Clicking the finished result retries pickup. A busy
+  hand click does nothing: there is no busy refusal text in this code;
+  the reticle shows the recipe's name and progress.
+- Fabricator drives the animator bools open_fabricator and fabricating.
+  Beams, light and sparks start after the spawn animation delay. The ghost
+  is based on the Constructable model or VFXFabricating child, positioned
+  at itemSpawnPoint with the VFX offsets/scale, using FX_BUILDING.
+- Crafter closes the menu for duration > 5.9 s, otherwise locks it (unless
+  Sprint is held). A craft longer than 20 s posts CraftingBegin. Leaving
+  range closes the menu but keeps the machine open while an output exists.
+- KnownTech initializes from PDAData.defaultTech using AddRange (which
+  analyzes entries too). Add recursively analyzes unlocks and updates
+  compound dependencies; unread blueprints use Blueprints (3 s), CraftTree
+  and Builder notifications. Existing sn-sim KnownTech does not yet model
+  compound dependencies.
+- Pod power sources find their ancestor relay. PowerSource stores power
+  and maxPower; RegeneratePowerSource adds regenerationAmount every
+  regenerationInterval while below regenerationThreshhold. The pod's
+  serialized power values and repair interactions are **not tested** here.
+
+**Hypothesis:** exact Unity frame/coroutine scheduling at completion;
+comparison with the original running game is **not tested**.
