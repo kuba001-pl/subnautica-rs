@@ -2,6 +2,22 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-27 ? M9f1: save/load plan and state research
+
+**What/why:** wrote the M9f plan before implementation: pure versioned
+codec, stable player identities and pose/vitals, complete M9d item state,
+platform user folder, 30 s autosave, orderly shutdown, validated backup and
+explicit corruption refusal. Read the main checkout's decompile read-only
+as explicitly authorized; findings in `docs/formats/saves.md` are prose.
+No game format is read or written. Planned dependency: `ctrlc` for orderly
+console shutdown. No ignore changes. Crafted items use ordinary inventory.
+
+**Verified:** `git diff --check`; docs-only step, runtime not tested yet.
+`git status --short` lists only our documentation. Verification for the
+next step: `cargo test -p sn-session -p sn-protocol` (all synthetic tests pass).
+Initial Python console read failed on Windows cp1252 output; set
+PYTHONIOENCODING=utf-8; no files were modified by that failed read.
+
 ## 2026-10-27 — M9e1: fabricator rules, headless
 
 **What/why:** direct source research (local ILSpy decompile, read only)

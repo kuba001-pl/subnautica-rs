@@ -1529,6 +1529,48 @@ so. The lifepod's power may depend on pod state we do not model yet
 labelled stand-in ("not the game's") rather than a guess. Size: about
 M9d's, five steps.
 
+#### M9f plan
+
+Written 2026-10-27. Our own server save format, independent of the game's
+Protobuf saves; this becomes M11's persistence. No game assets are saved.
+Research is recorded in `docs/formats/saves.md`; no decompiled code is copied.
+
+Use the existing checked binary codec in pure `sn-session` (layer 2), with
+magic, save version, protocol version, build/rules fingerprint, payload length
+and FNV checksum. Reuse the item snapshot for inventory (crafted items are
+ordinary items), equipment, unlocks, luck, locker, removed/picked keys,
+outcrop hit counts, spawned/dropped items and id counters. Save stable
+name/id mappings, latest player pose and vitals, world settings, elapsed
+ticks and the server random generator. Connections and credentials are never
+saved. Names retain M10's trust model; they are not authenticated identities.
+No dependency on the concurrent M9e implementation.
+
+File I/O lives in the apps, shared through `sn-server`: default user data
+folder `%LOCALAPPDATA%/subnautica-rs/saves/default` on Windows,
+`~/Library/Application Support/subnautica-rs/saves/default` on macOS,
+`$XDG_DATA_HOME/subnautica-rs/saves/default` (fallback `~/.local/share`) on
+Linux. An explicit save-directory option supports slots and tests; reject
+paths inside the game install or `out/`. Tests and agent runs use system temp.
+Save every 30 s (configurable) and on orderly shutdown, including Ctrl-C;
+forced termination can only retain the last autosave. Flush a temporary file,
+retain the previous validated save as a backup, then install the new file.
+Corruption, incompatible versions/build/rules and semantic errors return an
+offset-bearing error and refuse startup without overwriting either file;
+recovery from backup is explicit. No silent reset or automatic migration.
+New dependency planned: `ctrlc` in the app handles orderly console shutdown;
+all serialization uses existing dependencies.
+
+| Step | Work | Done when |
+|---|---|---|
+| **M9f1** | Plan and read-only format/state research. | Plan written before code; confirmed findings documented, no game code/data copied. |
+| **M9f2** | Pure versioned serialization and session restore, stable offline players, pose/vitals restore messages and client application. | Synthetic round-trip preserves all saved categories; truncated, corrupt, incompatible and invalid saves fail with offsets; reconnect keeps inventory and own pose/vitals. |
+| **M9f3** | Shared app save I/O, platform folder, autosave and shutdown in dedicated and embedded servers. | Temp-directory tests cover backup, corruption refusal, path rejection and restart; both server modes compile; no filesystem dependencies in layer 2. |
+| **M9f4** | Real server/scripted-client restart proof and documentation close-out. | Real install run logs pickup/move/drop and matching saved/restored numbers; workspace tests, clippy and fmt pass; merge local main, resolve keeping both docs, rerun tests/clippy. |
+
+M9f is done only when every Done-when above has passed. Linux/macOS runtime,
+power loss durability, original-game save compatibility and M11 ownership
+are not tested here; original-game save compatibility is not implemented.
+
 #### M9g plan: the player's body (written 2026-10-10)
 
 **Why now:** the user wants the player's model and animations before
