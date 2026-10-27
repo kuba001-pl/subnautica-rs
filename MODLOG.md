@@ -2,6 +2,29 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-27 — P2c: repair winding only for changed parts
+
+**What/why:** `repair_winding` scanned every object part each frame
+(2.2–4.4 ms p50 on the main thread at view 1200). Now only parts with a
+changed transform/mesh or a newly added material are checked, plus a retry
+list for reflected parts whose mesh data was not loaded; the census log is
+recounted only when parts are added/removed/re-materialled or flipped.
+New synthetic test: late material + delayed mesh. P2b re-measured cleanly
+first (matched direct/indirect, same executable): frame p50 28.619 /
+26.050 / 32.983 → 18.974 / 19.106 / 15.988 ms. A first indirect attempt hit
+a driver DeviceLost while another client used the GPU (kept, unused).
+
+**Measured (3 rounds, B/A A/B B/A, contended by other agents' builds):**
+`repair_winding` p50 3.653 / 2.181 / 4.365 → 0.124 / 0.179 / 0.126 ms;
+`main::schedules` p50 9.033 / 6.043 / 15.068 → 3.323 / 4.958 / 3.651 ms.
+Frame p50 22.198 / 14.672 / 40.814 → 16.593 / 18.484 / 14.005 ms — overlap,
+so no frame-time claim. Scene counts and face census (524 reflected, 325
+reversed, 0 unsupported) identical in all six reports. Details:
+`docs/P1-PERFORMANCE.md` § P2c.
+
+**Verification:** workspace tests 749 passed, 0 failed, 64 ignored (SUBNAUTICA_DIR unset); clippy with warnings denied and fmt pass (`out/p2/p2c2-*.log`).
+No dependencies, whitelist or game-rule changes; game data stays in out/.
+
 ## 2026-10-27 — P2b: avoid indirect preprocessing for CPU-culled views
 
 **What/why:** the default-view bottleneck is CPU/driver render preparation,

@@ -42,28 +42,55 @@ fn reversed_mesh(mesh: &Mesh) -> Option<Mesh> {
 /// Run after transform propagation, so nested and animated scale signs
 /// count. Switching back restores the original handle, without repeatedly
 /// reversing an already reversed mesh. The original is never modified.
+/// Only parts whose transform or mesh changed are checked (plus parts whose
+/// mesh data was not available yet); the logged census is recounted only
+/// when parts appear, disappear, switch material or flip.
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub(crate) fn repair_winding(
     mut cache: ResMut<ReflectedMeshes>,
     mut meshes: ResMut<Assets<Mesh>>,
     materials: Res<Assets<ObjectMaterial>>,
-    mut objects: Query<(
-        &GlobalTransform,
-        &mut Mesh3d,
-        &MeshMaterial3d<ObjectMaterial>,
+    mut parts: ParamSet<(
+        Query<(
+            &GlobalTransform,
+            &mut Mesh3d,
+            &MeshMaterial3d<ObjectMaterial>,
+        )>,
+        Query<
+            Entity,
+            (
+                With<MeshMaterial3d<ObjectMaterial>>,
+                Or<(
+                    Changed<GlobalTransform>,
+                    Changed<Mesh3d>,
+                    Added<MeshMaterial3d<ObjectMaterial>>,
+                )>,
+            ),
+        >,
+        Query<
+            (),
+            (
+                With<Mesh3d>,
+                Or<(Added<Mesh3d>, Changed<MeshMaterial3d<ObjectMaterial>>)>,
+            ),
+        >,
     )>,
+    mut removed: RemovedComponents<Mesh3d>,
+    mut retry: Local<Vec<Entity>>,
     mut last: Local<Option<[usize; 5]>>,
 ) {
     let _perf = crate::perf::span("sidedness::repair_winding");
-    let mut counts = [0; 5]; // off, front, back, reflected, unsupported
-    for (transform, mut mesh, material) in &mut objects {
-        if let Some(material) = materials.get(&material.0) {
-            let index = match material.base.cull_mode {
-                None => 0,
-                Some(Face::Front) => 1,
-                Some(Face::Back) => 2,
-            };
-            counts[index] += 1;
-        }
+    let mut recount = !parts.p2().is_empty() | (removed.read().count() > 0);
+    let retried = retry.len();
+    let mut pending = std::mem::take(&mut *retry);
+    pending.extend(parts.p1().iter());
+    let mut objects = parts.p0();
+    pending.sort_unstable();
+    pending.dedup();
+    for entity in pending {
+        let Ok((transform, mut mesh, _)) = objects.get_mut(entity) else {
+            continue;
+        };
         let original = cache
             .originals
             .get(&mesh.0.id())
@@ -71,12 +98,11 @@ pub(crate) fn repair_winding(
             .unwrap_or_else(|| mesh.0.clone());
         let reflected = transform.affine().matrix3.determinant() < 0.0;
         let wanted = if reflected {
-            counts[3] += 1;
             if let Some(reversed) = cache.reversed.get(&original.id()) {
                 reversed.clone()
             } else {
                 let Some(reversed) = meshes.get(&original).and_then(reversed_mesh) else {
-                    counts[4] += 1;
+                    retry.push(entity);
                     continue;
                 };
                 let reversed = meshes.add(reversed);
@@ -89,8 +115,28 @@ pub(crate) fn repair_winding(
         };
         if mesh.0.id() != wanted.id() {
             mesh.0 = wanted;
+            recount = true;
         }
     }
+    recount |= retry.len() != retried;
+    if !recount && last.is_some() {
+        return;
+    }
+    let mut counts = [0; 5]; // off, front, back, reflected, unsupported
+    for (transform, _, material) in &objects {
+        if let Some(material) = materials.get(&material.0) {
+            let index = match material.base.cull_mode {
+                None => 0,
+                Some(Face::Front) => 1,
+                Some(Face::Back) => 2,
+            };
+            counts[index] += 1;
+        }
+        if transform.affine().matrix3.determinant() < 0.0 {
+            counts[3] += 1;
+        }
+    }
+    counts[4] = retry.len();
     if *last != Some(counts) {
         *last = Some(counts);
         info!(
@@ -109,6 +155,49 @@ pub(crate) fn repair_winding(
 mod tests {
     use super::*;
     use bevy::asset::RenderAssetUsages;
+
+    #[test]
+    fn late_material_and_delayed_mesh_are_repaired_without_a_transform_change() {
+        let mut app = App::new();
+        app.init_resource::<Assets<Mesh>>()
+            .init_resource::<Assets<ObjectMaterial>>()
+            .init_resource::<ReflectedMeshes>()
+            .add_systems(Update, repair_winding);
+        let original = app.world().resource::<Assets<Mesh>>().reserve_handle();
+        let entity = app
+            .world_mut()
+            .spawn((
+                GlobalTransform::from(Transform::from_scale(Vec3::new(-1.0, 1.0, 1.0))),
+                Mesh3d(original.clone()),
+            ))
+            .id();
+        app.update();
+        app.world_mut()
+            .entity_mut(entity)
+            .insert(MeshMaterial3d::<ObjectMaterial>(Handle::default()));
+        app.update();
+        assert_eq!(
+            app.world().get::<Mesh3d>(entity).unwrap().0.id(),
+            original.id()
+        );
+        let mut geometry = Mesh::new(
+            PrimitiveTopology::TriangleList,
+            RenderAssetUsages::default(),
+        );
+        geometry.insert_indices(Indices::U32(vec![0, 1, 2]));
+        app.world_mut()
+            .resource_mut::<Assets<Mesh>>()
+            .insert(original.id(), geometry)
+            .unwrap();
+        app.update();
+        let repaired = app.world().get::<Mesh3d>(entity).unwrap().0.id();
+        assert_ne!(repaired, original.id());
+        for _ in 0..3 {
+            app.update();
+            assert_eq!(app.world().get::<Mesh3d>(entity).unwrap().0.id(), repaired);
+        }
+        assert_eq!(app.world().resource::<ReflectedMeshes>().reversed.len(), 1);
+    }
 
     #[test]
     fn already_extracted_mesh_is_rejected_without_panicking() {

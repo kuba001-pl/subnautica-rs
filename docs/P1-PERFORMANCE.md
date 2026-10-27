@@ -405,3 +405,59 @@ SilentlyContinue` (after), alternating order. Use new baseline/log names and
 archive profiler CSVs after each run. Expected: zero unsettled samples; scene
 and effective draw counts above, with bin unpacking present only before.
 Actual timing depends strongly on concurrent GPU/compiler work.
+
+### P2b re-measurement (matched, after the disk-full interruption)
+
+Same archived P2b release executable (`out/p2/p2b-client.exe`), only
+`SN_CLIENT_INDIRECT_DRAWING` switched; order direct/indirect, indirect/direct,
+direct/indirect (`out/p2/m{1b,2,3}-indirect-fixed.*`, `m{1,2,3}-direct-fixed.*`).
+Runner `out/p2/run2.py`. Every start had 2–8 `cargo` and 1–8 `rustc`
+processes of other agents; round 3 direct also had another `sn-client`. The
+first indirect attempt ended in a driver `DeviceLost` (another client was
+using the GPU); it is kept as `m1-indirect-fixed.log` and not used.
+
+| ms, rounds 1 / 2 / 3 | Indirect (before) | Direct (P2b) |
+|---|---|---|
+| Frame p50 | 28.619 / 26.050 / 32.983 | 18.974 / 19.106 / 15.988 |
+| Frame p95 | 43.904 / 33.038 / 61.276 | 27.585 / 25.444 / 19.325 |
+| Frame p99 | 68.017 / 39.986 / 147.268 | 34.317 / 115.214 / 20.727 |
+| `render::batch` p50 | 6.040 / 5.447 / 7.209 | 1.466 / 1.452 / 1.234 |
+| `render::bind_groups` p50 | 3.560 / 3.268 / 4.096 | 0.372 / 0.359 / 0.316 |
+| `render::graph` p50 | 16.810 / 15.250 / 19.978 | 15.200 / 15.418 / 12.808 |
+
+Median frame time falls by 33–52 % per round (spread dominated by other
+agents' compilers). All six reports: 1,393 batches / 7,759,704 triangles,
+34,469 tufts, 39,353 object entities, 12,493 meshes, 1,968 materials,
+2,265 textures; face census 2,819 off / 31,687 back / 524 reflected /
+325 reversed / 0 unsupported; zero unsettled samples. Retained.
+
+### P2c — winding repair only on change
+
+Ranked main-thread cost after P2b: `sidedness::repair_winding` visited all
+~37k object parts every frame (determinant + two hash lookups), 2.3–4.5 ms
+p50 of a 6–15 ms main schedule. P2c checks only parts whose `GlobalTransform`
+or `Mesh3d` changed or whose object material was added, plus a retry list
+for reflected parts whose mesh data was not loaded yet; the census is
+recounted only when parts appear, disappear, change material or flip. A
+synthetic test covers a late material and a mesh that arrives later.
+
+Fixed camera, view 1200, three rounds, order B/A, A/B, B/A
+(`out/p2/w{1,2,3}-{base,wind}-fixed.*`; base = P2b executable, wind =
+`out/p2/wind-client.exe`). Concurrent `cargo`/`rustc` at every start
+(round 3: 16–20 `rustc`).
+
+| ms, rounds 1 / 2 / 3 | P2b (before) | P2c (after) |
+|---|---|---|
+| `repair_winding` p50 | 3.653 / 2.181 / 4.365 | 0.124 / 0.179 / 0.126 |
+| `repair_winding` max | 5.324 / 5.122 / 8.399 | 0.404 / 1.145 / 0.359 |
+| `main::schedules` p50 | 9.033 / 6.043 / 15.068 | 3.323 / 4.958 / 3.651 |
+| Frame p50 | 22.198 / 14.672 / 40.814 | 16.593 / 18.484 / 14.005 |
+| Frame p95 | 27.487 / 18.881 / 58.530 | 18.639 / 40.829 / 15.897 |
+| `render::graph` p50 | 18.193 / 11.781 / 24.312 | 10.595 / 14.858 / 11.251 |
+
+The system cost falls 12–35× in every round and the main schedule by
+1.1–11 ms. Whole-frame medians overlap (round 2 reversed) because frames
+are pipelined and bound by the render thread; the frame-level gain is
+**not** established by these contended runs. Scene counts and the face
+census are identical in all six reports (same values as above, zero
+unsettled samples).
