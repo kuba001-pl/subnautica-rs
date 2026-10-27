@@ -14,6 +14,7 @@
 //!   each frame), then open: count 1 until 4 s of visible time (± a
 //!   frame), then 0. Visibility from the scene (the icon active, its
 //!   inherited alpha above 0).
+//! - M9u8b5b: `Resources` `Sprites/NotificationOverlay` is a texture.
 
 use std::collections::HashMap;
 use std::process::ExitCode;
@@ -90,6 +91,19 @@ pub fn run(game: &GameData) -> Result<ExitCode> {
     c.check(
         template.text_params(nodes.text).is_some(),
         "the text node is a TextMeshProUGUI",
+    );
+
+    // `iconMaterial`'s overlay (M9u8b5b).
+    let overlay = assets.resource_texture("Sprites/NotificationOverlay")?;
+    println!(
+        "  Sprites/NotificationOverlay: {:?}",
+        overlay
+            .as_ref()
+            .map(|o| (&o.file.name, o.data().map(|(i, d)| (i.class_id, d.len()))))
+    );
+    c.check(
+        overlay.is_some(),
+        "Resources Sprites/NotificationOverlay is a Texture2D",
     );
 
     // The PDA screen with its toolbar.

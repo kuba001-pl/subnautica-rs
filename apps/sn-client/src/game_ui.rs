@@ -20,8 +20,9 @@
 //! ui_start_state`: faders, overlays, the game-over blocker), not its
 //! stored one, which is black.
 //!
-//! Shaders: `UI/Default`, `UI/Simple`, `UI/Icon`'s base and `SLICE_9_GRID`
-//! variants and `UI/Circle` (`game_ui.wgsl`, M9u8b2b), and TMP's
+//! Shaders: `UI/Default`, `UI/Simple`, `UI/Icon`'s base, `SLICE_9_GRID`
+//! and `NOTIFICATION` variants and `UI/Circle` (`game_ui.wgsl`, M9u8b2b,
+//! M9u8b5b), and TMP's
 //! `TextMeshPro/Distance Field` (`game_ui_text.wgsl`, M9u5d) with the
 //! font atlases the worker fills (sent again when glyphs are added). `uGUI/DepthClear` writes only depth,
 //! which our pass does not use: skipped (counted). Other shaders (`UI/Bar`,
@@ -87,8 +88,9 @@ const FAR: f32 = 1700.0;
 /// Bytes per vertex: position (3 × f32), colour (4 × u8), uv, uv1.
 const VERTEX_BYTES: usize = 32;
 
-/// `UI/Icon`'s keywords whose variants are not ported (M9u7c1): a
-/// material with one is drawn as `UI/Default` and named in the log.
+/// `UI/Icon`'s keywords (M9u7c1): a material with one other than
+/// `SLICE_9_GRID` (M9u8b2b) and `NOTIFICATION` (M9u8b5b), whose variants
+/// are ported, is drawn as `UI/Default` and named in the log.
 const ICON_KEYWORDS: [&str; 7] = [
     "ALPHA_PREMULTIPLY",
     "FILL_HORIZONTAL",
@@ -107,6 +109,7 @@ const MAIN_TEX_ST: u32 = 8;
 const COMPASS: u32 = 16;
 const SLICE_9: u32 = 32;
 const CIRCLE: u32 = 64;
+const NOTIFICATION: u32 = 128;
 
 /// A clip rect that clips nothing (`UI/Simple` always tests `_ClipRect`;
 /// *hypothesis*: Unity's native default covers everything).
@@ -149,6 +152,10 @@ pub(crate) struct UiDrawCmd {
     pub clip: [f32; 4],
     pub softness: [f32; 2],
     pub flags: u32,
+    /// `UI/Icon`'s `NOTIFICATION` (M9u8b5b): `_NotificationStrength`,
+    /// `_PDATime`, `_Size`; and `_NotificationOverlayTex`'s key (0: white).
+    pub notification: [f32; 4],
+    pub overlay: u64,
     /// A TMP text's material values (`game_ui_text.wgsl`); `None` for an
     /// image.
     pub text: Option<TextValues>,
@@ -608,7 +615,18 @@ fn run_worker(
     // code (`NotifierIcon` + its foreground) with `iconMaterial`, and the
     // item sprites `SpriteManager` looks up.
     let mut notifier = Notifier::new(assets.notifier_config(&layouts, &tree)?, 0x5eed_1c0f);
-    let icon_material = assets.icon_material(&catalog, &layouts)?;
+    let mut icon_material = assets.icon_material(&catalog, &layouts)?;
+    // `iconMaterial`'s `_NotificationOverlayTex` (M9u8b5b): `Resources`
+    // `Sprites/NotificationOverlay`, sent with every build's textures.
+    let overlay = assets.resource_texture("Sprites/NotificationOverlay")?;
+    match &overlay {
+        Some(o) => {
+            icon_material
+                .textures
+                .insert("_NotificationOverlayTex".into(), sn_assets::texture_key(o));
+        }
+        None => warn!("game UI: Resources Sprites/NotificationOverlay not found"),
+    }
     let icon_template = sn_assets::UiScene::from_code(
         "NotifierIcon",
         sn_assets::notifier_icon_nodes(tree.nodes[notifier.config.canvas].layer, &icon_material),
@@ -1524,6 +1542,9 @@ fn run_worker(
         let mut d = scene.draw(&assets, &fonts, &set, &mut atlases, &placements, &state)?;
         // The dragged icon over the rest (M9u8b4).
         dragging.draw_last(&mut d);
+        if let Some(o) = &overlay {
+            d.textures.insert(sn_assets::texture_key(o), o.clone());
+        }
         // The scene's tree: the stored nodes and the copies grafted since.
         let mut build = convert(
             &scene.tree,
@@ -2219,6 +2240,8 @@ fn convert(
         let clip = it.clip.map(|r| [r.x, r.y, r.x + r.width, r.y + r.height]);
         let mut text = None;
         let mut bar = None;
+        let mut notification = [0.0; 4];
+        let mut overlay = 0;
         match m.shader.as_str() {
             "TextMeshPro/Distance Field" => {
                 census.texts += 1;
@@ -2315,10 +2338,31 @@ fn convert(
             sn_ui::icon::SHADER
                 if !ICON_KEYWORDS
                     .iter()
-                    .any(|k| *k != "SLICE_9_GRID" && m.has_keyword(k)) =>
+                    .any(|k| *k != "SLICE_9_GRID" && *k != "NOTIFICATION" && m.has_keyword(k)) =>
             {
                 flags |= HARD_CLIP;
                 let mut key = m.shader.clone();
+                if m.has_keyword("NOTIFICATION") {
+                    // M9u8b5b: the glow (blobs 144 and 176).
+                    flags |= NOTIFICATION;
+                    key.push_str(" NOTIFICATION");
+                    let size = m
+                        .colors
+                        .get("_Size")
+                        .copied()
+                        .unwrap_or([100.0, 100.0, 0.0, 0.0]);
+                    notification = [
+                        m.float("_NotificationStrength"),
+                        m.float("_PDATime"),
+                        size[0],
+                        size[1],
+                    ];
+                    overlay = m
+                        .textures
+                        .get("_NotificationOverlayTex")
+                        .copied()
+                        .unwrap_or(0);
+                }
                 if m.has_keyword("SLICE_9_GRID") {
                     flags |= SLICE_9;
                     key.push_str(" SLICE_9_GRID");
@@ -2407,6 +2451,8 @@ fn convert(
             clip: clip.unwrap_or(NO_CLIP),
             softness: [it.softness[0] as f32, it.softness[1] as f32],
             flags,
+            notification,
+            overlay,
             text,
             bar,
         });
@@ -2902,6 +2948,7 @@ struct GpuItem {
     clip_rect: Vec4,
     softness: Vec4,
     pixel: Vec4,
+    notification: Vec4,
 }
 
 #[derive(Clone, Default, ShaderType)]
@@ -3046,9 +3093,10 @@ fn pipeline_descriptor(
         Kind::Bar => (&p.bar_items_layout, &p.bar_shader),
         Kind::Image => (&p.items_layout, &p.shader),
     };
-    // A bar also samples its overlay texture (group 2).
+    // A bar also samples its overlay texture (group 2), an image the
+    // notification's (M9u8b5b).
     let mut layout = vec![items_layout.clone(), p.texture_layout.clone()];
-    if kind == Kind::Bar {
+    if kind != Kind::Text {
         layout.push(p.texture_layout.clone());
     }
     let attribute = |format, offset, shader_location| VertexAttribute {
@@ -3313,6 +3361,7 @@ fn prepare_buffers(
             clip_rect: Vec4::from_array(d.clip),
             softness: Vec4::new(d.softness[0], d.softness[1], d.flags as f32, 0.0),
             pixel,
+            notification: Vec4::from_array(d.notification),
         });
     }
     // Storage buffers may not be empty.
@@ -3401,10 +3450,11 @@ fn game_ui_pass(
     );
     let texture_layout = pipeline_cache.get_bind_group_layout(&pipelines.texture_layout);
     let mut texture_groups = HashMap::new();
-    let keys = build
-        .draws
-        .iter()
-        .flat_map(|d| std::iter::once(d.texture).chain(d.bar.map(|b| b.overlay_texture)));
+    let keys = build.draws.iter().flat_map(|d| {
+        [d.texture, d.overlay]
+            .into_iter()
+            .chain(d.bar.map(|b| b.overlay_texture))
+    });
     for key in keys {
         texture_groups.entry(key).or_insert_with(|| {
             let handle = frame.images.get(&key).map_or(&frame.white, |(h, _)| h);
@@ -3469,9 +3519,15 @@ fn game_ui_pass(
             current_kind = Some(kind);
         }
         pass.set_bind_group(1, group, &[]);
-        if let Some(b) = &d.bar {
-            // The overlay (none: the white texture, unused without `OVERLAY`).
-            let Some(Some(overlay)) = texture_groups.get(&b.overlay_texture) else {
+        // The overlay (none: the white texture, unused without `OVERLAY`
+        // or `NOTIFICATION`).
+        let overlay = match (&d.bar, kind) {
+            (Some(b), _) => Some(b.overlay_texture),
+            (None, Kind::Image) => Some(d.overlay),
+            _ => None,
+        };
+        if let Some(key) = overlay {
+            let Some(Some(overlay)) = texture_groups.get(&key) else {
                 continue;
             };
             pass.set_bind_group(2, overlay, &[]);

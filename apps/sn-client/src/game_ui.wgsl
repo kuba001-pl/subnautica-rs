@@ -20,6 +20,11 @@
 // - `UI/Circle` (M9u8b2b, flag 64; `st` = `_TileX`, `_TileY`, `_Size`): the
 //   UV mapped to angle and radius (`sn_ui::icon::circle_uv`); the hard clip.
 // Both read `_MainTex_TexelSize.w` as the bound texture's height.
+// - `UI/Icon` with `NOTIFICATION` (M9u8b5b, flag 128, with or without
+//   `SLICE_9_GRID`; blobs 144 and 176; `notification` = strength,
+//   `_PDATime`, `_Size`): rgb × (1 + 0.75 · strength · the overlay's red at
+//   (|UV − ½| · `_Size` × 0.015152 − 3.18 · `_PDATime`, ½)); alpha as before
+//   (`sn_ui::notifications::glow`, which this mirrors).
 // Vertex colours arrive as stored (sRGB bytes) and are made linear, as
 // Unity does in a linear project (*hypothesis*, `docs/formats/ui.md`).
 
@@ -41,11 +46,16 @@ struct Item {
     softness: vec4<f32>,
     // `_ScreenParams.xy`, the projection's [0][0] and [1][1].
     pixel: vec4<f32>,
+    // `_NotificationStrength`, `_PDATime`, `_Size` (flag 128).
+    notification: vec4<f32>,
 }
 
 @group(0) @binding(0) var<storage, read> items: array<Item>;
 @group(1) @binding(0) var main_tex: texture_2d<f32>;
 @group(1) @binding(1) var main_sampler: sampler;
+// `_NotificationOverlayTex` (white when unused).
+@group(2) @binding(0) var overlay_tex: texture_2d<f32>;
+@group(2) @binding(1) var overlay_sampler: sampler;
 
 struct VertexIn {
     @builtin(instance_index) instance: u32,
@@ -166,6 +176,13 @@ fn fragment(in: VertexOut) -> @location(0) vec4<f32> {
         uv = circle_uv(in.uv, it.st.xy, it.st.z, h);
     }
     var c = (textureSample(main_tex, main_sampler, uv) + it.texture_add) * in.color;
+    // The glow's overlay (sampled for every item, used with flag 128).
+    let n = it.notification;
+    let ring = length((in.uv - 0.5) * n.zw) * 0.015152 - 3.18 * n.y;
+    let glow = textureSample(overlay_tex, overlay_sampler, vec2<f32>(ring, 0.5)).r;
+    if has(it.softness.z, 128u) {
+        c = vec4<f32>(c.rgb * (1.0 + 0.75 * n.x * glow), c.a);
+    }
     if compass {
         c.a = c.a * window;
     }

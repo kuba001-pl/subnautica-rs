@@ -15,6 +15,7 @@ use crate::water::resources;
 use crate::{Assets, ObjectRef, Result, TechData, UiGraphicKind};
 
 const SPRITE: i32 = 213;
+const TEXTURE_2D: i32 = 28;
 
 /// `SpriteManager.GetBackground(BackgroundType)`'s Resources paths, by the
 /// type's value (Normal, Blueprint, PlantWater, PlantWaterSeed, PlantAir,
@@ -84,6 +85,21 @@ impl Assets<'_> {
                 name: s.name,
                 size: [s.rect[2], s.rect[3]],
             }));
+        }
+        Ok(None)
+    }
+
+    /// `Resources.Load<Texture2D>(path)` (M9u8b5b: `uGUI_ItemIcon.
+    /// iconMaterial`'s `Sprites/NotificationOverlay`); `None` if absent.
+    pub fn resource_texture(&self, path: &str) -> Result<Option<ObjectRef>> {
+        let (file, found) = resources(self, &path.to_lowercase())?;
+        for p in found {
+            let Some(o) = self.resolve(&file, p)? else {
+                continue;
+            };
+            if o.data()?.0.class_id == TEXTURE_2D {
+                return Ok(Some(o));
+            }
         }
         Ok(None)
     }

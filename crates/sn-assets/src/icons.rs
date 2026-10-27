@@ -163,8 +163,8 @@ impl Assets<'_> {
 
     /// `uGUI_ItemIcon.iconMaterial`: a new material of `UIIcon`. Its
     /// `_NotificationOverlayTex` (`Resources.Load("Sprites/
-    /// NotificationOverlay")`) is not read: only the `NOTIFICATION`
-    /// variants sample it.
+    /// NotificationOverlay")`, [`Assets::resource_texture`]) is set by the
+    /// caller that draws the `NOTIFICATION` variants (M9u8b5b).
     pub fn icon_material(&self, catalog: &Catalog, layouts: &Layouts) -> Result<UiMaterial> {
         let shader = self.preloaded_shader(catalog, layouts, "UIIcon")?;
         Ok(new_material("uGUI_ItemIcon.iconMaterial", &shader))

@@ -12,7 +12,8 @@
 //!   inherited alpha above 0.
 //! - `Progress(p)`: the icon's `NotificationLabel` ("+", alpha sin(p·π/2),
 //!   upper right at (−10, −10); a slot's at its `iconRect`'s size ×
-//!   −0.1464466), gone at 0. The glow (`NOTIFICATION`) is M9u8b5b.
+//!   −0.1464466), gone at 0; and the glow (M9u8b5b: `SetGodRaysIntensity`
+//!   on its two materials, `_PDATime` the PDA's time).
 //! - `uGUI_PDA.OnLateUpdate`: the toolbar's inventory icon shows
 //!   `GetCount(Inventory)` while above 0.
 
@@ -23,7 +24,7 @@ use sn_assets::NotificationLabelNodes;
 use sn_ui::layout::V2;
 use sn_ui::notifications::{
     Group, ICON_LABEL_ANCHOR, ICON_LABEL_OFFSET, LabelNodes, Notifications, PICKUP_DURATION,
-    SYMBOL, anchor_point, label_alpha, label_state, slot_label_offset,
+    SYMBOL, anchor_point, god_rays, label_alpha, label_state, slot_label_offset,
 };
 
 /// A notification target: an item's icon (a store's or a slot's) and its
@@ -58,6 +59,9 @@ pub(super) struct Notices {
     count: usize,
     /// Each target's last progress, for the logs (quarter steps).
     logged: HashMap<usize, i32>,
+    /// The icons glowing (strength above 0), by root, and `PDA.time`.
+    glowing: BTreeMap<usize, (IconNodes, f32)>,
+    pda_time: f32,
     /// The labels' state, applied after the tab's.
     pub state: UiState,
 }
@@ -97,6 +101,8 @@ impl Notices {
             toolbar_offset,
             count: 0,
             logged: HashMap::new(),
+            glowing: BTreeMap::new(),
+            pda_time: 0.0,
             state: UiState::default(),
         }
     }
@@ -125,6 +131,7 @@ impl Notices {
         state: &dyn Fn(&UiState) -> UiState,
     ) -> Result<(), String> {
         let mut progress = Vec::new();
+        self.pda_time += dt;
         // The stores against last frame.
         let grid: BTreeSet<u64> = contents.inventory.iter().map(|e| e.id).collect();
         let slots: BTreeSet<(String, u64)> = contents
@@ -251,6 +258,25 @@ impl Notices {
                 t.offset,
                 anchor_point(ICON_LABEL_ANCHOR),
             )?;
+            if alpha > 0.0 {
+                self.glowing.insert(t.icon.root, (t.icon, alpha));
+            } else if self.glowing.remove(&t.icon.root).is_some() {
+                god_rays(
+                    &mut self.state,
+                    [t.icon.background, t.icon.foreground],
+                    0.0,
+                    self.pda_time,
+                );
+            }
+        }
+        // `_PDATime` is a global: every glowing icon's materials follow it.
+        for (icon, a) in self.glowing.values() {
+            god_rays(
+                &mut self.state,
+                [icon.background, icon.foreground],
+                *a,
+                self.pda_time,
+            );
         }
         // `SetNotificationsAmount(i, GetCount)`: the inventory's icon.
         let count = self.manager.count(Group::Inventory);

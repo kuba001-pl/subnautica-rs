@@ -63,6 +63,30 @@ pub fn slot_label_offset(icon_rect: [f32; 2]) -> [f32; 2] {
     [icon_rect[0] * -0.146_446_6, icon_rect[1] * -0.146_446_6]
 }
 
+/// `UI/Icon`'s `NOTIFICATION` glow (M9u8b5b; its D3D11 programs, blobs
+/// 144 and 176): the overlay's u at quad UV `uv` for `_Size` `size` and
+/// `_PDATime` `time` (its v is ½), and the factor the colour's rgb takes
+/// for the overlay's red `overlay` and `_NotificationStrength` `strength`.
+pub fn glow_u(uv: V2, size: V2, time: f32) -> f32 {
+    let d = [(uv[0] - 0.5) * size[0], (uv[1] - 0.5) * size[1]];
+    (d[0] * d[0] + d[1] * d[1]).sqrt() * 0.015_152 - time * 3.18
+}
+
+pub fn glow(overlay: f32, strength: f32) -> f32 {
+    1.0 + 0.75 * overlay * strength
+}
+
+/// `SetGodRaysIntensity(a)` on an icon's two materials: `NOTIFICATION`
+/// while above 0, `_NotificationStrength` a; and the global `_PDATime`.
+pub fn god_rays(state: &mut UiState, graphics: [usize; 2], a: f32, pda_time: f32) {
+    for n in graphics {
+        let m = state.material.entry(n).or_default();
+        m.keywords.insert("NOTIFICATION".into(), a > 0.0);
+        m.floats.insert("_NotificationStrength".into(), a);
+        m.floats.insert("_PDATime".into(), pda_time);
+    }
+}
+
 /// `RectTransformExtensions.GetAnchorPoint(UIAnchor)`.
 pub fn anchor_point(anchor: i32) -> V2 {
     match anchor {
@@ -314,6 +338,25 @@ mod tests {
         assert!((o[0] + 18.159_38).abs() < 1e-3 && o[0] == o[1]);
         assert_eq!(anchor_point(8), [1.0, 1.0]);
         assert_eq!(anchor_point(1), [0.5, 0.0]);
+    }
+
+    #[test]
+    fn the_glow_by_hand() {
+        // The centre at time 0: u = 0; a corner of a 66 × 66 icon: the
+        // distance 33·√2 = 46.669 × 0.015152 = 0.70713.
+        assert_eq!(glow_u([0.5, 0.5], [66.0, 66.0], 0.0), 0.0);
+        assert!((glow_u([1.0, 1.0], [66.0, 66.0], 0.0) - 0.707_13).abs() < 1e-4);
+        // A second later the ring has moved 3.18 inward in u.
+        assert!((glow_u([1.0, 1.0], [66.0, 66.0], 1.0) + 2.472_87).abs() < 1e-4);
+        assert_eq!(glow(0.0, 1.0), 1.0);
+        assert_eq!(glow(1.0, 1.0), 1.75);
+        assert_eq!(glow(0.5, 0.5), 1.1875);
+        let mut s = UiState::default();
+        god_rays(&mut s, [4, 5], 0.0, 2.0);
+        assert!(!s.material[&4].keywords["NOTIFICATION"]);
+        god_rays(&mut s, [4, 5], 0.5, 2.0);
+        assert!(s.material[&5].keywords["NOTIFICATION"]);
+        assert_eq!(s.material[&5].floats["_PDATime"], 2.0);
     }
 
     #[test]

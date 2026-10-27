@@ -2,6 +2,40 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-27 — M9u8b5b: the notification's glow (`UI/Icon` `NOTIFICATION`)
+
+**What/why:** the second half of M9u8b5 (DESIGN). `game_ui.wgsl`:
+`UI/Icon`'s `NOTIFICATION` variant from its D3D11 programs (blobs 144 and
+176; flag 128, with or without slice 9): rgb × (1 + 0.75 · strength ·
+the overlay's red at the ring's u); the image pipeline gains group 2 (the
+overlay, white when unused) as the bar pipeline has; `GpuItem` /
+`UiDrawCmd` carry strength, `_PDATime`, `_Size` and the overlay's key.
+`sn_assets::Assets::resource_texture` (`Sprites/NotificationOverlay`);
+the client puts it on `iconMaterial` and sends it with the builds.
+`sn_ui::notifications`: `glow_u`, `glow` (the reference the WGSL
+mirrors) and `god_rays` (`SetGodRaysIntensity` on both materials, the
+global `_PDATime`); `notify.rs` sets them from `Progress`. No new
+dependencies, no `.gitignore` change.
+
+**Verified** (Git Bash; logs in `out/m9u8b5/`):
+- `cargo test --workspace` (no game): 740 passed, 0 failed.
+- `cargo clippy --workspace --all-targets -- -D warnings`: pass.
+- `target/release/sn-inspect ui --notifications`: 15 of 15, RUN OK
+  (`Sprites/NotificationOverlay`: class 28 in `resources.assets`).
+- `target/release/sn-client --view 400 --resolution 960 540 --start
+  -197.3 -35.2 -10.2 --pick-up 3 --panel 6=open --shot 8.3 m9u8b5b-glow`
+  (`glow.log`): 0 WARN/ERROR (no GPU validation errors); census while
+  notified `UI/Icon NOTIFICATION` 3, `UI/Icon NOTIFICATION SLICE_9_GRID`
+  3, drawn as `UI/Default` only the loading bar's `UI/Bar` (as before).
+  The same at 1920 × 1080 (`m9u8b5b-glow-1080.png`): the three new icons
+  brighter than the rest; 0 WARN/ERROR.
+
+**Not tested:** the ring's look against the game (the screenshots show
+the icons brightened; the ring's motion is not checked), the overlay's
+wrap mode, the WGSL itself by a test (only its Rust reference),
+Linux/macOS. **Not 1:1:** `_PDATime`'s phase (our own sum, not the
+PDA's time since the game started). No game assets committed.
+
 ## 2026-10-27 — M9u8b5a: the inventory's notifications (count and "+")
 
 **What/why:** the first half of M9u8b5 (DESIGN, split after reading the

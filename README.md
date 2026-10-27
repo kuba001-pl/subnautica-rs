@@ -106,8 +106,8 @@ Tested on Windows 11 with game build 10 (Steam):
   click sends (checked with scripted drags; a real mouse drag is not
   tested). A pick-up shows the game's count on the inventory tab's icon
   and a "+" on the new item's icon, which fades out over 4 s once the
-  inventory tab is seen (M9u8b5a); the icon's glow is not drawn yet. The
-  model and
+  inventory tab is seen (M9u8b5a), the icon glowing meanwhile with the
+  game's `NOTIFICATION` shader variant (M9u8b5b). The model and
   screen are not compared with the game on screen. A left click does what
   the game's click does (take out of or put into the locker, equip,
   unequip), a right click drops the item where the game would (not in

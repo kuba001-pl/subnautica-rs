@@ -2229,13 +2229,13 @@ the stored fields and, for `UI/Icon`, UnityPy and `D3DDisassemble`
   variant with no keyword (the notifier's) is `UI/Simple`'s program
   without premultiplying: colour = vertex colour × `_Color`; (`_MainTex` +
   `_TextureSampleAdd`) × colour, alpha × the hard clip on `_ClipRect`.
-  The others (fills, grayscale, the notification's god rays and overlay,
-  slice 9) are not ported: a material with one of those keywords is drawn
+  The others (fills, grayscale; slice 9 since M9u8b2b and the
+  notification's glow since M9u8b5b are ported) are not ported: a material with one of those keywords is drawn
   as `UI/Default` and named in the client's log. `iconMaterial` is `new
   Material(UIIcon)`: the shader's defaults (`sn_assets::new_material`).
   Its `_NotificationOverlayTex` (`Resources.Load("Sprites/
-  NotificationOverlay")`) is not read: only the `NOTIFICATION` variants
-  sample it.
+  NotificationOverlay")`, a `Texture2D` in `resources.assets`) is read
+  since M9u8b5b; only the `NOTIFICATION` variants sample it.
 - **When in the frame:** `Inventory.Pickup` (from `GUIHand`, in
   `ManagedUpdate`'s queue) calls `Play(techType, From)` unless
   `noMessage`; `uGUI_IconNotifier.Update` is a plain `Update`.
@@ -2464,3 +2464,26 @@ and `RectTransformExtensions` (read only; our code is
   `Text` is the TMP text, colour (0.494, 0.208, 0.110, 1). Laid out with
   "1" or "+" it is 36 × 36.97. `GetAnchorPoint`: LowerLeft (0, 0) …
   UpperRight (1, 1) row by row.
+
+### The glow (M9u8b5b) — confirmed (D3D11 disassembly, census)
+
+- **`UI/Icon` with `NOTIFICATION`** (M9u7c's dump: fragment blob 144; with
+  `SLICE_9_GRID` blob 176; their constants `_NotificationStrength` @ 80,
+  `_PDATime` @ 84, `_Size` @ 88 in blob 144): the colour as without the
+  keyword (the slice-9 sample in 176), then rgb × (1 + 0.75 · s · o),
+  alpha unchanged. s = `_NotificationStrength`; o = the red of
+  `_NotificationOverlayTex` at (|UV − ½| · `_Size` × 0.015152 − 3.18 ·
+  `_PDATime`, ½), UV the quad's own (before slice 9). 0.015152 ≈ 1/66 (a
+  1 × 1 icon's size): a ring scrolls inward 3.18 texture widths a second.
+- **`_Size`:** only the background's material gets it (`SetSize` →
+  `background.material.SetVector(_Size)`); the foreground keeps the
+  shader's default (100, 100).
+- **`_PDATime`:** a global (`PDA.UpdateTime`: `Shader.SetGlobalFloat(
+  _PDATime, time)`, the PDA's time). Ours: the notifications' own sum of
+  the PDA deltas since the UI started (*hypothesis* that the phase does not
+  matter: it only moves the ring).
+- **`SetGodRaysIntensity(a)`** (a = sin(p·π/2), from
+  `SetNotificationProgress`): on the foreground's and the background's
+  materials `NOTIFICATION` on while a > 0 and `_NotificationStrength` a.
+- The overlay's wrap mode is the texture's own (*not checked*: if it
+  clamps, the ring is the edge texel once u leaves 0–1).
