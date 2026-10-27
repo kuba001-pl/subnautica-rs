@@ -13,7 +13,12 @@
 mod consume;
 mod decay;
 mod energy;
+mod equipment;
 mod hunger;
+pub use equipment::{
+    EquipmentRules, OxygenId, OxygenSource, OxygenSources, SwimCharge, SwimEquipment,
+    restore_oxygen, swim_charge, swim_max_speed,
+};
 
 pub use consume::{
     ConsumeRules, EatableInfo, Eaten, Refused, Used, UsedItem, add_health, eat, eat_item,

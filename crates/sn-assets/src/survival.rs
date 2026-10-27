@@ -74,7 +74,7 @@ pub(crate) fn match_literals(
 }
 
 /// The value of a named slot (present by construction of the shape).
-fn take(map: &BTreeMap<&'static str, (f32, usize)>, name: &str) -> Result<f32> {
+pub(crate) fn take(map: &BTreeMap<&'static str, (f32, usize)>, name: &str) -> Result<f32> {
     map.get(name)
         .map(|v| v.0)
         .ok_or_else(|| format!("{GAME_ASSEMBLY}: no {name}"))
@@ -385,6 +385,83 @@ pub fn energy_rules(bytes: &[u8]) -> Result<EnergyRules> {
         .validate()
         .map_err(|r| format!("{GAME_ASSEMBLY}: energy rules: {r}"))?;
     Ok(rules)
+}
+
+/// Code-only equipment coefficients, read from their bounded IL literal shapes.
+pub fn equipment_rules(bytes: &[u8]) -> Result<sn_sim::survival::EquipmentRules> {
+    let asm = Assembly::parse(bytes).map_err(|e| format!("{GAME_ASSEMBLY}: {e}"))?;
+    let m = match_literals(
+        &asm,
+        "UnderwaterMotor",
+        "AlterMaxSpeed",
+        &[
+            Named("plasteel"),
+            Named("tank"),
+            Named("double"),
+            Named("heavy"),
+            Named("spare"),
+            Named("min"),
+            Named("min"),
+            Named("min"),
+            Named("suit"),
+            Named("fins"),
+            Named("glide"),
+            Named("hand"),
+            Named("surface"),
+            Named("transition"),
+        ],
+    )?;
+    let charge = match_literals(
+        &asm,
+        "UpdateSwimCharge",
+        "FixedUpdate",
+        &[Named("threshold")],
+    )?;
+    let tech = |name: &str| enum_value(&asm, "TechType", name);
+    let r = sn_sim::survival::EquipmentRules {
+        tank_penalties: [
+            ("PlasteelTank", "plasteel"),
+            ("Tank", "tank"),
+            ("DoubleTank", "double"),
+            ("HighCapacityTank", "heavy"),
+        ]
+        .into_iter()
+        .map(|(t, n)| Ok((tech(t)?, f64::from(take(&m, n)?))))
+        .collect::<Result<_>>()?,
+        heavy_tank: tech("HighCapacityTank")?,
+        spare_penalty: f64::from(take(&m, "spare")?),
+        minimum_speed: f64::from(take(&m, "min")?),
+        reinforced_suit: tech("ReinforcedDiveSuit")?,
+        suit_penalty: f64::from(take(&m, "suit")?),
+        fins_bonuses: [("Fins", "fins"), ("UltraGlideFins", "glide")]
+            .into_iter()
+            .map(|(t, n)| Ok((tech(t)?, f64::from(take(&m, n)?))))
+            .collect::<Result<_>>()?,
+        held_penalty: f64::from(take(&m, "hand")?),
+        surface_multiplier: f64::from(take(&m, "surface")?),
+        modifier_transition: f64::from(take(&m, "transition")?),
+        surface_fill: f64::from(
+            sn_dotnet::field_initializer_f32(
+                &asm,
+                "",
+                "OxygenManager",
+                "oxygenUnitsPerSecondSurface",
+            )
+            .map_err(|e| format!("{GAME_ASSEMBLY}: {e}"))?,
+        ),
+        charge_speed_threshold: f64::from(take(&charge, "threshold")?),
+    };
+    r.validate().map_err(|e| format!("{GAME_ASSEMBLY}: {e}"))?;
+    Ok(r)
+}
+
+pub(crate) fn enum_value(asm: &Assembly, ty: &str, name: &str) -> Result<i32> {
+    sn_dotnet::enum_values(asm, "", ty)
+        .map_err(|e| format!("{GAME_ASSEMBLY}: {e}"))?
+        .into_iter()
+        .find(|(n, _)| n == name)
+        .and_then(|(_, v)| i32::try_from(v).ok())
+        .ok_or_else(|| format!("{GAME_ASSEMBLY}: missing {ty}.{name}"))
 }
 
 #[cfg(test)]
@@ -710,6 +787,80 @@ mod tests {
             let mut b = bytes.clone();
             b[i] ^= 0xFF;
             read(&b);
+        }
+    }
+}
+
+#[cfg(test)]
+mod equipment_reader_tests {
+    use super::*;
+    use sn_dotnet::encode::{Builder, Il};
+    fn fixture(bad: bool) -> Vec<u8> {
+        let mut b = Builder::new();
+        b.type_def("", "UnderwaterMotor");
+        let mut il = Il::default();
+        for x in [
+            0.1,
+            0.2,
+            0.3,
+            0.4,
+            0.5,
+            2.0,
+            if bad { 3.0 } else { 2.0 },
+            2.0,
+            0.6,
+            1.1,
+            1.2,
+            0.7,
+            1.4,
+            0.8,
+        ] {
+            il = il.ldc_r4(x).op(0x26);
+        }
+        b.method("AlterMaxSpeed", 1, Some(&il.ret().0));
+        b.type_def("", "UpdateSwimCharge");
+        b.method(
+            "FixedUpdate",
+            1,
+            Some(&Il::default().ldc_r4(3.0).op(0x26).ret().0),
+        );
+        b.type_def("", "OxygenManager");
+        let field = b.field(1, "oxygenUnitsPerSecondSurface");
+        b.method(
+            ".ctor",
+            0,
+            Some(&Il::default().op(2).ldc_r4(9.0).stfld(field).ret().0),
+        );
+        b.type_def("", "TechType");
+        b.field(0x0606, "value__");
+        for (i, name) in [
+            "PlasteelTank",
+            "Tank",
+            "DoubleTank",
+            "HighCapacityTank",
+            "ReinforcedDiveSuit",
+            "Fins",
+            "UltraGlideFins",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let f = b.field(0x0056, name);
+            b.constant_i4(f, i as i32 + 80);
+        }
+        b.build()
+    }
+    #[test]
+    fn equipment_coefficients_are_runtime_inputs_and_ambiguity_is_an_offset_error() {
+        let data = fixture(false);
+        let r = equipment_rules(&data).unwrap();
+        assert_eq!(r.charge_speed_threshold, 3.0);
+        assert_eq!(r.surface_fill, 9.0);
+        assert_eq!(r.tank_penalties[0], (80, f64::from(0.1f32)));
+        let error = equipment_rules(&fixture(true)).unwrap_err();
+        assert!(error.contains("IL offset"), "{error}");
+        for n in (0..data.len()).step_by(47) {
+            assert!(equipment_rules(&data[..n]).is_err());
         }
     }
 }

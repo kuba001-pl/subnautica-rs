@@ -1,3 +1,33 @@
+# MODLOG
+
+One entry per change: what, why, how it was verified. Record dead ends too.
+
+## 2026-10-27 — M9s4: oxygen sources and ordered equipment effects
+
+Borrow authoritative oxygen amounts; tank unregister/re-register preserves them,
+spares contribute nothing, totals and fill/drain follow source ordering. Add
+ordered speed calculation and gated charging with actual velocity/accepted
+energy. Read coefficients from bounded DLL patterns, and stored fields through
+existing metadata layouts (no new dependency). Four synthetic rule tests plus
+runtime-reader malformed/ambiguity test. No whitelist change.
+
+Environment: first workspace test link failed with LNK1180 (insufficient disk
+space). Cache deletion was rejected automatically; no files removed. Free
+space subsequently recovered; retry logged separately in
+out/m9s4-workspace-retry.log (passed). Clippy/format/install checks passed first run.
+
+Dead end: main-scene UpdateSwimCharge count 0; charging-fin prefab count 0.
+Stop placement search after these two attempts; record STATUS.md. Correct M9s7
+measurement wording, require an explicit serialized rate and leave active
+placement/rate open. No balance fallback. DLL threshold is read successfully.
+
+Verification: `cargo test --workspace`, `cargo clippy --workspace --all-targets
+-- -D warnings`, `cargo fmt --all -- --check`; with SUBNAUTICA_DIR,
+`cargo test -p sn-assets the_equipment_rules_are_read -- --ignored --nocapture`.
+Logs out/m9s4-check-*.log. Expected: all pass; four capacities 30/90/90/180,
+surface fill 30/s, threshold 2; repeated reads identical. Live movement/vitals
+integration and original-game acquisition comparison: **not tested**.
+
 ## 2026-10-27 — M9s2–3 fixes: audit and unique battery selector entries
 
 Read the full repository rules and compared consumption, Eatable and battery
@@ -16,10 +46,6 @@ and `cargo test -p sn-assets the_decay_and_energy_rules_are_read -- --ignored
 heal threshold f32 0.1, oxygen 15, decay floor -25, fractions 0.5/f32 0.9,
 despawn 5/300 s, default battery 504, charge/capacity/recovery 1/100/2.
 Full prefab input loading and live application are **not tested** (M9s7+).
-
-# MODLOG
-
-One entry per change: what, why, how it was verified. Record dead ends too.
 
 ## 2026-10-27 — M9s3: decay, battery charge and replacement in sn-sim, headless
 

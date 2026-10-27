@@ -1417,8 +1417,8 @@ prose. Numbers below describe rules, not a shipped balance table.
   costs; its missing-key defaults and enum identities come from the DLL.
   Prefabs supply Eatable values/rates, Oxygen capacities, Battery capacity,
   EnergyMixin battery policy, PlayerTool timings/targets, Knife damage/range,
-  cabinet settings and crate references. Main-scene components supply player
-  and charging-fin fields; UI prefabs supply bar curves and presentation.
+  cabinet settings and crate references. Main-scene components supply player fields; charging-component placement
+  remains unconfirmed after M9s4; UI prefabs supply bar curves and presentation.
   Read serialized fields before applying code defaults; properties are not
   fields, and NonSerialized/ProtoMember state is not a prefab balance field.
 - **Confirmed (source):** SurvivalConstants metadata contains many constants,
@@ -1548,3 +1548,37 @@ prose. Numbers below describe rules, not a shipped balance table.
 - Historical diffs contain question marks introduced by the shell encoding;
   current M9s1–3 prose and source already contain proper UTF-8. Unrelated
   older MODLOG encoding damage is outside this change.
+
+### M9s4: equipment effects as implemented (2026-10-27)
+
+- **Confirmed (direct Oxygen/OxygenManager source read; synthetic borrowed-source
+  tests):** registrations borrow the authoritative amounts, sort player first,
+  fill forward (including nonbreathable sources), drain breathable sources in
+  reverse, and totals exclude nonbreathable sources. Unregistering does not
+  change amounts. The caller registers equipped tanks only; spare tanks remain
+  separate items. Equal-priority registration order is **our policy, not the
+  game's**. Surface/cinematic booleans are resolved by the caller.
+- **Confirmed (runtime metadata layouts and four installed tank prefabs, opt-in
+  `the_equipment_rules_are_read`):** capacities are stored fields, read as
+  30/90/90/180 for the four tested tank types. Available oxygen is excluded by
+  NonSerialized. Direct `Oxygen.Awake`/`OnProtoDeserialize` reading confirms
+  negative-to-full repair, zero retained; no field initializer means fresh CLR
+  state starts at zero. CraftData/Pickupable contain no oxygen refill assignment.
+  This confirms component initialization, not an original-game acquisition run.
+- **Confirmed (source UnderwaterMotor.AlterMaxSpeed and runtime bounded IL
+  sequence):** tank/spare penalties precede minimum; reinforced suit uses
+  another minimum; fins then held-tool penalty (both skipped for Seaglide),
+  surface multiplication, and smoothed player multiplier follow. DLL values,
+  including the actually inlined half penalties for equipped tanks, are loaded
+  at runtime. A synthetic scripted multiplier trace checks the operation order.
+- **Confirmed (UpdateSwimCharge.FixedUpdate source + runtime IL):** actual speed
+  must be strictly above the extracted threshold 2; underwater/equipped/held
+  gates and accepted energy determine charging. Synthetic rate/capacity tests
+  check equality, holstering, surface and saturation.
+- **Open, stopped after two genuine placement checks:** no UpdateSwimCharge in
+  main scene or SwimChargeFins hierarchy. Serialized rate/active placement is
+  unresolved; see STATUS.md and out/m9s4-placement-dead-end.log. The field
+  accessor is ready but the pure rule requires an explicit rate. No initializer
+  is substituted, no live charging claimed. M9s7 owns the broader census.
+- Pure max-speed and oxygen rules are ready for M9s integration; the live player
+  motor/vitals and equipment event plumbing are **not tested** here.

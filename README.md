@@ -466,3 +466,9 @@ belong to their owners and are not part of this project.
 Projects we learn from (reading, not copying): Nitrox,
 Subnautica-TerrainPatcher, UnityPy, AssetStudio, OpenMW, hl2-rs, benilla,
 gang-beasts-rust, and the AI Game Modding Guides.
+
+Headless survival rules (M9s1–4, unit/opt-in install tested): hunger,
+consumption/first aid, individual decay/oxygen/battery state, battery reload,
+registered oxygen and ordered swimming equipment effects. DLL coefficients and
+four tank capacities are read at runtime. Live survival integration is pending;
+serialized charging-component placement/rate remains unresolved (STATUS.md).

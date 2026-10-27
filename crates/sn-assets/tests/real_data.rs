@@ -3790,3 +3790,61 @@ fn the_decay_and_energy_rules_are_read() {
     assert_eq!(sn_assets::decay_rules(&code).unwrap(), d);
     assert_eq!(sn_assets::energy_rules(&code).unwrap(), e);
 }
+
+#[test]
+#[ignore = "needs SUBNAUTICA_DIR"]
+fn the_equipment_rules_are_read() {
+    let Some(dir) = std::env::var_os("SUBNAUTICA_DIR") else {
+        eprintln!("SUBNAUTICA_DIR not set; skipping");
+        return;
+    };
+    let game = GameData::locate(Some(PathBuf::from(dir))).unwrap();
+    let code = sn_assets::read_assembly(&game).unwrap();
+    let r = sn_assets::equipment_rules(&code).unwrap();
+    println!("{r:?}");
+    assert_eq!(r.charge_speed_threshold, 2.0);
+    assert_eq!(r.surface_fill, 30.0);
+    assert_eq!(r.tank_penalties.len(), 4);
+    assert_eq!(sn_assets::equipment_rules(&code).unwrap(), r);
+    let assets = sn_assets::Assets::index(&game).unwrap();
+    let assemblies = sn_assets::ScriptAssemblies::load(&game).unwrap();
+    let layouts = assemblies.layouts().unwrap();
+    // Stored fields must not include the saved oxygen amount.
+    let oxygen_layout = layouts.script("Assembly-CSharp", "", "Oxygen").unwrap();
+    assert!(
+        !oxygen_layout
+            .fields
+            .iter()
+            .any(|f| f.name == "oxygenAvailable")
+    );
+    let catalog = assets.catalog().unwrap();
+    let mut count = 0;
+    for name in ["Tank", "DoubleTank", "PlasteelTank", "HighCapacityTank"] {
+        let db = game.read_prefab_database().unwrap();
+        let path = db
+            .values()
+            .find(|p| {
+                p.to_lowercase()
+                    .ends_with(&format!("/{}.prefab", name.to_lowercase()))
+            })
+            .unwrap_or_else(|| panic!("no prefab for {name}"));
+        let locations = catalog.locate(path);
+        let location = locations
+            .iter()
+            .find(|l| l.resource_type == "UnityEngine.GameObject")
+            .unwrap();
+        let root = assets.catalog_object(location, 1).unwrap().unwrap();
+        let tree = assets.ui_tree(name, &root).unwrap();
+        let mut found = 0;
+        for (_, c) in tree.scripts("Oxygen") {
+            let f = sn_assets::survival_fields(&c.object, &layouts, "Oxygen").unwrap();
+            let cap = sn_assets::oxygen_capacity(&f).unwrap();
+            println!("tank {name}: capacity={cap}, initial=0 (NonSerialized CLR zero-init)");
+            assert!(cap > 0.0);
+            found += 1;
+        }
+        assert_eq!(found, 1);
+        count += found;
+    }
+    println!("tank prefabs read: {count}");
+}
