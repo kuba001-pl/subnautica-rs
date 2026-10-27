@@ -42,6 +42,7 @@ use bevy::core_pipeline::tonemapping::tonemapping;
 use bevy::image::{ImageAddressMode, ImageFilterMode, ImageSampler, ImageSamplerDescriptor};
 use bevy::mesh::VertexBufferLayout;
 use bevy::prelude::*;
+use bevy::render::diagnostic::RecordDiagnostics;
 use bevy::render::extract_component::{ExtractComponent, ExtractComponentPlugin};
 use bevy::render::extract_resource::{ExtractResource, ExtractResourcePlugin};
 use bevy::render::render_asset::RenderAssets;
@@ -3177,6 +3178,7 @@ fn prepare_pipelines(
     frame: Option<Res<GameUiFrame>>,
     views: Query<(Entity, &ExtractedView), With<GameUiCamera>>,
 ) {
+    let _perf = crate::perf::span("game_ui::prepare_pipelines");
     let Some(build) = frame.as_ref().and_then(|f| f.build.clone()) else {
         return;
     };
@@ -3191,6 +3193,7 @@ fn prepare_pipelines(
             let id = match pipelines.by_key.get(&key) {
                 Some(id) => *id,
                 None => {
+                    crate::perf::count("game_ui::new_pipelines", 1);
                     let d = pipeline_descriptor(&pipelines, view.target_format, b.0, b.1);
                     let id = pipeline_cache.queue_render_pipeline(d);
                     pipelines.by_key.insert(key, id);
@@ -3483,6 +3486,10 @@ fn game_ui_pass(
             })
         });
     }
+    crate::perf::count("game_ui::texture_bind_groups", texture_groups.len());
+    let diagnostics = ctx.diagnostic_recorder();
+    let diagnostics = diagnostics.as_deref();
+    let span = diagnostics.time_span(ctx.command_encoder(), "game_ui");
     let mut pass = ctx
         .command_encoder()
         .begin_render_pass(&RenderPassDescriptor {
@@ -3552,6 +3559,8 @@ fn game_ui_pass(
         drawn += 1;
     }
     drop(pass);
+    span.end(ctx.command_encoder());
+    crate::perf::count("game_ui::draws", drawn);
     cost.seconds += begin.elapsed().as_secs_f64();
     cost.frames += 1;
     if cost.frames == 600 {

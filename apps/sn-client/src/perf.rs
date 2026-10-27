@@ -55,6 +55,8 @@ pub fn install(app: &mut App) {
             usize::MAX,
         ));
     }
+    app.add_systems(First, || stage_begin("main::schedules"))
+        .add_systems(Last, || stage_end("main::schedules"));
     app.init_resource::<Interval>()
         .add_systems(PreUpdate, frame_start);
     if let Some(render) = app.get_sub_app_mut(RenderApp) {
@@ -261,7 +263,10 @@ pub fn frame(
     if sampling && snapshot_due {
         let mut costs: Vec<_> = diagnostics
             .iter()
-            .filter(|d| d.path().as_str().ends_with("elapsed_cpu"))
+            .filter(|d| {
+                let path = d.path().as_str();
+                path.ends_with("elapsed_cpu") || path.ends_with("elapsed_gpu")
+            })
             .filter_map(|d| Some((d.path().as_str().to_string(), d.average()?)))
             .collect();
         costs.sort_by(|a, b| b.1.total_cmp(&a.1));

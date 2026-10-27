@@ -211,6 +211,26 @@ Completion checks:
 - [x] Default view-distance and dev/release profile checks recorded, with
   noise and remaining untested costs stated; no universal FPS claim.
 
+### Perf P2 — Default-view steady frames and PDA activation (plan, 2026-10-27)
+
+| # | Goal | Done when |
+|---|---|---|
+| **Perf P2** | Reduce steady frame time at view 1200 and remove the PDA-open stall while preserving drawn content and game rules. Rank measured costs before fixing them; one concern per local P2 commit. | Three matched release runs per fix, identical scene/draw counts, default-view median below 16.667 ms and at least 10% below the matched baseline; PDA activation window maximum below 20 ms in three runs, excluding capture/exit; tests, clippy and fmt pass after merging local main. Targets are machine-specific and remain unchecked until measured. |
+
+Measure fixed camera (600 frames, 120 settled warm-up, 1600 × 900, view 1200)
+and scripted player/PDA, retaining raw logs and profiler CSVs under ignored
+`out/p2/`. Record concurrent processes and timing spread. Compare CPU stages
+with recent GPU pass timings; inspect draw/instance counts, object and terrain
+culling, repeated-mesh batching, material/bind-group churn, shadows, fog/post,
+Bevy systems, allocations, and PDA activation. Do not reduce view distance,
+disable effects, or change visibility rules to meet targets.
+
+- [ ] Repeated baseline and ranked CPU/GPU/PDA attribution recorded.
+- [ ] Each retained fix has repeated before/after evidence and scene/draw parity.
+- [ ] Default-view median and PDA activation targets above passed.
+- [ ] Local main merged with crafting/UI changes preserved; workspace tests,
+  clippy with warnings denied, and fmt pass; no game data tracked.
+
 ### Phase A — Terrain, headless → visible
 
 | # | Goal | Done when |

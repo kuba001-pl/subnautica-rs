@@ -219,6 +219,7 @@ pub struct Snapshot<'w, 's> {
     lods: Option<Res<'w, LodStats>>,
     lod_settings: Option<Res<'w, LodSettings>>,
     virtual_time: Res<'w, Time>,
+    meshes: Query<'w, 's, (&'static Mesh3d, &'static ViewVisibility)>,
 }
 
 impl Snapshot<'_, '_> {
@@ -266,6 +267,20 @@ impl Snapshot<'_, '_> {
         if let Some(objects) = objects {
             let _ = writeln!(out, "objects={:?}", objects.stats());
         }
+        let mut unique = std::collections::HashSet::new();
+        let mut visible = 0;
+        for (mesh, visibility) in &self.meshes {
+            if visibility.get() {
+                visible += 1;
+                unique.insert(mesh.0.id());
+            }
+        }
+        let _ = writeln!(
+            out,
+            "mesh_instances={}\nview_visible_mesh_instances={visible}\nview_visible_unique_meshes={}\nmesh_count_scope=main-world ViewVisibility; includes any view; not GPU draw calls",
+            self.meshes.iter().count(),
+            unique.len(),
+        );
         out
     }
 }

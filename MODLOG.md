@@ -2,6 +2,21 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-27 — P2a: default-view plan and attribution probes
+
+**What/why:** planned Perf P2 beside P1 before implementation. Extend the
+opt-in profiler with main schedule wall time, winding repair and UI pipeline
+preparation; retain recent GPU as well as CPU diagnostics for player runs.
+Add UI GPU timestamps, new-pipeline/texture-bind-group/draw counters and a
+baseline mesh-instance census (explicitly not a GPU draw-call count).
+No rendering rules, game data, dependencies or whitelist changes.
+
+**Verify:** cargo build -p sn-client --release, then P1's fixed/player
+commands with --view 1200, SN_CLIENT_PERF=1, and new output names under
+out/p2/. Expect existing scene counts plus labelled census, CPU/GPU scopes
+and unchanged UI draw totals. cargo fmt --all run. Runtime, workspace tests
+and clippy: **not tested yet**; release compilation is in progress.
+
 ## 2026-10-27 — M9e1: fabricator rules, headless
 
 **What/why:** direct source research (local ILSpy decompile, read only)

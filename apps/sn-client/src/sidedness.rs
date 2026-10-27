@@ -53,6 +53,7 @@ pub(crate) fn repair_winding(
     )>,
     mut last: Local<Option<[usize; 5]>>,
 ) {
+    let _perf = crate::perf::span("sidedness::repair_winding");
     let mut counts = [0; 5]; // off, front, back, reflected, unsupported
     for (transform, mut mesh, material) in &mut objects {
         if let Some(material) = materials.get(&material.0) {
