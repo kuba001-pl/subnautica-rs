@@ -40,12 +40,25 @@ Tested on Windows 11 with game build 10 (Steam):
   triangle count.
 - Reading the biome map and the water settings of all 145 biomes
   (`sn-inspect biomes`, `sn-inspect biomes --at X Y Z`).
-- Reading gameplay data (headless, not used by the client yet): all 463
+- Reading gameplay data: all 463
   recipe/item entries of `Balance/TechData`, the prefab → tech type map,
   the player's numbers (oxygen, health, swim and walk speeds) and the
   starting blueprints and unlocks (`PDAData`) from the main scene
   (`sn-inspect techdata`, `sn-inspect player`), and every collider of the
   placed prefabs (`sn-inspect prefab --colliders`).
+- Fabricator recipes headless (`sn-inspect craft`): 100 tree nodes,
+  87 craft nodes, zero unresolved, 46 starting blueprints. Pure rules
+  check ingredients, blueprint and power; partial results wait when the
+  inventory fills. Scripted client crafting goes through the server:
+  `--test-supply ScrapMetal --use-item 3 --panel 6=take-all,7=close
+  --craft 8=Titanium,12=take,14=Titanium --shot 17 m9e2-solo`
+  consumed one salvage, produced four Titanium after 2.8 s, spent 5 power
+  and refused the next craft for missing ingredients. M9e3: the
+  fabricator's localized hand, range checks (open at the hand, close
+  beyond its stored 3 m), its open/close animation (the cycle returns to
+  the resting pose in an opt-in install test), automatic output pickup and
+  the output preview on the tray pass scripted runs; the fabrication
+  shader, particles and light are drawn plainly, not ported. The crafting menu and power regeneration are not implemented.
 - The player's body: the suit models the game shows in a new game,
   animated by the game's controller with its empty-hand rules (walking,
   swimming, surface, falling, death), turned and bobbed with the view as
@@ -406,6 +419,16 @@ network: only positions, animation values, events and checks.
 - **Host:** `sn-client --host` (or `--host PORT`; default UDP 27420).
   The host's flags decide the world (`--lifepod-seed`, `--slot-seed`,
   `--time`, `--aurora…`). A headless `sn-server` works too.
+- **Saves (M9f):** the server (headless or `--host`/solo) keeps the world
+  in our own format in `%LOCALAPPDATA%/subnautica-rs/saves/default`
+  (`--save-dir` for another slot, `--no-save` for none): every 30 s
+  (`--autosave S`), on `--run-for` and on Ctrl-C. Inventories, the locker,
+  picked-up and dropped items, unlocks, each player's pose and health/oxygen
+  come back after a restart; a player rejoins by the same name. A corrupt
+  save stops the server instead of starting fresh (`--load-backup` takes
+  the previous one). Tested: a scripted headless restart on the real
+  install; not tested: saving from `sn-client`, Ctrl-C, Linux/macOS.
+  Game saves are not read or written.
 - **Join:** `sn-client --join ADDRESS[:PORT] --name NAME`. The host's
   world replaces your world flags.
 - **Over the internet:** the host forwards UDP port 27420 on their

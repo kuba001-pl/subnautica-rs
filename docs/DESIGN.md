@@ -462,8 +462,8 @@ understand it, then write our own.
 | **M9d** ✅ | **Done 2026-10-12** (steps M9d1–M9d6 below, each in MODLOG; what is not 1:1 yet is listed under "Not 1:1 after M9d"). Pick up and inventory (plan below, steps M9d1–M9d6): `Pickupable` objects within reach, outcrops break into their resource (`BreakableResource`), inventory of the game's size, item sizes from TechData, equipment slots, blueprints unlocked by picking up, dropping, the lifepod's locker with its starting supplies, the `grab` animation; picked objects gone for every player (server state keyed by entity id and slot seed). What stays not 1:1 is listed in the plan with where each item goes. | Inventory rules unit-tested; a scripted pick-up logs item counts; the object's drawn count −1 on both clients. |
 | **M9u** ✅ (2026-10-27, M9u0–M9u9; not compared with the game on screen) | The game's UI (uGUI, sprites, TextMesh Pro): the HUD, hand reticle, messages, the PDA with its inventory tab and equipment; replaces our own HUD and panel. Plan written 2026-10-12 ("M9u plan", below M9d's; steps M9u0–M9u9), approved by the user 2026-10-12. | Each step's own list in the plan. |
 | **M9e** (next; plan written 2026-10-27, "M9e plan" below M9u's, steps M9e1–M9e5) | Crafting at the lifepod's fabricator: the menu from P1's tree, recipes and times from TechData, starting blueprints from `PDAData`; item names from the language files. | Crafting rules unit-tested on synthetic recipes; one real recipe crafted in a scripted run (counts before/after logged); menu node count equal to P1's. |
-| **M9f** | Save and load (player, inventory, removed objects, crafted items) on the server, in our own format, in the user's save folder (not `out/`, not the game folder). Becomes M11's persistence. | Round-trip unit test; server restart restores the logged state. |
-| **M9s** (planned 2026-10-27; M9s1–M9s15 below) | **Survival:** food/water, eating and first aid; per-item decay, tank oxygen and battery charge; tanks/fins, quick slots, held tools and knife harvesting; medical cabinets and supply crates. Pulls forward After Phase E item 1 and the survival gaps in M9d/M9u. Depends on M9e crafting and M9f persistence (both in progress). | Each step’s own Done when below; headless rules first, then runtime data, server, persistence, client and UI; two-player scripted survival loop with 0 state/hash mismatches. |
+| **M9f** ✅ (2026-10-27, M9f1–M9f4) | Save and load (player, inventory, removed objects, crafted items) on the server, in our own format, in the user's save folder (not `out/`, not the game folder). Becomes M11's persistence. | Round-trip unit test; server restart restores the logged state. |
+| **M9s** (planned 2026-10-27; M9s1–M9s15 below) | **Survival:** food/water, eating and first aid; per-item decay, tank oxygen and battery charge; tanks/fins, quick slots, held tools and knife harvesting; medical cabinets and supply crates. Pulls forward After Phase E item 1 and the survival gaps in M9d/M9u. Depends on M9e crafting (in progress) and M9f persistence (done 2026-10-27). | Each step’s own Done when below; headless rules first, then runtime data, server, persistence, client and UI; two-player scripted survival loop with 0 state/hash mismatches. |
 
 #### M9a plan (written 2026-10-10)
 
@@ -1461,7 +1461,7 @@ step-M9u4 oracle (saved driven rects) is a hypothesis. If it does not
 hold, layout is checked against hand-computed cases and the
 screenshots only, and the plan says so. Size: about M9g's, ten steps.
 
-#### M9e plan: crafting at the lifepod's fabricator (written 2026-10-27, after M9u; M9e1 done)
+#### M9e plan: crafting at the lifepod's fabricator (written 2026-10-27, after M9u; M9e1–M9e3 done)
 
 **Why next:** the road (§ 4.3, Phase E) puts M9e after M9u, and both of
 its bases are done: the menus are read from the DLL (P1: 7 menus, the
@@ -1499,8 +1499,8 @@ in M9e1; confirmed rules and corrections are recorded in gameplay.md
 | Step | Work | Done when |
 |---|---|---|
 | **M9e1** ✅ (2026-10-27; see as built) | **Rules, headless.** Read `Crafter`, `GhostCrafter`, `CrafterLogic`, `Fabricator`, `uGUI_CraftingMenu`, `KnownTech` and the recipe checks in the decompiled code; record them in `docs/formats/gameplay.md` § Crafting (each fact marked). `sn-sim::craft` (pure): can-craft (known, ingredients in the inventory, power), room checked per output at pickup (confirmed in M9e1), consume, the result and `craftAmount`, linked items, the craft time and its default, the energy cost. `sn-inspect craft`: every fabricator node resolved. | Unit tests on synthetic recipes (missing ingredient, unknown blueprint, no power, full inventory, `craftAmount` > 1, linked items); `sn-inspect craft` on the install: 100 fabricator nodes, including 87 craft nodes (= P1; corrected count in M9e1), each with ingredients, time and energy logged, 0 unresolved; the starting blueprints from `PDAData` counted; the default craft time settled with its source. |
-| **M9e2** | **Server-authoritative crafting.** `sn-protocol`: `Request::Craft { crafter, tech }`, `Request::TakeCrafted { crafter }`; world events for a craft started (with its duration), done and taken; the fabricator's state and the pod's power in the world state and its hash. `sn-session` checks with `sn-sim::craft`; one craft at a time per fabricator, shared by all players. A `--craft SECONDS=TECH` test hook. | Protocol round-trip tests; a scripted solo run crafts one real recipe (e.g. Titanium from Scrap metal picked up nearby): inventory counts before/after, the duration equal to the rule, the energy drop logged; a refused craft (no ingredients) logged with its reason; 0 warnings. |
-| **M9e3** | **The fabricator in the world.** The hand on it (`handOverText` from the language file, `closeDistance`), its animator's open and close, the result shown in the fabricator until taken (the item's model at `itemSpawnPoint`); beams, sparks and `CrafterGhostModel`'s shader drawn if they fit, otherwise kept drawn plainly and logged (never hidden). | Client run: hand text logged; open at the hand, close beyond `closeDistance` (distances logged against the stored value); the crafted item drawn at the spawn point during the craft and gone when taken; 0 warnings; a screenshot for the user. |
+| **M9e2** ✅ (2026-10-27; scripted path; limitations below) | **Server-authoritative crafting.** `sn-protocol`: `Request::Craft { crafter, tech }`, `Request::TakeCrafted { crafter }`; world events for a craft started (with its duration), done and taken; the fabricator's state and the pod's power in the world state and its hash. `sn-session` checks with `sn-sim::craft`; one craft at a time per fabricator, shared by all players. A `--craft SECONDS=TECH` test hook. | Protocol round-trip tests; a scripted solo run crafts one real recipe (e.g. Titanium from Scrap metal picked up nearby): inventory counts before/after, the duration equal to the rule, the energy drop logged; a refused craft (no ingredients) logged with its reason; 0 warnings. |
+| **M9e3** ✅ (2026-10-27; plain effects, see as built) | **The fabricator in the world.** The hand on it (`handOverText` from the language file, `closeDistance`), its animator's open and close, the result shown in the fabricator until taken (the item's model at `itemSpawnPoint`); beams, sparks and `CrafterGhostModel`'s shader drawn if they fit, otherwise kept drawn plainly and logged (never hidden). | Client run: hand text logged; open at the hand, close beyond `closeDistance` (distances logged against the stored value); the crafted item drawn at the spawn point during the craft and gone when taken; 0 warnings; a screenshot for the user. |
 | **M9e4** | **The crafting menu.** `uGUI_CraftingMenu` on `CraftingCanvas`: the fabricator tree's nodes as icons (made as the game makes them), expand and craft sprites, grey for unknown/unaffordable, the punch animations, the recipe tooltip; hover and clicks through the existing hit-test; a click sends `Request::Craft`. The unlock pop-up and `Blueprints` notifications if crafting unlocks anything. `sn-inspect ui --crafting`. | `ui --crafting`: node count and layout of the top level and one sub-menu against a replay of the decompiled code, N/N; client: open the menu, hover a recipe (tooltip text logged), click it: the same craft as M9e2, the item taken into the inventory with its notification; 0 warnings; a screenshot. |
 | **M9e5** | **Close-out.** Two players: one crafts, the other sees the fabricator busy (its menu refuses with the game's message) and the result taken; README, `docs/formats/gameplay.md`, `docs/formats/ui.md`, "Not 1:1 after M9e". | Two-player run logs as listed; `cargo test --workspace` passes without the game; `git status --short` shows only our code and docs. |
 
@@ -1508,6 +1508,15 @@ in M9e1; confirmed rules and corrections are recorded in gameplay.md
 the original row's checks hold (rules unit-tested on synthetic recipes,
 one real recipe crafted in a scripted run with counts before/after
 logged, the menu's node count equal to P1's).
+
+**M9e3 as built (2026-10-27):** hand, range, preview and automatic
+collection verified in scripted runs; scoped optimized-avatar restoration
+resolves 120/120 bindings. The checkpoint's open/close pose residual
+(0.031879187) was the test's reference sampled mid-way through the
+0.033 s non-looping `closed` clip; referenced after that clip ends, the
+cycle returns to the resting pose with residual 0 (animation.md). The
+fabrication shader, particles and light are drawn plainly and logged,
+not ported.
 
 **M9e1 as built (2026-10-27):** pure recipe validation/consumption and
 incremental output collection, runtime TechData conversion, `sn-inspect
@@ -1530,6 +1539,47 @@ so. The lifepod's power may depend on pod state we do not model yet
 labelled stand-in ("not the game's") rather than a guess. Size: about
 M9d's, five steps.
 
+#### M9f plan
+
+Written 2026-10-27. Our own server save format, independent of the game's
+Protobuf saves; this becomes M11's persistence. No game assets are saved.
+Research is recorded in `docs/formats/saves.md`; no decompiled code is copied.
+
+Use the existing checked binary codec in pure `sn-session` (layer 2), with
+magic, save version, protocol version, build/rules fingerprint, payload length
+and FNV checksum. Reuse the item snapshot for inventory (crafted items are
+ordinary items), equipment, unlocks, luck, locker, removed/picked keys,
+outcrop hit counts, spawned/dropped items and id counters. Save stable
+name/id mappings, latest player pose and vitals, world settings, elapsed
+ticks and the server random generator. Connections and credentials are never
+saved. Names retain M10's trust model; they are not authenticated identities.
+No dependency on the concurrent M9e implementation.
+
+File I/O lives in the apps, shared through `sn-server`: default user data
+folder `%LOCALAPPDATA%/subnautica-rs/saves/default` on Windows,
+`~/Library/Application Support/subnautica-rs/saves/default` on macOS,
+`$XDG_DATA_HOME/subnautica-rs/saves/default` (fallback `~/.local/share`) on
+Linux. An explicit save-directory option supports slots and tests; reject
+paths inside the game install or `out/`. Tests and agent runs use system temp.
+Save every 30 s (configurable) and on orderly shutdown, including Ctrl-C;
+forced termination can only retain the last autosave. Flush a temporary file,
+retain the previous validated save as a backup, then install the new file.
+Corruption, incompatible versions/build/rules and semantic errors return an
+offset-bearing error and refuse startup without overwriting either file;
+recovery from backup is explicit. No silent reset or automatic migration.
+New dependency planned: `ctrlc` in the app handles orderly console shutdown;
+all serialization uses existing dependencies.
+
+| Step | Work | Done when |
+|---|---|---|
+| **M9f1** ✅ | Plan and read-only format/state research. | Plan written before code; confirmed findings documented, no game code/data copied. |
+| **M9f2** ✅ | Pure versioned serialization and session restore, stable offline players, pose/vitals restore messages (app application in M9f3). | Synthetic round-trip preserves all saved categories; truncated, corrupt, incompatible and invalid saves fail with offsets; reconnect sends inventory and own pose/vitals. |
+| **M9f3** ✅ | Shared app save I/O, platform folder, autosave and shutdown in dedicated and embedded servers. | Temp-directory tests cover backup, corruption refusal, path rejection and restart; both server modes compile; no filesystem dependencies in layer 2. |
+| **M9f4** ✅ | Real server/scripted-client restart proof and documentation close-out. | Real install run logs pickup/move/drop and matching saved/restored numbers; workspace tests, clippy and fmt pass; merge local main, resolve keeping both docs, rerun tests/clippy. |
+
+M9f is done only when every Done-when above has passed. Linux/macOS runtime,
+power loss durability, original-game save compatibility and M11 ownership
+are not tested here; original-game save compatibility is not implemented.
 #### M9s plan: survival (written 2026-10-27)
 
 **Scope and dependencies.** Pull After Phase E item 1 into Phase E after

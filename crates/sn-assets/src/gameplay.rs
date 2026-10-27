@@ -490,6 +490,10 @@ impl Assets<'_> {
     /// The components of a prefab node's GameObject.
     pub fn node_components(&self, node: &PrefabNode) -> Result<Vec<ObjectRef>> {
         let (bundle, name, path_id) = &node.object;
+        // Restored optimized-avatar bones have no serialized GameObject.
+        if name.contains("#avatar:") {
+            return Ok(Vec::new());
+        }
         let file = self.file(bundle, name)?;
         let go = ObjectRef {
             file,

@@ -410,40 +410,64 @@ impl Assets<'_> {
                 .map(|(i, _)| i)
                 .collect();
             for animator in animators {
-                let Some(reference) = prefab.nodes[animator]
-                    .animator
-                    .as_ref()
-                    .and_then(|a| a.avatar.as_ref())
-                else {
-                    continue;
-                };
-                let avatar = self.avatar(reference)?;
-                let mut nodes = prefab.nodes.clone();
-                let map = restore_avatar(&mut nodes, animator, &avatar)?;
-                for i in 0..nodes.len() {
-                    if !below(&nodes, i, animator)
-                        || !nodes[i].skinned
-                        || !nodes[i].bone_keys.is_empty()
-                    {
-                        continue;
-                    }
-                    let Some(mesh) = nodes[i].mesh.as_ref() else {
-                        continue;
-                    };
-                    let mesh = self.mesh_info(mesh)?;
-                    if mesh.bind_poses.len() != mesh.bone_name_hashes.len() {
-                        return Err("optimized terminal: palette/bind-pose count mismatch".into());
-                    }
-                    let keys: Option<Vec<_>> = mesh
-                        .bone_name_hashes
-                        .iter()
-                        .map(|hash| map.get(hash).map(|&index| Some(nodes[index].key.clone())))
-                        .collect();
-                    nodes[i].bone_keys =
-                        keys.ok_or("optimized terminal: unresolved skin palette hash")?;
-                }
-                prefab.nodes = nodes;
+                self.restore_optimized_animator(prefab, animator)?;
             }
+        }
+        prefab.sort_nodes()
+    }
+
+    /// Restore one verified optimized generic rig with the shared avatar rule.
+    fn restore_optimized_animator(&self, prefab: &mut Building, animator: usize) -> Result<()> {
+        let Some(reference) = prefab.nodes[animator]
+            .animator
+            .as_ref()
+            .and_then(|a| a.avatar.as_ref())
+        else {
+            return Ok(());
+        };
+        let avatar = self.avatar(reference)?;
+        let mut nodes = prefab.nodes.clone();
+        let map = restore_avatar(&mut nodes, animator, &avatar)?;
+        for i in 0..nodes.len() {
+            if !below(&nodes, i, animator) || !nodes[i].skinned || !nodes[i].bone_keys.is_empty() {
+                continue;
+            }
+            let Some(mesh) = nodes[i].mesh.as_ref() else {
+                continue;
+            };
+            let mesh = self.mesh_info(mesh)?;
+            if mesh.bind_poses.len() != mesh.bone_name_hashes.len() {
+                return Err("optimized terminal: palette/bind-pose count mismatch".into());
+            }
+            let keys: Option<Vec<_>> = mesh
+                .bone_name_hashes
+                .iter()
+                .map(|hash| map.get(hash).map(|&index| Some(nodes[index].key.clone())))
+                .collect();
+            nodes[i].bone_keys = keys.ok_or("optimized terminal: unresolved skin palette hash")?;
+        }
+        prefab.nodes = nodes;
+        Ok(())
+    }
+
+    /// M9e3: the Fabricator also has a verified optimized generic avatar.
+    fn prepare_fabricator_avatar(&self, prefab: &mut Building) -> Result<()> {
+        if !prefab.fabricator {
+            return Ok(());
+        }
+        let animators: Vec<_> = prefab
+            .nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| {
+                n.animator
+                    .as_ref()
+                    .is_some_and(|a| !a.component.has_transform_hierarchy)
+            })
+            .map(|(i, _)| i)
+            .collect();
+        for i in animators {
+            self.restore_optimized_animator(prefab, i)?;
         }
         prefab.sort_nodes()
     }
@@ -512,6 +536,7 @@ impl Assets<'_> {
         let mut lods: Vec<(ObjectRef, LodGroup)> = Vec::new();
         self.add_node(root, None, true, &mut prefab, &mut lods, 0)?;
         self.prepare_key_terminals(&mut prefab)?;
+        self.prepare_fabricator_avatar(&mut prefab)?;
 
         for (file, script, owner) in std::mem::take(&mut prefab.waterfalls) {
             for (reference, height) in [
@@ -870,6 +895,9 @@ impl Assets<'_> {
                         .map_err(|e| format!("Light {}: {e}", c.path_id))?,
                 ),
                 MONO_BEHAVIOUR => match script_class(self, &c).as_deref() {
+                    Some("Fabricator") => {
+                        prefab.fabricator = true;
+                    }
                     Some("PrecursorKeyTerminal") => {
                         let terminal = sn_unity::PrecursorKeyTerminal::parse(data, big_endian)
                             .map_err(|e| format!("PrecursorKeyTerminal {}: {e}", c.path_id))?;
@@ -1077,6 +1105,7 @@ struct BuildingNode {
 }
 
 struct Building {
+    fabricator: bool,
     key: String,
     nodes: Vec<BuildingNode>,
     /// `SkyApplier`s found, with the file their references are relative to.
@@ -1297,6 +1326,7 @@ impl Building {
 
     fn new(key: &str) -> Building {
         Building {
+            fabricator: false,
             key: key.to_string(),
             nodes: Vec::new(),
             sky_appliers: Vec::new(),

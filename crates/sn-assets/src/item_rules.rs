@@ -242,7 +242,31 @@ pub fn item_rules_with(
             tech_class.insert(t, class.clone());
         }
     }
-    for t in player.loot.escape_pod.iter().chain(extra) {
+    let mut recipes = BTreeMap::new();
+    let tree = code
+        .craft_trees
+        .iter()
+        .find(|t| t.id == "Fabricator")
+        .ok_or("no Fabricator tree")?;
+    for node in tree
+        .root
+        .walk()
+        .into_iter()
+        .filter(|n| Some(n.action) == code.tree_action("Craft"))
+    {
+        let entry = tech
+            .get(node.tech_type)
+            .ok_or_else(|| format!("no recipe for {}", node.tech_type))?;
+        recipes.insert(
+            node.tech_type,
+            crate::craft_recipe(entry, &code.tech_defaults)?,
+        );
+    }
+    let outputs: Vec<i32> = recipes
+        .values()
+        .flat_map(|r| std::iter::once(r.tech).chain(r.linked.iter().copied()))
+        .collect();
+    for t in player.loot.escape_pod.iter().chain(extra).chain(&outputs) {
         let class = tech_class
             .get(t)
             .ok_or_else(|| format!("supply tech type {t} has no prefab"))?;
@@ -299,7 +323,12 @@ pub fn item_rules_with(
             techs.equipment.insert(e.tech_type, t);
         }
     }
+    let fabricator = crate::pod_fabricator(game, assets, [0.0; 3])?;
     let rules = ItemRules {
+        fabricator_offset: fabricator.at.position,
+        fabricator_close_distance: fabricator.close_distance,
+        recipes,
+        pod_power: crate::pod_crafting_power(game, assets)?,
         techs,
         slots: SlotTable {
             slots: items.slot_types.clone(),

@@ -84,6 +84,13 @@ pub struct DeathDrop {
 /// What a player asks the server for.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Request {
+    Craft {
+        crafter: u16,
+        tech: i32,
+    },
+    TakeCrafted {
+        crafter: u16,
+    },
     /// Pick up a world object, which the client says is the prefab
     /// `class` (empty for `Spawned`: the server knows it).
     PickUp {
@@ -117,6 +124,18 @@ pub enum Request {
 /// An accepted request, as every machine replays it.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ItemEvent {
+    CraftStarted {
+        crafter: u16,
+        tech: i32,
+        start_tick: u32,
+        end_tick: u32,
+    },
+    CraftDone {
+        crafter: u16,
+    },
+    CraftedTaken {
+        crafter: u16,
+    },
     /// The object left the world into the player's inventory; a world
     /// object gets the next item number, a `Spawned` one keeps its own.
     PickedUp {
@@ -151,6 +170,10 @@ pub enum ItemEvent {
 /// Why a request was refused.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RefuseReason {
+    Busy,
+    UnknownBlueprint,
+    MissingIngredients,
+    NoPower,
     /// The object is no longer in the world (someone was first).
     Gone,
     /// Not an object the rules know as this kind (not pickupable, not
@@ -169,7 +192,7 @@ pub enum RefuseReason {
     NotReady,
 }
 
-const REFUSE: [RefuseReason; 7] = [
+const REFUSE: [RefuseReason; 11] = [
     RefuseReason::Gone,
     RefuseReason::Unknown,
     RefuseReason::NoRoom,
@@ -177,6 +200,10 @@ const REFUSE: [RefuseReason; 7] = [
     RefuseReason::NoItem,
     RefuseReason::NotAllowed,
     RefuseReason::NotReady,
+    RefuseReason::Busy,
+    RefuseReason::UnknownBlueprint,
+    RefuseReason::MissingIngredients,
+    RefuseReason::NoPower,
 ];
 
 pub(crate) fn write_refuse(w: &mut Writer, r: RefuseReason) {
@@ -354,6 +381,15 @@ pub fn read_death_drop(r: &mut Reader) -> Result<DeathDrop> {
 
 pub(crate) fn write_request(w: &mut Writer, q: &Request) {
     match q {
+        Request::Craft { crafter, tech } => {
+            w.u8(5);
+            w.varint(u64::from(*crafter));
+            w.varint_signed(i64::from(*tech));
+        }
+        Request::TakeCrafted { crafter } => {
+            w.u8(6);
+            w.varint(u64::from(*crafter));
+        }
         Request::PickUp { key, class } => {
             w.u8(0);
             write_key(w, key);
@@ -424,12 +460,39 @@ pub(crate) fn read_request(r: &mut Reader) -> Result<Request> {
             }
             Request::Lose { origin, drops }
         }
+        5 => Request::Craft {
+            crafter: r.varint_u16("crafter")?,
+            tech: r.varint_i32("craft tech")?,
+        },
+        6 => Request::TakeCrafted {
+            crafter: r.varint_u16("crafter")?,
+        },
         k => return Err(r.error(at, format!("unknown request kind {k}"))),
     })
 }
 
 pub(crate) fn write_item_event(w: &mut Writer, e: &ItemEvent) {
     match e {
+        ItemEvent::CraftStarted {
+            crafter,
+            tech,
+            start_tick,
+            end_tick,
+        } => {
+            w.u8(5);
+            w.varint(u64::from(*crafter));
+            w.varint_signed(i64::from(*tech));
+            w.varint(u64::from(*start_tick));
+            w.varint(u64::from(*end_tick));
+        }
+        ItemEvent::CraftDone { crafter } => {
+            w.u8(6);
+            w.varint(u64::from(*crafter));
+        }
+        ItemEvent::CraftedTaken { crafter } => {
+            w.u8(7);
+            w.varint(u64::from(*crafter));
+        }
         ItemEvent::PickedUp { key, class } => {
             w.u8(0);
             write_key(w, key);
@@ -523,6 +586,18 @@ pub(crate) fn read_item_event(r: &mut Reader) -> Result<ItemEvent> {
             }
             ItemEvent::Lost { origin, drops }
         }
+        5 => ItemEvent::CraftStarted {
+            crafter: r.varint_u16("crafter")?,
+            tech: r.varint_i32("craft tech")?,
+            start_tick: r.varint_u32("craft start")?,
+            end_tick: r.varint_u32("craft end")?,
+        },
+        6 => ItemEvent::CraftDone {
+            crafter: r.varint_u16("crafter")?,
+        },
+        7 => ItemEvent::CraftedTaken {
+            crafter: r.varint_u16("crafter")?,
+        },
         k => return Err(r.error(at, format!("unknown item event kind {k}"))),
     })
 }

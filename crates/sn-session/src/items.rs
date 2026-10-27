@@ -168,6 +168,7 @@ pub struct PlayerItems {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ItemsState {
+    pub fabricator: crate::craft::Fabricator,
     rules: Arc<ItemRules>,
     /// The number the next item or spawned object gets.
     pub next_item: u32,
@@ -207,6 +208,10 @@ impl ItemsState {
     pub fn new(rules: Arc<ItemRules>, supplies: bool) -> ItemsState {
         let (w, h) = rules.locker_size;
         let mut s = ItemsState {
+            fabricator: crate::craft::Fabricator {
+                power: rules.pod_power,
+                job: None,
+            },
             locker: Container::new(w, h),
             rules,
             next_item: 0,
@@ -299,6 +304,9 @@ impl ItemsState {
         let rules = self.rules.clone();
         let p = self.players.get(&player).ok_or(RefuseReason::Unknown)?;
         match event {
+            ItemEvent::CraftStarted { .. }
+            | ItemEvent::CraftDone { .. }
+            | ItemEvent::CraftedTaken { .. } => return self.apply_craft(player, event),
             ItemEvent::PickedUp { key, class } => {
                 let (id, info) = match key {
                     EntityKey::Spawned(id) => {
@@ -557,6 +565,7 @@ impl ItemsState {
 
     /// The locker and the players (their part of the encoding).
     fn write_rest(&self, w: &mut Writer) {
+        self.fabricator.encode(w);
         write_container(w, &self.locker);
         w.varint(self.players.len() as u64);
         for (id, p) in &self.players {
@@ -663,6 +672,7 @@ impl ItemsState {
                 return Err(r.error(at, "outcrop repeated"));
             }
         }
+        let fabricator = crate::craft::Fabricator::decode(r, &rules)?;
         let locker = read_container(r)?;
         let mut players = BTreeMap::new();
         for _ in 0..r.count(usize::MAX, "player count")? {
@@ -703,6 +713,7 @@ impl ItemsState {
             }
         }
         Ok(ItemsState {
+            fabricator,
             rules,
             next_item,
             gone,

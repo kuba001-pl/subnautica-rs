@@ -69,6 +69,7 @@ pub enum Mode {
 /// Everything the network thread and the main thread share.
 struct Inner {
     server: Option<Server>,
+    save: Option<(sn_server::saves::SaveStore, ServerConfig, bool, u64, u64)>,
     socket: Option<Socket>,
     /// `--join`: the server's peer on the socket.
     server_peer: Option<PeerId>,
@@ -192,9 +193,33 @@ impl Inner {
             socket.update(now);
         }
         self.notices();
+        if self.save.as_ref().is_some_and(|s| now >= s.4) {
+            self.save_now(now);
+        }
         if now >= self.next_report && self.epoch.is_some() {
             self.next_report += REPORT_US;
             self.report(now);
+        }
+    }
+
+    fn save_now(&mut self, now: u64) {
+        let result = if let (Some(server), Some((store, config, recovering, interval, next))) =
+            (&self.server, &mut self.save)
+        {
+            let result = store.write(server, config, now, *recovering);
+            if result.is_ok() {
+                *recovering = false;
+            }
+            *next = now.saturating_add(*interval);
+            Some(result)
+        } else {
+            None
+        };
+        if let Some(result) = result {
+            match result {
+                Ok(line) => self.say(Level::INFO, line),
+                Err(e) => self.say(Level::ERROR, format!("save failed: {e}")),
+            }
         }
     }
 
@@ -384,6 +409,7 @@ impl Session {
         name: &str,
         sim: Option<Impairment>,
         test_supplies: &[i32],
+        save: Option<(sn_server::saves::SaveStore, bool, u64)>,
     ) -> Result<Session, String> {
         let client = Client::new(
             ClientConfig {
@@ -400,6 +426,7 @@ impl Session {
         let tick_us = config.tick_us;
         let mut inner = Inner {
             server: None,
+            save: None,
             socket: None,
             server_peer: None,
             client,
@@ -413,6 +440,7 @@ impl Session {
             to_client: 0,
             next_report: REPORT_US,
         };
+        let save_config = config.clone();
         match *mode {
             Mode::Solo => {
                 inner.server = Some(Server::new(config, 0));
@@ -436,6 +464,16 @@ impl Session {
                 let mut s = socket(("0.0.0.0", 0), Config::client(random_seed()), sim)?;
                 inner.server_peer = Some(s.connect(addr, 0));
                 inner.socket = Some(s);
+            }
+        }
+        if let Some((store, backup, interval)) = save {
+            if inner.server.is_some() {
+                inner.server = Some(store.load(save_config.clone(), 0, backup)?);
+                inner.say(
+                    Level::INFO,
+                    format!("save: loaded slot {}", store.dir().display()),
+                );
+                inner.save = Some((store, save_config, backup, interval, interval));
             }
         }
         if let Some(server) = inner.server.as_mut() {
@@ -473,7 +511,7 @@ impl Session {
             if inner.lost {
                 return Err(format!("could not reach the server at {mode:?}"));
             }
-            if inner.client.world().is_some() && inner.client.server_us(now).is_some() {
+            if inner.client.loaded() && inner.client.server_us(now).is_some() {
                 break;
             }
             if started.elapsed() > JOIN_TIMEOUT {
@@ -561,6 +599,16 @@ impl Session {
     }
 
     /// The own player's state after the step of its tick.
+    pub fn take_restore(
+        &mut self,
+    ) -> Option<(Option<PlayerState>, Option<sn_protocol::PlayerVitals>)> {
+        self.lock().client.take_restore()
+    }
+
+    pub fn push_vitals(&mut self, v: sn_protocol::PlayerVitals) {
+        self.lock().client.push_vitals(v);
+    }
+
     pub fn push_state(&mut self, state: PlayerState) {
         self.lock().client.push_state(state);
     }
@@ -639,8 +687,13 @@ impl Drop for Session {
         for (_, line) in std::mem::take(&mut i.log) {
             info!("{line}");
         }
+        i.pump();
+        i.save_now(now);
         i.client.bye();
         i.pump();
+        for (_, line) in std::mem::take(&mut i.log) {
+            info!("{line}");
+        }
         i.stop = true;
     }
 }

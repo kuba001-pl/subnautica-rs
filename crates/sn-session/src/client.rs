@@ -2,7 +2,7 @@
 //! buffer per remote player and what to draw of it (interpolation,
 //! bridging gaps, extrapolation), the world state from `Welcome` and the
 //! events, events released in order at their tick, and sending the own
-//! player's states (`docs/DESIGN.md` § M10 plan, "The timeline: ticks").
+//! player's states (`docs/DESIGN.md` Â§ M10 plan, "The timeline: ticks").
 //! A state machine on the caller's clock, like [`crate::Server`].
 
 use std::collections::{BTreeMap, VecDeque};
@@ -99,7 +99,7 @@ pub enum SampleKind {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RemoteSample {
     pub position: [f64; 3],
-    /// Look, degrees (`rotationX` 0…360, `rotationY` up positive).
+    /// Look, degrees (`rotationX` 0â€¦360, `rotationY` up positive).
     pub yaw: f64,
     pub pitch: f64,
     /// The received state at or before the tick (flags, animator values,
@@ -150,6 +150,7 @@ struct Remote {
 }
 
 pub struct Client {
+    restore: Option<(Option<PlayerState>, Option<sn_protocol::PlayerVitals>)>,
     config: ClientConfig,
     player: Option<PlayerId>,
     world: Option<WorldState>,
@@ -197,6 +198,7 @@ impl Client {
             password: config.password.clone(),
         };
         Client {
+            restore: None,
             config,
             player: None,
             world: None,
@@ -225,6 +227,17 @@ impl Client {
             notices: Vec::new(),
             stats: ClientStats::default(),
         }
+    }
+
+    pub fn take_restore(
+        &mut self,
+    ) -> Option<(Option<PlayerState>, Option<sn_protocol::PlayerVitals>)> {
+        self.restore.take()
+    }
+
+    pub fn push_vitals(&mut self, v: sn_protocol::PlayerVitals) {
+        self.outgoing
+            .push((Channel::Latest(PING_KEY - 1), ClientMessage::Vitals(v)));
     }
 
     pub fn player(&self) -> Option<PlayerId> {
@@ -364,6 +377,11 @@ impl Client {
             }
         };
         match m {
+            ServerMessage::Restore { state, vitals } => {
+                if !self.ready_sent {
+                    self.restore = Some((state, vitals));
+                }
+            }
             ServerMessage::Reject(r) => {
                 self.rejected = true;
                 self.notices.push(ClientNotice::Rejected(r));
@@ -891,7 +909,7 @@ mod tests {
         let s = c.sample(pid, 10.5).unwrap();
         assert_eq!(s.kind, SampleKind::Interpolated);
         assert!((s.position[0] - 10.5 * 0.152).abs() < 1e-5);
-        // Yaw 360 → 361 crosses 0 the short way.
+        // Yaw 360 â†’ 361 crosses 0 the short way.
         assert!(
             (s.yaw - 0.5).abs() < 0.01 || (s.yaw - 360.5).abs() < 0.01,
             "{}",

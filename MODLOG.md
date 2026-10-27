@@ -2,6 +2,19 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-27 — Merge main (M9e1–e3 crafting, M9f save/load) into M9s
+
+Kept both sides in MODLOG, DESIGN (main's M9f ✅ row and plan, then the M9s
+row and plan) and gameplay.md (main's M9e findings, then the M9s sections).
+One semantic conflict: `sn-session` crafting builds `Item` literals without
+M9s2's `state`; it now uses `ItemState::default()` (crafted-item survival
+state is M9s11's `initial_state`; save of item state is M9s10). M9s row now
+says M9f is done. Verification: `cargo test --workspace` (804 passed, 0
+failed, 72 ignored; out/m9s6-merge-workspace.log), clippy `-D warnings` and
+`cargo fmt --all -- --check` clean; with SUBNAUTICA_DIR the six opt-in
+`*_rules_are_read` survival tests pass. Other main install tests: **not
+re-run** after the merge.
+
 ## 2026-10-27 — M9s6: knife harvest, cabinets, supply crates and stored loot, headless
 
 **What/why:** sixth step of M9s. `sn_sim::survival::world`: `ToolUseGate`
@@ -294,6 +307,311 @@ git status --short (expect no entries after commit/merge). Runtime gameplay,
 prefab census, proposed CLI scenarios and cargo test --workspace are
 **not tested**: this is research + plan only, no Rust code changed. The
 proposed CLI commands are labelled not implemented in DESIGN.
+## 2026-10-27 — M9e3: fabricator close cycle resolved; M9e3 done
+
+**What/why:** resolved the checkpoint's blocking pose check (STATUS.md,
+now deleted). **Root cause:** the controller's default `closed` state
+plays `fabricator_closed`, a 0.033 s non-looping clip with 26 streamed
+(non-constant) curves. The test took its "initial closed" reference after
+one 1/60 s update, i.e. normalized time 0.5, mid-way between the clip's
+keys; after the cycle the state is clamped at the clip's end (normalized
+50). A diagnostic (not kept) printed per-slot values: the differences were
+on six slots (two positions ~4e-4, four rotations up to 0.0319, two of
+them sign-flipped), and a fresh animator left in `closed` for 120 frames
+matched the post-cycle pose on every slot. So our playback was right
+and so was 240 frames (closing ends around 2.45 s); Unity also holds a
+non-looping clip's last frame. No playback change. The test now takes
+its reference after two updates and asserts the state is `closed` at
+normalized time ≥ 1, and that after closing it is `closed` with no
+transition pending. Tolerance unchanged (1e-4). animation.md updated.
+
+**Verified:** `$env:SUBNAUTICA_DIR='D:\SteamLibrary\steamapps\common\Subnautica';
+cargo test -p sn-assets fabricator_world -- --ignored --nocapture`: pass,
+pose change 0.7423693, closed residual 0, end normalized 50.000004,
+ghosts 90/90, 24 slots, 8 palette bones. Release client, each with a fresh
+`--save-dir` in system temp (since M9f a solo client loads a slot, and the
+default slot refuses `--test-supply` once it has been played):
+- `sn-client --save-dir %TEMP%\sn-m9e3-b --view 400 --resolution 960 540
+  --test-supply ScrapMetal --use-item 3 --panel 6=take-all,7=close
+  --craft 8=open,9=Titanium --shot 14 m9e3-done-solo`: exit 0, 0
+  WARN/ERROR; hand "Use fabricator"; open at 0.8957 m (closeDistance 3);
+  preview attached to the animated itemSpawnPoint at event 10, two beams;
+  done, pickup at 0.8957 < 3; Titanium in the inventory, ghost removed at
+  event 12; power 75→70.
+- Same with `--shot 10.8 m9e3-done-during` (slot `sn-m9e3-a`): exit 0, 0
+  WARN/ERROR; screenshot `out/m9e3-done-during.png` shows the preview on
+  the tray with the plain beams and the 63 % reticle.
+- `sn-client --save-dir %TEMP%\sn-m9e3-c --view 400 --resolution 960 540
+  --craft 3=open --hold-back 6 --shot 12 m9e3-done-close`: exit 0, 0
+  WARN/ERROR; open at 2.0634 m, close at 3.2251 m against 3; animator
+  parameter open true→false.
+- `CARGO_BUILD_JOBS=2 cargo test --workspace` (game unset): 756 passed,
+  0 failed, 66 ignored; clippy `-D warnings` and `fmt --check` pass.
+
+**Note:** `%LOCALAPPDATA%/subnautica-rs/saves/default` already existed
+(created 21:26, before this session's runs); left untouched.
+**Not tested:** original-game visual parity of the animation and effects;
+the fabrication shader, particles and light (plain fallbacks, logged).
+
+## 2026-10-27 — M9e3 checkpoint: world fabricator, animation check unresolved
+
+**What/why:** reviewed the inherited uncommitted M9e3 changes and kept the
+runtime fabricator discovery, hand colliders/text/progress, strict server
+range, animator parameters and preview. Moved range/lid/beam rules into
+sn-sim with synthetic boundary tests. Corrected preview loading to copy
+only the activated model subtree and reset its root before VFX offsets.
+Automatic completion pickup is owner-only (our multiplayer policy); an
+explicit take still lets another player collect. Beams/sparks use logged
+plain geometry and ordinary ghost materials, not the unported FX_BUILDING,
+particle simulation or fabrication light. Inspector reports ghost coverage.
+No dependencies or whitelist changes.
+
+**Animation finding:** the initial client runs had no bound fabricator
+animator. The prefab is another optimized generic avatar: 11 skeleton
+nodes, empty serialized renderer bones. Scoped reuse of the existing
+key-terminal avatar restoration yields 120/120 bindings rather than 0/120,
+and restores the skin palette. Added an exposed spawn-point anchor and
+preview parenting. Synthetic avatar nodes return no serialized components.
+Facts and limits are in gameplay.md/animation.md. DESIGN keeps M9e3 open;
+README labels this a checkpoint. M9e4 and M9e5 were not started.
+
+**Stopped under AGENTS.md:** two attempts at the new ignored close-cycle
+check both failed. Open for 180 frames at 60 Hz: maximum scalar pose
+change 0.7428153. Close for 240 frames: raw residual 1.4142408; accounting
+for equivalent quaternion signs leaves 0.031879187 (required <1e-4).
+The remaining channel is unidentified. Clip time sampling or a retained
+curve/default is a hypothesis, not a finding. STATUS.md records the exact
+reproducer and next investigation. The ignored failing assertion is kept;
+M9e3 is **not done**.
+
+**Verified before avatar restoration** (release, installed-game environment,
+logs/screenshots `out/m9e3-solo.*`, `out/m9e3-close.*`):
+- `target/release/sn-client.exe --view 400 --resolution 960 540
+  --test-supply ScrapMetal --use-item 3 --panel 6=take-all,7=close
+  --craft 8=open,9=Titanium --shot 14 m9e3-solo`: exit 0, zero WARN/ERROR;
+  localized hand text; open at 0.8086 m; ghost drawn (one entity) at event
+  10, removed at 12; automatic pickup at 2.8 s, four Titanium, power 75→70;
+  two beams and six plain sparks per beam after one second.
+- `target/release/sn-client.exe --view 400 --resolution 960 540
+  --craft 3=open --hold-back 6 --shot 12 m9e3-close`: exit 0, zero
+  WARN/ERROR; logical open at 2.0634 m, close at 3.0057 m, stored limit 3.
+- `cargo test --workspace`: 752 passed, 65 ignored; Clippy with warnings
+  denied and formatting check passed at that point.
+- `$env:SUBNAUTICA_DIR='D:\SteamLibrary\steamapps\common\Subnautica'`;
+  `target/release/sn-inspect.exe craft`: RUN OK, 100 tree/87 craft nodes,
+  90/90 output classes, 88 VFX models, two without ghosts, two inactive
+  roots; `fabricator_world` read-only install test passed before it gained
+  the failing animation cycle check.
+
+**Final-code reproduction:** with that environment,
+`cargo test -p sn-assets fabricator_world -- --ignored --nocapture`
+**fails** at the close residual as above. `cargo run -p sn-inspect -- anim
+Submarine/Build/Fabricator.prefab --states` resolves 120 bindings, zero
+missing. Original-game screen comparison, crafting menu, unlock popups,
+two-player crafting, accurate fabrication effects and Linux/macOS are
+**not tested**.
+
+**Other dead ends:** inverse preview placement rejected a real non-uniform
+transform; replaced with subtree rebasing. Restored virtual nodes initially
+triggered a nonexistent serialized-file lookup; component enumeration now
+skips them (as existing atmosphere enumeration does). A relative executable
+path in Python failed; absolute launch works. The inspector needs its
+catalog key, not the displayed Assets/AddressableResources prefix. A
+concurrent workspace compilation ended in rustc STATUS_STACK_BUFFER_OVERRUN;
+the final check retry limits this invocation to two build jobs.
+
+**Final standard checks:** `CARGO_BUILD_JOBS=2 cargo test --workspace`
+(environment supplied to the process, game environment unset): 752 passed,
+0 failed, 65 ignored. `cargo clippy --workspace --all-targets -- -D warnings`
+and `cargo fmt --all -- --check`: pass. The opt-in real-data close-cycle
+failure remains separate and is not concealed by the default test result.
+
+**Final client/build check:** `cargo build --release -p sn-client -p
+sn-inspect` passes. Repeated the solo/walk-away commands above with
+screenshot names `m9e3-solo-final` and `m9e3-close-final`: both exit 0,
+zero WARN/ERROR. Solo open distance 0.8826 m; one animator bound with the
+open/fabricating transitions logged; preview attached to animated spawn
+point, drawn/removed at events 10/12; craft ticks 652→792 (2.8 s), power
+75→70. Walk-away open at 2.0634 m, close at 3.0754 m (limit 3); the bound
+animator's open parameter changes true→false. This proves the wiring, not
+the unresolved pose equivalence check. Craft-in-progress screenshot run:
+same solo flags with `--shot 10.8 m9e3-during-final`: exit 0, zero
+WARN/ERROR; one preview entity attached and two plain beams/twelve sparks
+logged before capture. Final status contains only our Rust and Markdown;
+all generated output remains ignored.
+## 2026-10-27 — Merge main (M9e2 crafting) into M9f
+
+**What/why:** both branches had raised `PROTOCOL_VERSION` to 5 for
+different changes (crafting requests/events; vitals/restore messages), so
+the merged protocol is 6 (protocol.md history updated; its header still
+said 4). Conflicts were only the version comment and MODLOG; both sides
+kept. The fabricator (power, current job with owner/start/end ticks) is part
+of `ItemsState`'s encoding on main, so the save carries it with no extra
+code; job ticks stay valid because elapsed ticks are saved. Saves written
+with protocol 5 (only temp test saves so far) are refused by the version
+check, as designed (no migration).
+
+**Verified:** `cargo test --workspace`: 755 passed, 0 failed. `cargo
+clippy --workspace --all-targets -- -D warnings` clean; `cargo fmt --all
+--check` clean. Real restart run repeated on the merged code (`cargo test
+-p sn-server --test persistence -- --ignored --nocapture` with
+`SUBNAUTICA_DIR`): 1 passed; shutdown save 788 B at tick 399, item hash
+2c04ac9b6bc4c3f3, restart loaded tick 399 with the same hash, 0
+differences. Not tested: saving/restoring an in-progress fabricator job on
+the real install (only through the synthetic `ItemsState` round-trip, which
+compares the whole state including the fabricator).
+
+## 2026-10-27 — M9f4: real restart proof; M9f done
+
+**What/why:** `apps/sn-server/tests/persistence.rs` (`#[ignore]`, reads
+`SUBNAUTICA_DIR`, skips if unset): starts our dedicated server with a temp
+save slot, `--autosave 1 --run-for 8`, joins a scripted client, moves a
+locker item to the inventory, picks up 2 real 1×1 pickups near Lifepod 5,
+drops one, sends a pose and vitals, says bye; the server stops and saves;
+a second server on the same slot is joined and compared. Server logs go to
+`out/m9f/`. Fixes over the draft: wait for the drop's own event and settle
+before snapshotting (the first run compared a snapshot without the drop),
+pump after `Bye` and tolerate sends to the closed peer. README gains the
+saves paragraph (tested claims only).
+
+**Verified:** `SUBNAUTICA_DIR=D:\SteamLibrary\steamapps\common\Subnautica
+cargo test -p sn-server --test persistence -- --ignored --nocapture`:
+1 passed. Before stop: player 0, inventory 2, locker 5 (fresh 6), removed 2,
+dropped 1, item hash 0a729620226e89d3, pose [-197.33, -36.19, -10.21],
+health 78.25, oxygen 37.5. First server: shutdown save 783 B at tick 399,
+hash 0a729620226e89d3. Restart: "loaded … at tick 399; item hash
+0a729620226e89d3; locker 5, removed 2, dropped 1"; client gets player id 0,
+equal item state, Restore equal to the sent pose and vitals; 0 differences.
+The scripted pose jump logs one "implausible move" (expected; the check
+only logs). Workspace tests/clippy/fmt: see the merge entry. Not tested:
+Ctrl-C (only `--run-for` shutdown), saving from `sn-client` at runtime,
+the platform default folder (the run used a temp slot), Linux/macOS,
+power loss.
+
+## 2026-10-27 — M9f3: save slot I/O, autosave and shutdown
+
+**What/why:** `sn-server::saves` (app layer, shared by the dedicated server
+and the client's solo/host embedded server): platform save folder
+(`%LOCALAPPDATA%/subnautica-rs/saves/default` etc.), `--save-dir`,
+`--no-save`, `--load-backup`, `--autosave S` (default 30). Writes validate
+the new bytes and the existing primary, copy the primary to `world.sav.bak`,
+flush `world.sav.tmp`, then replace. A missing primary with a backup/temp
+present, corruption or an incompatible save refuses startup and keeps the
+files; recovery is explicit. An OS file lock (`server.lock`) stops two
+processes sharing a slot. Save paths inside the game install or under any
+folder named `out` are refused (conservative: the app does not know the
+repo root, so any `out` component counts). The dedicated server saves on
+autosave, `--run-for` and Ctrl-C; a failed autosave is logged and the
+server keeps running, a failed shutdown save is an error. The client
+applies the M9f2 Restore (pose, velocity, rotation, look, life, health,
+oxygen) and reports numeric vitals each tick; the embedded server saves on
+its interval and when the session drops. `--join` never saves.
+
+New dependency: `ctrlc` 3.5 in `sn-server` — orderly Ctrl-C shutdown so the
+final save is flushed. `sn-server` now declares `rust-version = "1.89"`
+(standard-library `File::try_lock`); the workspace toolchain is 1.96.
+`sn-client` depends on the `sn-server` library for the shared save code.
+Review fixes over the interrupted draft: `--autosave` f32/f64 compile error,
+a mojibake comment in `sn-client/Cargo.toml`, `sn_protocol::message` kept
+public (the draft made it private for no need).
+
+**Verified:** `cargo test --workspace` all pass, 0 fail (new
+`sn-server` temp-dir tests: restart from save, backup is the previous
+save, corrupt primary refused for load and write, explicit backup recovery
+preserves the backup, second lock on a slot refused, game-dir and `out/`
+paths refused, game dir never created). `cargo clippy --workspace
+--all-targets -- -D warnings` clean, `cargo fmt --all` run. No `std::fs`,
+`std::net`, Bevy or tokio in `sn-session`/`sn-protocol` (grep). Real
+install restart run: M9f4. Embedded (client) saving compiles but is not
+tested at runtime; Linux/macOS folders not tested.
+
+## 2026-10-27 — M9f2: pure save codec and reconnect state
+
+**What/why:** `sn-session::save`, bytes only: independent versioned header,
+protocol/build/rules/tick compatibility, bounded length and checksum;
+world settings/elapsed tick/random, stable names/ids, online and offline
+pose/vitals, complete existing item snapshot. Loading checks identity,
+ownership, allocation and container invariants and reports absolute offsets.
+Offline pose survives disconnect. Protocol 5 adds numeric vitals reports
+and reliable own-state restoration before world chunks/Ready; M9e is not a
+dependency. The client retains this restore for its app to apply (M9f3).
+No dependencies or ignore changes in the pure crates.
+
+**Verified:** `cargo test -p sn-session -p sn-protocol` (log
+`out/m9f2-tests.log`): 51 tests pass, 0 fail. New round-trip checks offline
+inventory, equipped tank, locker, unlocks, 2 removed keys, 1 drop, pose,
+health 61.25, oxygen 12.5, stable identity and elapsed tick. Every truncation
+and bit flip rejected, plus 10,000 random inputs, no panics; build/rules
+mismatch rejected. Initial compile found a test receiver's exhaustive match
+needed the new Restore variant; fixed. `cargo fmt --all` run.
+Further app integration, real-data run and full workspace checks not tested
+at this step; M9f3/M9f4 follow. Verification: repeat the command above;
+expect all tests pass. No assets in status.
+
+## 2026-10-27 — M9f1: save/load plan and state research
+
+**What/why:** wrote the M9f plan before implementation: pure versioned
+codec, stable player identities and pose/vitals, complete M9d item state,
+platform user folder, 30 s autosave, orderly shutdown, validated backup and
+explicit corruption refusal. Read the main checkout's decompile read-only
+as explicitly authorized; findings in `docs/formats/saves.md` are prose.
+No game format is read or written. Planned dependency: `ctrlc` for orderly
+console shutdown. No ignore changes. Crafted items use ordinary inventory.
+
+**Verified:** `git diff --check`; docs-only step, runtime not tested yet.
+`git status --short` lists only our documentation. Verification for the
+next step: `cargo test -p sn-session -p sn-protocol` (all synthetic tests pass).
+Initial Python console read failed on Windows cp1252 output; set
+PYTHONIOENCODING=utf-8; no files were modified by that failed read.
+
+## 2026-10-27 — M9e2: server-authoritative scripted crafting
+
+**What/why:** protocol 5 adds Craft/TakeCrafted requests, CraftStarted
+(start/end ticks), CraftDone and CraftedTaken item world events, and
+four refusal reasons. ItemsState holds one shared fabricator job and pod
+power, included in its snapshot and hash. The server schedules completion;
+only its events consume/produce items. Partial pickup retains the rest.
+`--craft SECONDS=TECH[,SECONDS=TECH]` (`take` collects) uses that path.
+All 87 runtime recipes and their output prefab facts join ItemRules and
+its fingerprint. Initial power is read from the spawned cells. Three
+new synthetic tests cover protocol round trips, shared busy state,
+snapshot/replay/collection and malformed snapshots; the real item-rules
+test checks all primary/linked output mappings. No dependencies/ignore
+changes.
+
+**Research/dead ends:** a direct scene scan and then direct root components
+both found zero fabricators/cells. Reading addressable prefab spawners
+(as the client does) found one fabricator and three active cell instances,
+each 25/25 power, regeneration threshold 25, interval 20, amount 1.
+`read_script` consumed every field. The first workspace run failed the
+old malformed-message test because tag 5/refusal 7 now mean valid values;
+its unknown-tag probes now use 255. Rerun passed. A relative executable
+path in Python failed to launch the client; the absolute path worked.
+
+**Verified** (PowerShell, game environment unset for workspace checks;
+set to the installed game for runtime checks; logs `out/m9e2-*.log`):
+- `cargo test --workspace`: 751 passed, 0 failed, 64 ignored.
+- `cargo clippy --workspace --all-targets -- -D warnings`: pass;
+  `cargo fmt --all`, `cargo fmt --all -- --check`: clean.
+- `cargo build --release -p sn-client -p sn-inspect`: pass.
+- `target/release/sn-client.exe --view 400 --resolution 960 540
+  --test-supply ScrapMetal --use-item 3 --panel 6=take-all,7=close
+  --craft 8=Titanium,12=take,14=Titanium --shot 17 m9e2-solo`:
+  inventory one Metal salvage → zero at event 10; Titanium zero → four
+  (#7–10) at event 12; start tick 560, end 700 = 140 × 0.02 = 2.8 s;
+  power 75 → 70. Second craft refused MissingIngredients; 0 WARN/ERROR.
+  Screenshot out/m9e2-solo.png is the ordinary pod view, not a menu.
+- `cargo test -p sn-assets item_rules_from_install -- --ignored
+  --nocapture`: 1 passed; 87 recipes, power 75; 240 pickup classes,
+  182 tech types, 0 unreadable candidates, all recipe output mappings valid.
+
+**Not tested:** crafted objects in the world/menu (M9e3–4), automatic
+pickup/range (currently explicit take, in_pod gate), two clients (M9e5),
+original-game screen comparison, Linux/macOS. **Not 1:1:** static pod
+energy reservoir, explicitly not the game's power simulation: no
+regeneration/repair/relay-connection timing. The server's in_pod gate
+must gain the fabricator's stored close distance in M9e3. No assets sent
+over the network or committed.
 
 ## 2026-10-27 — M9e1: fabricator rules, headless
 

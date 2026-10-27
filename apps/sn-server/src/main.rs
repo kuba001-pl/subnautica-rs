@@ -10,8 +10,15 @@ use std::time::{Duration, Instant};
 use sn_install::GameData;
 use sn_net::{Config, Endpoint, Transport, UdpTransport, random_seed};
 use sn_protocol::{AuroraStart, MAX_PLAYERS, WorldSettings};
-use sn_server::Host;
+use sn_server::{
+    Host,
+    saves::{AUTOSAVE_US, SaveStore, default_dir},
+};
 use sn_session::ServerConfig;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 
 const USAGE: &str = "\
 sn-server: a headless subnautica-rs multiplayer server (experimental)
@@ -19,6 +26,10 @@ sn-server: a headless subnautica-rs multiplayer server (experimental)
 Usage: sn-server [options]
 
   --game-dir     the Subnautica folder (default: the SUBNAUTICA_DIR variable)
+  --save-dir     our save slot directory (default: platform user data folder)
+  --no-save      ephemeral server; no persistence
+  --load-backup  explicitly recover world.sav.bak (primary retained until save)
+  --autosave     seconds between saves (default 30; positive)
   --bind         address to listen on (default 0.0.0.0)
   --port         UDP port (default 27420)
   --max-players  at most this many players (default 8, the most)
@@ -39,6 +50,10 @@ Usage: sn-server [options]
 
 struct Args {
     game_dir: Option<PathBuf>,
+    save_dir: Option<PathBuf>,
+    no_save: bool,
+    load_backup: bool,
+    autosave_s: f64,
     bind: String,
     port: u16,
     max_players: usize,
@@ -56,6 +71,10 @@ struct Args {
 fn parse_args() -> Result<Args, String> {
     let mut a = Args {
         game_dir: None,
+        save_dir: None,
+        no_save: false,
+        load_backup: false,
+        autosave_s: AUTOSAVE_US as f64 / 1e6,
         bind: "0.0.0.0".into(),
         port: 27420,
         max_players: MAX_PLAYERS,
@@ -77,6 +96,10 @@ fn parse_args() -> Result<Args, String> {
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "--game-dir" => a.game_dir = Some(value(it.next(), "--game-dir")?),
+            "--save-dir" => a.save_dir = Some(value(it.next(), "--save-dir")?),
+            "--no-save" => a.no_save = true,
+            "--load-backup" => a.load_backup = true,
+            "--autosave" => a.autosave_s = value(it.next(), "--autosave")?,
             "--bind" => a.bind = value(it.next(), "--bind")?,
             "--port" => a.port = value(it.next(), "--port")?,
             "--max-players" => a.max_players = value(it.next(), "--max-players")?,
@@ -101,6 +124,14 @@ fn parse_args() -> Result<Args, String> {
             "--help" | "-h" => return Err(USAGE.into()),
             other => return Err(format!("unknown option {other}; see --help")),
         }
+    }
+    if !a.autosave_s.is_finite()
+        || a.autosave_s <= 0.0
+        || (a.no_save && (a.save_dir.is_some() || a.load_backup))
+    {
+        return Err(
+            "--autosave must be finite and positive; --no-save conflicts with save options".into(),
+        );
     }
     if a.max_players == 0 || a.max_players > MAX_PLAYERS {
         return Err(format!("--max-players must be 1 to {MAX_PLAYERS}"));
@@ -193,7 +224,36 @@ fn run(args: Args) -> Result<(), String> {
     };
     let clock = Instant::now();
     let now = || clock.elapsed().as_micros() as u64;
-    let mut host = Host::new(endpoint, config, now());
+    let store = if args.no_save {
+        None
+    } else {
+        Some(SaveStore::open(
+            args.save_dir.clone().map_or_else(default_dir, Ok)?,
+            game.data_dir.parent().ok_or("game root missing")?,
+        )?)
+    };
+    let mut host = Host::new(endpoint, config.clone(), now());
+    if let Some(store) = &store {
+        host.server = store.load(config.clone(), now(), args.load_backup)?;
+        println!(
+            "save: loaded slot {} at tick {}; item hash {:016x}; locker {}, removed {}, dropped {}",
+            store.dir().display(),
+            host.server.clock(now()).0.0,
+            sn_protocol::Fnv64::new()
+                .bytes(&host.server.world().items.to_bytes())
+                .finish(),
+            host.server.world().items.locker.len(),
+            host.server.world().items.gone.len(),
+            host.server.world().items.objects.len()
+        );
+    }
+    let stop = Arc::new(AtomicBool::new(false));
+    let signal = stop.clone();
+    ctrlc::set_handler(move || signal.store(true, Ordering::SeqCst))
+        .map_err(|e| format!("Ctrl-C handler: {e}"))?;
+    let autosave_us = (args.autosave_s * 1e6) as u64;
+    let mut next_save = now().saturating_add(autosave_us);
+    let mut recovering = args.load_backup;
     println!(
         "listening on UDP {addr} (up to {} players{}); ready {:.1} s after start",
         args.max_players,
@@ -210,6 +270,20 @@ fn run(args: Args) -> Result<(), String> {
         let t = now();
         for line in host.step(t) {
             println!("[{:8.1} s] {line}", t as f64 / 1e6);
+        }
+        if t >= next_save {
+            if let Some(store) = &store {
+                // A failed autosave keeps the server running (and the files
+                // as they were); the shutdown save still reports its error.
+                match store.write(&host.server, &config, t, recovering) {
+                    Ok(line) => {
+                        println!("[{:8.1} s] {line}", t as f64 / 1e6);
+                        recovering = false;
+                    }
+                    Err(e) => eprintln!("[{:8.1} s] autosave failed: {e}", t as f64 / 1e6),
+                }
+            }
+            next_save = t.saturating_add(autosave_us);
         }
         passes.push(t0.elapsed().as_micros() as u64);
         if t >= next_report {
@@ -237,8 +311,20 @@ fn run(args: Args) -> Result<(), String> {
             }
             passes.clear();
         }
-        if args.run_for.is_some_and(|s| t as f64 / 1e6 >= s) {
-            println!("[{:8.1} s] --run-for reached; stopping", t as f64 / 1e6);
+        if stop.load(Ordering::SeqCst) || args.run_for.is_some_and(|s| t as f64 / 1e6 >= s) {
+            if let Some(store) = &store {
+                println!(
+                    "[{:8.1} s] shutdown {}",
+                    t as f64 / 1e6,
+                    store.write(&host.server, &config, t, recovering)?
+                );
+            }
+            let why = if stop.load(Ordering::SeqCst) {
+                "Ctrl-C"
+            } else {
+                "--run-for reached"
+            };
+            println!("[{:8.1} s] {why}; stopping", t as f64 / 1e6);
             return Ok(());
         }
         std::thread::sleep(Duration::from_millis(1));

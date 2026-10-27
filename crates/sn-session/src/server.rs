@@ -22,6 +22,9 @@ use crate::world::{ApplyError, WorldState};
 use crate::{Channel, ConnId, PING_KEY};
 
 /// A connection that has not said `Hello` within this long is closed.
+#[path = "save.rs"]
+pub mod save;
+
 pub const HELLO_TIMEOUT_US: u64 = 5_000_000;
 /// A rejected connection is closed this long after its `Reject`, so the
 /// answer gets through first.
@@ -164,6 +167,9 @@ pub struct Server {
     stats: ServerStats,
     /// The server's own random (SplitMix64) for the luck draws.
     random: u64,
+    saved_states: BTreeMap<PlayerId, PlayerState>,
+    vitals: BTreeMap<PlayerId, sn_protocol::PlayerVitals>,
+    base_tick: u32,
 }
 
 /// The server's random: SplitMix64, as a `Random.value` in [0, 1).
@@ -199,6 +205,9 @@ impl Server {
             notices: Vec::new(),
             stats: ServerStats::default(),
             random,
+            saved_states: BTreeMap::new(),
+            vitals: BTreeMap::new(),
+            base_tick: 0,
         }
     }
 
@@ -208,7 +217,7 @@ impl Server {
     /// Returns whether each went in. Refused once a player is in or the
     /// world has no lifepod.
     pub fn add_test_supplies(&mut self, techs: &[i32]) -> Result<Vec<bool>, String> {
-        if !self.conns.is_empty() || self.world.events != 0 {
+        if !self.conns.is_empty() || self.world.events != 0 || !self.ids.is_empty() {
             return Err("test supplies only go into a new world before anyone joins".into());
         }
         if self.world.settings.lifepod.is_none() {
@@ -235,7 +244,7 @@ impl Server {
     /// 1/65,536.
     pub fn clock(&self, now_us: u64) -> (Tick, u16) {
         let t = now_us.saturating_sub(self.start_us);
-        let tick = t / self.config.tick_us;
+        let tick = u64::from(self.base_tick) + t / self.config.tick_us;
         let fraction = (t % self.config.tick_us) * 65_536 / self.config.tick_us;
         (Tick(tick.min(u64::from(u32::MAX)) as u32), fraction as u16)
     }
@@ -316,8 +325,11 @@ impl Server {
     }
 
     fn leave(&mut self, player: PlayerId, reason: LeaveReason, now_us: u64) {
-        if self.players.remove(&player).is_none() {
+        let Some(joined) = self.players.remove(&player) else {
             return;
+        };
+        if let Some(state) = joined.state {
+            self.saved_states.insert(player, state);
         }
         self.stats.leaves += 1;
         self.notices.push(Notice::Left { player, reason });
@@ -327,6 +339,20 @@ impl Server {
 
     /// Hello timeouts and closing rejected connections.
     pub fn update(&mut self, now_us: u64) {
+        let tick = self.clock(now_us).0;
+        if let Some(job) = self.world.items.fabricator.job.as_ref() {
+            if !job.done && tick.0 >= job.end {
+                let player = job.owner;
+                self.emit(
+                    tick,
+                    WorldEventKind::Item {
+                        player,
+                        req: u32::MAX,
+                        event: ItemEvent::CraftDone { crafter: 0 },
+                    },
+                );
+            }
+        }
         let mut close = Vec::new();
         for (&conn, stage) in &self.conns {
             match *stage {
@@ -402,6 +428,11 @@ impl Server {
                         fraction,
                     },
                 );
+            }
+            ClientMessage::Vitals(v) => {
+                if self.world.players.get(&player).is_some_and(|p| p.ready) {
+                    self.vitals.insert(player, v);
+                }
             }
             ClientMessage::States(states) => self.states(conn, player, states, now_us),
             ClientMessage::Event(e) => self.player_event(conn, player, e),
@@ -526,6 +557,14 @@ impl Server {
                 next_seq: self.world.events,
                 settings: self.config.settings,
                 players,
+            },
+        );
+        self.send(
+            conn,
+            Channel::Reliable,
+            ServerMessage::Restore {
+                state: self.saved_states.get(&player).copied(),
+                vitals: self.vitals.get(&player).copied(),
             },
         );
         // The items after the same events, in chunks (at least one).
@@ -660,7 +699,46 @@ impl Server {
             .and_then(|j| j.state)
             .is_some_and(|s| s.in_pod);
         let items = &self.world.items;
+        let craft_in_range = self
+            .world
+            .settings
+            .lifepod
+            .zip(self.players.get(&player).and_then(|p| p.state))
+            .is_some_and(|(pod, state)| {
+                let r = items.rules();
+                sn_sim::craft::in_range(
+                    state.position,
+                    [0, 1, 2].map(|i| pod[i] + r.fabricator_offset[i]),
+                    r.fabricator_close_distance,
+                )
+            });
         let event = match q {
+            Request::Craft { crafter, tech } => {
+                if crafter != 0 || !in_pod || !craft_in_range {
+                    return self.refuse(conn, player, req, RefuseReason::NotHere);
+                }
+                let Some(recipe) = items.rules().recipes.get(&tech) else {
+                    return self.refuse(conn, player, req, RefuseReason::Unknown);
+                };
+                let start_tick = self.clock(now_us).0.0;
+                let ticks =
+                    (f64::from(recipe.duration()) * 1e6 / self.config.tick_us as f64).ceil() as u32;
+                let Some(end_tick) = start_tick.checked_add(ticks) else {
+                    return self.refuse(conn, player, req, RefuseReason::NotAllowed);
+                };
+                ItemEvent::CraftStarted {
+                    crafter,
+                    tech,
+                    start_tick,
+                    end_tick,
+                }
+            }
+            Request::TakeCrafted { crafter } => {
+                if crafter != 0 || !in_pod || !craft_in_range {
+                    return self.refuse(conn, player, req, RefuseReason::NotHere);
+                }
+                ItemEvent::CraftedTaken { crafter }
+            }
             Request::PickUp { key, class } => {
                 let class = match &key {
                     EntityKey::Spawned(id) => match items.objects.get(id) {

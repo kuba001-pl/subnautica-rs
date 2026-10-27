@@ -1153,6 +1153,47 @@ the local ILSpy decompile (2026-10-27; not ields.py):
 **Hypothesis:** exact Unity frame/coroutine scheduling at completion;
 comparison with the original running game is **not tested**.
 
+**Confirmed (M9e3, read-only ILSpy source research):** `GhostCrafter`'s
+range is measured from the player root, with a strict less-than comparison.
+Closing with any pending output preserves the open lid. `Fabricator` drives
+the stored animator's open and fabricating parameters. Its two beams intersect
+the plane through itemSpawnPoint normal to its up vector, after a one-second
+delay; the plane's world Y is capped at the beam origin's Y. Sparks sit at
+those intersections. `CrafterGhostModel` copies the selected model subtree,
+activates its root, resets its transform, then applies the VFX offsets and
+scale. This is a subtree copy, not an inverse of the original prefab root;
+non-uniform prefab transforms need no inverse. Confirmed by reading
+GhostCrafter, Fabricator and CrafterGhostModel directly, not fields.py.
+
+**Implementation (M9e3):** preview uses the runtime model subtree and ordinary
+materials. Beams and sparks use explicitly logged plain geometry at the
+runtime beam origins/intersections. FX_BUILDING, particle simulation and the
+fabrication light remain unported. These are visible fallbacks, not a claim
+of original-game effect fidelity. Automatic completion pickup is attempted
+only by the job owner; other players can explicitly collect finished output.
+That ownership policy is ours, since the original game is single-player.
+
+**Confirmed (M9e3 runtime reads):** `sn-inspect craft` and the ignored
+`fabricator_world` test resolve all 90 distinct recipe output classes:
+88 VFXFabricating models, no Constructable models, two with neither
+(the game's no-ghost case), and two ghost roots stored inactive. The
+copied roots are activated explicitly. All placements and beam transforms
+are finite; the serialized close distance is 3 m. Logs are in out/m9e3-*.
+
+**Confirmed by runtime reads (M9e2 research):** the escapepod's prefab
+spawners instantiate one Fabricator and three RegenPowerCell objects.
+Each cell's PowerSource stores power/maxPower 25/25; each
+RegeneratePowerSource stores threshold 25, interval 20 s, amount 1.
+The fabricated machine stores closeDistance 3, handOverText UseFabricator,
+pickupOutOfRange false. Read with the Rust assembly-derived ScriptLayout
+and read_script, all fields consumed; diagnostic logs in
+out/m9e2-pod-active.log. These scripts are on addressable spawns, so
+Scene.behaviours and the direct roots alone report zero of them.
+
+**Implementation limitation (M9e2):** initial pod power is read from those
+sources and summed. Regeneration/relay connection timing and repair are
+not yet simulated; this static reservoir is **not the game's power
+simulation**. Full source/relay behavior remains unimplemented.
 ## Survival: drain, eating, first aid and HUD (M9s research, 2026-10-27)
 
 The research sections describe source rules; the dated implementation sections

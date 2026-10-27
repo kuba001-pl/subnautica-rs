@@ -65,6 +65,10 @@ Usage: sn-client [--game-dir <PATH>] [--start <X> <Y> <Z>] [--look <X> <Y> <Z>]
                  [--view <METRES>] [--debug-colours]
                  [--benchmark <FRAMES> | --flythrough <X> <Y> <Z> [--speed <M/S>]]
 
+  --save-dir     our server save slot (default: platform user data folder)
+  --no-save      ephemeral solo/host session (use for scripted fresh runs)
+  --load-backup  explicitly recover the slot's backup
+  --autosave     seconds between solo/host saves (default 30)
   --game-dir     folder containing Subnautica.exe (or set SUBNAUTICA_DIR)
   --start        camera start, Unity world coordinates (default: where the
                  player starts, in Lifepod 5; 0 -10 0 with --no-scenes)
@@ -161,6 +165,10 @@ Usage: sn-client [--game-dir <PATH>] [--start <X> <Y> <Z>] [--look <X> <Y> <Z>]
                  check that the player moves)
   --hold-back    --hold-back <SECONDS>: from then on, hold S (M9u8a3: walk
                  away from the locker with the PDA open)
+  --craft        --craft SECONDS=TECH[,SECONDS=TECH…]; TECH=take collects
+                 finished output, TECH=open turns to the fabricator and
+                 clicks it with the hand (debug hook, server checks the
+                 request)
   --test-supply  --test-supply <TECH>[,<TECH>…]: a debug aid for a solo or
                  host run: one item of each tech type (by its name in the
                  game's code, e.g. Compass) put into the new world's
@@ -206,6 +214,10 @@ to move, Q/E down/up, Shift to go fast, mouse wheel to change speed.
 
 struct Args {
     game_dir: Option<PathBuf>,
+    save_dir: Option<PathBuf>,
+    no_save: bool,
+    load_backup: bool,
+    autosave_s: f64,
     start: Vec3,
     /// `--start` given (else the player's spawn in the lifepod).
     start_given: bool,
@@ -272,6 +284,7 @@ struct Args {
     hold_back: Option<f32>,
     /// `--test-supply`: tech type names put into a new world's locker.
     test_supply: Vec<String>,
+    craft: Vec<(f64, String)>,
     /// `--turn`: the player's look turns at this many degrees a second.
     turn: Option<f32>,
     /// `--kill`: seconds of play before the player dies.
@@ -302,6 +315,10 @@ fn parse_args() -> Result<Args, String> {
 fn parse_args_from(raw: &[String]) -> Result<Args, String> {
     let mut args = Args {
         game_dir: None,
+        save_dir: None,
+        no_save: false,
+        load_backup: false,
+        autosave_s: 30.0,
         start: Vec3::new(0.0, -10.0, 0.0),
         start_given: false,
         lifepod_seed: 1,
@@ -351,6 +368,7 @@ fn parse_args_from(raw: &[String]) -> Result<Args, String> {
         hold_forward: None,
         hold_back: None,
         test_supply: Vec::new(),
+        craft: Vec::new(),
         turn: None,
         kill: None,
         pick_up: None,
@@ -440,6 +458,14 @@ fn parse_args_from(raw: &[String]) -> Result<Args, String> {
                 let seed = it.next().and_then(|v| v.parse().ok());
                 args.slot_seed = Some(seed.ok_or("--slot-seed needs a whole number")?);
             }
+            "--save-dir" => {
+                args.save_dir = Some(PathBuf::from(
+                    it.next().ok_or("--save-dir needs a directory")?,
+                ))
+            }
+            "--no-save" => args.no_save = true,
+            "--load-backup" => args.load_backup = true,
+            "--autosave" => args.autosave_s = f64::from(number(it.next(), "--autosave")?),
             "--no-slots" => args.slot_seed = None,
             "--no-placeholders" => args.no_placeholders = true,
             "--no-grass" => args.no_grass = true,
@@ -522,6 +548,22 @@ fn parse_args_from(raw: &[String]) -> Result<Args, String> {
             }
             "--hatch-name" => {
                 args.hatch_name = Some(it.next().ok_or("--hatch-name takes a name")?.clone());
+            }
+            "--craft" => {
+                let list = it.next().ok_or(
+                    "--craft takes SECONDS=TECH[,SECONDS=TECH]; TECH=take collects the result",
+                )?;
+                for entry in list.split(',') {
+                    let (at, name) = entry
+                        .split_once('=')
+                        .ok_or("--craft requires SECONDS=TECH")?;
+                    let at: f64 = at.parse().map_err(|_| "invalid --craft time")?;
+                    if !at.is_finite() || at < 0.0 {
+                        return Err("invalid --craft time".into());
+                    }
+                    args.craft.push((at, name.to_owned()));
+                }
+                args.craft.sort_by(|a, b| a.0.total_cmp(&b.0));
             }
             "--test-supply" => {
                 let list = it.next().ok_or("--test-supply takes TECH[,TECH…]")?;
@@ -842,12 +884,37 @@ fn start_session(args: &Args, lifepod: bool) -> Result<Started, String> {
         max_speed: rules.max_speed,
         rules: rules.items.clone(),
     };
+    if !args.autosave_s.is_finite()
+        || args.autosave_s <= 0.0
+        || (args.no_save && (args.save_dir.is_some() || args.load_backup))
+    {
+        return Err(
+            "--autosave must be finite and positive; --no-save conflicts with save options".into(),
+        );
+    }
+    let save = if joining || args.no_save {
+        None
+    } else {
+        let dir = args
+            .save_dir
+            .clone()
+            .map_or_else(sn_server::saves::default_dir, Ok)?;
+        Some((
+            sn_server::saves::SaveStore::open(
+                dir,
+                game.data_dir.parent().ok_or("game root missing")?,
+            )?,
+            args.load_backup,
+            (args.autosave_s * 1e6) as u64,
+        ))
+    };
     let mut session = session::Session::start(
         config,
         &args.mode,
         &args.name,
         args.net_sim,
         if joining { &[] } else { &test_supplies },
+        save,
     )?;
     session.log_every = args.log_ticks;
     let pod = match session.settings().lifepod {
@@ -1265,12 +1332,23 @@ fn main() -> AppExit {
                     .insert_resource(items::ItemsView::new(
                         args.pick_up.map(f64::from),
                         args.drop.map(f64::from),
+                        args.craft.clone(),
                     ))
                     .add_systems(
                         Update,
                         items::sync
                             .after(player::update)
                             .before(objects::stream_objects),
+                    )
+                    .add_systems(
+                        Update,
+                        items::fabricator_animation
+                            .after(items::sync)
+                            .before(animation::animate),
+                    )
+                    .add_systems(
+                        Update,
+                        items::attach_fabricator_preview.after(objects::stream_objects),
                     );
                 if let Some((seconds, name)) = args.shot.clone() {
                     app.insert_resource(PlayShot {

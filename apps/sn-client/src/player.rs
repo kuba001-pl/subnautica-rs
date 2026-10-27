@@ -101,6 +101,10 @@ pub struct HandHover {
     pub button: bool,
     /// `SetIcon`'s icon; `None`: not called.
     pub icon: Option<sn_ui::reticle::IconType>,
+    /// `SetIcon`'s size (`None`: the default 1).
+    pub icon_scale: Option<f32>,
+    /// `SetProgress` (0 when not called: the reticle resets it each frame).
+    pub progress: f32,
 }
 use crate::session::Session;
 
@@ -123,6 +127,7 @@ struct TriggerInfo {
 
 /// What the worker found at start.
 struct Init {
+    fabricator: Option<sn_assets::PodFabricator>,
     params: PlayerParams,
     vitals: VitalsParams,
     look: LookParams,
@@ -212,6 +217,9 @@ struct HatchPlay {
 
 #[derive(Resource)]
 pub struct PlayerSim {
+    pub fabricator: Option<sn_assets::PodFabricator>,
+    pub fabricator_opened: u32,
+    pub use_fabricator: bool,
     to_worker: Sender<ToWorker>,
     from_worker: Mutex<Receiver<FromWorker>>,
     world: World,
@@ -441,6 +449,9 @@ impl PlayerSim {
             })
             .expect("spawn the collision thread");
         PlayerSim {
+            fabricator: None,
+            fabricator_opened: 0,
+            use_fabricator: false,
             to_worker,
             from_worker: Mutex::new(from_worker),
             world: World::new(),
@@ -480,6 +491,37 @@ impl PlayerSim {
             drop_draws: sn_session::drops::Draws(sn_net::random_seed()),
         }
     }
+}
+
+/// The pod's fabricator with the ghosts of every recipe's outputs (M9e3).
+fn pod_fabricator(
+    game: &GameData,
+    assets: &sn_assets::Assets,
+    point: [f32; 3],
+    start: &Start,
+) -> Result<sn_assets::PodFabricator, String> {
+    let mut f = sn_assets::pod_fabricator(game, assets, point)?;
+    if let Some(rules) = &start.items {
+        let mut classes: Vec<String> = rules
+            .recipes
+            .values()
+            .flat_map(|r| std::iter::once(r.tech).chain(r.linked.iter().copied()))
+            .filter_map(|t| rules.tech_class.get(&t).cloned())
+            .collect();
+        classes.sort();
+        classes.dedup();
+        f.ghosts = sn_assets::fabricator_ghosts(game, assets, &classes)?;
+        info!(
+            "player: fabricator at {:?}, itemSpawnPoint {:?}, closeDistance {}, hand text key {:?}, {} output ghosts read ({} without a ghost)",
+            f.at.position,
+            f.item_spawn.position,
+            f.close_distance,
+            f.hand_text,
+            f.ghosts.len(),
+            f.ghosts.values().filter(|g| g.is_none()).count()
+        );
+    }
+    Ok(f)
 }
 
 fn worker(
@@ -553,6 +595,7 @@ fn worker(
                 (start.position, 0.0)
             };
             Init {
+                fabricator: Some(pod_fabricator(game, loader.assets(), point, &start)?),
                 params: params.clone(),
                 vitals: vitals.clone(),
                 look,
@@ -583,6 +626,7 @@ fn worker(
             }
         }
         None => Init {
+            fabricator: None,
             params: params.clone(),
             vitals: vitals.clone(),
             look,
@@ -1031,6 +1075,7 @@ pub fn update(
                     init.locker_bodies.len()
                 );
                 sim.locker_at = init.locker_at;
+                sim.fabricator = init.fabricator;
                 sim.storage_pivot = init.storage_pivot;
                 info!(
                     "player: lifepod locker node at {:?}, collider bounds {:?}; player spawn {:?}",
@@ -1132,6 +1177,53 @@ pub fn update(
     let Some(state) = sim.state.as_mut() else {
         return;
     };
+
+    if let Some((pose, vitals)) = session.take_restore() {
+        if let Some(p) = pose {
+            let to = V3::new(
+                f64::from(p.position[0]),
+                f64::from(p.position[1]),
+                f64::from(p.position[2]),
+            );
+            state.player.teleport(&state.params, to, Some(p.in_pod));
+            state.player.velocity = V3::new(
+                f64::from(p.velocity[0]) / 100.0,
+                f64::from(p.velocity[1]) / 100.0,
+                f64::from(p.velocity[2]) / 100.0,
+            );
+            if let Some(q) = p.rotation {
+                state.player.rotation = Q {
+                    x: f64::from(q[0]) / 32767.0,
+                    y: f64::from(q[1]) / 32767.0,
+                    z: f64::from(q[2]) / 32767.0,
+                    w: f64::from(q[3]) / 32767.0,
+                };
+            }
+            state.look = Look::facing(f64::from(p.yaw) * 360.0 / 65536.0);
+            state.look.rotation_y = f64::from(p.pitch) / quant::PITCH_SCALE;
+            state.vitals.life = match p.life {
+                Life::Alive => sn_sim::vitals::Life::Alive,
+                Life::Dead => sn_sim::vitals::Life::Dead {
+                    at: state.vitals.time,
+                },
+                Life::Respawning => sn_sim::vitals::Life::Respawning {
+                    at: state.vitals.time,
+                },
+                Life::Restored => sn_sim::vitals::Life::Restored {
+                    at: state.vitals.time,
+                },
+            };
+            info!(
+                "save: restored pose {:?}, look ({}, {}), life {:?}",
+                p.position, state.look.rotation_x, state.look.rotation_y, p.life
+            );
+        }
+        if let Some(v) = vitals {
+            state.vitals.health = v.health;
+            state.vitals.oxygen = v.oxygen;
+            info!("save: restored health {}, oxygen {}", v.health, v.oxygen);
+        }
+    }
 
     // Mouse capture and look.
     let mut captured = false;
@@ -1362,6 +1454,22 @@ pub fn update(
         }
     }
     let auto_strafe = auto_walk && play < sim.auto_strafe_until;
+    if sim.use_fabricator && controls {
+        sim.use_fabricator = false;
+        if let Some(f) = &sim.fabricator {
+            let eye = camera_of(state).0;
+            let d = V3::from_f32(f.at.position) - eye;
+            state.look = Look {
+                rotation_x: d.x.atan2(d.z).to_degrees(),
+                rotation_y: d
+                    .y
+                    .atan2((d.x * d.x + d.z * d.z).sqrt())
+                    .to_degrees()
+                    .clamp(state.look_params.minimum_y, state.look_params.maximum_y),
+            };
+            auto_use = true;
+        }
+    }
     let (yaw, pitch) = (state.look.yaw(), state.look.pitch());
 
     // The hand (M9b: the lifepod's hatches; M9d5: items and the locker):
@@ -1376,6 +1484,58 @@ pub fn update(
             b.camera(p, pose, None).position
         });
         hand_target(&sim.world, eye, yaw, pitch)
+    } else {
+        None
+    };
+    let fabricator_hover = sim.fabricator.as_ref().is_some_and(|f| {
+        if !sim.ready || !controls || state.hatch.is_some() || panel_open {
+            return false;
+        }
+        let eye = camera_of(state).0;
+        hand_target(&f.hand_world, eye, yaw, pitch)
+            .is_some_and(|(d, _)| hover.is_none_or(|(nearest, _)| d <= nearest + 0.001))
+    });
+    let fabricator_aim = if fabricator_hover {
+        // Outside `with_items`: both take the session's lock.
+        let tick = session.server_tick();
+        sim.fabricator
+            .as_ref()
+            .zip(item_text.as_ref())
+            .and_then(|(f, t)| {
+                session.with_items(|items, _| {
+                    // GhostCrafter.OnHandHover: crafting, the recipe and its
+                    // progress; done, the output held; else the hand text.
+                    let job = items.fabricator.job.as_ref();
+                    let busy = job.filter(|j| !j.done);
+                    let held = job.filter(|j| j.done).and_then(|j| j.output.current());
+                    let progress = busy.map_or(0.0, |j| {
+                        ((tick - f64::from(j.start)) / f64::from(j.end - j.start).max(1.0))
+                            .clamp(0.0, 1.0) as f32
+                    });
+                    HandHover {
+                        text: match (busy, held) {
+                            (Some(j), _) => t.0.tech(j.output.recipe.tech),
+                            (None, Some(tech)) => t.0.tech(tech),
+                            _ => t.0.get(&f.hand_text).to_owned(),
+                        },
+                        subscript: if job.is_none()
+                            && items.fabricator.power < sn_sim::craft::ENERGY
+                        {
+                            t.0.get("unpowered").to_owned()
+                        } else {
+                            String::new()
+                        },
+                        button: true,
+                        icon: Some(if busy.is_some() {
+                            sn_ui::reticle::IconType::Progress
+                        } else {
+                            sn_ui::reticle::IconType::Hand
+                        }),
+                        icon_scale: busy.map(|_| 1.5),
+                        progress,
+                    }
+                })
+            })
     } else {
         None
     };
@@ -1415,19 +1575,23 @@ pub fn update(
                     subscript: String::new(),
                     button: true,
                     icon: Some(sn_ui::reticle::IconType::Hand),
+                    ..HandHover::default()
                 })
         }
         _ => None,
     };
     // This frame's `ErrorMessage` calls (M9u7b).
     let (mut messages_early, mut messages_late) = (Vec::new(), Vec::new());
-    hud.hand = item_aim
-        .as_ref()
-        .map(|a| HandHover {
-            text: a.text.clone(),
-            subscript: a.subscript.clone(),
-            button: a.button,
-            icon: a.icon,
+    // The fabricator only hovers when it is the nearest hit.
+    hud.hand = fabricator_aim
+        .or_else(|| {
+            item_aim.as_ref().map(|a| HandHover {
+                text: a.text.clone(),
+                subscript: a.subscript.clone(),
+                button: a.button,
+                icon: a.icon,
+                ..HandHover::default()
+            })
         })
         .or(hatch_aim);
     let aim_line = hud.hand.as_ref().map(|a| {
@@ -1456,95 +1620,114 @@ pub fn update(
             )),
             None => hover,
         };
-        match aimed {
-            Some((d, hit)) if hit.body & HATCH_BODY != 0 => {
-                let i = ((hit.body >> 8) & 0xff) as usize;
-                let (name, text) = (
-                    state.triggers[i].name.clone(),
-                    state.triggers[i].hand_text.clone(),
-                );
-                let cinematic = state.pod_anim.is_some() && state.anim.is_some();
-                let now = sim.steps as f64 * state.params.fixed_dt;
-                if cinematic {
-                    let root = state
-                        .body
-                        .as_ref()
-                        .map_or(pose, |(_, b)| b.camera_root(pose));
-                    let anchor = cam_anchor(state);
-                    match state.hatches.begin(
-                        i,
-                        now,
-                        &mut state.player,
-                        &mut state.look,
-                        &state.params,
-                        root,
-                        anchor,
-                    ) {
-                        Some((run, first)) => {
-                            info!("player: used {name:?} ({text:?}) from {d:.2} m: cinematic");
-                            let h = HatchPlay {
-                                run,
-                                started: now,
-                                camera_root: None,
-                            };
-                            signals(state, &mut sim.world, &mut drive, i, &first);
-                            state.hatch = Some(h);
-                        }
-                        None => info!("player: {name:?} cannot be used now"),
-                    }
-                } else {
-                    match state
-                        .hatches
-                        .use_trigger(i, &mut state.player, &state.params)
-                    {
-                        Some(switched) => {
-                            info!(
-                                "player: used {name:?} ({text:?}) from {d:.2} m → ({:.2}, {:.2}, {:.2}), in pod {}",
-                                state.player.position.x,
-                                state.player.position.y,
-                                state.player.position.z,
-                                state.player.in_pod
-                            );
-                            for (k, on) in switched {
-                                show_trigger(&mut sim.world, &state.triggers, k, on);
+        if fabricator_hover {
+            let status = session.with_items(|items, _| {
+                (
+                    items.fabricator.job.as_ref().map(|j| j.done),
+                    items.fabricator.power,
+                )
+            });
+            match status {
+                Some((Some(true), _)) => {
+                    session.request(sn_protocol::Request::TakeCrafted { crafter: 0 });
+                }
+                Some((None, power)) if power >= sn_sim::craft::ENERGY => {
+                    sim.fabricator_opened += 1;
+                    info!("fabricator: opened by the hand");
+                }
+                _ => {}
+            }
+        } else {
+            match aimed {
+                Some((d, hit)) if hit.body & HATCH_BODY != 0 => {
+                    let i = ((hit.body >> 8) & 0xff) as usize;
+                    let (name, text) = (
+                        state.triggers[i].name.clone(),
+                        state.triggers[i].hand_text.clone(),
+                    );
+                    let cinematic = state.pod_anim.is_some() && state.anim.is_some();
+                    let now = sim.steps as f64 * state.params.fixed_dt;
+                    if cinematic {
+                        let root = state
+                            .body
+                            .as_ref()
+                            .map_or(pose, |(_, b)| b.camera_root(pose));
+                        let anchor = cam_anchor(state);
+                        match state.hatches.begin(
+                            i,
+                            now,
+                            &mut state.player,
+                            &mut state.look,
+                            &state.params,
+                            root,
+                            anchor,
+                        ) {
+                            Some((run, first)) => {
+                                info!("player: used {name:?} ({text:?}) from {d:.2} m: cinematic");
+                                let h = HatchPlay {
+                                    run,
+                                    started: now,
+                                    camera_root: None,
+                                };
+                                signals(state, &mut sim.world, &mut drive, i, &first);
+                                state.hatch = Some(h);
                             }
+                            None => info!("player: {name:?} cannot be used now"),
                         }
-                        None => info!("player: {name:?} cannot be used (no end point)"),
+                    } else {
+                        match state
+                            .hatches
+                            .use_trigger(i, &mut state.player, &state.params)
+                        {
+                            Some(switched) => {
+                                info!(
+                                    "player: used {name:?} ({text:?}) from {d:.2} m → ({:.2}, {:.2}, {:.2}), in pod {}",
+                                    state.player.position.x,
+                                    state.player.position.y,
+                                    state.player.position.z,
+                                    state.player.in_pod
+                                );
+                                for (k, on) in switched {
+                                    show_trigger(&mut sim.world, &state.triggers, k, on);
+                                }
+                            }
+                            None => info!("player: {name:?} cannot be used (no end point)"),
+                        }
                     }
                 }
-            }
-            Some((d, hit)) if hit.body & (TARGET_BODY | LOCKER_BODY) != 0 => {
-                let now = sim.steps as f64 * state.params.fixed_dt + sim.accumulator;
-                match item_aim.map(|a| a.action) {
-                    Some(sn_assets::hand::AimAction::Request(request)) => {
-                        info!("player: hand on an item at {d:.2} m");
-                        session.request(request);
-                        // `Player.PlayGrab`, as the game does on a pick-up
-                        // and on a hit without a bash tool.
-                        sim.time_grabbed = now;
+                Some((d, hit)) if hit.body & (TARGET_BODY | LOCKER_BODY) != 0 => {
+                    let now = sim.steps as f64 * state.params.fixed_dt + sim.accumulator;
+                    match item_aim.map(|a| a.action) {
+                        Some(sn_assets::hand::AimAction::Request(request)) => {
+                            info!("player: hand on an item at {d:.2} m");
+                            session.request(request);
+                            // `Player.PlayGrab`, as the game does on a pick-up
+                            // and on a hit without a bash tool.
+                            sim.time_grabbed = now;
+                        }
+                        Some(sn_assets::hand::AimAction::OpenLocker) => {
+                            sim.locker_opened += 1;
+                            info!("player: opened the lifepod's locker from {d:.2} m");
+                        }
+                        Some(sn_assets::hand::AimAction::Full) => {
+                            info!("player: no room for the item at {d:.2} m: InventoryFull");
+                            messages_early.push("InventoryFull");
+                        }
+                        Some(sn_assets::hand::AimAction::None) => {
+                            info!("player: the item cannot be taken (not pickupable)");
+                        }
+                        None => info!(
+                            "player: nothing to use ({} at {d:.2} m; no item rule)",
+                            sn_assets::body_kind(hit.body)
+                        ),
                     }
-                    Some(sn_assets::hand::AimAction::OpenLocker) => {
-                        sim.locker_opened += 1;
-                        info!("player: opened the lifepod's locker from {d:.2} m");
-                    }
-                    Some(sn_assets::hand::AimAction::Full) => {
-                        info!("player: no room for the item at {d:.2} m: InventoryFull");
-                        messages_early.push("InventoryFull");
-                    }
-                    Some(sn_assets::hand::AimAction::None) => {
-                        info!("player: the item cannot be taken (not pickupable)");
-                    }
-                    None => info!(
-                        "player: nothing to use ({} at {d:.2} m; no item rule)",
-                        sn_assets::body_kind(hit.body)
-                    ),
                 }
+                Some((d, hit)) => info!(
+                    "player: nothing to use ({} at {d:.2} m)",
+                    sn_assets::body_kind(hit.body)
+                ),
+                None => info!("player: nothing to use within reach"),
             }
-            Some((d, hit)) => info!(
-                "player: nothing to use ({} at {d:.2} m)",
-                sn_assets::body_kind(hit.body)
-            ),
-            None => info!("player: nothing to use within reach"),
         }
     }
 
@@ -1772,6 +1955,10 @@ pub fn update(
                     st.anim.bools
                 );
             }
+            session.push_vitals(sn_protocol::PlayerVitals {
+                health: state.vitals.health,
+                oxygen: state.vitals.oxygen,
+            });
             session.push_state(st);
         }
         // The step for tick T runs once the server's clock reaches T.
