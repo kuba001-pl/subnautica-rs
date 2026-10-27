@@ -3887,3 +3887,156 @@ fn the_quick_slot_rules_are_read() {
     println!("serialized knife timing {timing:?}");
     assert!(timing.draw.is_finite() && timing.holster.is_finite());
 }
+
+fn prefab_tree(assets: &Assets, catalog: &sn_unity::Catalog, path: &str) -> sn_assets::UiTree {
+    let locations = catalog.locate(path);
+    let location = locations
+        .iter()
+        .find(|l| l.resource_type == "UnityEngine.GameObject")
+        .unwrap_or_else(|| panic!("{path}: no GameObject location"));
+    let root = assets.catalog_object(location, 1).unwrap().unwrap();
+    assets.ui_tree(path, &root).unwrap()
+}
+
+#[test]
+#[ignore = "needs SUBNAUTICA_DIR"]
+fn the_world_survival_rules_are_read() {
+    let Some(dir) = std::env::var_os("SUBNAUTICA_DIR") else {
+        eprintln!("SUBNAUTICA_DIR not set; skipping");
+        return;
+    };
+    let game = GameData::locate(Some(PathBuf::from(dir))).unwrap();
+    let code = sn_assets::read_assembly(&game).unwrap();
+    let r = sn_assets::world_survival_rules(&code).unwrap();
+    println!("{r:?}");
+    assert_eq!(sn_assets::world_survival_rules(&code).unwrap(), r);
+    let names = sn_assets::game_code(&code).unwrap();
+    assert_eq!(names.tech_name(r.first_aid), Some("FirstAidKit"));
+    assert_eq!((r.animation_guard, r.cabinet_door_delay), (0.5, 2.0));
+    assert_eq!(
+        (r.cabinet_room, r.cabinet_count, r.harvest_count),
+        ((1, 1), 1, 1)
+    );
+    let firstpass = game
+        .read_file(&game.data_dir.join("Managed/Assembly-CSharp-firstpass.dll"))
+        .unwrap();
+    sn_assets::verify_loot_sampler(&firstpass).unwrap();
+    println!("UWE.Utils.Sample: strict rejection loop recognised");
+
+    let assets = sn_assets::Assets::index(&game).unwrap();
+    let assemblies = sn_assets::ScriptAssemblies::load(&game).unwrap();
+    let layouts = assemblies.layouts().unwrap();
+    let catalog = assets.catalog().unwrap();
+    let db = game.read_prefab_database().unwrap();
+    let mut paths: Vec<&String> = db.values().collect();
+    paths.sort();
+    let find = |suffix: &str| {
+        paths
+            .iter()
+            .copied()
+            .find(|p| p.to_lowercase().ends_with(&suffix.to_lowercase()))
+            .unwrap_or_else(|| panic!("no prefab {suffix}"))
+    };
+
+    let tree = prefab_tree(&assets, &catalog, find("/Knife.prefab"));
+    let knives = tree.scripts("Knife").collect::<Vec<_>>();
+    assert_eq!(knives.len(), 1);
+    let f = sn_assets::survival_fields(&knives[0].1.object, &layouts, "Knife").unwrap();
+    let knife = sn_assets::knife_info(&f).unwrap();
+    println!("Knife.prefab: {knife:?}");
+
+    let tree = prefab_tree(&assets, &catalog, find("/MedicalCabinet.prefab"));
+    let cabinets = tree.scripts("MedicalCabinet").collect::<Vec<_>>();
+    assert_eq!(cabinets.len(), 1);
+    let f = sn_assets::survival_fields(&cabinets[0].1.object, &layouts, "MedicalCabinet").unwrap();
+    let (cabinet, constructable) = sn_assets::cabinet_info(&f).unwrap();
+    println!(
+        "MedicalCabinet.prefab: {cabinet:?}, constructable null={}",
+        constructable.is_null()
+    );
+
+    let data = sn_assets::tech_data(&assets).unwrap();
+    let tech = |name: &str| {
+        names
+            .tech_types
+            .iter()
+            .find(|(_, n)| n == name)
+            .map(|(v, _)| *v)
+            .unwrap()
+    };
+    let mut kinds = std::collections::BTreeMap::new();
+    for e in &data.entries {
+        let h = sn_assets::harvest_info(Some(e), &names.tech_defaults).unwrap();
+        *kinds.entry(h.kind).or_insert(0usize) += 1;
+    }
+    println!("TechData harvest types (kind: entries): {kinds:?}");
+    let creepvine = tech("Creepvine");
+    let entry = data.entries.iter().find(|e| e.tech_type == creepvine);
+    let h = sn_assets::harvest_info(entry, &names.tech_defaults).unwrap();
+    println!(
+        "Creepvine harvest: kind {} output {:?} final bonus {}",
+        h.kind,
+        names.tech_name(h.output),
+        h.final_bonus
+    );
+    assert_eq!(h.kind, r.damage_alive);
+
+    let mut crates = 0;
+    for p in paths.iter().filter(|p| {
+        let l = p.to_lowercase();
+        l.starts_with("worldentities/natural/supplycrate")
+            || l.ends_with("/starshipcargocrate.prefab")
+    }) {
+        let tree = prefab_tree(&assets, &catalog, p);
+        let animations = tree.components().filter(|(_, c)| c.class_id == 111).count();
+        let sealed = tree.scripts("Sealed").count();
+        let pickups = tree.scripts("Pickupable").count();
+        let active_pickups = tree
+            .scripts("Pickupable")
+            .filter(|(n, _)| tree.nodes[*n].active)
+            .count();
+        let placeholders = tree
+            .scripts("PrefabPlaceholder")
+            .filter(|(n, _)| tree.nodes[*n].active)
+            .count();
+        let mut line = format!(
+            "{p}: Animation {animations}, Sealed {sealed}, Pickupable {pickups} (active {active_pickups}), active PrefabPlaceholder {placeholders}"
+        );
+        for (_, c) in tree.scripts("SupplyCrate") {
+            crates += 1;
+            // Every crate's item is a placeholder child, not a stored Pickupable.
+            assert_eq!((animations, placeholders, pickups), (1, 1, 0), "{p}");
+            let f = sn_assets::survival_fields(&c.object, &layouts, "SupplyCrate").unwrap();
+            let target = f
+                .get("setActiveOnOpen")
+                .and_then(sn_unity::Value::as_pptr)
+                .unwrap();
+            let node = tree.nodes.iter().find(|n| {
+                n.game_object
+                    .as_ref()
+                    .is_some_and(|g| g.path_id == target.path_id && target.file_id == 0)
+            });
+            line += &format!(
+                ", setActiveOnOpen {}",
+                match node {
+                    Some(n) => format!("{} (activeSelf {})", n.path, n.active_self),
+                    None if target.is_null() => "null".into(),
+                    None => "outside prefab".into(),
+                }
+            );
+        }
+        for (_, c) in tree.scripts("SpawnStoredLoot") {
+            let f = sn_assets::survival_fields(&c.object, &layouts, "SpawnStoredLoot").unwrap();
+            let loot = sn_assets::stored_loot_info(&f).unwrap();
+            line += &format!(
+                ", SpawnStoredLoot min {} max {} keys {}",
+                loot.min,
+                loot.max,
+                loot.distribution.keys.len()
+            );
+        }
+        println!("{line}");
+    }
+    println!("SupplyCrate components: {crates}");
+    assert_eq!(crates, 8);
+}

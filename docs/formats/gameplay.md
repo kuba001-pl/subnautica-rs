@@ -1620,3 +1620,57 @@ prose. Numbers below describe rules, not a shipped balance table.
   slot-count patterns return offset errors; installed reads repeat identically.
 - View-model rendering, collider/socket/IK application and live input dispatch
   are **not tested**, deferred to M9s11; events describe the headless boundary.
+
+### M9s6: knife harvest, cabinets, crates and stored loot as implemented (2026-10-27)
+
+- **Confirmed (direct read of `Knife.OnToolUseAnim`, `IsValidTarget`,
+  `GiveResourceOnDamage`; six synthetic `sn_sim::survival::world` tests):**
+  a target with a LiveMixin is rejected (no damage, no harvest) when
+  weldable, not knifeable, or an escape pod; a target without one is valid
+  but receives no damage or harvest. Liveness is read before `TakeDamage`
+  and after it; DamageAlive grants 1 while it was alive, plus the final-cut
+  bonus on the killing hit; DamageDead grants 1 whenever it is dead after
+  the hit (killing or already dead). Output `None` grants nothing.
+  `sn_sim` asks a caller-supplied damage resolver once per accepted event
+  and never models `LiveMixin.TakeDamage` modifiers itself (M9s9).
+- **Confirmed (install, opt-in `the_world_survival_rules_are_read`):**
+  `GUIHand.OnToolUseAnim`'s re-entry guard is strict `Time.time > last +
+  0.5`; `MedicalCabinet.OnHandClick` checks `HasInventoryRoom(1, 1)`, adds
+  one `FirstAidKit` (4514 on build 10) and has exactly one
+  `Invoke("ToggleDoorState", 2)`; `HarvestType` DamageAlive = 3,
+  DamageDead = 4; Knife's base output count is 1. Each method's integer
+  literal sequence is matched exactly, so a changed method is an error
+  with its IL offset. Stored `Knife.prefab` fields: damage 20, attackDist
+  1.2 (f32), damageType 0. Stored `MedicalCabinet.prefab`
+  (`Submarine/Build/`): interval 600, startWithMedKit false, constructable
+  non-null. TechData harvest types over all entries (defaults applied):
+  None 384, Break 8, Pick 17, DamageAlive 46, DamageDead 3, Click 5;
+  Creepvine is DamageAlive → CreepvinePiece, final bonus 0.
+- **Confirmed (source `MedicalCabinet` field types):** `timeSpawnMedKit` is a
+  float: both the first deadline (`(float)timePassed + …`) and the one after
+  a take (`timePassedAsFloat + interval`) are computed in single precision
+  and compared to the double clock strictly. Our `Cabinet` rounds the same
+  way. The 2 s door toggle runs on Unity's scaled `Time.time`, a second
+  clock, separate from the kit deadline's `DayNightCycle` clock.
+- **Hypothesis settled (install, same test):** all 8 `WorldEntities/Natural/
+  SupplyCrate_*` prefabs (Battery, DisinfectedWater, FirstAidKit, Flare,
+  PowerCell, Ration, Sealed, Signal) have one `Animation`, `setActiveOnOpen`
+  null, 0 `Pickupable`s and exactly one active `PrefabPlaceholder` child; only
+  `SupplyCrate_Sealed` has a `Sealed` component. So a crate's item is the
+  placeholder's spawned child, never `SpawnStoredLoot`, and opening never
+  activates anything in these prefabs. `StarshipCargoCrate` has no
+  `SupplyCrate`. **Still open:** resolving each placeholder's prefab and the
+  spawned child's tech type belongs to the M9s7 census.
+- **Open (install scan):** 0 of the 3,336 catalog-loadable prefabs in the
+  prefab database contain `SpawnStoredLoot`. Its users (scene objects, or
+  none) are unknown; M9s7's scene census must settle it. The headless rule
+  is implemented but has no installed caller yet.
+- **Confirmed (firstpass `UWE.Utils.Sample` IL recognised at runtime by
+  `verify_loot_sampler`; `LootSpawner.GetRandomTechTypes`,
+  `MathExtensions.UniqueRandomNumbersInRange`):** the curve is sampled by
+  strict rejection (`y < curve(x)`), the count is
+  `RoundToInt(min + x·(max − min))` (ties to even), capped by the list
+  length, with distinct indices. Our RNG (SplitMix64 from a server seed)
+  and the 4,096-attempt limit are **ours, not the game's**: Unity's
+  `Random` sequence is not reproduced, and a curve that never accepts is
+  an explicit error instead of an endless loop.

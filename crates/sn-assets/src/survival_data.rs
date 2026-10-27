@@ -51,3 +51,75 @@ pub fn tool_timing(fields: &Fields, named_animation: bool) -> Result<sn_sim::sur
         first_use: flag("hasFirstUseAnimation")?,
     })
 }
+
+pub fn knife_info(fields: &Fields) -> Result<sn_sim::survival::KnifeInfo> {
+    let damage_type = fields
+        .get("damageType")
+        .and_then(Value::as_i64)
+        .and_then(|n| i32::try_from(n).ok())
+        .ok_or("Knife.damageType missing")?;
+    let info = sn_sim::survival::KnifeInfo {
+        damage: number(fields, "damage")?,
+        reach: number(fields, "attackDist")?,
+        damage_type,
+    };
+    info.validate().map_err(|e| e.to_string())?;
+    Ok(info)
+}
+pub fn cabinet_info(fields: &Fields) -> Result<(sn_sim::survival::CabinetInfo, sn_unity::PPtr)> {
+    let info = sn_sim::survival::CabinetInfo {
+        interval: number(fields, "medKitSpawnInterval")?,
+        start_with_kit: fields
+            .get("startWithMedKit")
+            .and_then(Value::as_bool)
+            .ok_or("MedicalCabinet.startWithMedKit missing")?,
+    };
+    info.validate().map_err(|e| e.to_string())?;
+    let construction = fields
+        .get("constructable")
+        .and_then(Value::as_pptr)
+        .ok_or("MedicalCabinet.constructable missing")?;
+    Ok((info, construction))
+}
+pub fn harvest_info(
+    entry: Option<&crate::TechEntry>,
+    defaults: &crate::code::TechDefaults,
+) -> Result<sn_sim::survival::HarvestInfo> {
+    let kind = entry
+        .and_then(|e| e.harvest_type)
+        .unwrap_or(defaults.harvest_type);
+    let output = entry
+        .and_then(|e| e.harvest_output)
+        .unwrap_or(defaults.harvest_output);
+    let bonus = entry
+        .and_then(|e| e.harvest_final_cut_bonus)
+        .unwrap_or(defaults.harvest_final_cut_bonus);
+    Ok(sn_sim::survival::HarvestInfo {
+        kind,
+        output,
+        final_bonus: u32::try_from(bonus).map_err(|_| "negative harvest bonus")?,
+    })
+}
+/// `SpawnStoredLoot`'s stored fields. The curve must be clamped and
+/// unweighted (the only kind our evaluator supports); others are errors.
+#[derive(Clone, Debug)]
+pub struct StoredLootInfo {
+    pub min: i32,
+    pub max: i32,
+    pub distribution: sn_ui::clip::Curve,
+}
+pub fn stored_loot_info(fields: &Fields) -> Result<StoredLootInfo> {
+    let int = |n| {
+        fields
+            .get(n)
+            .and_then(Value::as_i64)
+            .and_then(|v| i32::try_from(v).ok())
+            .ok_or_else(|| format!("SpawnStoredLoot.{n} missing"))
+    };
+    Ok(StoredLootInfo {
+        min: int("randomStartMinItems")?,
+        max: int("randomStartMaxItems")?,
+        distribution: crate::hud::curve_field(fields, "distribution")
+            .map_err(|e| format!("SpawnStoredLoot.{e}"))?,
+    })
+}

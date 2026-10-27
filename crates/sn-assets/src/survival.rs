@@ -1000,3 +1000,244 @@ mod quick_reader_tests {
         }
     }
 }
+
+/// Headless world-rule constants (M9s6), all from the DLL: `GUIHand.
+/// OnToolUseAnim`'s re-entry guard, `MedicalCabinet.OnHandClick`'s room,
+/// kit, count and `Invoke("ToggleDoorState", delay)`, `HarvestType` values
+/// and `Knife.GiveResourceOnDamage`'s base output count. Each method's
+/// integer literals must match the known shape exactly.
+pub fn world_survival_rules(bytes: &[u8]) -> Result<sn_sim::survival::WorldSurvivalRules> {
+    let asm = Assembly::parse(bytes).map_err(|e| format!("{GAME_ASSEMBLY}: {e}"))?;
+    let guard = match_literals(
+        &asm,
+        "GUIHand",
+        "OnToolUseAnim",
+        &[Fixed(-1.0), Named("guard")],
+    )?;
+    let door = match sn_dotnet::invokes(&asm, "", "MedicalCabinet", "OnHandClick")
+        .map_err(|e| format!("{GAME_ASSEMBLY}: {e}"))?
+        .as_slice()
+    {
+        [(name, delay)] if name == "ToggleDoorState" => *delay,
+        _ => return Err("MedicalCabinet.OnHandClick: expected one Invoke(ToggleDoorState)".into()),
+    };
+    let alive = enum_value(&asm, "HarvestType", "DamageAlive")?;
+    let dead = enum_value(&asm, "HarvestType", "DamageDead")?;
+    let knife = sn_dotnet::int_literals(&asm, "", "Knife", "GiveResourceOnDamage")
+        .map_err(|e| format!("{GAME_ASSEMBLY}: {e}"))?;
+    let expected = [
+        Some(enum_value(&asm, "TechType", "Creepvine")?),
+        Some(alive),
+        Some(dead),
+        None,
+        Some(alive),
+        Some(0),
+        Some(0),
+    ];
+    if knife.len() != expected.len() {
+        return Err(format!(
+            "Knife.GiveResourceOnDamage: unexpected integer shape at IL offsets {:?}",
+            knife.iter().map(|x| x.0).collect::<Vec<_>>()
+        ));
+    }
+    for ((offset, value), expected) in knife.iter().zip(expected) {
+        if expected.is_some_and(|n| n != *value) {
+            return Err(format!(
+                "Knife.GiveResourceOnDamage: IL offset {offset:#x}: unexpected integer"
+            ));
+        }
+    }
+    let count = u32::try_from(knife.get(3).ok_or("knife count absent")?.1)
+        .map_err(|_| "negative knife output count")?;
+    let kit = enum_value(&asm, "TechType", "FirstAidKit")?;
+    let cabinet = sn_dotnet::int_literals(&asm, "", "MedicalCabinet", "OnHandClick")
+        .map_err(|e| format!("{GAME_ASSEMBLY}: {e}"))?;
+    let expected = [
+        None,
+        None,
+        Some(0),
+        Some(kit),
+        None,
+        Some(0),
+        Some(1),
+        Some(0),
+    ];
+    if cabinet.len() != expected.len() {
+        return Err(format!(
+            "MedicalCabinet.OnHandClick: unexpected integer shape at IL offsets {:?}",
+            cabinet.iter().map(|x| x.0).collect::<Vec<_>>()
+        ));
+    }
+    for ((offset, value), expected) in cabinet.iter().zip(expected) {
+        if expected.is_some_and(|n| n != *value) {
+            return Err(format!(
+                "MedicalCabinet.OnHandClick: IL offset {offset:#x}: unexpected integer"
+            ));
+        }
+    }
+    let get = |n: usize| cabinet.get(n).map(|x| x.1).ok_or("cabinet integer absent");
+    let r = sn_sim::survival::WorldSurvivalRules {
+        animation_guard: f64::from(take(&guard, "guard")?),
+        cabinet_door_delay: f64::from(door),
+        cabinet_room: (get(0)?, get(1)?),
+        first_aid: kit,
+        cabinet_count: u32::try_from(get(4)?).map_err(|_| "negative kit count")?,
+        damage_alive: alive,
+        damage_dead: dead,
+        harvest_count: count,
+    };
+    r.validate().map_err(|e| format!("{GAME_ASSEMBLY}: {e}"))?;
+    Ok(r)
+}
+/// Proves that the supplied firstpass DLL samples density by strict rejection.
+/// This is a bounded recognizer, not an IL interpreter.
+pub fn verify_loot_sampler(bytes: &[u8]) -> Result<()> {
+    let asm = Assembly::parse(bytes).map_err(|e| e.to_string())?;
+    let ty = asm
+        .find_type("UWE", "Utils")
+        .map_err(|e| e.to_string())?
+        .ok_or("UWE.Utils missing")?;
+    let method = asm
+        .find_method_with(ty, "Sample", 1)
+        .map_err(|e| e.to_string())?
+        .ok_or("UWE.Utils.Sample missing")?;
+    let (body, base) = asm
+        .method_body(method)
+        .map_err(|e| e.to_string())?
+        .ok_or("Sample body missing")?;
+    let code = sn_dotnet::decode(body, base).map_err(|e| e.to_string())?;
+    let shape = [
+        0x28, 0x0a, 0x28, 0x02, 0x06, 0x6f, 0x0b, 0x07, 0x34, 0x06, 0x2a,
+    ];
+    if !code.iter().map(|i| i.opcode).eq(shape) {
+        return Err(format!(
+            "UWE.Utils.Sample: unexpected shape at IL offset {base:#x}"
+        ));
+    }
+    for (at, ty, name) in [
+        (0, "Random", "get_value"),
+        (2, "Random", "get_value"),
+        (5, "AnimationCurve", "Evaluate"),
+    ] {
+        let i = code.get(at).ok_or("Sample instruction missing")?;
+        let call = asm
+            .method_token(i.token().ok_or("Sample call token missing")?)
+            .map_err(|e| e.to_string())?;
+        if call.namespace != "UnityEngine" || call.type_name != ty || call.name != name {
+            return Err(format!(
+                "UWE.Utils.Sample: unexpected call at IL offset {:#x}",
+                i.offset
+            ));
+        }
+    }
+    if !matches!(
+        code.get(8).map(|i| &i.operand),
+        Some(sn_dotnet::Operand::Branch(-22))
+    ) {
+        return Err(format!(
+            "UWE.Utils.Sample: wrong rejection branch at IL offset {base:#x}"
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod world_reader_tests {
+    use super::*;
+    use sn_dotnet::{
+        Table,
+        encode::{Builder, Il},
+    };
+    fn enum_type(b: &mut Builder, name: &str, values: &[(&str, i32)]) {
+        b.type_def("", name);
+        b.field(0x0606, "value__");
+        for (n, v) in values {
+            let f = b.field(0x0056, n);
+            b.constant_i4(f, *v);
+        }
+    }
+    fn fixture(guard: f32, kit_count: i32, invokes: usize) -> Vec<u8> {
+        let mut b = Builder::new();
+        let mono = b.type_ref("UnityEngine", "MonoBehaviour");
+        let invoke = b.member_ref((Table::TYPE_REF, mono), "Invoke", Some(2));
+        let toggle = b.user_string("ToggleDoorState");
+        b.type_def("", "GUIHand");
+        let il = Il::default().ldc_r4(-1.0).op(0x26).ldc_r4(guard).op(0x26);
+        b.method("OnToolUseAnim", 0, Some(&il.ret().0));
+        b.type_def("", "MedicalCabinet");
+        let mut il = Il::default();
+        for n in [1, 1, 0, 70, kit_count, 0, 1, 0] {
+            il = il.ldc(n).op(0x26);
+        }
+        for _ in 0..invokes {
+            il = il.op(0x02).ldstr(toggle).ldc_r4(3.0).call(invoke);
+        }
+        b.method("OnHandClick", 1, Some(&il.ret().0));
+        b.type_def("", "Knife");
+        let mut il = Il::default();
+        for n in [60, 3, 4, 2, 3, 0, 0] {
+            il = il.ldc(n).op(0x26);
+        }
+        b.method("GiveResourceOnDamage", 3, Some(&il.ret().0));
+        enum_type(
+            &mut b,
+            "HarvestType",
+            &[("DamageAlive", 3), ("DamageDead", 4)],
+        );
+        enum_type(
+            &mut b,
+            "TechType",
+            &[("Creepvine", 60), ("FirstAidKit", 70)],
+        );
+        b.build()
+    }
+    #[test]
+    fn world_rules_are_read_and_shape_changes_are_errors() {
+        let data = fixture(0.25, 1, 1);
+        let r = world_survival_rules(&data).unwrap();
+        assert_eq!(r.animation_guard, 0.25);
+        assert_eq!(r.cabinet_door_delay, 3.0);
+        assert_eq!(r.cabinet_room, (1, 1));
+        assert_eq!((r.first_aid, r.cabinet_count), (70, 1));
+        assert_eq!((r.damage_alive, r.damage_dead, r.harvest_count), (3, 4, 2));
+        assert!(world_survival_rules(&fixture(0.25, 1, 0)).is_err());
+        assert!(world_survival_rules(&fixture(0.25, 1, 2)).is_err());
+        assert!(world_survival_rules(&fixture(0.25, 0, 1)).is_err());
+        for n in (0..data.len()).step_by(41) {
+            assert!(world_survival_rules(&data[..n]).is_err());
+        }
+    }
+    fn sampler(branch: u8) -> Vec<u8> {
+        let mut b = Builder::new();
+        let random = b.type_ref("UnityEngine", "Random");
+        let value = b.member_ref((Table::TYPE_REF, random), "get_value", Some(0));
+        let curve = b.type_ref("UnityEngine", "AnimationCurve");
+        let evaluate = b.member_ref((Table::TYPE_REF, curve), "Evaluate", Some(1));
+        b.type_def("UWE", "Utils");
+        let il = Il::default()
+            .call(value)
+            .op(0x0a)
+            .call(value)
+            .op(0x02)
+            .op(0x06)
+            .callvirt(evaluate)
+            .op(0x0b)
+            .op(0x07)
+            .op(0x34)
+            .op(branch)
+            .op(0x06)
+            .ret();
+        b.method("Sample", 1, Some(&il.0));
+        b.build()
+    }
+    #[test]
+    fn loot_sampler_recognizer_accepts_only_the_rejection_loop() {
+        let data = sampler(0xEA);
+        verify_loot_sampler(&data).unwrap();
+        let error = verify_loot_sampler(&sampler(0xEC)).unwrap_err();
+        assert!(error.contains("IL offset"), "{error}");
+        for n in (0..data.len()).step_by(37) {
+            assert!(verify_loot_sampler(&data[..n]).is_err());
+        }
+    }
+}

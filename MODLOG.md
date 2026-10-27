@@ -2,6 +2,59 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-27 — M9s6: knife harvest, cabinets, supply crates and stored loot, headless
+
+**What/why:** sixth step of M9s. `sn_sim::survival::world`: `ToolUseGate`
+(one move-only `ToolAction` per accepted sequence; knife events behind the
+strict 0.5 s re-entry guard), `knife_strike` (target validity, one call to a
+caller-supplied damage resolver, before/after liveness, DamageAlive/
+DamageDead output and final-cut bonus), `grant_harvest` (failed additions
+returned, never spawned loose), `outcrop_click`/`bash_outcrop` (a held bash
+tool waits for its event: one input, one hit), `Cabinet` (strict deadline,
+door/take/full-grid paths, 2 s delayed toggle on a second clock, f32
+deadlines like the game's float field), `SupplyCrate` (sealed/closed/open/
+full/empty, absent Animation) and `draw_stored_loot`/`StoredLoot`
+(rejection sampling, distinct indices, once flag). `sn_assets`:
+`world_survival_rules` (Assembly-CSharp IL), `verify_loot_sampler`
+(firstpass `UWE.Utils.Sample` recogniser), `knife_info`, `cabinet_info`,
+`harvest_info`, `stored_loot_info` (stored fields/TechData).
+
+**Review of the previous agent's uncommitted draft:** kept the sn-sim module
+and readers. Fixed a compile error (closure type inference) in
+`world_survival_rules`; replaced the cabinet door delay's bare float match
+with `sn_dotnet::invokes`, requiring exactly one
+`Invoke("ToggleDoorState", …)`; made cabinet deadlines single precision
+(source: `timeSpawnMedKit` is a float) with a 2^24 s rounding test; added
+`stored_loot_info`, synthetic reader fixtures (shape changes, wrong branch,
+truncations: errors, 0 panics) and the opt-in install test with a crate census.
+
+**Decisions (ours, not the game's):** SplitMix64 seeded loot RNG; 4,096
+rejection attempts then an explicit error; negative/inverted loot bounds
+refused; monotone action sequences for replay protection.
+
+**Findings:** crate contents are a single active `PrefabPlaceholder` child in
+all 8 SupplyCrate prefabs (setActiveOnOpen null in all), so SupplyCrate
+never uses SpawnStoredLoot. Dead end recorded: a bounded scan of all 3,336
+catalog-loadable prefabs found 0 `SpawnStoredLoot` users; its installed
+caller (scene objects or none) is left to M9s7. Details in
+`docs/formats/gameplay.md` § M9s6.
+
+**Verification:** `cargo test -p sn-sim survival::world` (6 passed);
+`cargo test -p sn-assets --lib reader_tests` (4 passed, 2 new);
+`SUBNAUTICA_DIR=D:\SteamLibrary\steamapps\common\Subnautica cargo test -p
+sn-assets --test real_data the_world_survival_rules_are_read -- --ignored
+--nocapture` → guard 0.5, door delay 2, room (1,1), FirstAidKit 4514 ×1,
+DamageAlive 3/DamageDead 4, base count 1; Knife damage 20, reach 1.2,
+type 0; cabinet interval 600, startWithMedKit false; harvest kinds
+{0:384,1:8,2:17,3:46,4:3,5:5}; Creepvine → CreepvinePiece bonus 0; 8 crates
+(log `out/m9s6-real.log`). `cargo test --workspace` (796 passed, 0
+failed, 70 ignored; log `out/m9s6-workspace.log`), `cargo clippy --workspace
+--all-targets -- -D warnings` and `cargo fmt --all -- --check` clean. This
+full run also closes M9s5's pending workspace check (STATUS.md, DESIGN row).
+**Not tested:** server authority/reach/occlusion (M9s9), save of cabinet/
+crate/loot flags (M9s10), live hand targets/UI (M9s11/13), placeholder child
+resolution and any SpawnStoredLoot caller (M9s7).
+
 ## 2026-10-27 — M9s5: item-identity quick slots and held-tool state
 
 Add pure binding/automatic eligibility/refill, desired vs held identities,

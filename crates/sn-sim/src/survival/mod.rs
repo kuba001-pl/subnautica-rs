@@ -61,3 +61,11 @@ mod quickslots;
 pub use quickslots::{
     ArmsState, QuickEvent, QuickItem, QuickRules, QuickSlots, QuickUpdate, ToolTiming,
 };
+
+mod world;
+pub use world::{
+    Cabinet, CabinetClick, CabinetClock, CabinetInfo, CrateClick, HarvestInfo, KnifeDamage,
+    KnifeInfo, KnifeStrike, KnifeTarget, OutcropClick, StoredLoot, SupplyCrate, ToolAction,
+    ToolActionKind, ToolUseGate, WorldSurvivalRules, bash_outcrop, draw_stored_loot, grant_harvest,
+    knife_strike, outcrop_click,
+};
