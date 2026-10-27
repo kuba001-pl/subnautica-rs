@@ -170,9 +170,9 @@ Tested on Windows 11 with game build 10 (Steam):
   (`uGUI_PopupNotification`, M9u7d: its slide in and out, 5 s, the queue,
   the picture) is ported, but nothing in the game we run shows it yet
   (a pick-up never does; crafting and scanning would): `--analyze
-  <TechType>` shows it as a test. Notifications (the PDA's item and tab
-  marks) wait for the inventory tab (M9u8b). The texts are
-  untranslated.
+  <TechType>` shows it as a test. The PDA's notifications (the
+  inventory tab's count and the items' "+") are described above
+  (M9u8b5). The texts are untranslated.
   Checked by numbers (`ui --bars`, `ui --pulse`, `ui --start`,
   `ui --depth`, `ui --compass`, `ui --tmp-sprites`, `ui --reticle`,
   `ui --death`, `ui --messages`, `ui --icon-mesh`, `ui --icons`,
@@ -291,7 +291,9 @@ shaders (actual particle lighting modes, sand and lava falls and other effect
 meshes not yet decoded are flat; matched original-game SIG rock/coral comparisons are not tested;
 `docs/formats/materials.md`), creatures (including the
 ~100,000 the spawn slots would add); the intro cinematic, tools and IK, tanks and fins changing
-speeds, the game's other screens (the PDA's screen and tabs, menus) and
+speeds, the game's other screens (the content of the PDA's tabs other
+than the inventory, the fabricator menu, the main and in-game menus), quick
+slots and held tools, the items' bars (battery, oxygen), and
 damage effects; audio,
 multiplayer (so far the headless `sn-server` and bot players, also with
 the player's own rules and collision, over UDP on one machine; the game
@@ -414,7 +416,14 @@ network: only positions, animation values, events and checks.
   and respawns, the game clock and the Aurora; items (pick-ups,
   outcrops, drops, the locker, death drops: each change is a world event
   every machine replays; checked with two clients on one machine, a drop
-  drawn and taken away at the same event on both). **Not yet:**
+  drawn and taken away at the same event on both). Each player has the
+  game's UI (M9u9, two clients on one machine, scripted): the PDA,
+  tooltips, clicks and drags show and move that player's own inventory;
+  the locker's contents change on both at the same world event when
+  either player moves an item; a pick-up's icon, count and "+" and a
+  death's "You died and lost some belongings." show only on the player
+  it happened to, while the other sees the items vanish or the drops
+  appear. **Not yet:**
   crafting, saves, creatures, chat, players colliding; other players'
   held items and the locker's flap.
 - **Trust:** no encryption and no password in the client yet: for

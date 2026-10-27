@@ -2,6 +2,80 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-27 — M9u9: close-out (two players with the game's UI; M9u done)
+
+**What/why:** the last step of M9u (DESIGN). No code change: the merged
+client (Perf P1a–P1e into M9u8) was smoke-checked, three two-player runs
+check what each client's UI shows, and the docs were brought up to date:
+README ("What works" UI paragraph, "What doesn't work yet", "Play
+together"), `docs/formats/ui.md` (a status paragraph, stale "not yet"
+notes from before M9u8b fixed, § Two players), DESIGN (the "Not 1:1
+after M9u" list collected from the M9u8b3–b5 entries, M9u and M9u9 ✅).
+No new dependencies, no `.gitignore` change.
+
+**Verified** (Git Bash; release build; `SUBNAUTICA_DIR` set for the game
+runs; logs in `out/m9u9/`):
+- Merge smoke check (same flags as the MODLOG entries): tooltip run as
+  M9u8b3b3: three tooltips and one clear, first at pointer (−463, 246),
+  top-left (−452.650, 225.299), size 469 × 186.15, sorting (1, 0)+2;
+  drag/swap run as M9u8b4: the same three moves applied (world events
+  10–12) and "nothing to do"; slot run as M9u8b4: the same five moves
+  (events 11–15), Tank denied over Foots, the click while dragging
+  ignored; notification run as M9u8b5a: `Add` × 3, count 0 → 3 at
+  5.035 s, progress 0.748 / 0.499 / 0.248, count 3 → 0 at 12.035 s; 0
+  WARN/ERROR in all four. P1 swim route (docs/P1-PERFORMANCE.md flags,
+  `SN_CLIENT_PERF=1`, two runs): sampled max 23.134 / 26.809 ms, p99
+  15.963 / 16.329 ms, 3,624 / 3,623 frames; the same end scene as P1e
+  (102 batches [4, 4, 20, 74], 2,950,338 triangles, 13,171 object
+  entities, 201 slot objects, 0 warnings). No regression from the merge.
+- Two players, host `--host PORT --name host`, joiner started 8 s later
+  with `--join 127.0.0.1:PORT --name joiner`, both `--view 400
+  --resolution 960 540`; 0 WARN/ERROR in all six logs; server hash
+  checks 74, 58 and 70, 0 differ:
+  - (A) `a-host.log` / `a-joiner.log`: host `--test-supply Tank,Fins
+    --use-item 3 --panel 6=take-all,7=hover0,8=drag0,9=over-locker,
+    10=release,12=hover0,12.2=press,12.4=release,25=hover0,40=close
+    --shot 45`; joiner `--test-supply Tank,Fins --use-item 3 --panel
+    8=drag-locker0,9=over-grid,10=release,11=hover0,13=hover-empty
+    --shot 20`. Both log the same locker after world events 11 (empty),
+    13 (Tank), 14 (Tank, Fins) and 15 (Fins: the joiner took the Tank by
+    drag); the host's inventory line does not change at event 14; the
+    joiner's inventory is only the Tank. Tooltips on both (host Tank,
+    Fins, Flare; joiner Tank).
+  - (B) `b-*.log`: both `--start -197.3 -35.2 -10.2`; host `--pick-up 3
+    --panel 5=open,11=close --drop 14 --shot 32`, joiner `--pick-up 10
+    --panel 12=open --shot 18`. Host: 3 pick-ups, 3 icons, `Add` × 3,
+    count 0 → 3 → 0; drops #6 (event 7). Joiner: object 6 drawn (asked at
+    event 8), picks it up with 2 more placed mushrooms (events 8–10), 3
+    icons, `Add` × 3, count 0 → 3 → 0. On both: object 6 removed at event
+    11, 5 keys gone. Neither client shows the other's icons or counts.
+  - (C) `c-*.log`: host `--start -197.3 -35.2 -10.2 --pick-up 3 --kill
+    14 --shot 36`, joiner at the same place `--shot 26`. Host: `LoseItems`
+    2 dropped, "You died and lost some belongings." shown 23.021 s, gone
+    after 6.006 s; joiner: 0 messages, objects 6 and 7 drawn at event 11
+    as on the host.
+- `cargo test --workspace` (no game): 743 passed, 0 failed, 63 ignored.
+- `cargo clippy --workspace --all-targets -- -D warnings`: pass;
+  `cargo fmt --all -- --check`: clean.
+
+**Not tested:** two machines (all runs on 127.0.0.1); a real mouse or
+keyboard; "Inventory full" in the client; the locker's view while the
+other player changes it with both PDAs open on it at the same moment (in
+(A) the host's PDA was open on the locker during the joiner's drag and
+logged the change, but the joiner's PDA was not open during the host's
+moves); against the original game on screen; Linux/macOS. **Not 1:1:**
+the DESIGN list "Not 1:1 after M9u". No game assets committed.
+
+## 2026-10-27 — Format: `cargo fmt --all` (commit ad1e740)
+
+**What/why:** `cargo fmt --all -- --check` reported drift in four
+tooltip files from M9u8b3 (`apps/sn-inspect/src/main.rs`,
+`apps/sn-inspect/src/tooltip.rs`, `crates/sn-ui/src/tooltip.rs`,
+`crates/sn-ui/src/tooltip/tests.rs`). Formatting only.
+
+**Verified:** `cargo test --workspace` 743 passed, 0 failed; clippy
+(`-D warnings`) pass; `cargo fmt --all -- --check` clean.
+
 ## 2026-10-27 — M9u8b5b: the notification's glow (`UI/Icon` `NOTIFICATION`)
 
 **What/why:** the second half of M9u8b5 (DESIGN). `game_ui.wgsl`:

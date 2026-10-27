@@ -10,6 +10,17 @@ glyphs: `crates/sn-ui/src/font/`. Inspector: `sn-inspect ui` (M9u0),
 Each fact is marked **confirmed** (with how) or **hypothesis**. Only
 names, counts and numbers are recorded here, never the game's content.
 
+**Status after M9u (2026-10-27).** Ported and checked by numbers: the
+UI's sources, canvases, sprites, fonts and TMP text; layout, meshes and
+draw order; the UI shaders the HUD and the inventory tab use; the HUD
+(bars, depth, compass, reticle, death and respawn overlays), the text
+messages, the picked-up icons and the unlock pop-up; the PDA (model,
+screen, toolbar) and its inventory tab (containers, doll, icons, hover,
+clicks, tooltip, drag and drop, notifications and their glow); each
+client's UI in a two-player game (§ Two players). What is not 1:1 yet is
+listed in `docs/DESIGN.md` "Not 1:1 after M9u". None of it is compared
+against the original game on screen.
+
 ## Where the UI comes from — confirmed
 
 - **`uGUI.prefab`.** `uGUI.InitializeAsync` (a coroutine,
@@ -103,9 +114,9 @@ ports `uGUI_PDA`'s states in `sn_ui::pda`:
 - **`uGUI_Toolbar.UpdateCycleBtnText`** (`OnEnable`): with the keyboard as
   the primary device `cycleLeftBtnText` and `cycleRightBtnText` are made
   inactive (stored with "?" texts). Ported for the PDA's toolbar.
-- **Not ported yet:** the equipment slots' `UI/Circle` (drawn as
-  `UI/Default`); the inventory tab's containers (our M9d5b panel stands in,
-  M9u8b); the other tabs' own scripts (their stored content is drawn).
+- **Not ported yet:** the other tabs' own scripts (their stored content
+  is drawn). The equipment slots' `UI/Circle` and the inventory tab's
+  containers, listed here before, were ported in M9u8b2b and M9u8b1.
 
 ## The PDA's toolbar (M9u8a4b) — confirmed (decompiled code, stored fields, `ui --pda`, client)
 
@@ -149,7 +160,8 @@ with `sizeDelta` (0, 54), its anchors one point.
   `currentTabs[index]`. The icons' colours are white for normal, hovered
   and pressed (never set by the toolbar), so hover shows nothing.
   `SetNotificationsAmount(i, 0)` makes nothing (`SetNotificationAlpha(0)`
-  without a label); the counts are `NotificationManager`'s (M9u8b).
+  without a label); the counts are `NotificationManager`'s (M9u8b5a,
+  § Notifications; only the inventory tab's count is ported).
 - **Ours** (`sn_ui::toolbar`, `sn_assets::toolbar_icon_nodes`): the icon
   nodes are made once and set again on each `Initialize` (same state, same
   sibling order). The client hit-tests a click by the UI camera's ray
@@ -197,8 +209,9 @@ in `Equipment.slotMapping`.
   inactive). The inventory container stays active.
 - **`OnLanguageChanged`** (from `uGUI_PDA.Start`): `inventoryLabel` =
   "INVENTORY".
-- Not yet (M9u8b2b–b5): `UI/Circle` and the icons' `SLICE_9_GRID`
-  backgrounds in WGSL, hover, clicks, drag and drop, notifications.
+- Ported later in M9u8b: `UI/Circle` and the icons' `SLICE_9_GRID`
+  backgrounds (b2b), hover and clicks (b3a), the tooltip (b3b), drag and
+  drop (b4), notifications (b5); each in its own section below.
 
 ## The inventory tab's icons (M9u8b2a) — confirmed (decompiled code, Resources, `ui --inventory`, client)
 
@@ -271,7 +284,7 @@ in `Equipment.slotMapping`.
   a new one, last among its siblings. Icons never overlap, so the draw
   order between them shows nothing.
 
-## The tooltip (M9u8b3b) — confirmed (decompiled code, stored fields, `ui --tooltip`)
+## The tooltip (M9u8b3b) — confirmed (decompiled code, stored fields, `ui --tooltip`, client)
 
 **The prefab** (`uGUI/Tooltip` in `uGUI`, dumped by `ui --tooltip`):
 one node holds a world-space `Canvas`, a `CanvasGroup`, its
@@ -2088,7 +2101,8 @@ the ignored `out/m9u7d/`). Our port: `crates/sn-ui/src/popup.rs`,
   than 1 s of its duration has passed. `Inventory.Pickup` adds
   `(Inventory, the item's UniqueIdentifier id, 4 s)` unless `noMessage`;
   `KnownTech`'s verbose adds add `(Blueprints, key, 3 s)` and the
-  `CraftTree`/`Builder` ones. Ported with the inventory tab (M9u8b).
+  `CraftTree`/`Builder` ones. The `Inventory` group is ported (M9u8b5a,
+  § Notifications); the `Blueprints` and other groups are not.
 - **`uGUI_PopupNotification`** (on `ScreenCanvas/HUD/Content/
   PopupNotification`: anchors y 0.4 stretched across, anchored (0, 108),
   size delta (0, 1080), so its rect is the canvas's width × 1080): its own
@@ -2487,3 +2501,27 @@ and `RectTransformExtensions` (read only; our code is
   materials `NOTIFICATION` on while a > 0 and `_NotificationStrength` a.
 - The overlay's wrap mode is the texture's own (*not checked*: if it
   clamps, the ring is the edge texel once u leaves 0–1).
+
+## Two players (M9u9) — confirmed (client runs, host and join on one machine)
+
+The UI has no network state of its own: each client builds it from its
+own player's state and from the world events every machine replays
+(`docs/formats/protocol.md` and M10). Checked with two release clients on
+127.0.0.1 (logs `out/m9u9/`, 0 WARN/ERROR on all six):
+- **The locker is shared, inventories are not.** The host moved the
+  locker's supplies out (8 moves) and the Tank (drag) and Fins (click)
+  back; the joiner then dragged the Tank into its own grid. Both clients
+  logged the same locker contents after the same world event (11, 13, 14,
+  15); the host's inventory line did not change at the joiner's move
+  (event 14), and the joiner's inventory held only the Tank.
+- **Pick-up feedback is the picker's only.** A pick-up's icons
+  (`uGUI_IconNotifier`), `NotificationManager.Add` and the tab count
+  appeared only on the client whose player picked up; the other client
+  logged the same keys gone (3, then 5) and the dropped item's object
+  drawn at event 8 and removed at event 11.
+- **Messages are the player's own.** The host's death showed "You died
+  and lost some belongings." on the host only (6.006 s shown); the
+  joiner drew the host's two death drops at the same event.
+- The original game has no multiplayer, so who sees what is our rule
+  (`docs/DESIGN.md` Phase D: shared world, own player's UI), not a fact
+  about the game.
