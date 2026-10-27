@@ -271,6 +271,109 @@ in `Equipment.slotMapping`.
   a new one, last among its siblings. Icons never overlap, so the draw
   order between them shows nothing.
 
+## The tooltip (M9u8b3b) — confirmed (decompiled code, stored fields, `ui --tooltip`)
+
+**The prefab** (`uGUI/Tooltip` in `uGUI`, dumped by `ui --tooltip`):
+one node holds a world-space `Canvas`, a `CanvasGroup`, its
+`RectTransform` and `uGUI_Tooltip`; the script's `canvas`,
+`rectTransform` and `canvasGroup` all point at it. Stored: anchors at the
+centre, pivot (0, 1) (top left), 256 × 256, scale 0.01, `scaleFactor`
+0.00116. Children: `Background` (`Image`, stretched over the parent),
+`Prefix` (TMP, anchor and pivot top left, at (10, −10)), `Icons`
+(`FlexibleGridLayout`), `Postfix` (TMP). Both texts: font size 16, word
+wrap, rich text, aligned top left; stored texts "Prefix" and
+"Postfix
+" (replaced before the first draw).
+
+**When it shows** (`FPSInputModule`, each frame with the mouse): the
+graphic under the pointer's nearest `ITooltip` up the hierarchy. None, or
+one with `showTooltipOnDrag` false while a button drags (an item icon's
+is false) → `uGUI_Tooltip.Clear()` (only `visible = false`; the texts are
+kept). Else `Set(tooltip)`: the data reset, `GetTooltip(data)`, `prefix`
+and `postfix` taken from it, `visible = true`. Nothing under the pointer
+→ `Clear`. An item icon (`uGUI_ItemIcon`, an `ITooltip`) asks its
+container (`uGUI_ItemsContainer.GetTooltip` → `uGUI_InventoryTab.
+GetTooltip`) → `TooltipFactory.InventoryItem(item)`; a slot
+(`uGUI_EquipmentSlot`) asks `uGUI_Equipment`, which passes its item if
+the slot holds one (an empty slot gives empty texts, so `Clear`).
+
+**`OnUpdate`** (`ManagedUpdate.PreCanvasTooltip`): with the prefix, the
+icons and the postfix all empty, or `ExtractParams` failing, `Clear`.
+Visible: `canvasGroup.alpha` = the hovered graphic's nested alpha
+(`CalculateNestedAlpha`), the node's layer and the canvas's sorting layer
+and order = the hovered graphic's canvas's (its order + 2). When a text
+or the icons changed, the texts are set and `OnLayout` (queue `UILayout`)
+then `UpdatePosition` (queue `UILayoutComplete`) run that frame; else
+only `UpdatePosition`. Not visible: alpha 0. `Awake` sets alpha 0.
+
+**`ExtractParams`** (`CursorManager.GetPointerInfo`): the hovered
+graphic's nearest `Canvas` up the hierarchy (for the inventory's icons:
+the PDA screen's root canvas, the only other one being the blueprint
+tab's `BlueprintPinHover`), its `RectTransform`'s matrices, rotation,
+lossy scale and `rect`; the pointer's world point on that canvas's plane
+(`ScreenPointToWorldPointInRectangle`); the event camera's transform
+(`aimingTransform`).
+
+**`OnLayout`** (with no icons: an inventory item has none, so the icon
+grid's preferred size is 0 × 0): a = max(prefix's and postfix's
+preferred widths unbounded (`GetPreferredValues(text)`), icons' width),
+at most 429; both text rects get width a; their heights are
+`GetPreferredValues(text, a, 0).y`; the prefix at (20, −20), the icons
+below it, then the postfix 10 lower when its height > 0; the root rect
+(a + 40) × (20 + prefix + icons + (10) + postfix + 20). The background
+stretches with it.
+
+**`UpdatePosition`**: s = dot(camera forward, pointer − camera) ×
+`scaleFactor` × `uGUI_CanvasScaler.uiScale`; the root's local scale is
+(s, s, s), its rotation the canvas's. In the canvas's local space (k =
+s ÷ the canvas's lossy scale per axis): the size is the background's
+size × k, the margin (10, 20) × k, the pointer p. Right overflow r =
+max(0, p.x + m.x + w − right), left overflow l = −min(0, p.x − m.x − w −
+left), likewise top t and bottom b with the height. x = p.x + m.x (to the
+right) unless r > 0: then p.x − m.x − w (to the left), or when l > 0 too,
+the left edge if r > l else right − w. y = p.y − m.y (below; the pivot is
+the top) unless b > 0: then p.y + m.y + h (above), or when t > 0 too, the
+top edge if b > t else bottom + h. z stays the pointer's. The point goes
+back to world space.
+
+**`TooltipFactory.InventoryItem`** = `ItemCommons` (prefix) +
+`ItemActions` (postfix), with `WriteTitle` (`<size=25><color=#ffffffff>…
+</color></size>`), `WriteDescription` (a new line unless first,
+`<size=20><color=#DDDEDEFF>…</color></size>`), `WriteAction` (a new line
+unless first, `<size=20><color=#ffffffff>key</color> - <color=#00ffffff>
+action</color></size>`).
+- `ItemCommons(techType, the Pickupable's object)`: title
+  `Language.Get(techType)` (a dead `Creature`: `DeadFormat`; an `Eatable`
+  with a secondary text, in survival, when it decomposes: rotting (food
+  and water < 0), ripe (food < ½ stored), decomposing (food < 0.9 stored)
+  → `DecomposingFormat(secondary, title)`); then an `EnergyMixin`'s
+  battery charge or `BatteryNotInserted`; an `IBattery` (only `Battery`)
+  its `GetChargeValueText` = `BatteryCharge(charge ÷ capacity,
+  RoundToInt(charge), capacity)` **and no description**; `FirstAidKit`:
+  `HealthFormat(50f)`; an `Eatable` in survival: `FoodFormat(ceil(food))`
+  and `WaterFormat(ceil(water))`, each only when not 0; an
+  `IOxygenSource` (`Oxygen`, `AirBladder`): its seconds left
+  (`GetOxygenText`); the description `Tooltip_<TechType>`; a `Signal`'s
+  target description; a `FireExtinguisher`'s fuel. `WriteDebug` only with
+  `TooltipFactory.debug`.
+- `ItemActions(item)`: bind = the item is `hoveredItem` and
+  `GetCanBindItem` (its `EquipmentType` is `Hand` and it is in the
+  player's own container). With the keyboard and mouse: bind → `KeyRange15
+  - BindQuickSlot`; then the actions of buttons 3, 0, 2, 1 (in that
+  order) that are not `None`, each `FormatButton(button)` and its word
+  (`Use`, `Eat`, `Equip`, `Unequip`, `SwitchContainer`, `SwapItems`,
+  `Drop`, `AssignQuickSlot`). `GetItemAction`: button 0 the first of use,
+  eat, equip, unequip, swap, switch; button 1 drop; buttons 2 and 3 none
+  (they act only with a controller). Buttons 0–3 are `UISubmit`,
+  `UICancel`, `UIClear`, `UIAssign`; with the default bindings
+  `FormatButton` gives the mouse's left and right button sprites (`<sprite
+  name="MouseButtonLeft" color=#ADF8FFFF>`, `…Right…`), "Delete" and the
+  `KeyboardF` sprite.
+- **Formats:** `Language.GetFormat` is `string.Format(culture, …)` with
+  the language's culture. The English entries use `{0:+#;-#;+0}` (food,
+  water, health) and `{0:P0}` (the battery). *Hypothesis:* `P0` writes
+  "50%" with no space (Mono's en-US); not checked against the game.
+
 ## Canvases and scalers — confirmed
 
 **`Canvas` (class 223), 55 bytes:** PPtr game object, `u8` enabled

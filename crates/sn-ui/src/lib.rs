@@ -25,6 +25,7 @@
 //!   closes, and its tabs.
 //! - [`popup`] (M9u7d1): `uGUI_PopupNotification`, the unlock pop-up.
 //! - [`scaler`] (M9u5b): the UI camera and `uGUI_CanvasScaler`'s placement.
+//! - [`tooltip`] (M9u8b3b): `uGUI_Tooltip` and `TooltipFactory`'s texts.
 //! - [`text`] (M9u4c): TextMesh Pro's text layout, auto-size and
 //!   preferred sizes.
 //! - [`state`] (M9u6a): a tree's live state, the scripts' changes.
@@ -54,4 +55,5 @@ pub mod scaler;
 pub mod state;
 pub mod text;
 pub mod toolbar;
+pub mod tooltip;
 pub mod tween;

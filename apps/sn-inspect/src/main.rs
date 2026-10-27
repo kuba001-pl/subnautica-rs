@@ -50,6 +50,7 @@ mod sprites_tmp;
 mod start;
 mod swim;
 mod texts;
+mod tooltip;
 mod texture;
 mod ui;
 mod unity;
@@ -302,6 +303,8 @@ Commands:
                          its icons, OpenTab and clicks against the rule
   ui --inventory         M9u8b1: the PDA's inventory tab without icons:
                          containers, the doll's slots, labels
+  ui --tooltip           M9u8b3b: uGUI_Tooltip and TooltipFactory's item
+                         texts
   ui --layout <CLASS> [<NAME>]
                          M9u1: a script's layout and, for its first object
                          (named NAME), where each field starts and its value
@@ -535,6 +538,7 @@ fn run(mut args: Vec<String>) -> Result<ExitCode> {
         ["ui", "--popup"] => popup::run(&game),
         ["ui", "--pda"] => pda_tabs::run(&game),
         ["ui", "--inventory"] => inventory_tab::run(&game),
+        ["ui", "--tooltip"] => tooltip::run(&game),
         ["ui", "--fonts"] => fonts::run(&game, false),
         ["ui", "--fonts", "--atlas"] => fonts::run(&game, true),
         ["ui", "--sprites"] => ui::sprites(&game, false),

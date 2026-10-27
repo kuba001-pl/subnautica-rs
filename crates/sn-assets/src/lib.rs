@@ -40,6 +40,7 @@ mod slots;
 mod sprites;
 mod terrain;
 mod texts;
+mod tooltip;
 mod ui;
 mod ui_draw;
 mod ui_layout;
@@ -121,6 +122,7 @@ pub use terrain::{
     TerrainMaterial, TerrainMaterials, TerrainTexture, terrain_materials,
 };
 pub use texts::UiText;
+pub use tooltip::{ItemTooltipValues, UNPORTED_TOOLTIP_SCRIPTS};
 pub use ui::{UGUI_PREFAB_KEY, UiComponent, UiNode, UiTree};
 pub use ui_draw::{GlyphAtlases, UiDraw, font_texture_key, texture_key};
 pub use ui_layout::{UiDrawParts, UiGraphic, UiGraphicKind, UiLayout};

@@ -2,6 +2,44 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-27 — M9u8b3b1: the tooltip's texts (plan for M9u8b3b)
+
+**What/why:** M9u8b3b (the inventory item tooltip) was researched in the
+decompiled `uGUI_Tooltip`, `TooltipFactory`, `FPSInputModule` and
+`CursorManager` and split into b3b1 (texts), b3b2 (layout and placement)
+and b3b3 (the client) in DESIGN. This first step makes the texts.
+(Started by an agent that was cancelled; its uncommitted work was
+reviewed against the decompile and kept, with the fixes below.)
+- `sn-ui::tooltip` (new): `TooltipConfig`, `TooltipStrings` (the action
+  words, the four buttons' texts, the formats), `cs_format` (the subset
+  of C#'s `string.Format` the English entries use: `{0:+#;-#;+0}`,
+  `{0:P0}`), `WriteTitle` / `WriteDescription` / `WriteAction`,
+  `item_commons`, `item_actions`, `inventory_item`; 4 unit tests with
+  made-up strings.
+- `sn-assets`: `tooltip_config` (`uGUI_Tooltip`'s nodes and
+  `scaleFactor`), `item_tooltip_values` (an item prefab's `Eatable` and
+  `Battery`, and the scripts whose lines we leave out),
+  `ItemTooltipValues::facts`; `UiScene::text_params`.
+- `sn-inspect ui --tooltip` (new): the prefab dumped, then the checks.
+- `docs/formats/ui.md` § The tooltip: the research.
+No new dependencies.
+
+**Found:** `Battery._charge` is not stored (`[NonSerialized]`);
+`OnAfterDeserialize` sets it to `_capacity`, so a new battery shows 100 of
+100. The first run failed on reading it; fixed to the rule.
+
+**Verified** (`SUBNAUTICA_DIR` set; logs in `out/m9u8b3b/`):
+- `sn-inspect ui --tooltip` (`ui-tooltip-b3b1.log`): RUN OK, 23 of 23.
+  Flare: the bind hint and drop; FilteredWater: water +20, eat, drop;
+  NutrientBlock: food +75, eat, drop; FirstAidKit: health +50, use,
+  drop; Titanium: drop; Battery: the charge line and no description,
+  drop; the Tank in its slot: unequip. All as written in DESIGN before the
+  run, each line equal to one built from the language file.
+- `cargo test --workspace` 725 passed, 0 failed; clippy clean.
+- Not tested: `{0:P0}` against the game (we write the percent sign with no space; Mono's en-US
+  spacing is a hypothesis); the Tank's oxygen line, tools' `EnergyMixin`
+  charge and food decay are not ported.
+
 ## 2026-10-20 — M9u8b3a: hover and clicks on the game's inventory tab; our panel removed
 
 **What/why:** the next step of M9u8b (DESIGN). M9u8b3 was split: b3a

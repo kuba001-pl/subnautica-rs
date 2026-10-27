@@ -493,6 +493,12 @@ impl UiScene {
         self.layout.nodes.get(node).map(|n| &n.rect)
     }
 
+    /// A text node's parameters as stored (M9u8b3b); `None` if the node
+    /// has no text.
+    pub fn text_params(&self, node: usize) -> Option<&TextParams> {
+        self.texts.iter().find(|t| t.node == node).map(|t| &t.params)
+    }
+
     /// Sorting layer ids not in the TagManager.
     pub fn unknown_layers(&self) -> &[i32] {
         &self.parts.unknown_layers
