@@ -2,6 +2,52 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-27 — M9e3: fabricator close cycle resolved; M9e3 done
+
+**What/why:** resolved the checkpoint's blocking pose check (STATUS.md,
+now deleted). **Root cause:** the controller's default `closed` state
+plays `fabricator_closed`, a 0.033 s non-looping clip with 26 streamed
+(non-constant) curves. The test took its "initial closed" reference after
+one 1/60 s update, i.e. normalized time 0.5, mid-way between the clip's
+keys; after the cycle the state is clamped at the clip's end (normalized
+50). A diagnostic (not kept) printed per-slot values: the differences were
+on six slots (two positions ~4e-4, four rotations up to 0.0319, two of
+them sign-flipped), and a fresh animator left in `closed` for 120 frames
+matched the post-cycle pose on every slot. So our playback was right
+and so was 240 frames (closing ends around 2.45 s); Unity also holds a
+non-looping clip's last frame. No playback change. The test now takes
+its reference after two updates and asserts the state is `closed` at
+normalized time ≥ 1, and that after closing it is `closed` with no
+transition pending. Tolerance unchanged (1e-4). animation.md updated.
+
+**Verified:** `$env:SUBNAUTICA_DIR='D:\SteamLibrary\steamapps\common\Subnautica';
+cargo test -p sn-assets fabricator_world -- --ignored --nocapture`: pass,
+pose change 0.7423693, closed residual 0, end normalized 50.000004,
+ghosts 90/90, 24 slots, 8 palette bones. Release client, each with a fresh
+`--save-dir` in system temp (since M9f a solo client loads a slot, and the
+default slot refuses `--test-supply` once it has been played):
+- `sn-client --save-dir %TEMP%\sn-m9e3-b --view 400 --resolution 960 540
+  --test-supply ScrapMetal --use-item 3 --panel 6=take-all,7=close
+  --craft 8=open,9=Titanium --shot 14 m9e3-done-solo`: exit 0, 0
+  WARN/ERROR; hand "Use fabricator"; open at 0.8957 m (closeDistance 3);
+  preview attached to the animated itemSpawnPoint at event 10, two beams;
+  done, pickup at 0.8957 < 3; Titanium in the inventory, ghost removed at
+  event 12; power 75→70.
+- Same with `--shot 10.8 m9e3-done-during` (slot `sn-m9e3-a`): exit 0, 0
+  WARN/ERROR; screenshot `out/m9e3-done-during.png` shows the preview on
+  the tray with the plain beams and the 63 % reticle.
+- `sn-client --save-dir %TEMP%\sn-m9e3-c --view 400 --resolution 960 540
+  --craft 3=open --hold-back 6 --shot 12 m9e3-done-close`: exit 0, 0
+  WARN/ERROR; open at 2.0634 m, close at 3.2251 m against 3; animator
+  parameter open true→false.
+- `CARGO_BUILD_JOBS=2 cargo test --workspace` (game unset): 756 passed,
+  0 failed, 66 ignored; clippy `-D warnings` and `fmt --check` pass.
+
+**Note:** `%LOCALAPPDATA%/subnautica-rs/saves/default` already existed
+(created 21:26, before this session's runs); left untouched.
+**Not tested:** original-game visual parity of the animation and effects;
+the fabrication shader, particles and light (plain fallbacks, logged).
+
 ## 2026-10-27 — M9e3 checkpoint: world fabricator, animation check unresolved
 
 **What/why:** reviewed the inherited uncommitted M9e3 changes and kept the

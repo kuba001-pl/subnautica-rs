@@ -80,7 +80,19 @@ fn fabricator_world() {
                 bindings += b.nodes.len();
                 let program = std::sync::Arc::new(program);
                 let mut animator = sn_anim::Animator::new(program.clone(), b.defaults);
+                // The default "closed" state's clip is 0.033 s long and not
+                // looping, with motion between its two keys: one 1/60 s update
+                // samples it mid-clip (normalized 0.5). Unity holds a
+                // non-looping clip's last frame, so the resting closed pose is
+                // the one after the clip has ended (confirmed in M9e3: a fresh
+                // animator left in "closed" for 120 frames equals the pose
+                // after the open/close cycle on every slot).
+                let closed_state = sn_unity::name_hash("closed");
                 animator.update(1.0 / 60.0);
+                animator.update(1.0 / 60.0);
+                let rest = animator.layer_info(0).unwrap();
+                assert_eq!(rest.state, Some(closed_state));
+                assert!(rest.normalized_time >= 1.0);
                 let closed = animator.pose().to_vec();
                 assert!(animator.set_bool(sn_unity::name_hash("open_fabricator"), true));
                 for _ in 0..180 {
@@ -97,6 +109,8 @@ fn fabricator_world() {
                 for _ in 0..240 {
                     animator.update(1.0 / 60.0);
                 }
+                let end = animator.layer_info(0).unwrap();
+                assert_eq!((end.state, end.next), (Some(closed_state), None));
                 let residual = program
                     .slots
                     .iter()
@@ -125,7 +139,10 @@ fn fabricator_world() {
                         }
                     })
                     .fold(0.0f32, f32::max);
-                println!("fabricator open/close: pose change={change}, closed residual={residual}");
+                println!(
+                    "fabricator open/close: pose change={change}, closed residual={residual}, end normalized={}",
+                    end.normalized_time
+                );
                 assert!(residual < 1e-4);
                 assert!(animator.pose().iter().all(|v| v.is_finite()));
             }

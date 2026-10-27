@@ -22,14 +22,14 @@ references. Existing animation/skin code then applies the default closed
 state and moves the glyph with its restored parent. Scoped to active,
 enabled `PrecursorKeyTerminal` scripts: other optimized families have not
 been validated at that milestone. M9e3 also scopes restoration to Fabricator
-scripts; its checkpoint and unresolved cycle check are described below.
+scripts; its close-cycle check is described below.
 Purple, orange and blue templates each resolve 240/240
 clip bindings and 7/7 bones; a one-second closed-pose test reports finite
 skin vertices and a 0.215570 m glyph-centre/nearest-body-vertex distance
 (this is not a triangle-surface gap). Original-game visual parity and key
 insertion interaction remain **not tested**. Research logs stay ignored.
 
-## Optimized fabricator — partial confirmation (2026-10-27)
+## Optimized fabricator (2026-10-27)
 
 **Confirmed by Rust install reads:** the pod fabricator has an optimized
 generic avatar with 11 skeleton nodes. The serialized skinned renderer
@@ -39,17 +39,30 @@ the mesh palette with the existing avatar rule changes clip binding from
 Synthetic virtual bones have no serialized GameObject/components; component
 queries return an empty list for them.
 
-**Confirmed by the ignored runtime test:** opening for 180 frames at 60 Hz
-changes the sampled pose by 0.7428153 in the maximum scalar component.
-After closing for 240 frames, the residual from the initial closed sample
-is 0.031879187 after accounting for quaternion sign equivalence, above
-the test's 1e-4 bound. The test fails; this is **not** evidence of a correct
-close cycle. The earlier raw quaternion comparison gave 1.4142408.
+**Controller (confirmed, `sn-inspect anim Submarine/Build/Fabricator.prefab
+--states`):** one layer, default state `closed`, states closed → opening
+(on `open_fabricator`) → open (exit time 0.79) → closing (on not
+`open_fabricator`) → closed (exit time 0.9026, 0.0974 s blend);
+`fabricating` and `fabricating_slow` branch from open. The `closed` clip
+`fabricator_closed` is **0.033 s long, not looping, and has 26 streamed
+(non-constant) curves**: the resting closed pose is its last frame, not
+its first.
 
-**Hypothesis:** clip sampling times or a retained curve/default channel may
-explain the remaining difference. The affected slot is not yet identified.
-Stopped after two attempts; see STATUS.md. Original-game visual parity is
-**not tested**. M9e3 remains incomplete.
+**Close cycle (confirmed by the ignored `fabricator_world` test, M9e3):**
+the checkpoint compared the final pose against a sample taken after one
+1/60 s update, i.e. at normalized time 0.5 of the `closed` clip, mid-way
+between its keys. That was the 0.031879187 residual (largest on the two
+arm rotation slots; positions differed by about 4e-4). A fresh animator
+left in `closed` for 120 frames equals the post-cycle pose on every slot,
+so playback was right and the reference was sampled too early. With the
+reference taken once the `closed` clip has ended (two updates, normalized
+time ≥ 1), opening for 180 frames changes the pose by 0.7423693 and
+closing for 240 frames returns to `closed` (normalized 50, no transition
+pending) with residual **0** after quaternion sign equivalence. Two
+rotation slots come back as the negated quaternion (same rotation; our
+nlerp picks a hemisphere per blend). Holding a non-looping clip's last
+frame is the clamp rule under "Clip time" below. Original-game visual
+parity is **not tested**.
 
 Described build: game build `10` (Unity 2019.4.36f1). Reader:
 `crates/sn-unity/src/anim.rs` (M7f4a); runtime: `crates/sn-anim` (M7f4b).
