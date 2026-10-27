@@ -75,6 +75,7 @@ impl Client {
         // As on the wire.
         let m = ServerMessage::decode(&m.encode()).unwrap();
         match m {
+            ServerMessage::Restore { .. } => {}
             ServerMessage::Reject(r) => self.rejected = Some(r),
             ServerMessage::Welcome {
                 player,
@@ -1017,4 +1018,128 @@ fn test_supplies_go_into_the_locker_and_reach_joiners() {
     let world = w.clients[&a].world.as_ref().unwrap();
     assert_eq!(world.items.locker.len(), before + 1);
     assert!(w.server.add_test_supplies(&[common::TANK]).is_err());
+}
+
+#[test]
+fn save_round_trip_offline_inventory_equipment_world_and_pose() {
+    let mut w = World::with(item_config());
+    let c = w.join("saved");
+    w.send(c, &ClientMessage::Ready);
+    let mut pose = state(Tick(0), 12.25);
+    pose.in_pod = true;
+    w.send(c, &ClientMessage::States(vec![pose]));
+    let vitals = PlayerVitals {
+        health: 61.25,
+        oxygen: 12.5,
+    };
+    w.send(c, &ClientMessage::Vitals(vitals));
+    for (req, request) in [
+        Request::Move {
+            item: ItemId(2),
+            to: Store::Slots,
+            target: MoveTarget::Store,
+        },
+        Request::PickUp {
+            key: EntityKey::Placed("synthetic-1".into()),
+            class: "quartz".into(),
+        },
+        Request::PickUp {
+            key: EntityKey::Placed("synthetic-2".into()),
+            class: "big".into(),
+        },
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        w.send(
+            c,
+            &ClientMessage::Request {
+                req: req as u32,
+                request,
+            },
+        );
+    }
+    pose.tick = Tick(1);
+    pose.in_pod = false;
+    w.advance(TICK_US);
+    w.send(c, &ClientMessage::States(vec![pose]));
+    w.send(
+        c,
+        &ClientMessage::Request {
+            req: 3,
+            request: Request::Drop {
+                item: ItemId(4),
+                at: DropAt {
+                    point: [1., 2., 3.],
+                    rotation: [0, 0, 0, 32767],
+                },
+            },
+        },
+    );
+    assert!(w.clients[&c].refused.is_empty());
+    w.send(c, &ClientMessage::Bye);
+    let bytes = w.server.save_bytes(w.now);
+    let mut loaded = Server::from_save(item_config(), &bytes, 0).unwrap();
+    assert_eq!(loaded.world().items, w.server.world().items);
+    assert_eq!(loaded.clock(0).0, Tick(1));
+    assert_eq!(loaded.save_bytes(0), bytes);
+    assert_eq!(loaded.world().items.gone.len(), 2);
+    assert_eq!(loaded.world().items.objects.len(), 1);
+    let conn = ConnId(90);
+    loaded.connected(conn, 0);
+    loaded.received(conn, &hello("saved").encode(), 0);
+    let actions = loaded.take_actions();
+    assert!(actions.iter().any(|a| matches!(a, Action::Send { message: ServerMessage::Restore { state: Some(s), vitals: Some(v) }, .. } if *s == pose && *v == vitals)));
+    assert!(loaded.world().items.owns(PlayerId(0), ItemId(3)));
+    assert_eq!(
+        loaded.world().items.players[&PlayerId(0)]
+            .inventory
+            .equipment
+            .items()
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn invalid_saves_never_panic_or_silently_load() {
+    let mut w = World::with(item_config());
+    w.join("saved");
+    let bytes = w.server.save_bytes(w.now);
+    for n in 0..bytes.len() {
+        let err = Server::from_save(item_config(), &bytes[..n], 0)
+            .err()
+            .expect("truncated save accepted");
+        assert!(err.offset <= n);
+    }
+    for i in 0..bytes.len() {
+        let mut bad = bytes.clone();
+        bad[i] ^= 0x80;
+        assert!(Server::from_save(item_config(), &bad, 0).is_err());
+    }
+    let mut cfg = item_config();
+    cfg.fingerprint ^= 1;
+    assert!(
+        Server::from_save(cfg, &bytes, 0)
+            .err()
+            .unwrap()
+            .message
+            .contains("rules")
+    );
+    let mut cfg = item_config();
+    cfg.build = "other".into();
+    assert!(Server::from_save(cfg, &bytes, 0).is_err());
+    // A syntactically valid item allocation can still be semantically unsafe.
+    let mut loaded = Server::from_save(item_config(), &bytes, 0).unwrap();
+    // Exercise parser on random headers as well as every truncation/bit.
+    let mut random = 17u64;
+    for _ in 0..10_000 {
+        let mut bad = vec![0; 128];
+        for b in &mut bad {
+            random = random.wrapping_mul(6364136223846793005).wrapping_add(1);
+            *b = (random >> 32) as u8;
+        }
+        assert!(Server::from_save(item_config(), &bad, 0).is_err());
+    }
+    loaded.connected(ConnId(100), 0);
 }

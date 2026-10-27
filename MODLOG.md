@@ -2,6 +2,29 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-27 ? M9f2: pure save codec and reconnect state
+
+**What/why:** `sn-session::save`, bytes only: independent versioned header,
+protocol/build/rules/tick compatibility, bounded length and checksum;
+world settings/elapsed tick/random, stable names/ids, online and offline
+pose/vitals, complete existing item snapshot. Loading checks identity,
+ownership, allocation and container invariants and reports absolute offsets.
+Offline pose survives disconnect. Protocol 5 adds numeric vitals reports
+and reliable own-state restoration before world chunks/Ready; M9e is not a
+dependency. The client retains this restore for its app to apply (M9f3).
+No dependencies or ignore changes in the pure crates.
+
+**Verified:** `cargo test -p sn-session -p sn-protocol` (log
+`out/m9f2-tests.log`): 51 tests pass, 0 fail. New round-trip checks offline
+inventory, equipped tank, locker, unlocks, 2 removed keys, 1 drop, pose,
+health 61.25, oxygen 12.5, stable identity and elapsed tick. Every truncation
+and bit flip rejected, plus 10,000 random inputs, no panics; build/rules
+mismatch rejected. Initial compile found a test receiver's exhaustive match
+needed the new Restore variant; fixed. `cargo fmt --all` run.
+Further app integration, real-data run and full workspace checks not tested
+at this step; M9f3/M9f4 follow. Verification: repeat the command above;
+expect all tests pass. No assets in status.
+
 ## 2026-10-27 ? M9f1: save/load plan and state research
 
 **What/why:** wrote the M9f plan before implementation: pure versioned

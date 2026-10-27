@@ -1562,8 +1562,8 @@ all serialization uses existing dependencies.
 
 | Step | Work | Done when |
 |---|---|---|
-| **M9f1** | Plan and read-only format/state research. | Plan written before code; confirmed findings documented, no game code/data copied. |
-| **M9f2** | Pure versioned serialization and session restore, stable offline players, pose/vitals restore messages and client application. | Synthetic round-trip preserves all saved categories; truncated, corrupt, incompatible and invalid saves fail with offsets; reconnect keeps inventory and own pose/vitals. |
+| **M9f1** ? | Plan and read-only format/state research. | Plan written before code; confirmed findings documented, no game code/data copied. |
+| **M9f2** ? | Pure versioned serialization and session restore, stable offline players, pose/vitals restore messages (app application in M9f3). | Synthetic round-trip preserves all saved categories; truncated, corrupt, incompatible and invalid saves fail with offsets; reconnect sends inventory and own pose/vitals. |
 | **M9f3** | Shared app save I/O, platform folder, autosave and shutdown in dedicated and embedded servers. | Temp-directory tests cover backup, corruption refusal, path rejection and restart; both server modes compile; no filesystem dependencies in layer 2. |
 | **M9f4** | Real server/scripted-client restart proof and documentation close-out. | Real install run logs pickup/move/drop and matching saved/restored numbers; workspace tests, clippy and fmt pass; merge local main, resolve keeping both docs, rerun tests/clippy. |
 
