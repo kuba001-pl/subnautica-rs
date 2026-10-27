@@ -9,7 +9,7 @@
 use std::collections::BTreeMap;
 
 use sn_dotnet::Assembly;
-use sn_sim::survival::{ConsumeRules, HungerRules};
+use sn_sim::survival::{ConsumeRules, DecayRules, EnergyRules, HungerRules};
 
 use crate::Result;
 use crate::code::GAME_ASSEMBLY;
@@ -288,6 +288,105 @@ pub fn consume_rules(bytes: &[u8]) -> Result<ConsumeRules> {
     Ok(rules)
 }
 
+/// [`DecayRules`] from the game's code (M9s3): `Eatable`'s constructor
+/// (`despawnDelay`), `GetFoodValue`/`GetWaterValue` (the decay floor),
+/// `GetSecondaryTooltip` (the ripe and decomposing fractions),
+/// `IsRotten`, `SetDecomposes` and `StartDespawnInvoke` (the despawn
+/// check interval).
+pub fn decay_rules(bytes: &[u8]) -> Result<DecayRules> {
+    let e = |e: sn_dotnet::Error| format!("{GAME_ASSEMBLY}: {e}");
+    let asm = Assembly::parse(bytes).map_err(e)?;
+    let delay = sn_dotnet::field_initializer_f32(&asm, "", "Eatable", "despawnDelay").map_err(e)?;
+    let mut floor = None;
+    for method in ["GetFoodValue", "GetWaterValue"] {
+        let v = take(
+            &match_literals(&asm, "Eatable", method, &[Named("floor")])?,
+            "floor",
+        )?;
+        if floor.is_some_and(|f| f != v) {
+            return Err(format!(
+                "{GAME_ASSEMBLY}: Eatable's food and water floors differ"
+            ));
+        }
+        floor = Some(v);
+    }
+    let tooltip = match_literals(
+        &asm,
+        "Eatable",
+        "GetSecondaryTooltip",
+        &[Fixed(0.0), Fixed(0.0), Named("ripe"), Named("decomposing")],
+    )?;
+    match_literals(&asm, "Eatable", "IsRotten", &[Fixed(0.0), Fixed(0.0)])?;
+    match_literals(&asm, "Eatable", "SetDecomposes", &[Fixed(0.0), Fixed(0.0)])?;
+    let despawn = match_literals(
+        &asm,
+        "Eatable",
+        "StartDespawnInvoke",
+        &[Fixed(0.0), Named("interval"), Named("interval")],
+    )?;
+    let rules = DecayRules {
+        decay_floor: f64::from(floor.unwrap_or(f32::NAN)),
+        ripe_fraction: f64::from(take(&tooltip, "ripe")?),
+        decomposing_fraction: f64::from(take(&tooltip, "decomposing")?),
+        despawn_check_interval: f64::from(take(&despawn, "interval")?),
+        default_despawn_delay: f64::from(delay),
+    };
+    rules
+        .validate()
+        .map_err(|r| format!("{GAME_ASSEMBLY}: decay rules: {r}"))?;
+    Ok(rules)
+}
+
+/// [`EnergyRules`] from the game's code (M9s3): `Battery`'s constructor
+/// (`_capacity`), `EnergyMixin`'s constructor (`defaultBattery`,
+/// `defaultBatteryCharge`, `maxEnergy`), `get_charge` (the recovery ramp)
+/// and `ModifyCharge`.
+pub fn energy_rules(bytes: &[u8]) -> Result<EnergyRules> {
+    let e = |e: sn_dotnet::Error| format!("{GAME_ASSEMBLY}: {e}");
+    let asm = Assembly::parse(bytes).map_err(e)?;
+    let capacity = sn_dotnet::field_initializer_f32(&asm, "", "Battery", "_capacity").map_err(e)?;
+    let default_charge =
+        sn_dotnet::field_initializer_f32(&asm, "", "EnergyMixin", "defaultBatteryCharge")
+            .map_err(e)?;
+    let max_energy =
+        sn_dotnet::field_initializer_f32(&asm, "", "EnergyMixin", "maxEnergy").map_err(e)?;
+    if capacity != max_energy {
+        return Err(format!(
+            "{GAME_ASSEMBLY}: Battery._capacity ({capacity}) != EnergyMixin.maxEnergy ({max_energy})"
+        ));
+    }
+    let default_tech = tech_in(&asm, "Battery", "EnergyMixin", ".ctor")?;
+    let charge_getter = match_literals(
+        &asm,
+        "EnergyMixin",
+        "get_charge",
+        &[Fixed(0.0), Named("recovery"), Named("recovery")],
+    )?;
+    match_literals(
+        &asm,
+        "EnergyMixin",
+        "ModifyCharge",
+        &[
+            Fixed(0.0),
+            Fixed(0.0),
+            Fixed(0.0),
+            Fixed(0.0),
+            Fixed(0.0),
+            Fixed(0.0),
+        ],
+    )?;
+    let rules = EnergyRules {
+        default_battery_tech: default_tech,
+        default_battery_charge: default_charge,
+        default_battery_capacity: capacity,
+        recovery_time: take(&charge_getter, "recovery")?,
+    };
+    rules
+        .validate()
+        .map_err(|r| format!("{GAME_ASSEMBLY}: energy rules: {r}"))?;
+    Ok(rules)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -354,6 +453,23 @@ mod tests {
             ),
             ("Eatable", "GetFoodValue", vec![-3.0], vec![]),
             ("Eatable", "GetWaterValue", vec![-3.0], vec![]),
+            (
+                "Eatable",
+                "GetSecondaryTooltip",
+                vec![0.0, 0.0, 0.4, 0.8],
+                vec![],
+            ),
+            ("Eatable", "IsRotten", vec![0.0, 0.0], vec![]),
+            ("Eatable", "SetDecomposes", vec![0.0, 0.0], vec![]),
+            ("Eatable", "StartDespawnInvoke", vec![0.0, 6.0, 6.0], vec![]),
+            ("Battery", "Dummy", vec![], vec![]),
+            ("EnergyMixin", "get_charge", vec![0.0, 2.5, 2.5], vec![]),
+            (
+                "EnergyMixin",
+                "ModifyCharge",
+                vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                vec![],
+            ),
         ]
     }
 
@@ -372,6 +488,33 @@ mod tests {
         }
         for (ty, list) in by_type {
             b.type_def("", ty);
+            if ty == "Eatable" {
+                let delay = b.field(0x0001, "despawnDelay");
+                let ctor = Il::default().op(LDARG_0).ldc_r4(120.0).stfld(delay).ret();
+                b.method(".ctor", 0, Some(&ctor.0));
+            }
+            if ty == "Battery" {
+                let cap = b.field(0x0001, "_capacity");
+                let ctor = Il::default().op(LDARG_0).ldc_r4(80.0).stfld(cap).ret();
+                b.method(".ctor", 0, Some(&ctor.0));
+            }
+            if ty == "EnergyMixin" {
+                let def_bat = b.field(0x0001, "defaultBattery");
+                let def_chg = b.field(0x0001, "defaultBatteryCharge");
+                let max_e = b.field(0x0001, "maxEnergy");
+                let ctor = Il::default()
+                    .op(LDARG_0)
+                    .ldc(504)
+                    .stfld(def_bat)
+                    .op(LDARG_0)
+                    .ldc_r4(0.75)
+                    .stfld(def_chg)
+                    .op(LDARG_0)
+                    .ldc_r4(80.0)
+                    .stfld(max_e)
+                    .ret();
+                b.method(".ctor", 0, Some(&ctor.0));
+            }
             if ty == "Survival" {
                 let food = b.field(0x0001, "food");
                 let water = b.field(0x0001, "water");
@@ -401,7 +544,11 @@ mod tests {
         }
         b.type_def("", "TechType");
         b.field(VALUE_FIELD, "value__");
-        for (name, v) in [("FirstAidKit", 7001), ("Bladderfish", 7002)] {
+        for (name, v) in [
+            ("Battery", 504),
+            ("FirstAidKit", 7001),
+            ("Bladderfish", 7002),
+        ] {
             let f = b.field(LITERAL, name);
             b.constant_i4(f, v);
         }
@@ -506,11 +653,55 @@ mod tests {
     }
 
     #[test]
+    fn reads_the_decay_and_energy_rules() {
+        let bytes = assembly(None, false);
+        let d = decay_rules(&bytes).unwrap();
+        assert_eq!(d.decay_floor, -3.0);
+        assert_eq!(
+            (d.ripe_fraction, d.decomposing_fraction),
+            (f64::from(0.4f32), f64::from(0.8f32))
+        );
+        assert_eq!(
+            (d.despawn_check_interval, d.default_despawn_delay),
+            (6.0, 120.0)
+        );
+        let e = energy_rules(&bytes).unwrap();
+        assert_eq!(e.default_battery_tech, 504);
+        assert_eq!(
+            (
+                e.default_battery_charge,
+                e.default_battery_capacity,
+                e.recovery_time
+            ),
+            (0.75, 80.0, 2.5)
+        );
+        let err = decay_rules(&changed("StartDespawnInvoke", 2, 7.0)).unwrap_err();
+        assert!(
+            err.contains("interval") && err.contains("IL offset"),
+            "{err}"
+        );
+        let err = decay_rules(&changed("GetSecondaryTooltip", 2, 0.9)).unwrap_err();
+        assert!(err.contains("decay rules"), "{err}");
+        let err = energy_rules(&changed("get_charge", 2, 3.0)).unwrap_err();
+        assert!(
+            err.contains("recovery") && err.contains("IL offset"),
+            "{err}"
+        );
+        let err = energy_rules(&changed("ModifyCharge", 3, 1.0)).unwrap_err();
+        assert!(
+            err.contains("expected 0") && err.contains("IL offset"),
+            "{err}"
+        );
+    }
+
+    #[test]
     fn damaged_assemblies_never_panic() {
         let bytes = assembly(None, false);
         let read = |b: &[u8]| {
             let _ = hunger_rules(b);
             let _ = consume_rules(b);
+            let _ = decay_rules(b);
+            let _ = energy_rules(b);
         };
         for n in 0..bytes.len() {
             read(&bytes[..n]);

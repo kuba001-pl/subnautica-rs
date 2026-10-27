@@ -1233,9 +1233,16 @@ prose. Numbers below describe rules, not a shipped balance table.
   `despawns`. A rotten inactive object resets the active tracking flag;
   a subsequently active rotten object starts a timer and is destroyed only
   after elapsed active time is strictly greater than `despawnDelay`
-  (initializer 300 s). **Hypothesis:** normal stored items are inactive;
-  verify their lifecycle before reproducing world despawn versus inventory
-  retention. Moving an item must preserve decay even when despawn pauses.
+  (initializer 300 s). **Confirmed (source: `Pickupable.Initialize`,
+  `Deactivate`, `Activate`, `Drop`, `StorageSlot.UnsafeAdd`,
+  `Inventory.AddPending`):** `Initialize` (called on `Pickup`,
+  `CraftData.AddToInventory` and `SpawnStoredLoot`) calls `Deactivate()`,
+  which sets `gameObject.SetActive(false)`; `StorageSlot.UnsafeAdd` and
+  `Inventory.AddPending` also set `gameObject.SetActive(false)`, whereas
+  `Pickupable.Drop` calls `Activate` (`SetActive(true)`). Stored items are
+  therefore inactive (`!gameObject.activeSelf`), so `IterateDespawn` resets
+  `wasActive = false` and retains rotten items in storage while preserving
+  `timeDecayStart` across moves.
 
 ## Quick slots and the held-tool flow (M9s research)
 
@@ -1489,3 +1496,39 @@ prose. Numbers below describe rules, not a shipped balance table.
   `first_aid = 4514`, `first_aid_health = 50`, `heal_success = 0.1` (as f32,
   `0.10000000149011612`), `oxygen_food = 2515`, `oxygen_on_eat = 15`,
   `decay_floor = -25`, and 0 callers of `Survival.GetWeaknessSpeedScalar`.
+
+### M9s3: decay, battery charge and replacement as implemented (2026-10-27)
+
+- **Confirmed (source: `Eatable.IsRotten`, `GetSecondaryTooltip`,
+  `SetDecomposes`, `StartDespawnInvoke`, `IterateDespawn`;
+  `Battery.set_charge`, `OnProtoDeserialize`; `EnergyMixin.SpawnDefaultAsync`,
+  `ModifyCharge`, `AddEnergy`, `ConsumeEnergy`, `Filter`, `Sort`, `Select`;
+  `Inventory.ForcePickup`, `FlushPendingItemsAsync`):**
+  `sn_sim::survival::decay` implements `is_rotten` (both current values
+  strictly `< 0`), `freshness` (`Rotting` when both `< 0`, else `Ripe`
+  when `food < ripe_fraction * base_food`, else `Decomposing` when
+  `food < decomposing_fraction * base_food`, else `Fresh`), `set_decomposes`
+  (disabling clears `decay_start` to `0`; enabling sets `decay_start = now`
+  only if `0`), and `iterate_despawn` (inactive items reset `was_active =
+  false` and never despawn; active rotten items set `despawn_start` on the
+  first active check and despawn only when `now - despawn_start >
+  despawn_delay`). `sn_sim::survival::energy` and
+  `sn_sim::inventory::{force_pickup, flush_pending}` implement `make_battery`,
+  `restore_battery` (preserving saved charge without refilling used/empty
+  batteries), `spawn_default_battery` (spawning only when `slot.battery` is
+  `None` and `default_battery != TechType.None`), `modify_charge`/`add_energy`/
+  `consume_energy` (clamped to `0..=capacity`, `consume_energy` succeeding
+  for any positive charge removed), `sort_reload_candidates` (stored battery
+  at index `0`, then compatible grid batteries by `compatible_batteries`
+  order and descending charge), and `select_battery` (returning the outgoing
+  battery through `force_pickup` into `inv.pending` when the grid is full).
+- **Confirmed (install, `sn-assets::{decay_rules, energy_rules}`, opt-in
+  test `the_decay_and_energy_rules_are_read`):** all constants are read at
+  runtime from `Assembly-CSharp.dll`: `Eatable.despawnDelay` (`300`),
+  `GetFoodValue`/`GetWaterValue` (`-25`), `GetSecondaryTooltip` (`0, 0,
+  0.5, 0.9` as f32 `0.8999999761581421`), `IsRotten` (`0, 0`),
+  `SetDecomposes` (`0, 0`), `StartDespawnInvoke` (`0, 5, 5`),
+  `Battery._capacity` (`100`, equal to `EnergyMixin.maxEnergy`),
+  `EnergyMixin.defaultBattery` (`TechType.Battery = 504`),
+  `EnergyMixin.defaultBatteryCharge` (`1`), `EnergyMixin.get_charge`
+  (`0, 2, 2`), and `EnergyMixin.ModifyCharge` (six `0`s).

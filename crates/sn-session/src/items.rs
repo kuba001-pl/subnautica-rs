@@ -692,6 +692,7 @@ impl ItemsState {
                 container,
                 equipment,
                 known: KnownTech::from_sets(known, analyzed),
+                pending: Vec::new(),
             };
             let p = PlayerItems {
                 inventory,

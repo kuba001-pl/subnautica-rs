@@ -11,11 +11,21 @@
 //! Nothing here runs in live play yet (M9s8/M9s11 wire it in).
 
 mod consume;
+mod decay;
+mod energy;
 mod hunger;
 
 pub use consume::{
     ConsumeRules, EatableInfo, Eaten, Refused, Used, UsedItem, add_health, eat, eat_item,
     initial_state, use_item, use_tech,
+};
+pub use decay::{
+    DecayRules, DespawnState, Freshness, freshness, is_rotten, iterate_despawn, set_decomposes,
+};
+pub use energy::{
+    EnergyMixinInfo, EnergyRules, ReloadOutcome, ReloadRefused, add_energy, consume_energy,
+    energy_capacity, energy_charge, energy_scalar, make_battery, modify_charge, restore_battery,
+    select_battery, set_battery_charge, sort_reload_candidates, spawn_default_battery,
 };
 pub use hunger::{HungerEffect, HungerRules, Stat, Survival, Warning, crossing};
 

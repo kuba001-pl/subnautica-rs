@@ -16,6 +16,9 @@ pub struct Inventory {
     pub container: Container,
     pub equipment: Equipment,
     pub known: KnownTech,
+    /// `Inventory._pendingItems`: items retained by `ForcePickup` when the
+    /// grid had no room (`AddPending`), flushed when space opens up.
+    pub pending: Vec<Item>,
 }
 
 impl Inventory {
@@ -31,11 +34,14 @@ impl Inventory {
             container: Container::new(size.0, size.1),
             equipment: Equipment::new(table, slots),
             known,
+            pending: Vec::new(),
         }
     }
 
     pub fn contains(&self, id: ItemId) -> bool {
-        self.container.contains(id) || self.equipment.slot_of(id).is_some()
+        self.container.contains(id)
+            || self.equipment.slot_of(id).is_some()
+            || self.pending.iter().any(|i| i.id == id)
     }
 
     /// `InternalDropItem` for one item: out of the grid or its slot, if
@@ -97,6 +103,47 @@ pub fn pickup(
     };
     let unlocked = inv.known.analyze(analysis, tech);
     Ok((into, unlocked))
+}
+
+/// `Inventory.ForcePickup`: tries [`pickup`]; when the grid has no room,
+/// retains the item in `inv.pending` (`AddPending`, returning `None`) so
+/// outgoing items (such as a replaced or unloaded battery) are never lost
+/// or duplicated.
+pub fn force_pickup(
+    inv: &mut Inventory,
+    techs: &Techs,
+    analysis: &[AnalysisEntry],
+    item: Item,
+    in_sub: bool,
+) -> (Option<PickedInto>, Vec<TechType>) {
+    match pickup(inv, techs, analysis, item, in_sub) {
+        Ok((into, unlocked)) => (Some(into), unlocked),
+        Err(item) => {
+            inv.pending.push(item);
+            (None, Vec::new())
+        }
+    }
+}
+
+/// `Inventory.FlushPendingItemsAsync`: walks `inv.pending` from back to
+/// front (`num = Count - 1; num >= 0; num--`) and moves each item that
+/// now fits through [`pickup`].
+pub fn flush_pending(
+    inv: &mut Inventory,
+    techs: &Techs,
+    analysis: &[AnalysisEntry],
+    in_sub: bool,
+) -> Vec<(ItemId, PickedInto, Vec<TechType>)> {
+    let mut flushed = Vec::new();
+    for i in (0..inv.pending.len()).rev() {
+        let item = inv.pending.remove(i);
+        let id = item.id;
+        match pickup(inv, techs, analysis, item, in_sub) {
+            Ok((into, unlocked)) => flushed.push((id, into, unlocked)),
+            Err(item) => inv.pending.insert(i, item),
+        }
+    }
+    flushed
 }
 
 /// The `grab` animator bool (`ArmsController.Update`): true for 0.4 s

@@ -36,8 +36,8 @@ pub use equipment::{Equipment, SlotTable};
 pub use known::{AnalysisEntry, KnownTech};
 pub use luck::{FairRandomizer, HitKind, Outcrop, PlayerEntropy, Resource, draw_resources};
 pub use moves::{
-    GRAB_TIME, Inventory, PickedInto, Store, Target, add_or_swap, grab_active, lose_items, pickup,
-    spawn_supplies,
+    GRAB_TIME, Inventory, PickedInto, Store, Target, add_or_swap, flush_pending, force_pickup,
+    grab_active, lose_items, pickup, spawn_supplies,
 };
 pub use rules::{ItemRules, OutcropDrop, OutcropInfo, PickupInfo};
 

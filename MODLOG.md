@@ -2,6 +2,42 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-27 — M9s3: decay, battery charge and replacement in sn-sim, headless
+
+**What/why:** third step of M9s. Added `sn_sim::survival::decay`
+(`DecayRules`, `Freshness`, `DespawnState`, `is_rotten`, `freshness`,
+`set_decomposes`, `iterate_despawn`), `sn_sim::survival::energy`
+(`EnergyRules`, `EnergyMixinInfo`, `ReloadOutcome`, `ReloadRefused`,
+`make_battery`, `restore_battery`, `set_battery_charge`,
+`spawn_default_battery`, `energy_charge`, `energy_capacity`,
+`energy_scalar`, `modify_charge`, `add_energy`, `consume_energy`,
+`sort_reload_candidates`, `select_battery`), and
+`sn_sim::inventory::{force_pickup, flush_pending}` (`Inventory.pending`) so
+replacing or unloading a battery at a full grid retains the outgoing
+battery in `inv.pending` without losing or duplicating it. Added
+`sn_assets::{decay_rules, energy_rules}` reading `Eatable`, `Battery` and
+`EnergyMixin` constants from `Assembly-CSharp.dll`. Settled the stored-item
+active-state hypothesis in `docs/formats/gameplay.md` from `Pickupable` /
+`StorageSlot` / `Inventory`.
+
+**Verification:** `cargo test -p sn-sim survival` (22 passed: 7 hunger + 8
+consume + 3 decay + 4 energy covering exact 0.5 and 0.9 freshness
+boundaries, -25 floor, inactive rotten retention vs active >300 s deadline,
+disabling/re-enabling decomposition, default battery only when absent,
+restored used/empty batteries never refilling, charge conservation across
+empty/full/partial changes, candidate sorting, full-grid swap/unload into
+`inv.pending` and `flush_pending` with 0 duplicate ids, and explicit error
+on missing rule inputs). `cargo test -p sn-assets --lib survival` (5
+passed). `SUBNAUTICA_DIR=D:\SteamLibrary\steamapps\common\Subnautica cargo
+test -p sn-assets --test real_data the_decay_and_energy_rules_are_read --
+--ignored --nocapture` → `decay_floor: -25.0, ripe_fraction: 0.5,
+decomposing_fraction: 0.8999999761581421, despawn_check_interval: 5.0,
+default_despawn_delay: 300.0`; `default_battery_tech: 504,
+default_battery_charge: 1.0, default_battery_capacity: 100.0,
+recovery_time: 2.0` (log `out/m9s3-real.log`). `cargo test --workspace`,
+`cargo clippy --workspace --all-targets -- -D warnings` clean,
+`cargo fmt --all`.
+
 ## 2026-10-27 — M9s2: per-item state, eating, drinking and first aid, headless
 
 **What/why:** second step of M9s. Extended `sn_sim::inventory::Item` with

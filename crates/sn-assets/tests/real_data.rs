@@ -3753,3 +3753,40 @@ fn the_consume_rules_are_read() {
     println!("Survival.GetWeaknessSpeedScalar callers: {callers}");
     assert_eq!(callers, 0);
 }
+
+/// M9s3: the decay (`Eatable`) and energy (`Battery`/`EnergyMixin`) rules
+/// come from `Assembly-CSharp.dll`.
+#[test]
+#[ignore = "needs SUBNAUTICA_DIR pointing at a Subnautica install"]
+fn the_decay_and_energy_rules_are_read() {
+    let Some(dir) = std::env::var_os("SUBNAUTICA_DIR") else {
+        eprintln!("SUBNAUTICA_DIR not set; skipping");
+        return;
+    };
+    let game = GameData::locate(Some(PathBuf::from(dir))).unwrap();
+    let code = sn_assets::read_assembly(&game).unwrap();
+    let d = sn_assets::decay_rules(&code).unwrap();
+    let e = sn_assets::energy_rules(&code).unwrap();
+    println!("{d:?}");
+    println!("{e:?}");
+    assert_eq!(d.decay_floor, -25.0);
+    assert_eq!(
+        (d.ripe_fraction, d.decomposing_fraction),
+        (0.5, f64::from(0.9f32))
+    );
+    assert_eq!(
+        (d.despawn_check_interval, d.default_despawn_delay),
+        (5.0, 300.0)
+    );
+    assert_eq!(e.default_battery_tech, 504);
+    assert_eq!(
+        (
+            e.default_battery_charge,
+            e.default_battery_capacity,
+            e.recovery_time
+        ),
+        (1.0, 100.0, 2.0)
+    );
+    assert_eq!(sn_assets::decay_rules(&code).unwrap(), d);
+    assert_eq!(sn_assets::energy_rules(&code).unwrap(), e);
+}
