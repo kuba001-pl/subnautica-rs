@@ -134,6 +134,62 @@ reverted; P1b's eager UI path remains. This is a dead end, not a retained fix.
 These legacy player rows include capture/exit and must not be called gameplay
 maxima. Later attribution must explicitly stop sampling before capture.
 
+## P1d: render-stage spike attribution and object GPU upload budget
+
+`SN_CLIENT_PERF=1` now stops sampling at `play_shot` before screenshot
+readback/exit, writes `out/p1/frames.csv` and `out/p1/spans.csv`, and times
+`Render` schedule sub-stages (`render::assets`, `render::images`,
+`render::mesh_alloc`, `render::meshes`, `render::specialize`, `render::queue`,
+`render::prepare`, `render::render`) alongside main-thread asset work counters.
+
+### Spike attribution (excluding capture/exit)
+
+1. **Object asset burst in `objects::stream_objects` (player + swim):**
+   `library.scenes` and `library.batch` buffered all updates until the scene or
+   batch completed, and `stream_objects` inserted every queued `Image` and
+   `Mesh` in a single frame. In `player` at `play = 1.36?1.62 s`, `152.9 MB` of
+   textures and `193,562` mesh vertices were extracted in one frame, stalling
+   `render::assets` for `47.6?56.7 ms` (`render::images` `46.9?50.5 ms`,
+   `render::mesh_alloc` `30.9?38.9 ms`) and producing the `64.7?70.8 ms` max
+   frame spike. In the 35 s `swim` route (`--start -5 -10 -5 --look 200 -10 -5
+   --hold-forward 1 --turn 8 --shot 35`) at `play = 3.94?3.98 s`, `45.0 MB` of
+   textures and `401,807` mesh vertices stalled `render::assets` for
+   `47.1?49.0 ms` (`75.0?78.7 ms` frame spike).
+2. **LOD-0 terrain + grass batch upload in `terrain::stream` (swim):**
+   Four LOD-0 batch completions at `play = 7.64?9.00 s` and `32.40?33.48 s`
+   each insert `668k?848k` terrain vertices plus `521k?736k` grass vertices
+   (`1.19M?1.58M` vertices in one frame), stalling `render::mesh_alloc` for
+   `103.1?141.7 ms` (`125.5?174.8 ms` frame spikes; addressed in P1e).
+
+### P1d fix and 3-run matched results (`--view 400 --resolution 1600 900`)
+
+`objects.rs` now sends updates from the worker as each asset is decoded (`Out`)
+and drains `ObjectStreamer::pending` on the main thread under per-frame upload
+caps (`TEXTURE_UPLOAD_BYTES_PER_FRAME = 8 MiB`,
+`MESH_UPLOAD_VERTICES_PER_FRAME = 32,000`, `SPAWN_BUDGET = 1,500`), while
+`ObjectStreamer::settled` requires `pending.is_empty()`.
+
+| Case / metric | Before P1d (3 runs, ms) | After P1d (3 runs, ms) |
+|---|---|---|
+| fixed (`600` frames) p50 | 9.776 / 9.789 / 9.736 | 10.230 / 9.847 / 9.773 |
+| fixed (`600` frames) p95 | 10.859 / 10.541 / 10.712 | 12.436 / 11.884 / 10.998 |
+| fixed (`600` frames) p99 | 11.469 / 11.335 / 11.166 | 14.109 / 13.694 / 11.826 |
+| fixed (`600` frames) max | 11.910 / 11.984 / 12.223 | 17.956 / 15.741 / 12.434 |
+| player (`--shot 12`) p50 | 10.694 / 11.366 / 10.704 | 10.812 / 11.726 / 10.566 |
+| player (`--shot 12`) p95 | 12.190 / 26.040 / 12.123 | 12.423 / 25.528 / 11.997 |
+| player (`--shot 12`) p99 | 13.816 / 29.635 / 13.425 | 15.852 / 29.413 / 14.340 |
+| player (`--shot 12`) max | 70.822 / 66.462 / 69.706 | 27.872 / 36.735 / 28.438 |
+| player `render::assets` max | 56.673 / 48.557 / 55.165 | 5.719 / 6.519 / 5.863 |
+| swim (`--shot 35`) p50 | 9.269 / 9.707 / 9.321 | 8.967 / 8.887 / 10.194 |
+| swim (`--shot 35`) p95 | 11.817 / 13.260 / 14.181 | 11.179 / 11.097 / 17.421 |
+| swim (`--shot 35`) p99 | 20.981 / 16.228 / 18.582 | 12.642 / 12.590 / 20.997 |
+| swim (`--shot 35`) max | 166.824 / 166.956 / 174.818 | 168.571 / 171.400 / 169.033 |
+| swim `render::images` max | 17.646 / 18.530 / 17.458 | 4.244 / 3.608 / 5.216 |
+| swim `play~3.95 s` object burst | 76.129 / 74.958 / 77.408 | 24.290 / 25.000 / 31.679 |
+
+All six fixed-camera static snapshots match byte-for-byte; all six player runs
+perform the six locker `switch` moves and refuse the pod drop with zero warnings.
+
 ## Reproduction
 
 Run from the worktree in PowerShell; choose new baseline/capture/log names
@@ -170,8 +226,8 @@ revisions are P1a and P1b. Do not mix view distances in an A/B comparison.
 
 ## Checks and limits
 
-`cargo test --workspace` with the game environment variable unset: 722 passed,
-0 failed, 64 ignored. `cargo clippy --workspace --all-targets -- -D warnings`
+`cargo test --workspace` with the game environment variable unset: 723 passed,
+0 failed, 63 ignored. `cargo clippy --workspace --all-targets -- -D warnings`
 and `cargo fmt --all -- --check` pass. With the install configured:
 
 ```powershell

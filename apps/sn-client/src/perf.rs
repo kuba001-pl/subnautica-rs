@@ -1,16 +1,159 @@
 //! Opt-in wall-clock CPU evidence. Set SN_CLIENT_PERF=1; reports go to stdout.
 //! Timers include OS descheduling and nested spans must not be added together.
 use std::collections::BTreeMap;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
 use bevy::prelude::*;
 
 static ENABLED: AtomicBool = AtomicBool::new(false);
+static CAPTURING: AtomicBool = AtomicBool::new(false);
 static SAMPLING: AtomicBool = AtomicBool::new(false);
 static SAMPLES: Mutex<BTreeMap<(&str, bool), Vec<f32>>> = Mutex::new(BTreeMap::new());
 static RENDER_CPU: Mutex<Vec<(String, f64)>> = Mutex::new(Vec::new());
+static ORIGIN: OnceLock<Instant> = OnceLock::new();
+static TRACE: Mutex<Vec<Event>> = Mutex::new(Vec::new());
+static FRAMES: Mutex<Vec<Frame>> = Mutex::new(Vec::new());
+
+struct Event {
+    name: &'static str,
+    start: f64,
+    end: f64,
+    count: usize,
+}
+
+struct Frame {
+    start: f64,
+    end: f64,
+    ms: f32,
+    play: f64,
+    position: Option<[f32; 3]>,
+}
+
+fn now() -> f64 {
+    ORIGIN.get_or_init(Instant::now).elapsed().as_secs_f64() * 1000.0
+}
+
+/// Call before requesting readback: capture and exit are not gameplay.
+pub fn capture_started() {
+    CAPTURING.store(true, Ordering::Relaxed);
+    SAMPLING.store(false, Ordering::Relaxed);
+}
+
+/// Timed schedule boundaries are opt-in, including rendering and driver work
+/// outside our own systems. Their ranges overlap inner spans.
+pub fn install(app: &mut App) {
+    use bevy::render::{Render, RenderApp, RenderSystems};
+    // With profiling enabled, keep upload accounting on even for the unlimited
+    // baseline. A configured production budget takes precedence.
+    if !app
+        .world()
+        .contains_resource::<bevy::render::render_asset::RenderAssetBytesPerFrame>()
+    {
+        app.insert_resource(bevy::render::render_asset::RenderAssetBytesPerFrame::new(
+            usize::MAX,
+        ));
+    }
+    app.init_resource::<Interval>()
+        .add_systems(PreUpdate, frame_start);
+    if let Some(render) = app.get_sub_app_mut(RenderApp) {
+        use bevy::render::mesh::{RenderMesh, allocator::allocate_and_free_meshes};
+        use bevy::render::render_asset::prepare_assets;
+        use bevy::render::texture::GpuImage;
+        render.add_systems(
+            Render,
+            (
+                (|| stage_begin("render::mesh_alloc"))
+                    .in_set(RenderSystems::PrepareAssets)
+                    .before(allocate_and_free_meshes),
+                (|| stage_end("render::mesh_alloc"))
+                    .in_set(RenderSystems::PrepareAssets)
+                    .after(allocate_and_free_meshes)
+                    .before(prepare_assets::<RenderMesh>),
+                (|| stage_begin("render::images"))
+                    .in_set(RenderSystems::PrepareAssets)
+                    .before(prepare_assets::<GpuImage>),
+                (|| stage_end("render::images"))
+                    .in_set(RenderSystems::PrepareAssets)
+                    .after(prepare_assets::<GpuImage>)
+                    .before(prepare_assets::<RenderMesh>),
+            ),
+        );
+        render.add_systems(
+            Render,
+            (
+                (|| stage_begin("render::assets"))
+                    .after(RenderSystems::ExtractCommands)
+                    .before(RenderSystems::PrepareAssets),
+                (|| {
+                    stage_end("render::assets");
+                    stage_begin("render::meshes");
+                })
+                .after(RenderSystems::PrepareAssets)
+                .before(RenderSystems::PrepareMeshes),
+                (|| {
+                    stage_end("render::meshes");
+                    stage_begin("render::specialize");
+                })
+                .after(RenderSystems::PrepareMeshes)
+                .before(RenderSystems::CreateViews),
+                (|| {
+                    stage_end("render::specialize");
+                    stage_begin("render::queue");
+                })
+                .after(RenderSystems::PrepareViews)
+                .before(RenderSystems::Queue),
+                (|| {
+                    stage_end("render::queue");
+                    stage_begin("render::prepare");
+                })
+                .after(RenderSystems::Queue)
+                .before(RenderSystems::Prepare),
+                (|| {
+                    stage_end("render::prepare");
+                    stage_begin("render::render");
+                })
+                .after(RenderSystems::Prepare)
+                .before(RenderSystems::Render),
+                (|| stage_end("render::render"))
+                    .after(RenderSystems::Render)
+                    .before(RenderSystems::Cleanup),
+            ),
+        );
+    }
+}
+
+static STAGES: Mutex<BTreeMap<&str, Span>> = Mutex::new(BTreeMap::new());
+fn stage_begin(name: &'static str) {
+    if let Ok(mut stages) = STAGES.lock() {
+        stages.insert(name, span(name));
+    }
+}
+fn stage_end(name: &'static str) {
+    // Release this lock before dropping Span (it records in other locks).
+    let timer = STAGES.lock().ok().and_then(|mut s| s.remove(name));
+    drop(timer);
+}
+
+#[derive(Default)]
+struct Window {
+    previous: f64,
+    start: f64,
+    end: f64,
+}
+
+fn frame_start(mut window: Local<Window>, mut interval: ResMut<Interval>) {
+    let end = now();
+    window.start = window.previous;
+    window.end = end;
+    window.previous = end;
+    interval.0 = [window.start, window.end];
+}
+
+#[derive(Resource, Default)]
+pub(crate) struct Interval([f64; 2]);
+
 const MAX_SAMPLES: usize = 120_000;
 
 pub fn init() -> bool {
@@ -19,21 +162,53 @@ pub fn init() -> bool {
     enabled
 }
 
-pub struct Span(Option<(&'static str, Instant, bool)>);
+pub struct Span(Option<(&'static str, Instant, bool, f64)>);
 
 pub fn span(name: &'static str) -> Span {
-    Span(
-        ENABLED
-            .load(Ordering::Relaxed)
-            .then(|| (name, Instant::now(), SAMPLING.load(Ordering::Relaxed))),
-    )
+    Span(ENABLED.load(Ordering::Relaxed).then(|| {
+        (
+            name,
+            Instant::now(),
+            SAMPLING.load(Ordering::Relaxed),
+            now(),
+        )
+    }))
 }
 
 impl Drop for Span {
     fn drop(&mut self) {
-        if let Some((name, start, sampling)) = self.0 {
-            record(name, start.elapsed().as_secs_f32() * 1000.0, sampling);
+        if let Some((name, start, sampling, at)) = self.0 {
+            let ms = start.elapsed().as_secs_f32() * 1000.0;
+            record(name, ms, sampling);
+            if ms >= 0.1
+                && let Ok(mut events) = TRACE.lock()
+                && events.len() < MAX_SAMPLES
+            {
+                events.push(Event {
+                    name,
+                    start: at,
+                    end: at + f64::from(ms),
+                    count: 0,
+                });
+            }
         }
+    }
+}
+
+pub fn count(name: &'static str, count: usize) {
+    if count == 0 || !ENABLED.load(Ordering::Relaxed) {
+        return;
+    }
+    let at = now();
+    if let Ok(mut events) = TRACE.lock()
+        && events.len() < MAX_SAMPLES
+    {
+        events.push(Event {
+            name,
+            start: at,
+            end: at + 0.0001,
+            count,
+        });
     }
 }
 
@@ -50,16 +225,33 @@ fn record(name: &'static str, ms: f32, sampling: bool) {
 /// frames after one second of play. The selection also applies to worker spans.
 pub fn frame(
     time: Res<Time<Real>>,
+    interval: Res<Interval>,
     diagnostics: Res<bevy::diagnostic::DiagnosticsStore>,
     measurement: Option<Res<crate::Measurement>>,
     player: Option<Res<crate::player::PlayerSim>>,
     mut frames: Local<usize>,
 ) {
-    let sampling = measurement.as_ref().map_or_else(
-        || player.as_ref().is_some_and(|p| p.play_seconds() >= 1.0),
-        |m| matches!(m.phase, crate::Phase::Running | crate::Phase::Arriving),
-    );
+    let sampling = !CAPTURING.load(Ordering::Relaxed)
+        && measurement.as_ref().map_or_else(
+            || player.as_ref().is_some_and(|p| p.play_seconds() >= 1.0),
+            |m| matches!(m.phase, crate::Phase::Running | crate::Phase::Arriving),
+        );
     record("frame", time.delta_secs() * 1000.0, sampling);
+    if sampling
+        && let Ok(mut frames) = FRAMES.lock()
+        && frames.len() < MAX_SAMPLES
+    {
+        frames.push(Frame {
+            start: interval.0[0],
+            end: interval.0[1],
+            ms: time.delta_secs() * 1000.0,
+            play: player.as_ref().map_or(0.0, |p| p.play_seconds()),
+            position: player
+                .as_ref()
+                .and_then(|p| p.position())
+                .map(|p| [p.x as f32, p.y as f32, p.z as f32]),
+        });
+    }
     SAMPLING.store(sampling, Ordering::Relaxed);
     *frames += 1;
     let snapshot_due = *frames >= 120;
@@ -83,6 +275,7 @@ pub fn report() {
     if !ENABLED.load(Ordering::Relaxed) {
         return;
     }
+    report_trace();
     let Ok(samples) = SAMPLES.lock() else { return };
     println!(
         "perf: wall milliseconds; sampled=benchmark interval or player play>=1s; other=loading/warmup; cap={MAX_SAMPLES} per series; overlapping spans are not additive"
@@ -117,6 +310,70 @@ pub fn report() {
                 }
                 println!("perf: frame histogram <8.333/<16.667/<33.333/<50/<100/>=100ms: {bins:?}");
             }
+        }
+    }
+}
+
+/// Write numeric evidence only under ignored out/. Spans use a shared monotonic
+/// clock, so render/worker work can be correlated without assuming thread order.
+fn report_trace() {
+    use std::io::Write;
+    let (Ok(frames), Ok(events)) = (FRAMES.lock(), TRACE.lock()) else {
+        return;
+    };
+    let result = (|| -> std::io::Result<()> {
+        std::fs::create_dir_all("out/p1")?;
+        let mut file = std::io::BufWriter::new(std::fs::File::create("out/p1/frames.csv")?);
+        writeln!(file, "start_ms,end_ms,frame_ms,play_seconds,x,y,z")?;
+        for f in frames.iter() {
+            let p = f.position.unwrap_or([0.0; 3]);
+            writeln!(
+                file,
+                "{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3}",
+                f.start, f.end, f.ms, f.play, p[0], p[1], p[2]
+            )?;
+        }
+        let mut file = std::io::BufWriter::new(std::fs::File::create("out/p1/spans.csv")?);
+        writeln!(file, "name,start_ms,end_ms,count")?;
+        for e in events.iter() {
+            writeln!(file, "{},{:.3},{:.3},{}", e.name, e.start, e.end, e.count)?;
+        }
+        Ok(())
+    })();
+    if let Err(e) = result {
+        eprintln!("perf: trace write failed: {e}");
+    }
+    let mut slow: Vec<_> = frames.iter().enumerate().collect();
+    slow.sort_by(|a, b| b.1.ms.total_cmp(&a.1.ms));
+    for (idx, f) in slow.into_iter().take(12) {
+        println!(
+            "perf: slow frame {:.3} ms play={:.3} interval={:.3}..{:.3} position={:?}",
+            f.ms, f.play, f.start, f.end, f.position
+        );
+        let count_start = idx
+            .checked_sub(1)
+            .map_or(f.start - 25.0, |prev| frames[prev].start);
+        let mut costs: BTreeMap<&str, f64> = BTreeMap::new();
+        let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+        for e in events
+            .iter()
+            .filter(|e| e.start < f.end && e.end > count_start)
+        {
+            if e.count > 0 {
+                *counts.entry(e.name).or_default() += e.count;
+            }
+            if e.end > f.start {
+                *costs.entry(e.name).or_default() +=
+                    (e.end.min(f.end) - e.start.max(f.start)).max(0.0);
+            }
+        }
+        let mut costs: Vec<_> = costs.into_iter().collect();
+        costs.sort_by(|a, b| b.1.total_cmp(&a.1));
+        for (name, count) in counts {
+            println!("perf: work {name}={count}");
+        }
+        for (name, ms) in costs.into_iter().take(8) {
+            println!("perf: overlapping {name}={ms:.3} ms");
         }
     }
 }

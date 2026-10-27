@@ -689,6 +689,7 @@ pub fn stream(
             .map(|p| p.indices.len() / 3)
             .sum::<usize>();
         for part in done.parts {
+            crate::perf::count("terrain::mesh_vertices", part.positions.len());
             triangles += part.indices.len() / 3;
             let mut mesh = Mesh::new(
                 PrimitiveTopology::TriangleList,
@@ -741,6 +742,7 @@ pub fn stream(
             else {
                 continue;
             };
+            crate::perf::count("terrain::grass_vertices", part.positions.len());
             grass_tufts += part.tufts;
             grass_triangles += part.indices.len() / 3;
             uploaded += part.indices.len() / 3;

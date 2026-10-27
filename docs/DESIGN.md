@@ -195,8 +195,13 @@ Completion checks:
   worker savings did not establish a net gameplay tail win. Eager UI retained.
 - [x] Static scene snapshots and installed UI parity checked for candidate;
   candidate was reverted. See the evidence note for exact scope.
-- [ ] Attribute gameplay tails separately from capture/exit; exercise swimming
-  and turning over streaming boundaries, then measure each retained fix three times.
+- [x] P1d: attribute gameplay tails separately from capture/exit across fixed,
+  player, and 35 s swim routes; budget object GPU texture/mesh uploads per frame
+  (player max `66.462?70.822 ms -> 27.872?36.735 ms`, `render::assets` max
+  `48.557?56.673 ms -> 5.719?6.519 ms`, swim object burst `74.958?77.408 ms ->
+  24.290?31.679 ms`).
+- [ ] P1e: stage LOD-0 terrain + grass batch mesh uploads across frames in the
+  swim route (`125.5?174.8 ms` spikes) and measure three matched runs.
 - [ ] Workspace tests, clippy with warnings denied, and fmt rerun before commits.
 - [ ] Default view-distance and dev/release profile checks recorded, with
   noise and remaining untested costs stated; no universal FPS claim.

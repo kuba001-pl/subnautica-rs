@@ -2,6 +2,66 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-27 ? P1d: render-stage spike attribution and object GPU upload budget
+
+**What/why:** Extended `SN_CLIENT_PERF=1` (`apps/sn-client/src/perf.rs`,
+`main.rs`, `objects.rs`, `terrain.rs`, `game_ui.rs`) to stop sampling at
+`play_shot` before screenshot capture/exit, write `out/p1/frames.csv` and
+`out/p1/spans.csv` on exit, time `Render` schedule sub-stages
+(`render::assets`, `render::images`, `render::mesh_alloc`, `render::meshes`,
+`render::specialize`, `render::queue`, `render::prepare`, `render::render`),
+and correlate slow frames with main-thread work counters across Bevy's
+pipelined extract boundary. Attribution across player and a 35 s swimming/
+turning route (`--start -5 -10 -5 --look 200 -10 -5 --hold-forward 1 --turn 8
+--shot 35`) identified two dominant gameplay stall causes:
+1. Unbounded object asset bursts in `objects::stream_objects`: `library.scenes`
+   and `library.batch` buffered whole-scene/batch updates and `stream_objects`
+   drained all ready textures and meshes in one frame (152.9 MB textures +
+   193,562 mesh vertices at `play=1.36-1.62 s` in player mode -> `render::assets`
+   47.6-56.7 ms -> 64.7-70.8 ms frame spike; 45.0 MB textures + 401,807 mesh
+   vertices at `play=3.94-3.98 s` in swim mode -> `render::assets` 47.1-49.0 ms
+   -> 75.0-78.7 ms frame spike).
+2. Unstaged LOD-0 terrain + grass batch uploads in `terrain::stream` during
+   movement across streaming boundaries (1.19M-1.58M vertices uploaded in one
+   frame at `play=7.6-9.0 s` and `32.4-33.5 s` in swim mode -> `render::mesh_alloc`
+   103.1-141.7 ms -> 125.5-174.8 ms frame spikes; addressed next in P1e).
+
+Fixed cause #1 in `apps/sn-client/src/objects.rs`: the object worker now streams
+updates through `Out(&tx)` as each asset is decoded instead of holding a full
+scene/batch buffer, and `ObjectStreamer` queues updates in `pending: VecDeque`
+with per-frame GPU upload budgets (`TEXTURE_UPLOAD_BYTES_PER_FRAME = 8 MiB`,
+`MESH_UPLOAD_VERTICES_PER_FRAME = 32,000`, `SPAWN_BUDGET = 1,500`) while
+requiring `pending.is_empty()` in `settled()`. Three matched before/after release
+runs at `--view 400 --resolution 1600 900`:
+- Fixed camera (`600` frames): before p50 `9.776 / 9.789 / 9.736 ms`, p95
+  `10.859 / 10.541 / 10.712 ms`, p99 `11.469 / 11.335 / 11.166 ms`, max
+  `11.910 / 11.984 / 12.223 ms`; after p50 `10.230 / 9.847 / 9.773 ms`, p95
+  `12.436 / 11.884 / 10.998 ms`, p99 `14.109 / 13.694 / 11.826 ms`, max
+  `17.956 / 15.741 / 12.434 ms`. All six static scene snapshots match
+  byte-for-byte (`103` batches, `4,393,498` terrain triangles, `589` terrain
+  meshes, `25,311` grass tufts, `17,194` object entities, `2,599` object
+  meshes, `598` materials, `1,079` textures, `0` unsettled frames, `0` warnings).
+- Player + PDA (`--shot 12`, excluding capture/exit): before p50
+  `10.694 / 11.366 / 10.704 ms`, p95 `12.190 / 26.040 / 12.123 ms`, p99
+  `13.816 / 29.635 / 13.425 ms`, max `70.822 / 66.462 / 69.706 ms`
+  (`render::assets` max `56.673 / 48.557 / 55.165 ms`); after p50
+  `10.812 / 11.726 / 10.566 ms`, p95 `12.423 / 25.528 / 11.997 ms`, p99
+  `15.852 / 29.413 / 14.340 ms`, max `27.872 / 36.735 / 28.438 ms` (and
+  `21.936 ms` on an isolated warm run; `render::assets` max reduced ~9x to
+  `5.719 / 6.519 / 5.863 ms`, `render::images` max `46.940-48.638 ms ->
+  5.668-5.867 ms`, `render::mesh_alloc` max `36.749-38.850 ms -> 3.868-5.237 ms`).
+  All six runs perform the six locker `switch` moves and refuse the pod drop.
+- Swim route (`--shot 35`, excluding capture/exit): `render::images` max drops
+  from `17.646 / 18.530 / 17.458 ms` to `4.244 / 3.608 / 5.216 ms` and the
+  `play~3.95 s` object burst spike drops from `76.129 / 74.958 / 77.408 ms` to
+  `24.290 / 25.000 / 31.679 ms`; whole-run max (`168.571 / 171.400 / 169.033 ms`
+  vs before `166.824 / 166.956 / 174.818 ms`) remains governed by the four
+  LOD-0 terrain batch uploads (`render::mesh_alloc` 120-144 ms, targeted in P1e).
+
+**Verify:** `cargo test --workspace` (723 passed, 0 failed, 63 ignored without
+`SUBNAUTICA_DIR`), `cargo clippy --workspace --all-targets -- -D warnings`,
+`cargo fmt --all -- --check`.
+
 ## 2026-10-27 — P1c: reject inactive UI pruning after matched repeats
 
 **What/why:** reverted the unfinished inactive-hierarchy mesh/material/glyph
@@ -19,7 +79,7 @@ whitelist, simulation, or architecture changes. No game data tracked.
 (do not rerun with existing names); exact executable flags are in each log
 and the evidence note. `cargo test --workspace` and
 `cargo clippy --workspace --all-targets -- -D warnings` run before this commit;
-passed (721 tests, 63 ignored; clippy clean; fmt clean). Restored the bounded profiler snapshot counter after
+passed (722 tests, 63 ignored; clippy clean; fmt clean). Restored the bounded profiler snapshot counter after
 clippy caught P1a using an integer API newer than the declared Rust 1.85 MSRV.
 Capture/exit contamination of historical player
 maxima is retained explicitly and will be removed from later attribution.

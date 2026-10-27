@@ -2603,6 +2603,7 @@ fn receive_build(
     };
     let mut map = (*frame.images).clone();
     for t in build.textures.drain(..) {
+        crate::perf::count("game_ui::image_bytes", t.data.len());
         let format = match t.format {
             TexelFormat::RgbaSrgb => TextureFormat::Rgba8UnormSrgb,
             TexelFormat::Rgba => TextureFormat::Rgba8Unorm,

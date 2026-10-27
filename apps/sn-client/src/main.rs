@@ -1307,6 +1307,7 @@ fn main() -> AppExit {
         app.insert_resource(baseline);
     }
     if cpu_timings {
+        perf::install(&mut app);
         app.add_systems(Last, perf::frame.before(measure));
     }
     let result = app.run();
@@ -1407,6 +1408,7 @@ fn play_shot(mut commands: Commands, mut shot: ResMut<PlayShot>, sim: Res<player
     if shot.taken || sim.play_seconds() < shot.seconds {
         return;
     }
+    perf::capture_started();
     shot.taken = true;
     if let Err(e) = std::fs::create_dir_all("out") {
         error!("out/: {e}");
