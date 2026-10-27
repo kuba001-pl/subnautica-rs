@@ -13,6 +13,7 @@ mod collision;
 mod compass;
 mod coop;
 mod craft;
+mod crafting_menu;
 mod death;
 mod density;
 mod depth;
@@ -310,6 +311,9 @@ Commands:
                          the PDA screen (the toolbar's count, an icon's +).
   ui --tooltip           M9u8b3b: uGUI_Tooltip and TooltipFactory's item
                          texts
+  ui --crafting          M9e4a: uGUI_CraftingMenu, the Fabricator tree's
+                         icons, chroma, tooltips and a click, against a
+                         replay
   ui --layout <CLASS> [<NAME>]
                          M9u1: a script's layout and, for its first object
                          (named NAME), where each field starts and its value
@@ -542,6 +546,7 @@ fn run(mut args: Vec<String>) -> Result<ExitCode> {
         ["ui", "--icon-mesh"] => icon_mesh::run(&game),
         ["ui", "--icons"] => icons::run(&game),
         ["ui", "--popup"] => popup::run(&game),
+        ["ui", "--crafting"] => crafting_menu::run(&game),
         ["ui", "--pda"] => pda_tabs::run(&game),
         ["ui", "--notifications"] => notifications::run(&game),
         ["ui", "--inventory"] => inventory_tab::run(&game),

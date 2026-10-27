@@ -16,6 +16,7 @@ mod code;
 mod collision;
 mod collision_world;
 mod crafting;
+mod crafting_menu;
 mod death;
 mod fonts;
 mod gameplay;
@@ -74,6 +75,10 @@ pub use collision_world::{
     TargetBody, TargetKind, bodies, body_kind, look_params, player_params, vitals_params,
 };
 pub use crafting::{Ghost, PodFabricator, fabricator_ghosts, pod_crafting_power, pod_fabricator};
+pub use crafting_menu::{
+    CraftingMenuNodes, GROUP_BACKGROUND, GROUP_CATEGORY, craft_source, crafting_foreground,
+    crafting_icon_nodes, crafting_menu_config,
+};
 pub use death::vignette_times;
 pub use fonts::{
     FONTS_BUNDLE, FontAssets, LoadedFont, LoadedFontAsset, LoadedSpriteAsset, StoredFontAsset,

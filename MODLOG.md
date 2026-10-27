@@ -2,6 +2,51 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-27 — M9e4a: crafting menu rules, tooltip texts, `ui --crafting`
+
+**What/why:** split M9e4 as its risk note allows (DESIGN rows M9e4a/b):
+the headless half first. `sn-ui::crafting` ports `uGUI_CraftingMenu`'s
+`UpdateTree` filter, `GetIconMetrics`, expand/collapse, punches
+(`uGUI_ItemIcon.PunchScale`), chroma (`UpdateNotifications`), lock, fade
+and progress (`UpdateVisuals`), hover sprites, clicks (`Action`) and a
+graphic hit-test; `sn-ui::tooltip` gains `CraftRecipe`/`CraftNode` texts
+(seven more language keys). `sn-assets::crafting_menu` reads the menu's
+nodes, the four background sprites, the craft tree from the code and makes
+the icon nodes. `sn-inspect ui --crafting` checks it against a replay.
+Facts in ui.md § The crafting menu, including `UI/Icon`'s `GRAYSCALE`
+read from the dumped fragment program (blob 136) for M9e4b. No new
+dependencies or whitelist patterns.
+
+**Decisions:** a craft click is taken as begun (the game's
+`PerformAction` is synchronous; ours is a server request): the client must
+report "in progress" until the server answers (M9e4b). Icons are pooled
+instead of destroyed. Pins, the tree's notification counts, gamepad
+navigation and sounds are not ported. `Locked` (partial scans/compound
+tech) never occurs in our sim.
+
+**Verified:** `cargo test -p sn-ui`: 201 passed (9 new menu tests, 2 new
+tooltip tests). With `SUBNAUTICA_DIR` set,
+`target/release/sn-inspect ui --crafting` (output `out/m9e4a-ui-crafting.txt`):
+22/22 checks, RUN OK: Fabricator tree 100 nodes = P1, 100 visible with
+all known; 33 visible with the 46 starting blueprints (= replay, same
+paths); top level 4/4 (Resources, Survival, Personal, Machines, 92 units),
+Resources 2/2 (77.97), Basic materials 5/5 (66.07, 3 × 2 grid) at the
+replay's size and centre from both the rules and our layout of the grafted
+icons (worst 1.9e-5); chroma 11/11 (8 grey, Titanium craftable with one
+Metal salvage); tooltips "Titanium (x4)" / "Ti. Basic building material." /
+"Metal salvage" green / craft + pin hints; click → `Craft(16)`, locked, fade
+alpha 0.2929 at 15 %, open again when done; draw 11/11 icons with both
+graphics, 16/16 grey draws carry `GRAYSCALE`. `cargo test --workspace`
+(game unset): 767 passed, 0 failed, 66 ignored; clippy `-D warnings` and
+`fmt --check` pass.
+
+**Dead end:** the first tooltip run showed an empty ingredient name:
+Metal salvage's `.TooltipIngredient` value is empty and
+`Language.GetOrFallback` falls back on empty values too; fixed in the
+inspector (the client must do the same).
+
+**Not tested:** anything on screen (M9e4b); original-game comparison.
+
 ## 2026-10-27 — M9e3: fabricator close cycle resolved; M9e3 done
 
 **What/why:** resolved the checkpoint's blocking pose check (STATUS.md,

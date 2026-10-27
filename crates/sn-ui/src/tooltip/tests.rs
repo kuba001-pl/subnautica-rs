@@ -235,3 +235,89 @@ fn update_position_beside_the_pointer_or_flipped_at_the_edges() {
     // edge.
     assert_eq!(tall(-50.0), 300.0);
 }
+
+fn craft_strings() -> TooltipStrings {
+    TooltipStrings::new(
+        &|k| match k {
+            "CraftMultipleFormat" => "{0} x{1}".into(),
+            "LockedRecipeHint" => "Locked hint".into(),
+            other => other.into(),
+        },
+        ["LMB".into(), "RMB".into(), "MMB".into(), "X".into()],
+    )
+}
+
+#[test]
+fn a_recipe_tooltip_colours_each_ingredient_and_offers_the_craft() {
+    let s = craft_strings();
+    let r = RecipeFacts {
+        name: "Titanium".into(),
+        description: "Basic metal.".into(),
+        amount: 4,
+        ingredients: vec![
+            IngredientFacts {
+                tech: 1,
+                name: "Metal salvage".into(),
+                amount: 1,
+                have: 1,
+            },
+            IngredientFacts {
+                tech: 2,
+                name: "Quartz".into(),
+                amount: 3,
+                have: 1,
+            },
+        ],
+        fulfilled: false,
+        requires_ingredients: true,
+    };
+    let (prefix, postfix, icons) = craft_recipe(&s, &r, false);
+    assert_eq!(
+        prefix,
+        "<size=25><color=#ffffffff>Titanium x4</color></size>\n<size=20><color=#DDDEDEFF>Basic metal.</color></size>"
+    );
+    assert_eq!(
+        icons,
+        [
+            (1, "<color=#94DE00FF>Metal salvage</color>".to_string()),
+            (2, "<color=#DF4026FF>Quartz x3 (1)</color>".to_string())
+        ]
+    );
+    // Not fulfilled: only the pin hint.
+    assert_eq!(
+        postfix,
+        "<size=20><color=#ffffffff>RMB</color> - <color=#00ffffff>PinRecipe</color></size>"
+    );
+    let (_, postfix, _) = craft_recipe(
+        &s,
+        &RecipeFacts {
+            fulfilled: true,
+            ..r.clone()
+        },
+        false,
+    );
+    assert!(postfix.starts_with(
+        "<size=20><color=#ffffffff>LMB</color> - <color=#00ffffff>Craft</color></size>\n"
+    ));
+    // Locked: the title and the hint only.
+    let (prefix, postfix, icons) = craft_recipe(&s, &r, true);
+    assert_eq!(
+        prefix,
+        "<size=25><color=#ffffffff>Titanium</color></size>\n<size=20><color=#DDDEDEFF>Locked hint</color></size>"
+    );
+    assert!(postfix.is_empty() && icons.is_empty());
+}
+
+#[test]
+fn a_category_tooltip_offers_to_enter_until_expanded() {
+    let s = craft_strings();
+    assert_eq!(
+        craft_node(&s, "Resources", false),
+        (
+            "<size=25><color=#ffffffff>Resources</color></size>".to_string(),
+            "<size=20><color=#ffffffff>LMB</color> - <color=#00ffffff>NodeEnter</color></size>"
+                .to_string()
+        )
+    );
+    assert!(craft_node(&s, "Resources", true).1.is_empty());
+}

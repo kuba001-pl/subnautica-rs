@@ -11,6 +11,7 @@
 //! - [`mesh`] (M9u4b): the meshes `Image` and `RawImage` build.
 //! - [`bar`] (M9u6b1): `uGUI_CircularBar`, the HUD's round bars.
 //! - [`compass`] (M9u6c2): `uGUI_Compass`, the HUD's compass ring.
+//! - [`crafting`] (M9e4a): `uGUI_CraftingMenu`, the fabricator's menu.
 //! - [`death`] (M9u6e1): the death vignette, the respawn screen and the
 //!   out-of-oxygen overlay.
 //! - [`depth`] (M9u6c1): `uGUI_DepthCompass`, the depth readout's rules.
@@ -35,6 +36,7 @@
 pub mod bar;
 pub mod clip;
 pub mod compass;
+pub mod crafting;
 pub mod death;
 pub mod depth;
 pub mod drag;

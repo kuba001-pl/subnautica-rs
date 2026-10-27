@@ -52,8 +52,9 @@ pub const SWAP: u32 = 64;
 pub const DROP: u32 = 128;
 
 /// The language keys [`TooltipStrings`] reads: `RefreshActionStrings`'
-/// (those `InventoryItem` uses) and `ItemCommons`' formats.
-pub const LANGUAGE_KEYS: [&str; 19] = [
+/// (those `InventoryItem` uses) and `ItemCommons`' formats; since M9e4a
+/// also those `CraftRecipe` and `CraftNode` use.
+pub const LANGUAGE_KEYS: [&str; 26] = [
     "BatteryNotInserted",
     "Use",
     "Eat",
@@ -73,6 +74,13 @@ pub const LANGUAGE_KEYS: [&str; 19] = [
     "HealthFormat",
     "FoodFormat",
     "WaterFormat",
+    "LockedRecipeHint",
+    "CraftMultipleFormat",
+    "Craft",
+    "PinRecipe",
+    "UnpinRecipe",
+    "NodeEnter",
+    "NodeExit",
 ];
 
 /// `TooltipFactory`'s strings: the action words, the buttons' texts
@@ -414,6 +422,96 @@ pub fn inventory_item(
         item_commons(s, item, survival),
         item_actions(s, actions, bind),
     )
+}
+
+/// One ingredient as `WriteIngredients` reads it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct IngredientFacts {
+    pub tech: i32,
+    /// `Language.GetOrFallback("<tech>.TooltipIngredient", techType)`.
+    pub name: String,
+    pub amount: i32,
+    /// `Inventory.GetPickupCount(techType)`.
+    pub have: i32,
+}
+
+/// What `CraftRecipe` reads of a recipe.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RecipeFacts {
+    /// `Language.Get(techType)`.
+    pub name: String,
+    /// `Language.Get("Tooltip_<tech>")`.
+    pub description: String,
+    /// `TechData.GetCraftAmount`.
+    pub amount: i32,
+    pub ingredients: Vec<IngredientFacts>,
+    /// `CrafterLogic.IsCraftRecipeFulfilled`.
+    pub fulfilled: bool,
+    /// `GameModeUtils.RequiresIngredients()`.
+    pub requires_ingredients: bool,
+}
+
+/// `TooltipFactory.CraftRecipe(techType, locked, data)` with the keyboard
+/// and mouse and no pins (`PinManager` is not ported: none pinned, fewer
+/// than `max`): (prefix, postfix, the icons' texts by ingredient tech).
+pub fn craft_recipe(
+    s: &TooltipStrings,
+    r: &RecipeFacts,
+    locked: bool,
+) -> (String, String, Vec<(i32, String)>) {
+    let (mut prefix, mut postfix) = (String::new(), String::new());
+    if locked {
+        write_title(&mut prefix, &r.name);
+        write_description(&mut prefix, s.get("LockedRecipeHint"));
+        return (prefix, postfix, Vec::new());
+    }
+    let title = if r.amount > 1 {
+        cs_format(
+            s.get("CraftMultipleFormat"),
+            &[Arg::Str(r.name.clone()), Arg::Int(i64::from(r.amount))],
+        )
+    } else {
+        r.name.clone()
+    };
+    write_title(&mut prefix, &title);
+    write_description(&mut prefix, &r.description);
+    let icons = r
+        .ingredients
+        .iter()
+        .map(|i| {
+            let enough = i.have >= i.amount || !r.requires_ingredients;
+            let mut t = String::from(if enough {
+                "<color=#94DE00FF>"
+            } else {
+                "<color=#DF4026FF>"
+            });
+            t.push_str(&i.name);
+            if i.amount > 1 {
+                let _ = write!(t, " x{}", i.amount);
+            }
+            if i.have > 0 && i.have < i.amount {
+                let _ = write!(t, " ({})", i.have);
+            }
+            t.push_str("</color>");
+            (i.tech, t)
+        })
+        .collect();
+    if r.fulfilled {
+        write_action(&mut postfix, &s.buttons[0], s.get("Craft"));
+    }
+    write_action(&mut postfix, &s.buttons[1], s.get("PinRecipe"));
+    (prefix, postfix, icons)
+}
+
+/// `TooltipFactory.CraftNode(label, expanded, data)` with the keyboard and
+/// mouse: `label` already looked up (`Language.Get("<tree>Menu_<id>")`).
+pub fn craft_node(s: &TooltipStrings, label: &str, expanded: bool) -> (String, String) {
+    let (mut prefix, mut postfix) = (String::new(), String::new());
+    write_title(&mut prefix, label);
+    if !expanded {
+        write_action(&mut postfix, &s.buttons[0], s.get("NodeEnter"));
+    }
+    (prefix, postfix)
 }
 
 /// `uGUI_Tooltip`'s constants: `paddingX` (= `paddingY`), `spacing`,

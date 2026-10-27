@@ -2552,3 +2552,86 @@ a craft hint when affordable, and pin/unpin hints. These are research
 findings; the menu and recipe tooltip are **not implemented/not tested**
 in M9e1. Busy clicks play the deny sound; GhostCrafter's hand click while
 crafting returns without a message, correcting the M9e5 plan hypothesis.
+
+## The crafting menu (M9e4a)
+
+Our port: `crates/sn-ui/src/crafting.rs` (rules),
+`crates/sn-assets/src/crafting_menu.rs` (what it reads),
+`sn-inspect ui --crafting` (the check). Read from the decompiled
+`uGUI_CraftingMenu`, `uGUI_ItemIcon`, `TooltipFactory`, `Language`,
+`KnownTech`, `GameModeUtils`, `SpriteManager`, `uGUI_InputGroup`,
+`FPSInputModule`, `Crafter` and `GhostCrafter` (read only, in `out/`).
+
+- **Nodes (confirmed, `ui --crafting`):** the script is on
+  `uGUI/CraftingCanvas`, which is also its `canvasGroup` and
+  `canvasScaler`; `iconsCanvas` is `uGUI/CraftingCanvas/IconsCanvas`, laid
+  out 0 × 0 at 1920 × 1080, so the top level's x offset (half the parent's
+  width) is 0. The canvas is Static at 1 m (§ Canvas placement).
+- **The tree (confirmed, code reading; counts by `ui --crafting`):**
+  `UpdateTree` keeps a category only if `Filter(id)` passes (`Survival`
+  needs survival mode, `Submarine` a submarine) and a child stays; a
+  recipe, with blueprints required, needs a `TechData` entry and an unlock
+  state of `Available` (known) or `Locked` (partly scanned or a partly
+  known compound). With every recipe known all 100 Fabricator nodes show;
+  with the 46 starting blueprints 33 do (our run has no scanner or compound
+  tech, so `Locked` never occurs: *not tested* against the game).
+- **Placement (confirmed, code reading; `ui --crafting` 4/4, 2/2, 5/5 icons
+  against a replay of `GetIconMetrics`):** depth d (root 0) gives size
+  max(40, 92 ÷ 1.18^(d−1)); siblings form one column if any is a category,
+  else ⌈√n⌉ columns; x = (column + ½)·size + ½·parent width, y = ((rows −
+  1)/2 − row)·size, from the parent's centre. A child icon is created under
+  its parent's icon, so it sits right of it. The top level of the
+  Fabricator is Resources, Survival, Personal, Machines (92 units, a
+  column); Resources' two categories are 77.97; Basic materials' five
+  recipes a 3 × 2 grid of 66.07.
+- **Icons (confirmed, code reading):** `new GameObject(treeId)` +
+  `uGUI_ItemIcon`, anchor and pivot at the centre; background
+  `SpriteManager.Get(Background, categoryNormal | craftNormal)` (atlas
+  sprites, so no procedural slice 9 grid; 92 × 92 in the atlas), radius
+  size ÷ 2; foreground a category's `Get(Category, "<tree>_<id>")` or the
+  recipe's item sprite, 0.674 of the size, aspect kept. Hover swaps to
+  `categoryHovered` / `craftHovered`.
+- **Chroma (confirmed, code reading; `ui --crafting` 11/11):** each icon
+  under an expanded parent gets chroma 1 when it can be crafted now (known
+  and every ingredient held) or is a category holding such a recipe, and
+  not while the menu is locked; else 0, drawn with `UI/Icon`'s
+  `GRAYSCALE`. **`GRAYSCALE` (confirmed, fragment blob 136 of the M9u7c
+  dump, `_Chroma` @ 80):** c = (`_MainTex` + `_TextureSampleAdd`) × vertex
+  colour; g = dot(c.rgb, (0.3, 0.59, 0.11)); rgb = g + `_Chroma`·(c.rgb −
+  g); alpha = c.a × the hard clip.
+- **Actions (confirmed, code reading):** a left click on a category
+  collapses its siblings and expands it (children punched at amplitude 1,
+  delay 0.1 · i ÷ n); on a recipe that is unlocked and fulfilled it calls
+  `PerformAction(tech)` (the machine's `Craft`), locks the menu and
+  remembers the node; anything else plays `soundDeny`. Every click punches
+  the icon at amplitude 0.5. The right button on a known recipe toggles its
+  pin (`PinManager`: not ported). A press on no handler deselects the menu
+  (`FPSInputModule`). The menu is selected without locking movement: the
+  player can walk away, and `GhostCrafter.LateUpdate` closes it beyond
+  `closeDistance` or without power.
+- **While crafting (confirmed, code reading):** `Crafter.OnCraftingBegin`
+  closes the menu for a craft longer than 5.9 s, else `Lock`s it (not
+  interactable, no raycasts) unless Sprint is held; `UpdateVisuals` then
+  sets the group alpha to `EaseInSine(1 − progress ÷ 0.3)` (sin((v − 1)·π/2)
+  + 1) and the node's and its parents' radial fill to the progress. Done:
+  interactable, alpha 1, fill full, unlocked.
+- **Punch (confirmed, code reading):** `PunchScale(5, amplitude, 1 ±
+  0.2, delay)`: a `CoroutineTween` over duration + delay on
+  `PDA.deltaTime`; foreground and background scale 1 + amplitude ×
+  `Oscillation(1 ÷ (0.01·duration), 5, seed, t)`, t = (s − k) ÷ (1 − k),
+  k = delay ÷ (delay + duration); back to 1 at the end or when hidden.
+  `Random` is our generator.
+- **Tooltips (confirmed, code reading; texts by `ui --crafting`):**
+  `CraftNode`: the title `Language.Get("<tree>Menu_<id>")` and, unless
+  expanded, "button 0 – NodeEnter". `CraftRecipe`: locked → the title and
+  `LockedRecipeHint`; else the title (`CraftMultipleFormat` when the amount
+  is above 1: "Titanium (x4)"), `Tooltip_<tech>`, one icon per ingredient
+  whose text is `GetOrFallback("<tech>.TooltipIngredient", tech)` (an empty
+  value falls back too: Metal salvage's is empty), green `#94DE00FF` when
+  held else red `#DF4026FF`, " xN" above 1 and " (have)" when partly held;
+  the postfix "button 0 – Craft" when fulfilled and "button 1 – PinRecipe".
+- **Not ported:** the craft tree's notification counts (`NotificationManager`
+  group `CraftTree`), pins, the gamepad navigation, the sounds; the radial
+  fill (`FILL_RADIAL`) is set on the materials but not drawn (the menu is
+  faded out over the first 30 % of a craft anyway).
+
