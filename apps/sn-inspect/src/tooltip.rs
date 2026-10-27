@@ -12,16 +12,35 @@
 //!   language file (the tags, the title, the value lines with the formats
 //!   written out here, the description) and the actions against the table
 //!   DESIGN's M9u8b3b1 row wrote before the run.
+//! - Layout and placement (M9u8b3b2): each item's texts through
+//!   `TooltipLayout` (TMP's preferred sizes of the prefab's texts), laid
+//!   out in the `uGUI` tree: the root's size, the texts' rects at their
+//!   places and inside the root. Then `update_position` on the PDA
+//!   screen's canvas (its stored rect and scale, [`PDA_DEPTH`] in front of
+//!   the camera as the client's PDA is) with the pointer at the canvas's
+//!   centre, near its right edge, near its bottom and in its bottom right
+//!   corner: the rect on the side the rule says (worked here), inside the
+//!   canvas and clear of the pointer.
 
 use std::collections::HashMap;
 use std::process::ExitCode;
 
-use sn_assets::{Assets, UiState};
+use sn_assets::{Assets, UiScene, UiState};
 use sn_install::GameData;
 use sn_sim::inventory::{self as inv, Button, DropPlace, Inventory, Item, ItemId, KnownTech};
-use sn_ui::tooltip::{TooltipStrings, inventory_item};
+use sn_ui::layout::{Rect, Tree};
+use sn_ui::scaler::{DEFAULT_UI_SCALE, Placement};
+use sn_ui::text::FontSet;
+use sn_ui::tooltip::{
+    MARGIN, MAX_TEXT_WIDTH, PointerOnCanvas, TooltipConfig, TooltipLayout, TooltipStrings,
+    inventory_item, update_position,
+};
 
 use crate::Result;
+
+/// The PDA screen's distance in front of the camera in the client's runs
+/// (its logged pose, M9u8a).
+const PDA_DEPTH: f32 = 0.1874;
 
 /// The scripted grid, in order (ids 1…).
 const GRID: [&str; 6] = [
@@ -85,20 +104,9 @@ fn action_line(key: &str, word: &str) -> String {
     format!("<size=20><color=#ffffffff>{key}</color> - <color=#00ffffff>{word}</color></size>")
 }
 
-/// Dumps the prefab's nodes under `uGUI/Tooltip`.
-fn dump_prefab(game: &GameData, assets: &Assets) -> Result<()> {
-    let tags = sn_assets::physics_settings(assets)?.tags;
-    let assemblies = sn_assets::ScriptAssemblies::load(game)?;
-    let layouts = assemblies.layouts()?;
-    let fonts = assets.font_assets(&assemblies)?;
-    let set = assets.tmp_font_set(&fonts)?;
-    let catalog = assets.catalog()?;
-    let root = assets.ugui_root(&catalog)?;
-    let tree = assets.ui_tree("uGUI.prefab", &root)?;
-    let mut scene = assets.ui_scene(&layouts, &tree, &fonts, &tags.sorting_layers)?;
-    let config = assets.tooltip_config(&layouts, &tree)?;
+/// Dumps the prefab's nodes under `uGUI/Tooltip` (laid out as stored).
+fn dump_prefab(tree: &sn_assets::UiTree, scene: &UiScene, config: &TooltipConfig, laid: &Tree) {
     println!("uGUI_Tooltip: {config:?}");
-    let laid = scene.layout_for(assets, &set, &HashMap::new(), &UiState::default())?;
     for (i, n) in tree.nodes.iter().enumerate() {
         let mut p = Some(i);
         let mut under = false;
@@ -150,19 +158,197 @@ fn dump_prefab(game: &GameData, assets: &Assets) -> Result<()> {
             );
         }
     }
+}
+
+/// The PDA screen's canvas: its stored rect (about its pivot) and scale.
+struct Canvas {
+    rect: Rect,
+    scale: [f32; 2],
+}
+
+/// M9u8b3b2's checks for one item's texts.
+#[allow(clippy::too_many_arguments)]
+fn check_layout(
+    c: &mut Checks,
+    name: &str,
+    assets: &Assets,
+    set: &FontSet,
+    scene: &mut UiScene,
+    config: &TooltipConfig,
+    canvas: &Canvas,
+    (prefix, postfix): (&str, &str),
+) -> Result<()> {
+    // `OnLayout`: TMP's preferred sizes of the prefab's two texts.
+    let pref = |scene: &UiScene, node: usize, text: &str, width: f32| -> Result<[f32; 2]> {
+        scene
+            .preferred_size(set, node, text, width)
+            .ok_or_else(|| format!("node {node}: no text"))
+    };
+    let widths = [
+        pref(scene, config.text_prefix, prefix, 0.0)?[0],
+        pref(scene, config.text_postfix, postfix, 0.0)?[0],
+    ];
+    let a = widths[0].max(widths[1]).min(MAX_TEXT_WIDTH);
+    let heights = [
+        pref(scene, config.text_prefix, prefix, a)?[1],
+        pref(scene, config.text_postfix, postfix, a)?[1],
+    ];
+    let layout = TooltipLayout::new(widths, |_| heights);
+    println!(
+        "  layout: widths {widths:?} → a {}, heights {heights:?}, size {:?}",
+        layout.width, layout.size
+    );
+    let want_h = 20.0
+        + heights[0]
+        + if heights[1] > 0.0 { 10.0 } else { 0.0 }
+        + heights[1]
+        + 20.0;
+    c.check(
+        layout.width == a && layout.size == [a + 40.0, want_h] && heights[0] > 0.0 && heights[1] > 0.0,
+        &format!(
+            "{name}: OnLayout's size {:?}, expected [{}, {want_h}]",
+            layout.size,
+            a + 40.0
+        ),
+    );
+    // Laid out in the tree: the root sized as a canvas, the texts at
+    // their places, inside it.
+    let mut placements = HashMap::new();
+    placements.insert(
+        config.root,
+        Placement {
+            position: [0.0; 3],
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            size: layout.size,
+            scale: [1.0; 3],
+            scale_factor: 1.0,
+        },
+    );
+    let st = layout.state(config, prefix, postfix);
+    let l = scene.layout_for(assets, set, &placements, &st)?;
+    let root = l.rect(config.root);
+    let top_left = [root.x, root.y + root.height];
+    let mut inside = root.width == layout.size[0] && root.height == layout.size[1];
+    for (node, at, h) in [
+        (config.text_prefix, layout.prefix_at, heights[0]),
+        (config.text_postfix, layout.postfix_at, heights[1]),
+    ] {
+        let p = l.local_position(node);
+        let r = l.rect(node);
+        inside &= (p[0] - (top_left[0] + at[0])).abs() < 1e-3
+            && (p[1] - (top_left[1] + at[1])).abs() < 1e-3
+            && (r.width - a).abs() < 1e-3
+            && (r.height - h).abs() < 1e-3
+            && p[0] >= root.x
+            && p[0] + r.width <= root.x + root.width + 1e-3
+            && p[1] <= top_left[1] + 1e-3
+            && p[1] - r.height >= root.y - 1e-3;
+    }
+    c.check(
+        inside,
+        &format!("{name}: the texts laid out at their places inside the root {root:?}"),
+    );
+
+    // `UpdatePosition` on the PDA's canvas.
+    let r = canvas.rect;
+    let k = PDA_DEPTH * config.scale_factor * DEFAULT_UI_SCALE / canvas.scale[0];
+    let (w, h) = (layout.size[0] * k, layout.size[1] * k);
+    let (mx, my) = (MARGIN[0] * k, MARGIN[1] * k);
+    let (right, bottom, top) = (r.x + r.width, r.y, r.y + r.height);
+    let centre = [r.x + 0.5 * r.width, r.y + 0.5 * r.height];
+    // (where, pointer, the top left by the rule).
+    let cases = [
+        ("centre", centre, [centre[0] + mx, centre[1] - my]),
+        (
+            "right edge",
+            [right - 50.0, centre[1]],
+            [right - 50.0 - mx - w, centre[1] - my],
+        ),
+        (
+            "bottom",
+            [centre[0], bottom + 30.0],
+            [centre[0] + mx, bottom + 30.0 + my + h],
+        ),
+        (
+            "bottom right corner",
+            [right - 50.0, bottom + 30.0],
+            [right - 50.0 - mx - w, bottom + 30.0 + my + h],
+        ),
+    ];
+    for (place, at, want) in cases {
+        let pose = update_position(
+            layout.size,
+            &PointerOnCanvas {
+                rect: r,
+                canvas_scale: canvas.scale,
+                pointer: [at[0], at[1], 0.0],
+                depth: PDA_DEPTH,
+            },
+            config.scale_factor,
+            DEFAULT_UI_SCALE,
+        );
+        let p = pose.point;
+        let covers = at[0] >= p[0] && at[0] <= p[0] + w && at[1] <= p[1] && at[1] >= p[1] - h;
+        let good = (p[0] - want[0]).abs() < 1e-3
+            && (p[1] - want[1]).abs() < 1e-3
+            && p[0] >= r.x
+            && p[0] + w <= right + 1e-3
+            && p[1] - h >= bottom - 1e-3
+            && p[1] <= top + 1e-3
+            && !covers;
+        println!(
+            "  pointer at the {place} ({:.1}, {:.1}): scale {:.7}, top left ({:.1}, {:.1}), {w:.1} × {h:.1} on the canvas",
+            at[0], at[1], pose.scale, p[0], p[1]
+        );
+        c.check(
+            good,
+            &format!(
+                "{name}: pointer at the {place}: top left {p:?}, expected {want:?}, inside the canvas, clear of the pointer"
+            ),
+        );
+    }
     Ok(())
 }
 
 pub fn run(game: &GameData) -> Result<ExitCode> {
     let assets = Assets::index(game)?;
-    dump_prefab(game, &assets)?;
-    let mut c = Checks { ok: 0, all: 0 };
-
-    // The strings: the language file and the buttons.
+    let tags = sn_assets::physics_settings(&assets)?.tags;
     let assemblies = sn_assets::ScriptAssemblies::load(game)?;
     let layouts = assemblies.layouts()?;
     let fonts = assets.font_assets(&assemblies)?;
     let set = assets.tmp_font_set(&fonts)?;
+    let catalog = assets.catalog()?;
+    let ugui = assets.ugui_root(&catalog)?;
+    let tree = assets.ui_tree("uGUI.prefab", &ugui)?;
+    let mut scene = assets.ui_scene(&layouts, &tree, &fonts, &tags.sorting_layers)?;
+    let config = assets.tooltip_config(&layouts, &tree)?;
+    let laid = scene.layout_for(&assets, &set, &HashMap::new(), &UiState::default())?;
+    dump_prefab(&tree, &scene, &config, &laid);
+    let mut c = Checks { ok: 0, all: 0 };
+
+    // The PDA screen's canvas.
+    let pda_tree = assets.pda_screen_tree()?;
+    let pda_config = assets.pda_screen_config(&layouts, &pda_tree)?;
+    let pda_scene = assets.ui_scene(&layouts, &pda_tree, &fonts, &tags.sorting_layers)?;
+    let pr = pda_scene
+        .stored_rect(pda_config.root)
+        .cloned()
+        .ok_or("uGUI_PDAScreen: no RectTransform")?;
+    let canvas = Canvas {
+        rect: Rect {
+            x: -pr.pivot[0] * pr.size_delta[0],
+            y: -pr.pivot[1] * pr.size_delta[1],
+            width: pr.size_delta[0],
+            height: pr.size_delta[1],
+        },
+        scale: [pr.scale[0], pr.scale[1]],
+    };
+    println!(
+        "PDA canvas: rect {:?}, scale {:?}, {PDA_DEPTH} m in front of the camera",
+        canvas.rect, canvas.scale
+    );
+
+    // The strings: the language file and the buttons.
     let language = sn_assets::language(game, "English")?;
     let lang = |k: &str| language.get(k).cloned().unwrap_or_else(|| k.to_string());
     let mut buttons: [String; 4] = Default::default();
@@ -206,7 +392,6 @@ pub fn run(game: &GameData) -> Result<ExitCode> {
         .map_err(|e| e.to_string())?
         .into_iter()
         .collect();
-    let catalog = assets.catalog()?;
     let mut inventory = Inventory::new(
         rules.inventory_size,
         &rules.slots,
@@ -325,6 +510,17 @@ pub fn run(game: &GameData) -> Result<ExitCode> {
             got == want.iter().map(String::as_str).collect::<Vec<_>>(),
             &format!("{name}: postfix {got:?}, expected {want:?}"),
         );
+
+        check_layout(
+            &mut c,
+            name,
+            &assets,
+            &set,
+            &mut scene,
+            &config,
+            &canvas,
+            (&prefix, &postfix),
+        )?;
     }
 
     println!("{} of {} checks passed", c.ok, c.all);

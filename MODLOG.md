@@ -2,6 +2,31 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-27 — M9u8b3b2: the tooltip's layout and placement
+
+**What/why:** the second step of M9u8b3b (DESIGN): the tooltip's size
+and where it goes beside the pointer, headless.
+- `sn-ui::tooltip`: `TooltipLayout` (`OnLayout` with no icons: the width
+  from the texts' unbounded preferred widths, at most 429, the heights at
+  that width, the texts' places, the root's size; `state` gives the tree's
+  changes), `update_position` (`UpdatePosition`: the scale from the
+  pointer's depth, beside the pointer by the margin, flipped or pinned at
+  the canvas's edges), `PointerOnCanvas`, `TooltipPose`; 2 unit tests.
+- `sn-inspect ui --tooltip`: the layout and placement checks.
+No new dependencies.
+
+**Verified** (`SUBNAUTICA_DIR` set; logs in `out/m9u8b3b/`):
+- `sn-inspect ui --tooltip` (`ui-tooltip-b3b2.log`): RUN OK, 65 of 65.
+  Four items' prefixes are wider than 429 unwrapped and wrap at 429
+  (tooltip 469 wide); the others 277 to 364 wide. On the PDA canvas
+  (1195 × 970, scale 0.00021181, 0.1874 m away) the tooltip's scale is
+  0.0002174, so it is 1.026 times its size in the canvas's units. The
+  pointer at the centre puts it right of and below the pointer; near the
+  right edge to the left; near the bottom above; in the corner both.
+- `cargo test --workspace` 727 passed, 0 failed; clippy clean.
+- Not tested: against the game's own layout on screen. TMP's preferred
+  sizes are M9u4c's port, checked there, not here.
+
 ## 2026-10-27 — M9u8b3b1: the tooltip's texts (plan for M9u8b3b)
 
 **What/why:** M9u8b3b (the inventory item tooltip) was researched in the

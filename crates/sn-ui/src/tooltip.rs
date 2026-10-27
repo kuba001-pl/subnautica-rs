@@ -9,8 +9,14 @@
 //!   hints with their buttons), with `WriteTitle`, `WriteDescription` and
 //!   `WriteAction`'s rich-text tags. The language's formats go through
 //!   [`cs_format`], the subset of C#'s `string.Format` they use.
+//! - Layout and placement (M9u8b3b2): [`TooltipLayout`] is `OnLayout`
+//!   with no icons (an inventory item has none), [`update_position`] is
+//!   `UpdatePosition`: beside the pointer on the hovered graphic's canvas.
 
 use std::fmt::Write;
+
+use crate::layout::Rect;
+use crate::state::{LocalTransform, UiState};
 
 /// `uGUI_Tooltip`'s nodes and fields.
 #[derive(Clone, Debug, PartialEq)]
@@ -402,6 +408,159 @@ pub fn inventory_item(
         item_commons(s, item, survival),
         item_actions(s, actions, bind),
     )
+}
+
+/// `uGUI_Tooltip`'s constants: `paddingX` (= `paddingY`), `spacing`,
+/// `maxWidth` less both paddings (`OnLayout`'s 429), `margin`.
+pub const PADDING: f32 = 20.0;
+pub const SPACING: f32 = 10.0;
+pub const MAX_TEXT_WIDTH: f32 = 429.0;
+pub const MARGIN: [f32; 2] = [10.0, 20.0];
+
+/// `OnLayout` with no icons: the icon grid's preferred size is 0 × 0.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TooltipLayout {
+    /// `a`: the texts' width.
+    pub width: f32,
+    /// `GetPreferredValues(text, a, 0).y` of the prefix and the postfix.
+    pub prefix_height: f32,
+    pub postfix_height: f32,
+    /// The texts' and the icon grid's `anchoredPosition` (anchors and
+    /// pivots at their top left).
+    pub prefix_at: [f32; 2],
+    pub icons_at: [f32; 2],
+    pub postfix_at: [f32; 2],
+    /// The root's (and so the background's) size.
+    pub size: [f32; 2],
+}
+
+impl TooltipLayout {
+    /// From the texts' unbounded preferred widths
+    /// (`GetPreferredValues(text).x`) and their preferred heights at a
+    /// width (`height_at(a)` → [prefix, postfix]).
+    pub fn new(widths: [f32; 2], height_at: impl FnOnce(f32) -> [f32; 2]) -> TooltipLayout {
+        let icons = [0.0f32, 0.0f32];
+        let a = widths[0].max(widths[1]).max(icons[0]).min(MAX_TEXT_WIDTH);
+        let [y, y2] = height_at(a);
+        let mut num = PADDING;
+        let prefix_at = [PADDING, -num];
+        num += y;
+        let icons_width = icons[0].min(a);
+        let icons_at = [PADDING + 0.5 * (a - icons_width), -num];
+        num += icons[1];
+        if y2 > 0.0 {
+            num += SPACING;
+        }
+        let postfix_at = [PADDING, -num];
+        num += y2 + PADDING;
+        TooltipLayout {
+            width: a,
+            prefix_height: y,
+            postfix_height: y2,
+            prefix_at,
+            icons_at,
+            postfix_at,
+            size: [a + 2.0 * PADDING, num],
+        }
+    }
+
+    /// The changes `OnUpdate` and `OnLayout` make to the tree: the texts,
+    /// the children's sizes and places (the root's size goes through its
+    /// placement, as a canvas's).
+    pub fn state(&self, c: &TooltipConfig, prefix: &str, postfix: &str) -> UiState {
+        let mut st = UiState::default();
+        st.text.insert(c.text_prefix, prefix.to_string());
+        st.text.insert(c.text_postfix, postfix.to_string());
+        let mut place = |node: usize, at: [f32; 2], size: [f32; 2]| {
+            st.transform.insert(
+                node,
+                LocalTransform {
+                    anchored_position: Some(at),
+                    size_delta: Some(size),
+                    ..Default::default()
+                },
+            );
+        };
+        place(c.text_prefix, self.prefix_at, [self.width, self.prefix_height]);
+        place(c.icon_canvas, self.icons_at, [0.0, 0.0]);
+        place(c.text_postfix, self.postfix_at, [self.width, self.postfix_height]);
+        st
+    }
+}
+
+/// What `ExtractParams` reads of the hovered graphic's canvas
+/// (`CursorManager.GetPointerInfo`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PointerOnCanvas {
+    /// The canvas's `rect` in its own space.
+    pub rect: Rect,
+    /// The canvas's `lossyScale` (x, y).
+    pub canvas_scale: [f32; 2],
+    /// The pointer on the canvas's plane, in the canvas's space
+    /// (`worldToLocalMatrix.MultiplyPoint3x4(position)`).
+    pub pointer: [f32; 3],
+    /// `Dot(aimingForward, position - aimingPosition)`: the pointer's
+    /// depth along the camera's forward.
+    pub depth: f32,
+}
+
+/// Where `UpdatePosition` puts the tooltip.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TooltipPose {
+    /// `localScale` (all three axes); the rotation is the canvas's.
+    pub scale: f32,
+    /// The root's pivot (its top left) in the canvas's space.
+    pub point: [f32; 3],
+    /// The tooltip's size in the canvas's space (size × scale ÷ the
+    /// canvas's lossy scale).
+    pub size_on_canvas: [f32; 2],
+}
+
+/// `UpdatePosition` for a tooltip of `size` (the background's rect):
+/// right of and below the pointer by [`MARGIN`]; on an axis where that
+/// leaves the canvas's rect, on the pointer's other side; when both sides
+/// would leave it, at the left (top) edge if the right (bottom) side
+/// overflows more, else flush with the right (bottom) edge.
+pub fn update_position(
+    size: [f32; 2],
+    p: &PointerOnCanvas,
+    scale_factor: f32,
+    ui_scale: f32,
+) -> TooltipPose {
+    let s = p.depth * scale_factor * ui_scale;
+    let k = [s / p.canvas_scale[0], s / p.canvas_scale[1]];
+    let w = [size[0] * k[0], size[1] * k[1]];
+    let m = [MARGIN[0] * k[0], MARGIN[1] * k[1]];
+    let v = p.pointer;
+    let lo = [p.rect.x, p.rect.y];
+    let hi = [p.rect.x + p.rect.width, p.rect.y + p.rect.height];
+    let right = (v[0] + m[0] + w[0] - hi[0]).max(0.0);
+    let left = -(v[0] - m[0] - w[0] - lo[0]).min(0.0);
+    let top = (v[1] + m[1] + w[1] - hi[1]).max(0.0);
+    let bottom = -(v[1] - m[1] - w[1] - lo[1]).min(0.0);
+    let x = if right > 0.0 {
+        if left > 0.0 {
+            if right > left { lo[0] } else { hi[0] - w[0] }
+        } else {
+            v[0] - m[0] - w[0]
+        }
+    } else {
+        v[0] + m[0]
+    };
+    let y = if bottom > 0.0 {
+        if top > 0.0 {
+            if bottom > top { hi[1] } else { lo[1] + w[1] }
+        } else {
+            v[1] + m[1] + w[1]
+        }
+    } else {
+        v[1] - m[1]
+    };
+    TooltipPose {
+        scale: s,
+        point: [x, y, v[2]],
+        size_on_canvas: w,
+    }
 }
 
 #[cfg(test)]
