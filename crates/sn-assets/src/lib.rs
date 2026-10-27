@@ -41,7 +41,7 @@ mod slots;
 mod sprites;
 mod survival;
 mod survival_data;
-pub use survival_data::{oxygen_capacity, survival_fields, swim_charge_rate};
+pub use survival_data::{oxygen_capacity, survival_fields, swim_charge_rate, tool_timing};
 mod terrain;
 mod texts;
 mod tooltip;
@@ -122,7 +122,9 @@ pub use sprites::{
     AtlasSprite, GROUP_ATLASES, GROUP_ITEM, GROUP_ITEM_ACTIONS, GROUP_TAB, LoadedAtlas,
     SPRITE_ATLASES_LABEL, Sprites, cut,
 };
-pub use survival::{consume_rules, decay_rules, energy_rules, equipment_rules, hunger_rules};
+pub use survival::{
+    consume_rules, decay_rules, energy_rules, equipment_rules, hunger_rules, quick_rules,
+};
 pub use terrain::{
     BlendSettings, BlockSource, GrassLook, GrassShader, SurfaceLayer, TerrainGrass,
     TerrainMaterial, TerrainMaterials, TerrainTexture, terrain_materials,

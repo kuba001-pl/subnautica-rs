@@ -864,3 +864,139 @@ mod equipment_reader_tests {
         }
     }
 }
+
+/// QuickSlots' numeric rules, including Inventory.Awake's adjacent
+/// ldc.i4 -> newobj QuickSlots -> call Inventory.set_quickSlots pattern.
+pub fn quick_rules(bytes: &[u8]) -> Result<sn_sim::survival::QuickRules> {
+    let asm = Assembly::parse(bytes).map_err(|e| format!("{GAME_ASSEMBLY}: {e}"))?;
+    let slots = quick_slot_count(&asm)?;
+    let transition = match_literals(
+        &asm,
+        "QuickSlots",
+        "GetTransitionTime",
+        &[
+            Named("draw"),
+            Named("holster"),
+            Named("drop"),
+            Fixed(0.0),
+            Named("max"),
+            Fixed(0.0),
+            Named("max"),
+            Fixed(0.0),
+            Named("max"),
+            Fixed(0.0),
+        ],
+    )?;
+    let bash = match_literals(
+        &asm,
+        "QuickSlots",
+        "PlayerIsBashing",
+        &[Named("bash"), Fixed(0.0)],
+    )?;
+    let r = sn_sim::survival::QuickRules {
+        slots,
+        hand: enum_value(&asm, "EquipmentType", "Hand")?,
+        scrap: enum_value(&asm, "TechType", "ScrapMetal")?,
+        selectable: enum_value(&asm, "QuickSlotType", "Selectable")?,
+        selectable_chargeable: enum_value(&asm, "QuickSlotType", "SelectableChargeable")?,
+        defaults: sn_sim::survival::ToolTiming {
+            draw: take(&transition, "draw")?,
+            holster: take(&transition, "holster")?,
+            drop: take(&transition, "drop")?,
+            bash: take(&bash, "bash")?,
+            animated: false,
+            named_animation: false,
+            first_use: false,
+        },
+        transition_max: take(&transition, "max")?,
+    };
+    r.validate().map_err(|e| format!("{GAME_ASSEMBLY}: {e}"))?;
+    Ok(r)
+}
+fn quick_slot_count(asm: &Assembly) -> Result<usize> {
+    let e = |e: sn_dotnet::Error| format!("{GAME_ASSEMBLY}: {e}");
+    let ty = asm
+        .find_type("", "Inventory")
+        .map_err(e)?
+        .ok_or("Inventory missing")?;
+    let method = asm
+        .find_method(ty, "Awake")
+        .map_err(e)?
+        .ok_or("Inventory.Awake missing")?;
+    let (body, base) = asm
+        .method_body(method)
+        .map_err(e)?
+        .ok_or("Inventory.Awake body missing")?;
+    let code = sn_dotnet::decode(body, base).map_err(e)?;
+    let mut counts = Vec::new();
+    for w in code.windows(3) {
+        if w[1].opcode != 0x73 || w[2].opcode != 0x28 {
+            continue;
+        }
+        let ctor = asm
+            .method_token(w[1].token().ok_or("newobj token missing")?)
+            .map_err(e)?;
+        let setter = asm
+            .method_token(w[2].token().ok_or("setter token missing")?)
+            .map_err(e)?;
+        if ctor.type_name == "QuickSlots"
+            && ctor.name == ".ctor"
+            && ctor.params == 6
+            && setter.type_name == "Inventory"
+            && setter.name == "set_quickSlots"
+            && setter.params == 1
+        {
+            let n = w[0]
+                .ldc_i4()
+                .and_then(|n| usize::try_from(n).ok())
+                .filter(|n| *n > 0 && *n <= 1024)
+                .ok_or_else(|| {
+                    format!(
+                        "Inventory.Awake: invalid slot count at IL offset {:#x}",
+                        w[0].offset
+                    )
+                })?;
+            counts.push(n);
+        }
+    }
+    match counts.as_slice() {
+        [n] => Ok(*n),
+        _ => Err(format!(
+            "Inventory.Awake at IL offset {base:#x}: {} slot-count patterns, expected 1",
+            counts.len()
+        )),
+    }
+}
+
+#[cfg(test)]
+mod quick_reader_tests {
+    use super::*;
+    use sn_dotnet::{
+        Table,
+        encode::{Builder, Il},
+    };
+    fn fixture(counts: &[i32]) -> Vec<u8> {
+        let mut b = Builder::new();
+        let quick = b.type_ref("", "QuickSlots");
+        let ctor = b.member_ref((Table::TYPE_REF, quick), ".ctor", Some(6));
+        b.type_def("", "Inventory");
+        let setter = b.method("set_quickSlots", 1, None);
+        let mut il = Il::default();
+        for n in counts {
+            il = il.ldc(*n).newobj(ctor).call(setter);
+        }
+        b.method("Awake", 0, Some(&il.ret().0));
+        b.build()
+    }
+    #[test]
+    fn slot_count_pattern_is_bounded_and_unique() {
+        let bytes = fixture(&[7]);
+        let asm = Assembly::parse(&bytes).unwrap();
+        assert_eq!(quick_slot_count(&asm).unwrap(), 7);
+        for counts in [&[][..], &[0][..], &[7, 8][..]] {
+            let bytes = fixture(counts);
+            let asm = Assembly::parse(&bytes).unwrap();
+            assert!(quick_slot_count(&asm).unwrap_err().contains("IL offset"));
+        }
+    }
+}

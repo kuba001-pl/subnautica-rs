@@ -2,6 +2,35 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-27 — M9s5: item-identity quick slots and held-tool state
+
+Add pure binding/automatic eligibility/refill, desired vs held identities,
+Sequence draw/hold/holster/drop, per-player first-use flags and PDA/death
+teardown. Six synthetic tests cover row checklist, including same-clock
+updates and reverse transitions. No inventory clones, dependency or whitelist
+change. Runtime rules read from bounded IL and enum identities; stored tool
+fields use metadata layouts.
+
+Dead end corrected: the initial slot count pattern assumed a field; source
+shows a property, so require the setter call after newobj instead. Runtime
+reader now reports five slots, cap 10, default timings 0.5/0.35/1/0.7;
+stored Knife timings 0/0.1/0/0.7 (first-use enabled). Draft fixture used an
+unavailable IL emitter method; replaced it with the existing newobj helper.
+
+Host-resource dead end: default workspace build failed out-of-memory/pagefile
+1455; CARGO_BUILD_JOBS=1 retry failed writing client output (no space). Stop
+after these two attempts; STATUS.md and DESIGN explicitly leave completion
+pending. Targeted tests/install checks pass; no claim of a clean workspace
+build at this step. Required post-merge verification remains.
+
+Verification: `cargo test --workspace`, `cargo clippy --workspace --all-targets
+-- -D warnings`, `cargo fmt --all -- --check`; with SUBNAUTICA_DIR,
+`cargo test -p sn-assets the_quick_slot_rules_are_read -- --ignored --nocapture`.
+Clippy/format/install pass (logs out/m9s5-serial-1/2/3.log); workspace tests
+remain resource-blocked above. Synthetic slot-count fixture passes separately
+(out/m9s5-reader-test.log). Visual sockets,
+IK/colliders and live input are **not tested**; M9s11 consumes the events.
+
 ## 2026-10-27 — M9s4: oxygen sources and ordered equipment effects
 
 Borrow authoritative oxygen amounts; tank unregister/re-register preserves them,

@@ -1582,3 +1582,41 @@ prose. Numbers below describe rules, not a shipped balance table.
   is substituted, no live charging claimed. M9s7 owns the broader census.
 - Pure max-speed and oxygen rules are ready for M9s integration; the live player
   motor/vitals and equipment event plumbing are **not tested** here.
+
+### M9s5: quick slots and held state as implemented (2026-10-27)
+
+- **Confirmed (QuickSlots/Sequence/PlayerTool/PDA/Inventory direct source read;
+  six synthetic tests):** item-id bindings are distinct from desired and held
+  state. Automatic binding requires the first grid copy and Hand eligibility,
+  skips scrap and disallowed edibles, and does not replace a full toolbar.
+  Manual binding can bind duplicate tech types; same-item same-slot unbinds.
+  Removal/refill uses the removed identity's type and an unbound grid item.
+  Binding metadata retains the removed type until reconciliation; no cloned
+  item is created. Scroll ends deselect rather than wrap.
+- **Confirmed (Sequence.Update and QuickSlots.Update source; synthetic event
+  traces):** Sequence completion is notified on the update after reaching the
+  endpoint. Reversals reset current to the specified endpoint, rather than
+  preserving partial progress. Repeated identical clock values do not advance
+  Sequence. Draw/hold/holster/drop keep equip/unequip events once each; held
+  removal releases immediately on reconciliation and waits its drop duration
+  before drawing a refill. Use/bash can delay holstering in Hold.
+- **Confirmed (PDA.Open/Deactivated, Inventory.ReturnHeld, Player.OnKill):** PDA
+  opening refuses a tool in use, remembers the active slot, returns held
+  immediately and suspends activation; closing restores desired selection.
+  Slot keys during suspension bind the hovered eligible item. Interaction
+  teardown/death deselect immediately. Bindings still reference grid ownership;
+  no item is copied or moved by this state machine. Caller supplies interaction
+  permission and current tool-use/bash/VR/debug state. First-use flags are per
+  player/type, set only when a first-use animation is requested; ordinary
+  subsequent draws do not request it. Empty named-animation input on an
+  animated tool refuses explicitly rather than inventing an animation.
+- **Confirmed (runtime `the_quick_slot_rules_are_read`):** Inventory.quickSlots
+  is a property; the bounded count pattern ends in its setter call, not stfld.
+  Initial draft searched for a field and correctly refused (0 patterns); fixed
+  after reading the declaration. Slot count is 5; transition cap 10; default
+  timings 0.5/0.35/1/0.7. Installed Knife stored timings are 0/0.1/0/0.7,
+  with animations and first-use enabled. Constructor values are not substituted
+  for these stored fields. Synthetic assemblies check missing/zero/duplicate
+  slot-count patterns return offset errors; installed reads repeat identically.
+- View-model rendering, collider/socket/IK application and live input dispatch
+  are **not tested**, deferred to M9s11; events describe the headless boundary.

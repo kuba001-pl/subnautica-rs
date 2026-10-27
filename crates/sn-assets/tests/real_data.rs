@@ -3848,3 +3848,42 @@ fn the_equipment_rules_are_read() {
     }
     println!("tank prefabs read: {count}");
 }
+
+#[test]
+#[ignore = "needs SUBNAUTICA_DIR"]
+fn the_quick_slot_rules_are_read() {
+    let Some(dir) = std::env::var_os("SUBNAUTICA_DIR") else {
+        eprintln!("SUBNAUTICA_DIR not set; skipping");
+        return;
+    };
+    let game = GameData::locate(Some(PathBuf::from(dir))).unwrap();
+    let code = sn_assets::read_assembly(&game).unwrap();
+    let r = sn_assets::quick_rules(&code).unwrap();
+    println!("{r:?}");
+    assert_eq!(r.slots, 5);
+    assert_eq!(r.transition_max, 10.0);
+    assert_eq!(r.defaults.bash, 0.7);
+    assert_eq!(sn_assets::quick_rules(&code).unwrap(), r);
+    let assets = sn_assets::Assets::index(&game).unwrap();
+    let assemblies = sn_assets::ScriptAssemblies::load(&game).unwrap();
+    let layouts = assemblies.layouts().unwrap();
+    let db = game.read_prefab_database().unwrap();
+    let path = db
+        .values()
+        .find(|p| p.to_lowercase().ends_with("/knife.prefab"))
+        .unwrap();
+    let catalog = assets.catalog().unwrap();
+    let locations = catalog.locate(path);
+    let location = locations
+        .iter()
+        .find(|l| l.resource_type == "UnityEngine.GameObject")
+        .unwrap();
+    let root = assets.catalog_object(location, 1).unwrap().unwrap();
+    let tree = assets.ui_tree("knife", &root).unwrap();
+    let knives = tree.scripts("Knife").collect::<Vec<_>>();
+    assert_eq!(knives.len(), 1);
+    let fields = sn_assets::survival_fields(&knives[0].1.object, &layouts, "Knife").unwrap();
+    let timing = sn_assets::tool_timing(&fields, true).unwrap();
+    println!("serialized knife timing {timing:?}");
+    assert!(timing.draw.is_finite() && timing.holster.is_finite());
+}

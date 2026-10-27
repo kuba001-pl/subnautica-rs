@@ -56,3 +56,8 @@ pub(crate) fn nonnegative(values: &[f64]) -> bool {
 pub(crate) fn finite(values: &[f64]) -> bool {
     values.iter().all(|x| x.is_finite())
 }
+
+mod quickslots;
+pub use quickslots::{
+    ArmsState, QuickEvent, QuickItem, QuickRules, QuickSlots, QuickUpdate, ToolTiming,
+};

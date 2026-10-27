@@ -33,3 +33,21 @@ pub fn swim_charge_rate(fields: &Fields) -> Result<f64> {
     }
     Ok(n)
 }
+
+pub fn tool_timing(fields: &Fields, named_animation: bool) -> Result<sn_sim::survival::ToolTiming> {
+    let flag = |n| {
+        fields
+            .get(n)
+            .and_then(Value::as_bool)
+            .ok_or_else(|| format!("PlayerTool: missing {n}"))
+    };
+    Ok(sn_sim::survival::ToolTiming {
+        draw: number(fields, "drawTime")? as f32,
+        holster: number(fields, "holsterTime")? as f32,
+        drop: number(fields, "dropTime")? as f32,
+        bash: number(fields, "bashTime")? as f32,
+        animated: flag("hasAnimations")?,
+        named_animation,
+        first_use: flag("hasFirstUseAnimation")?,
+    })
+}
