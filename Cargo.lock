@@ -4795,6 +4795,7 @@ dependencies = [
  "sn-net",
  "sn-octree",
  "sn-protocol",
+ "sn-server",
  "sn-session",
  "sn-sim",
  "sn-terrain",
@@ -4860,6 +4861,7 @@ version = "0.0.0"
 name = "sn-server"
 version = "0.0.0"
 dependencies = [
+ "ctrlc",
  "sn-assets",
  "sn-install",
  "sn-net",

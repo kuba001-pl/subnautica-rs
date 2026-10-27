@@ -66,6 +66,32 @@ pub struct PlayerState {
     pub anim: AnimState,
 }
 
+/// Numeric vitals reported by the owner for persistence (M9f).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PlayerVitals {
+    pub health: f64,
+    pub oxygen: f64,
+}
+
+impl PlayerVitals {
+    pub fn write(&self, w: &mut Writer) {
+        w.f64(self.health);
+        w.f64(self.oxygen);
+    }
+
+    pub fn read(r: &mut Reader) -> Result<Self> {
+        let at = r.pos;
+        let v = Self {
+            health: r.f64("health")?,
+            oxygen: r.f64("oxygen")?,
+        };
+        if v.health < 0.0 || v.oxygen < 0.0 {
+            return Err(r.error(at, "negative vitals"));
+        }
+        Ok(v)
+    }
+}
+
 /// What can happen to a player, sent by its owner (reliable) and relayed
 /// by the server inside [`WorldEventKind::Player`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -250,6 +276,7 @@ pub enum ClientMessage {
     },
     /// Loaded and spawned: other players may see this one now.
     Ready,
+    Vitals(PlayerVitals),
     /// Clock sync: the client's own time, echoed in `Pong`.
     Ping {
         client_time: u64,
@@ -280,6 +307,11 @@ pub enum ClientMessage {
 /// Server → client.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ServerMessage {
+    /// Own state from a previous connection/save, before Ready.
+    Restore {
+        state: Option<PlayerState>,
+        vitals: Option<PlayerVitals>,
+    },
     /// The answer to a `Hello` that fails. Its tag and `Protocol`'s
     /// encoding never change (see `Hello`).
     Reject(RejectReason),
@@ -376,6 +408,10 @@ impl ClientMessage {
                     None => w.bool(false),
                 }
             }
+            ClientMessage::Vitals(v) => {
+                w.u8(10);
+                v.write(&mut w);
+            }
             ClientMessage::Ready => w.u8(tag::READY),
             ClientMessage::Ping { client_time } => {
                 w.u8(tag::PING);
@@ -434,6 +470,7 @@ impl ClientMessage {
                     password,
                 }
             }
+            10 => ClientMessage::Vitals(PlayerVitals::read(&mut r)?),
             tag::READY => ClientMessage::Ready,
             tag::PING => ClientMessage::Ping {
                 client_time: r.varint("client time")?,
@@ -471,6 +508,18 @@ impl ServerMessage {
     pub fn encode(&self) -> Vec<u8> {
         let mut w = Writer::default();
         match self {
+            ServerMessage::Restore { state, vitals } => {
+                w.u8(28);
+                w.bool(state.is_some());
+                if let Some(s) = state {
+                    w.varint(u64::from(s.tick.0));
+                    write_state_body(&mut w, s);
+                }
+                w.bool(vitals.is_some());
+                if let Some(v) = vitals {
+                    v.write(&mut w);
+                }
+            }
             ServerMessage::Reject(reason) => {
                 w.u8(tag::REJECT);
                 match reason {
@@ -600,6 +649,20 @@ impl ServerMessage {
         let mut r = Reader::new(data);
         let at = r.pos;
         let m = match r.u8("message tag")? {
+            28 => {
+                let state = if r.bool("restore state")? {
+                    let tick = Tick(r.varint_u32("restore tick")?);
+                    Some(read_state_body(&mut r, tick)?)
+                } else {
+                    None
+                };
+                let vitals = if r.bool("restore vitals")? {
+                    Some(PlayerVitals::read(&mut r)?)
+                } else {
+                    None
+                };
+                ServerMessage::Restore { state, vitals }
+            }
             tag::REJECT => {
                 let at = r.pos;
                 ServerMessage::Reject(match r.u8("reject reason")? {
@@ -950,7 +1013,7 @@ fn read_player_event(r: &mut Reader) -> Result<PlayerEventKind> {
     })
 }
 
-fn write_settings(w: &mut Writer, s: &WorldSettings) {
+pub fn write_settings(w: &mut Writer, s: &WorldSettings) {
     match s.slot_seed {
         Some(seed) => {
             w.bool(true);
@@ -981,7 +1044,7 @@ fn write_settings(w: &mut Writer, s: &WorldSettings) {
     w.f32(s.time_scale);
 }
 
-fn read_settings(r: &mut Reader) -> Result<WorldSettings> {
+pub fn read_settings(r: &mut Reader) -> Result<WorldSettings> {
     let slot_seed = if r.bool("slot seed present")? {
         Some(r.u64_fixed("slot seed")?)
     } else {

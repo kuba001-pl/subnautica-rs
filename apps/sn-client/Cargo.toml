@@ -8,6 +8,8 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+# Shared server save I/O and platform save-directory policy (M9f).
+sn-server = { path = "../sn-server" }
 sn-unity.workspace = true
 sn-anim.workspace = true
 # Engine: windowing, input, ECS, PBR rendering (see docs/DESIGN.md §3.3);

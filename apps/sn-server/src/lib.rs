@@ -2,6 +2,8 @@
 //! endpoint, on any transport (UDP in the app, the simulated network or
 //! UDP on 127.0.0.1 in tests). `main.rs` reads the install and the flags.
 
+pub mod saves;
+
 use std::collections::HashMap;
 use std::net::SocketAddr;
 

@@ -1178,6 +1178,53 @@ pub fn update(
         return;
     };
 
+    if let Some((pose, vitals)) = session.take_restore() {
+        if let Some(p) = pose {
+            let to = V3::new(
+                f64::from(p.position[0]),
+                f64::from(p.position[1]),
+                f64::from(p.position[2]),
+            );
+            state.player.teleport(&state.params, to, Some(p.in_pod));
+            state.player.velocity = V3::new(
+                f64::from(p.velocity[0]) / 100.0,
+                f64::from(p.velocity[1]) / 100.0,
+                f64::from(p.velocity[2]) / 100.0,
+            );
+            if let Some(q) = p.rotation {
+                state.player.rotation = Q {
+                    x: f64::from(q[0]) / 32767.0,
+                    y: f64::from(q[1]) / 32767.0,
+                    z: f64::from(q[2]) / 32767.0,
+                    w: f64::from(q[3]) / 32767.0,
+                };
+            }
+            state.look = Look::facing(f64::from(p.yaw) * 360.0 / 65536.0);
+            state.look.rotation_y = f64::from(p.pitch) / quant::PITCH_SCALE;
+            state.vitals.life = match p.life {
+                Life::Alive => sn_sim::vitals::Life::Alive,
+                Life::Dead => sn_sim::vitals::Life::Dead {
+                    at: state.vitals.time,
+                },
+                Life::Respawning => sn_sim::vitals::Life::Respawning {
+                    at: state.vitals.time,
+                },
+                Life::Restored => sn_sim::vitals::Life::Restored {
+                    at: state.vitals.time,
+                },
+            };
+            info!(
+                "save: restored pose {:?}, look ({}, {}), life {:?}",
+                p.position, state.look.rotation_x, state.look.rotation_y, p.life
+            );
+        }
+        if let Some(v) = vitals {
+            state.vitals.health = v.health;
+            state.vitals.oxygen = v.oxygen;
+            info!("save: restored health {}, oxygen {}", v.health, v.oxygen);
+        }
+    }
+
     // Mouse capture and look.
     let mut captured = false;
     for (window, mut cursor) in &mut windows {
@@ -1908,6 +1955,10 @@ pub fn update(
                     st.anim.bools
                 );
             }
+            session.push_vitals(sn_protocol::PlayerVitals {
+                health: state.vitals.health,
+                oxygen: state.vitals.oxygen,
+            });
             session.push_state(st);
         }
         // The step for tick T runs once the server's clock reaches T.

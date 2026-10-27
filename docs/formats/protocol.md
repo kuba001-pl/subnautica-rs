@@ -10,11 +10,12 @@ Messages carry ids, numbers, seeds and hashes only. They never carry game
 data (AGENTS.md rule 5): every player reads the world from their own
 install.
 
-Protocol version: **4** (`PROTOCOL_VERSION`). Any change to an encoding or
+Protocol version: **6** (`PROTOCOL_VERSION`). Any change to an encoding or
 to a table below raises it. History: 1 (M10a); 2 (M10c): `WorldHash`
 carries the number of world events applied instead of a tick; 3 (M10h3):
 the cinematic signal events; 4 (M9d3a): [items](#items) (`Request`,
-`Refused`, `WorldChunk`, the `Item` world event).
+`Refused`, `WorldChunk`, the `Item` world event); 5: crafting (M9e2) and,
+on a parallel branch, persistence messages (M9f); 6: both, merged.
 
 ## Scope
 
@@ -539,3 +540,17 @@ settle):
 Every reliable message arrived exactly once and in order in every run;
 the latest channel never went back.
 
+
+## M9f persistence messages (protocol 5 on its branch; 6 merged)
+
+The existing state layout is unchanged. Client tag 10 is Vitals: health
+then oxygen, two finite nonnegative f64s (17 B including tag), reported on
+the latest-only channel key 65534. They stay on the server for persistence.
+Server tag 28 is Restore: bool state-present, optional varint tick and state
+body, bool vitals-present, optional health and oxygen f64s. Sent reliably
+after Welcome and before world chunks; applies only to the own player,
+before Ready. Fresh players have both optional fields absent. Restored
+inventories/equipment are already part of world chunks. Names keep their
+server-assigned ids across restart under the existing friends-on-trust model.
+These messages contain no game assets. Numeric vitals add network overhead
+to the earlier M10 bandwidth measurements; that increase is not measured yet.

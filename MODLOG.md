@@ -88,6 +88,130 @@ same solo flags with `--shot 10.8 m9e3-during-final`: exit 0, zero
 WARN/ERROR; one preview entity attached and two plain beams/twelve sparks
 logged before capture. Final status contains only our Rust and Markdown;
 all generated output remains ignored.
+## 2026-10-27 — Merge main (M9e2 crafting) into M9f
+
+**What/why:** both branches had raised `PROTOCOL_VERSION` to 5 for
+different changes (crafting requests/events; vitals/restore messages), so
+the merged protocol is 6 (protocol.md history updated; its header still
+said 4). Conflicts were only the version comment and MODLOG; both sides
+kept. The fabricator (power, current job with owner/start/end ticks) is part
+of `ItemsState`'s encoding on main, so the save carries it with no extra
+code; job ticks stay valid because elapsed ticks are saved. Saves written
+with protocol 5 (only temp test saves so far) are refused by the version
+check, as designed (no migration).
+
+**Verified:** `cargo test --workspace`: 755 passed, 0 failed. `cargo
+clippy --workspace --all-targets -- -D warnings` clean; `cargo fmt --all
+--check` clean. Real restart run repeated on the merged code (`cargo test
+-p sn-server --test persistence -- --ignored --nocapture` with
+`SUBNAUTICA_DIR`): 1 passed; shutdown save 788 B at tick 399, item hash
+2c04ac9b6bc4c3f3, restart loaded tick 399 with the same hash, 0
+differences. Not tested: saving/restoring an in-progress fabricator job on
+the real install (only through the synthetic `ItemsState` round-trip, which
+compares the whole state including the fabricator).
+
+## 2026-10-27 — M9f4: real restart proof; M9f done
+
+**What/why:** `apps/sn-server/tests/persistence.rs` (`#[ignore]`, reads
+`SUBNAUTICA_DIR`, skips if unset): starts our dedicated server with a temp
+save slot, `--autosave 1 --run-for 8`, joins a scripted client, moves a
+locker item to the inventory, picks up 2 real 1×1 pickups near Lifepod 5,
+drops one, sends a pose and vitals, says bye; the server stops and saves;
+a second server on the same slot is joined and compared. Server logs go to
+`out/m9f/`. Fixes over the draft: wait for the drop's own event and settle
+before snapshotting (the first run compared a snapshot without the drop),
+pump after `Bye` and tolerate sends to the closed peer. README gains the
+saves paragraph (tested claims only).
+
+**Verified:** `SUBNAUTICA_DIR=D:\SteamLibrary\steamapps\common\Subnautica
+cargo test -p sn-server --test persistence -- --ignored --nocapture`:
+1 passed. Before stop: player 0, inventory 2, locker 5 (fresh 6), removed 2,
+dropped 1, item hash 0a729620226e89d3, pose [-197.33, -36.19, -10.21],
+health 78.25, oxygen 37.5. First server: shutdown save 783 B at tick 399,
+hash 0a729620226e89d3. Restart: "loaded … at tick 399; item hash
+0a729620226e89d3; locker 5, removed 2, dropped 1"; client gets player id 0,
+equal item state, Restore equal to the sent pose and vitals; 0 differences.
+The scripted pose jump logs one "implausible move" (expected; the check
+only logs). Workspace tests/clippy/fmt: see the merge entry. Not tested:
+Ctrl-C (only `--run-for` shutdown), saving from `sn-client` at runtime,
+the platform default folder (the run used a temp slot), Linux/macOS,
+power loss.
+
+## 2026-10-27 — M9f3: save slot I/O, autosave and shutdown
+
+**What/why:** `sn-server::saves` (app layer, shared by the dedicated server
+and the client's solo/host embedded server): platform save folder
+(`%LOCALAPPDATA%/subnautica-rs/saves/default` etc.), `--save-dir`,
+`--no-save`, `--load-backup`, `--autosave S` (default 30). Writes validate
+the new bytes and the existing primary, copy the primary to `world.sav.bak`,
+flush `world.sav.tmp`, then replace. A missing primary with a backup/temp
+present, corruption or an incompatible save refuses startup and keeps the
+files; recovery is explicit. An OS file lock (`server.lock`) stops two
+processes sharing a slot. Save paths inside the game install or under any
+folder named `out` are refused (conservative: the app does not know the
+repo root, so any `out` component counts). The dedicated server saves on
+autosave, `--run-for` and Ctrl-C; a failed autosave is logged and the
+server keeps running, a failed shutdown save is an error. The client
+applies the M9f2 Restore (pose, velocity, rotation, look, life, health,
+oxygen) and reports numeric vitals each tick; the embedded server saves on
+its interval and when the session drops. `--join` never saves.
+
+New dependency: `ctrlc` 3.5 in `sn-server` — orderly Ctrl-C shutdown so the
+final save is flushed. `sn-server` now declares `rust-version = "1.89"`
+(standard-library `File::try_lock`); the workspace toolchain is 1.96.
+`sn-client` depends on the `sn-server` library for the shared save code.
+Review fixes over the interrupted draft: `--autosave` f32/f64 compile error,
+a mojibake comment in `sn-client/Cargo.toml`, `sn_protocol::message` kept
+public (the draft made it private for no need).
+
+**Verified:** `cargo test --workspace` all pass, 0 fail (new
+`sn-server` temp-dir tests: restart from save, backup is the previous
+save, corrupt primary refused for load and write, explicit backup recovery
+preserves the backup, second lock on a slot refused, game-dir and `out/`
+paths refused, game dir never created). `cargo clippy --workspace
+--all-targets -- -D warnings` clean, `cargo fmt --all` run. No `std::fs`,
+`std::net`, Bevy or tokio in `sn-session`/`sn-protocol` (grep). Real
+install restart run: M9f4. Embedded (client) saving compiles but is not
+tested at runtime; Linux/macOS folders not tested.
+
+## 2026-10-27 — M9f2: pure save codec and reconnect state
+
+**What/why:** `sn-session::save`, bytes only: independent versioned header,
+protocol/build/rules/tick compatibility, bounded length and checksum;
+world settings/elapsed tick/random, stable names/ids, online and offline
+pose/vitals, complete existing item snapshot. Loading checks identity,
+ownership, allocation and container invariants and reports absolute offsets.
+Offline pose survives disconnect. Protocol 5 adds numeric vitals reports
+and reliable own-state restoration before world chunks/Ready; M9e is not a
+dependency. The client retains this restore for its app to apply (M9f3).
+No dependencies or ignore changes in the pure crates.
+
+**Verified:** `cargo test -p sn-session -p sn-protocol` (log
+`out/m9f2-tests.log`): 51 tests pass, 0 fail. New round-trip checks offline
+inventory, equipped tank, locker, unlocks, 2 removed keys, 1 drop, pose,
+health 61.25, oxygen 12.5, stable identity and elapsed tick. Every truncation
+and bit flip rejected, plus 10,000 random inputs, no panics; build/rules
+mismatch rejected. Initial compile found a test receiver's exhaustive match
+needed the new Restore variant; fixed. `cargo fmt --all` run.
+Further app integration, real-data run and full workspace checks not tested
+at this step; M9f3/M9f4 follow. Verification: repeat the command above;
+expect all tests pass. No assets in status.
+
+## 2026-10-27 — M9f1: save/load plan and state research
+
+**What/why:** wrote the M9f plan before implementation: pure versioned
+codec, stable player identities and pose/vitals, complete M9d item state,
+platform user folder, 30 s autosave, orderly shutdown, validated backup and
+explicit corruption refusal. Read the main checkout's decompile read-only
+as explicitly authorized; findings in `docs/formats/saves.md` are prose.
+No game format is read or written. Planned dependency: `ctrlc` for orderly
+console shutdown. No ignore changes. Crafted items use ordinary inventory.
+
+**Verified:** `git diff --check`; docs-only step, runtime not tested yet.
+`git status --short` lists only our documentation. Verification for the
+next step: `cargo test -p sn-session -p sn-protocol` (all synthetic tests pass).
+Initial Python console read failed on Windows cp1252 output; set
+PYTHONIOENCODING=utf-8; no files were modified by that failed read.
 
 ## 2026-10-27 — M9e2: server-authoritative scripted crafting
 
