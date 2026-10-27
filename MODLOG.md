@@ -1,3 +1,22 @@
+## 2026-10-27 — M9s2–3 fixes: audit and unique battery selector entries
+
+Read the full repository rules and compared consumption, Eatable and battery
+methods directly with ILSpy source (read only). All initial workspace checks
+passed. Duplicate compatibility entries previously repeated grid batteries in
+the reload selector; match the source's once-per-group behavior and test it.
+Clarify research versus implemented claims and caller-supplied prefab inputs.
+No new dependency or whitelist pattern. Old diffs have encoding damage; the
+current M9s sections are UTF-8. No game content copied.
+
+Verification: `cargo test --workspace`, `cargo clippy --workspace --all-targets
+-- -D warnings`, `cargo fmt --all -- --check`; all pass. With SUBNAUTICA_DIR,
+`cargo test -p sn-assets the_consume_rules_are_read -- --ignored --nocapture`
+and `cargo test -p sn-assets the_decay_and_energy_rules_are_read -- --ignored
+--nocapture` pass (logs out/audit-0.log, out/audit-1.log): food gate 99,
+heal threshold f32 0.1, oxygen 15, decay floor -25, fractions 0.5/f32 0.9,
+despawn 5/300 s, default battery 504, charge/capacity/recovery 1/100/2.
+Full prefab input loading and live application are **not tested** (M9s7+).
+
 # MODLOG
 
 One entry per change: what, why, how it was verified. Record dead ends too.

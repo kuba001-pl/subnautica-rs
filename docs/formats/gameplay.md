@@ -1155,7 +1155,8 @@ comparison with the original running game is **not tested**.
 
 ## Survival: drain, eating, first aid and HUD (M9s research, 2026-10-27)
 
-These sections are research, **not implemented or tested gameplay**. Evidence
+The research sections describe source rules; the dated implementation sections
+below distinguish headless tests from deferred integration. Evidence
 is direct reading of the local full ILSpy output in
 `D:/subnautica-rs/out/decompiled/full` (read only), not `fields.py`:
 properties are not serialized fields. **Confirmed (source)** means a method
@@ -1532,3 +1533,18 @@ prose. Numbers below describe rules, not a shipped balance table.
   `EnergyMixin.defaultBattery` (`TechType.Battery = 504`),
   `EnergyMixin.defaultBatteryCharge` (`1`), `EnergyMixin.get_charge`
   (`0, 2, 2`), and `EnergyMixin.ModifyCharge` (six `0`s).
+
+### M9s2–3 audit (2026-10-27)
+
+- **Confirmed (direct source read and opt-in install tests):** consume/decay/
+  energy code constants are read from DLL IL, not production literals. The
+  serialized Eatable/Battery/EnergyMixin inputs remain caller-supplied until
+  M9s7; these checks do not claim a prefab census. Electronics disable/recovery
+  is deferred, as documented above. Negative saved battery charge is rejected
+  by our input contract; the game setter itself only caps the upper bound.
+- **Confirmed (source: EnergyMixin.Sort; synthetic duplicate-type test):** a
+  compatible tech group is emitted once even if compatibility lists repeat a
+  type. Fixed our selector to preserve this property.
+- Historical diffs contain question marks introduced by the shell encoding;
+  current M9s1–3 prose and source already contain proper UTF-8. Unrelated
+  older MODLOG encoding damage is outside this change.

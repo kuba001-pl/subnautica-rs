@@ -271,7 +271,12 @@ pub fn sort_reload_candidates(
     } else {
         None
     };
+    let mut seen = std::collections::BTreeSet::new();
     for &tech in &mixin.compatible_batteries {
+        // The game removes each tech group after emitting it.
+        if !seen.insert(tech) {
+            continue;
+        }
         let mut group: Vec<(ItemId, f32)> = Vec::new();
         for item in inv.container.items().filter(|i| i.tech == tech) {
             let c = item
@@ -620,6 +625,21 @@ mod tests {
             i.container.get(ItemId(3)).and_then(|b| b.charge),
             Some(90.0)
         );
+    }
+
+    #[test]
+    fn duplicate_compatible_types_do_not_duplicate_candidates() {
+        let mut i = inv((2, 2));
+        i.container
+            .add(
+                &techs(),
+                restore_battery(ItemId(1), BAT, 100.0, 30.0).unwrap(),
+            )
+            .unwrap();
+        let mut m = mixin();
+        m.compatible_batteries.push(BAT);
+        let (ids, _) = sort_reload_candidates(&i, &EnergySlot::default(), &m).unwrap();
+        assert_eq!(ids, vec![ItemId(1)]);
     }
 
     #[test]
