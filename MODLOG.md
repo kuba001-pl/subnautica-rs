@@ -2,6 +2,67 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-27 ? P1e: staged terrain/grass LOD uploads and intra-slot object spawn budget
+
+**What/why:** Fixed the remaining movement-boundary frame spikes in the 35 s
+swimming/turning scenario (`--start -5 -10 -5 --look 200 -10 -5 --hold-forward 1
+--turn 8 --shot 35`). Each LOD-0 terrain batch completion in `terrain::stream`
+previously uploaded all `TerrainPart`s (`668k?848k` vertices, single base layer
+up to `261,530` vertices) and `GrassPart`s (`521k?736k` vertices, single grass
+layer up to `583,375` vertices) in a single frame (`render::mesh_alloc`
+`103.1?143.7 ms`), while `objects::stream_objects` spawned all `2,118?4,914`
+fine-detail (`level == 0`) entities of that batch in one frame (`8.4?20.9 ms`)
+because `SPAWN_BUDGET` was checked only between `(batch, level)` slots.
+
+- `apps/sn-client/src/terrain.rs`: split oversized `TerrainPart` and `GrassPart`
+  meshes on the worker thread into chunks of at most `PART_TRIANGLE_BUDGET =
+  12,000` triangles (`<= 36,000` vertices, preserving shared batch bounding
+  boxes and counting one logical mesh per layer in `StreamStats::shown_meshes`),
+  and stage in-place LOD transitions across frames in `TerrainStreamer::staging`
+  under `STAGED_VERTEX_BUDGET = 48,000` vertices per frame, swapping the batch's
+  entities on the frame after its GPU buffers finish allocating so the old LOD
+  remains on screen without holes. Added unit test
+  `oversized_parts_split_into_vertex_budgeted_chunks_and_share_bounds`.
+- `apps/sn-client/src/objects.rs`: track `spawn_cursor` and `slot_objects` per
+  `(batch, level)` slot in `BatchObjects` and lower `SPAWN_BUDGET` from `1,500`
+  to `600` entities per frame so dense fine-detail slots are spread across
+  frames while `settled()` requires `spawn_cursor[l] >= instances.len()`.
+
+Three matched before/after release runs at `--view 400 --resolution 1600 900`:
+- Fixed camera (`600` frames): before (P1d) p50 `10.230 / 9.847 / 9.773 ms`,
+  p95 `12.436 / 11.884 / 10.998 ms`, p99 `14.109 / 13.694 / 11.826 ms`, max
+  `17.956 / 15.741 / 12.434 ms`; after p50 `9.852 / 9.895 / 9.859 ms`, p95
+  `10.763 / 11.163 / 10.848 ms`, p99 `11.434 / 11.796 / 11.505 ms`, max
+  `12.659 / 16.137 / 11.759 ms`. All nine fixed-camera static snapshots across
+  P1d-before, P1d-after, and P1e-after match byte-for-byte (`103` batches,
+  `4,393,498` terrain triangles, `589` terrain meshes, `25,311` grass tufts,
+  `1,970,238` grass triangles, `17,194` object entities, `0` warnings).
+- Player + PDA (`--shot 12`, excluding capture/exit): before (P1d) p50
+  `10.812 / 11.726 / 10.566 ms`, p95 `12.423 / 25.528 / 11.997 ms`, p99
+  `15.852 / 29.413 / 14.340 ms`, max `27.872 / 36.735 / 28.438 ms`
+  (`objects::stream_objects` max `2.460 / 2.264 / 2.296 ms`); after p50
+  `10.714 / 10.791 / 10.660 ms`, p95 `12.389 / 12.437 / 12.201 ms`, p99
+  `14.301 / 13.974 / 14.628 ms`, max `22.645 / 26.272 / 28.515 ms`
+  (`objects::stream_objects` max `0.503 / 0.488 / 0.518 ms`). All runs perform
+  the six locker `switch` moves and refuse the pod drop with `0` warnings.
+- Swim route (`--shot 35`, excluding capture/exit): before (P1d) p50
+  `8.967 / 8.887 / 10.194 ms`, p95 `11.179 / 11.097 / 17.421 ms`, p99
+  `12.642 / 12.590 / 20.997 ms`, max `168.571 / 171.400 / 169.033 ms`
+  (`render::assets` max `127.600 / 126.900 / 144.364 ms`, `render::mesh_alloc`
+  max `123.300 / 122.900 / 143.738 ms`, `objects::stream_objects` max
+  `14.316 / 13.904 / 20.892 ms`); after p50 `8.989 / 8.984 / 8.967 ms`, p95
+  `11.783 / 11.517 / 11.562 ms`, p99 `16.358 / 16.317 / 16.494 ms`, max
+  `25.256 / 26.508 / 23.447 ms` (`render::assets` max `11.021 / 11.635 /
+  11.083 ms`, `render::mesh_alloc` max `8.014 / 7.957 / 7.901 ms`,
+  `objects::stream_objects` max `1.703 / 2.015 / 1.766 ms`), with `0` frames
+  `>= 33.333 ms` across `3,630?3,635` frames and identical end-of-route scene
+  counts (`102` batches, `2,950,338` terrain triangles, `16,852` grass tufts,
+  `13,171` object entities, `0` warnings).
+
+**Verify:** `cargo test --workspace` (724 passed, 0 failed, 63 ignored without
+`SUBNAUTICA_DIR`), `cargo clippy --workspace --all-targets -- -D warnings`,
+`cargo fmt --all -- --check`.
+
 ## 2026-10-27 ? P1d: render-stage spike attribution and object GPU upload budget
 
 **What/why:** Extended `SN_CLIENT_PERF=1` (`apps/sn-client/src/perf.rs`,

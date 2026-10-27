@@ -71,7 +71,7 @@ const BATCH_LOAD_RINGS: i32 = 1;
 
 /// Entities spawned per frame at most, so a burst of finished batches is
 /// spread over several frames.
-const SPAWN_BUDGET: usize = 1_500;
+const SPAWN_BUDGET: usize = 600;
 
 /// Maximum texture bytes added to `Assets<Image>` per frame so GPU texture
 /// uploads in `RenderSystems::PrepareAssets` do not stall a frame (P1d).
@@ -3021,6 +3021,10 @@ struct BatchObjects {
     level_keys: [Vec<EntityKey>; SLOTS],
     /// Spawned entities per cell level, `None` when not spawned.
     shown: [Option<Vec<Entity>>; SLOTS],
+    /// Next instance index to inspect when spawning a cell level across frames.
+    spawn_cursor: [usize; SLOTS],
+    /// Shown objects (not entities) that spawn slots filled, per cell level.
+    slot_objects: [usize; SLOTS],
     /// Whether its entities cast sun shadows (only the nearest level of
     /// detail: the game's shadows reach 50 m).
     casting: bool,
@@ -3352,12 +3356,7 @@ impl ObjectStreamer {
                 if let Some(e) = shown {
                     s.entities += e.len();
                     s.per_level[level] += e.len();
-                    s.slot_objects += b
-                        .instances
-                        .iter()
-                        .flatten()
-                        .filter(|i| i.from_slot && i.level == level)
-                        .count();
+                    s.slot_objects += b.slot_objects[level];
                 }
             }
         }
@@ -3376,10 +3375,14 @@ impl ObjectStreamer {
             && self.pending.is_empty()
             && terrain.shown_lods().all(|(coord, lod)| {
                 self.batches.get(&coord).is_some_and(|b| {
-                    b.instances.is_some()
-                        && (0..SLOTS).all(|l| {
-                            b.shown[l].is_some() == shows_slot(l, lod, coord, self.camera_batch)
-                        })
+                    let Some(instances) = &b.instances else {
+                        return false;
+                    };
+                    (0..SLOTS).all(|l| {
+                        let want = shows_slot(l, lod, coord, self.camera_batch);
+                        b.shown[l].is_some() == want
+                            && (!want || b.spawn_cursor[l] >= instances.len())
+                    })
                 })
             })
     }
@@ -4080,57 +4083,83 @@ pub fn stream_objects(
             let Some(b) = streamer.batches.get_mut(&coord) else {
                 break;
             };
-            match (&b.shown[level], want) {
-                (Some(_), false) => {
+            if !want {
+                if b.shown[level].is_some() {
                     for key in std::mem::take(&mut b.level_keys[level]) {
                         streamer.keyed.remove(&key);
                     }
                     for entity in b.shown[level].take().into_iter().flatten() {
                         commands.entity(entity).despawn();
                     }
+                    b.spawn_cursor[level] = 0;
+                    b.slot_objects[level] = 0;
                 }
-                (None, true) if budget > 0 => {
-                    let todo: Vec<(Instance, Option<EntityKey>)> = b
-                        .instances
-                        .iter()
-                        .flatten()
-                        .enumerate()
-                        .filter(|(_, i)| i.level == level)
-                        .map(|(n, i)| (*i, b.keys.get(&n).cloned()))
-                        .collect();
-                    let mut entities = Vec::new();
-                    let mut level_keys = Vec::new();
-                    let mut spawner = Spawner {
-                        commands: &mut commands,
-                        materials: &mut materials,
-                        defaults: &defaults,
-                        light: &light,
-                        water: water.as_deref(),
-                    };
-                    for (inst, key) in &todo {
-                        if key.as_ref().is_some_and(|k| streamer.gone.contains(k)) {
-                            streamer.item_stats.skipped_gone += 1;
-                            continue;
-                        }
-                        let first = entities.len();
-                        streamer.spawn_instance(inst, casting, &mut spawner, &mut entities);
-                        if let Some(key) = key {
-                            streamer
-                                .keyed
-                                .entry(key.clone())
-                                .or_default()
-                                .extend_from_slice(&entities[first..]);
-                            level_keys.push(key.clone());
+                continue;
+            }
+            let total = b.instances.as_ref().map_or(0, Vec::len);
+            let needs_spawn = b.shown[level].is_none() || b.spawn_cursor[level] < total;
+            if needs_spawn && budget > 0 {
+                let start_cursor = b.spawn_cursor[level];
+                let mut cursor = start_cursor;
+                let mut todo: Vec<(usize, Instance, Option<EntityKey>)> = Vec::new();
+                if let Some(instances) = &b.instances {
+                    for (n, inst) in instances.iter().enumerate().skip(start_cursor) {
+                        if inst.level == level {
+                            todo.push((n, *inst, b.keys.get(&n).cloned()));
+                        } else if todo.is_empty() {
+                            cursor = n + 1;
                         }
                     }
-                    crate::perf::count("objects::spawn_entities", entities.len());
-                    budget = budget.saturating_sub(entities.len().max(1));
-                    if let Some(b) = streamer.batches.get_mut(&coord) {
-                        b.shown[level] = Some(entities);
-                        b.level_keys[level] = level_keys;
+                }
+                let mut entities = Vec::new();
+                let mut level_keys = Vec::new();
+                let mut slot_objects = 0;
+                let mut spawner = Spawner {
+                    commands: &mut commands,
+                    materials: &mut materials,
+                    defaults: &defaults,
+                    light: &light,
+                    water: water.as_deref(),
+                };
+                for (idx, (n, inst, key)) in todo.iter().enumerate() {
+                    if budget == 0 {
+                        break;
+                    }
+                    cursor = *n + 1;
+                    if idx + 1 == todo.len() {
+                        cursor = total;
+                    }
+                    if key.as_ref().is_some_and(|k| streamer.gone.contains(k)) {
+                        streamer.item_stats.skipped_gone += 1;
+                        continue;
+                    }
+                    if inst.from_slot {
+                        slot_objects += 1;
+                    }
+                    let first = entities.len();
+                    streamer.spawn_instance(inst, casting, &mut spawner, &mut entities);
+                    let spawned_now = entities.len() - first;
+                    budget = budget.saturating_sub(spawned_now.max(1));
+                    if let Some(key) = key {
+                        streamer
+                            .keyed
+                            .entry(key.clone())
+                            .or_default()
+                            .extend_from_slice(&entities[first..]);
+                        level_keys.push(key.clone());
                     }
                 }
-                _ => {}
+                if todo.is_empty() {
+                    cursor = total;
+                    budget = budget.saturating_sub(1);
+                }
+                crate::perf::count("objects::spawn_entities", entities.len());
+                if let Some(b) = streamer.batches.get_mut(&coord) {
+                    b.shown[level].get_or_insert_with(Vec::new).extend(entities);
+                    b.level_keys[level].extend(level_keys);
+                    b.spawn_cursor[level] = cursor;
+                    b.slot_objects[level] += slot_objects;
+                }
             }
         }
     }

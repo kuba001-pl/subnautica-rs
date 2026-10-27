@@ -190,6 +190,56 @@ caps (`TEXTURE_UPLOAD_BYTES_PER_FRAME = 8 MiB`,
 All six fixed-camera static snapshots match byte-for-byte; all six player runs
 perform the six locker `switch` moves and refuse the pod drop with zero warnings.
 
+## P1e: staged LOD-0 terrain + grass mesh upload and intra-slot object spawn budget
+
+In the 35 s `swim` route across streaming boundaries, each LOD-0 terrain batch
+completion previously uploaded all `done.parts` (`668k?848k` vertices, single
+base layer up to `261,530` vertices) and `done.grass` (`521k?736k` vertices,
+single grass layer up to `583,375` vertices) in one frame, stalling
+`render::mesh_alloc` for `103.1?143.7 ms`, while `objects::stream_objects`
+spawned the batch's entire fine-detail (`level == 0`) slot (`2,118?4,914`
+entities, `8.4?20.9 ms`) in the same frame because `SPAWN_BUDGET` was checked
+only between slots.
+
+`terrain.rs` now splits oversized `TerrainPart` and `GrassPart` meshes on the
+worker thread into chunks of at most `PART_TRIANGLE_BUDGET = 12,000` triangles
+(`<= 36,000` vertices, preserving shared batch bounding boxes and counting one
+logical mesh per layer in `StreamStats::shown_meshes`) and stages in-place LOD
+transitions across frames in `TerrainStreamer::staging` under
+`STAGED_VERTEX_BUDGET = 48,000` vertices per frame, swapping the batch's
+entities on the frame after its GPU buffers finish allocating so the old LOD
+remains on screen without holes. `objects.rs` tracks `spawn_cursor` per
+`(batch, level)` slot and lowers `SPAWN_BUDGET` to `600` entities per frame so
+dense fine-detail slots are spread across frames.
+
+| Case / metric | Before P1e / After P1d (3 runs, ms) | After P1e (3 runs, ms) |
+|---|---|---|
+| fixed (`600` frames) p50 | 10.230 / 9.847 / 9.773 | 9.852 / 9.895 / 9.859 |
+| fixed (`600` frames) p95 | 12.436 / 11.884 / 10.998 | 10.763 / 11.163 / 10.848 |
+| fixed (`600` frames) p99 | 14.109 / 13.694 / 11.826 | 11.434 / 11.796 / 11.505 |
+| fixed (`600` frames) max | 17.956 / 15.741 / 12.434 | 12.659 / 16.137 / 11.759 |
+| player (`--shot 12`) p50 | 10.812 / 11.726 / 10.566 | 10.714 / 10.791 / 10.660 |
+| player (`--shot 12`) p95 | 12.423 / 25.528 / 11.997 | 12.389 / 12.437 / 12.201 |
+| player (`--shot 12`) p99 | 15.852 / 29.413 / 14.340 | 14.301 / 13.974 / 14.628 |
+| player (`--shot 12`) max | 27.872 / 36.735 / 28.438 | 22.645 / 26.272 / 28.515 |
+| player `objects::stream_objects` max | 2.460 / 2.264 / 2.296 | 0.503 / 0.488 / 0.518 |
+| swim (`--shot 35`) p50 | 8.967 / 8.887 / 10.194 | 8.989 / 8.984 / 8.967 |
+| swim (`--shot 35`) p95 | 11.179 / 11.097 / 17.421 | 11.783 / 11.517 / 11.562 |
+| swim (`--shot 35`) p99 | 12.642 / 12.590 / 20.997 | 16.358 / 16.317 / 16.494 |
+| swim (`--shot 35`) max | 168.571 / 171.400 / 169.033 | 25.256 / 26.508 / 23.447 |
+| swim `render::assets` max | 127.600 / 126.900 / 144.364 | 11.021 / 11.635 / 11.083 |
+| swim `render::mesh_alloc` max | 123.300 / 122.900 / 143.738 | 8.014 / 7.957 / 7.901 |
+| swim `objects::stream_objects` max | 14.316 / 13.904 / 20.892 | 1.703 / 2.015 / 1.766 |
+
+All nine fixed-camera static snapshots (`p1d-before-1..3`, `p1d-after-1..3`,
+`p1e-after-1..3`) match byte-for-byte (`103` batches, `4,393,498` terrain
+triangles, `589` terrain meshes, `25,311` grass tufts, `1,970,238` grass
+triangles, `17,194` object entities, `0` warnings). All three P1e `swim` runs
+reach the identical end-of-route scene (`102` batches `[4, 4, 20, 74]`,
+`2,950,338` terrain triangles, `16,852` grass tufts, `1,341,147` grass
+triangles, `13,171` object entities, `201` slot objects, `0` warnings) with zero
+frames `>= 33.333 ms` across `3,630?3,635` sampled frames.
+
 ## Reproduction
 
 Run from the worktree in PowerShell; choose new baseline/capture/log names
@@ -226,7 +276,7 @@ revisions are P1a and P1b. Do not mix view distances in an A/B comparison.
 
 ## Checks and limits
 
-`cargo test --workspace` with the game environment variable unset: 723 passed,
+`cargo test --workspace` with the game environment variable unset: 724 passed,
 0 failed, 63 ignored. `cargo clippy --workspace --all-targets -- -D warnings`
 and `cargo fmt --all -- --check` pass. With the install configured:
 

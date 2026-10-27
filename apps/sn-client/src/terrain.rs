@@ -41,12 +41,17 @@ const HYSTERESIS: f32 = 20.0;
 /// Parsed batches kept in memory for meshing. Average batch ≈ 0.2 MB.
 const CACHE_LIMIT: usize = 1200;
 
+/// Triangles per uploaded mesh chunk at most (`<= 36,000` vertices, ~3 ms in `render::mesh_alloc`).
+const PART_TRIANGLE_BUDGET: usize = 12_000;
+
 /// The triangles of one batch drawn with one material at one place in the
 /// draw order, in Bevy coordinates.
 pub struct TerrainPart {
     pub material: u8,
     /// 0: opaque; higher ranks are blended over lower ones (see `sn_mesh::build_layers`).
     pub rank: u8,
+    /// True on the first chunk of a material layer (counted in `StreamStats::shown_meshes`).
+    pub counted: bool,
     pub positions: Vec<[f32; 3]>,
     pub normals: Vec<[f32; 3]>,
     pub uvs: Vec<[f32; 2]>,
@@ -64,6 +69,7 @@ struct Job {
 pub struct GrassPart {
     pub ty: u8,
     pub tufts: usize,
+    pub counted: bool,
     pub positions: Vec<[f32; 3]>,
     pub normals: Vec<[f32; 3]>,
     pub tangents: Vec<[f32; 4]>,
@@ -79,6 +85,7 @@ impl GrassPart {
         GrassPart {
             ty: g.ty,
             tufts: g.tufts,
+            counted: true,
             positions: g
                 .positions
                 .iter()
@@ -102,6 +109,105 @@ impl GrassPart {
                 .collect(),
         }
     }
+
+    fn from_mesh_chunks(g: GrassMesh) -> Vec<GrassPart> {
+        split_grass_part(Self::from_mesh(g))
+    }
+}
+
+fn split_grass_part(part: GrassPart) -> Vec<GrassPart> {
+    let max_indices = PART_TRIANGLE_BUDGET * 3;
+    if part.indices.len() <= max_indices {
+        return vec![part];
+    }
+    let has_tangents = !part.tangents.is_empty();
+    let mut remap = vec![u32::MAX; part.positions.len()];
+    let mut out = Vec::with_capacity(part.indices.len().div_ceil(max_indices));
+    for (chunk_idx, tri_indices) in part.indices.chunks(max_indices).enumerate() {
+        let cap = tri_indices.len();
+        let mut positions = Vec::with_capacity(cap);
+        let mut normals = Vec::with_capacity(cap);
+        let mut tangents = Vec::with_capacity(if has_tangents { cap } else { 0 });
+        let mut uvs = Vec::with_capacity(cap);
+        let mut colors = Vec::with_capacity(cap);
+        let mut chunk_local = Vec::with_capacity(cap);
+        let mut indices = Vec::with_capacity(tri_indices.len());
+        for &v in tri_indices {
+            let idx = v as usize;
+            let slot = &mut remap[idx];
+            if *slot == u32::MAX {
+                *slot = positions.len() as u32;
+                positions.push(part.positions[idx]);
+                normals.push(part.normals[idx]);
+                if has_tangents {
+                    tangents.push(part.tangents[idx]);
+                }
+                uvs.push(part.uvs[idx]);
+                colors.push(part.colors[idx]);
+                chunk_local.push(part.chunk_local[idx]);
+            }
+            indices.push(*slot);
+        }
+        for &v in tri_indices {
+            remap[v as usize] = u32::MAX;
+        }
+        out.push(GrassPart {
+            ty: part.ty,
+            tufts: if chunk_idx == 0 { part.tufts } else { 0 },
+            counted: chunk_idx == 0 && part.counted,
+            positions,
+            normals,
+            tangents,
+            uvs,
+            colors,
+            chunk_local,
+            indices,
+        });
+    }
+    out
+}
+
+fn split_terrain_parts(parts: Vec<TerrainPart>) -> Vec<TerrainPart> {
+    let max_indices = PART_TRIANGLE_BUDGET * 3;
+    let mut out = Vec::with_capacity(parts.len());
+    for part in parts {
+        if part.indices.len() <= max_indices {
+            out.push(part);
+            continue;
+        }
+        let mut remap = vec![u32::MAX; part.positions.len()];
+        for (chunk_idx, tri_indices) in part.indices.chunks(max_indices).enumerate() {
+            let cap = tri_indices.len();
+            let mut positions = Vec::with_capacity(cap);
+            let mut normals = Vec::with_capacity(cap);
+            let mut uvs = Vec::with_capacity(cap);
+            let mut indices = Vec::with_capacity(tri_indices.len());
+            for &v in tri_indices {
+                let idx = v as usize;
+                let slot = &mut remap[idx];
+                if *slot == u32::MAX {
+                    *slot = positions.len() as u32;
+                    positions.push(part.positions[idx]);
+                    normals.push(part.normals[idx]);
+                    uvs.push(part.uvs[idx]);
+                }
+                indices.push(*slot);
+            }
+            for &v in tri_indices {
+                remap[v as usize] = u32::MAX;
+            }
+            out.push(TerrainPart {
+                material: part.material,
+                rank: part.rank,
+                counted: chunk_idx == 0 && part.counted,
+                positions,
+                normals,
+                uvs,
+                indices,
+            });
+        }
+    }
+    out
 }
 
 /// Seed of the grass scatter (the game's own draws differ per chunk load
@@ -206,7 +312,7 @@ impl Shared {
             Some(blocks) if job.lod == 0 && !blocks.grass.is_empty() => {
                 build_grass(&mesh, &blocks.grass, &GrassBudget::default(), GRASS_SEED)
                     .into_iter()
-                    .map(GrassPart::from_mesh)
+                    .flat_map(GrassPart::from_mesh_chunks)
                     .collect()
             }
             _ => Vec::new(),
@@ -255,9 +361,53 @@ fn worker(shared: Arc<Shared>, tx: Sender<WorkerMessage>) {
 struct Shown {
     lod: u32,
     entities: Vec<Entity>,
+    meshes: usize,
     triangles: usize,
     grass_tufts: usize,
     grass_triangles: usize,
+}
+
+struct StagedPart {
+    mesh: Handle<Mesh>,
+    material: u8,
+    rank: u8,
+    counted: bool,
+    triangles: usize,
+}
+
+struct StagedGrass {
+    mesh: Handle<Mesh>,
+    material: GrassHandle,
+    counted: bool,
+    tufts: usize,
+    triangles: usize,
+}
+
+/// A finished batch uploading its `Mesh` handles across frames before swapping `shown`.
+struct StagingBatch {
+    job: Job,
+    mesh_ms: f32,
+    in_place: bool,
+    parts: VecDeque<TerrainPart>,
+    grass: VecDeque<GrassPart>,
+    uploaded_parts: Vec<StagedPart>,
+    uploaded_grass: Vec<StagedGrass>,
+}
+
+impl StagingBatch {
+    fn new(done: Finished, in_place: bool) -> Self {
+        let uploaded_parts = Vec::with_capacity(done.parts.len());
+        let uploaded_grass = Vec::with_capacity(done.grass.len());
+        StagingBatch {
+            job: done.job,
+            mesh_ms: done.mesh_ms,
+            in_place,
+            parts: done.parts.into(),
+            grass: done.grass.into(),
+            uploaded_parts,
+            uploaded_grass,
+        }
+    }
 }
 
 #[derive(Default, Clone, Copy, Debug)]
@@ -291,6 +441,8 @@ pub struct TerrainStreamer {
     materials: HashMap<u8, Handle<StandardMaterial>>,
     /// Finished meshes waiting for upload (see UPLOAD_BUDGET).
     ready: VecDeque<Finished>,
+    /// Batch currently staging its GPU meshes across frames.
+    staging: Option<StagingBatch>,
     /// Request-to-screen latencies (ms) and pure meshing times (ms), per level.
     pub latencies: Vec<(u32, f32, f32)>,
 }
@@ -334,6 +486,7 @@ impl TerrainStreamer {
             last_update_at: None,
             materials: HashMap::new(),
             ready: VecDeque::new(),
+            staging: None,
             latencies: Vec::new(),
         })
     }
@@ -348,7 +501,7 @@ impl TerrainStreamer {
         };
         for shown in self.shown.values() {
             stats.shown_triangles += shown.triangles;
-            stats.shown_meshes += shown.entities.len();
+            stats.shown_meshes += shown.meshes;
             stats.grass_tufts += shown.grass_tufts;
             stats.grass_triangles += shown.grass_triangles;
             stats.per_lod[shown.lod as usize] += 1;
@@ -367,6 +520,7 @@ impl TerrainStreamer {
             && self.shared.queue.lock().unwrap().is_empty()
             && self.in_flight.is_empty()
             && self.ready.is_empty()
+            && self.staging.is_none()
             && self
                 .desired
                 .iter()
@@ -422,6 +576,27 @@ impl TerrainStreamer {
             }
         }
         self.desired = desired;
+
+        if self
+            .staging
+            .as_ref()
+            .is_some_and(|s| self.desired.get(&s.job.coord) != Some(&s.job.lod))
+        {
+            if let Some(s) = self.staging.take()
+                && self.in_flight.get(&s.job.coord) == Some(&s.job.lod)
+            {
+                self.in_flight.remove(&s.job.coord);
+            }
+        }
+        let desired_ref = &self.desired;
+        let in_flight_ref = &mut self.in_flight;
+        self.ready.retain(|done| {
+            let keep = desired_ref.get(&done.job.coord) == Some(&done.job.lod);
+            if !keep && in_flight_ref.get(&done.job.coord) == Some(&done.job.lod) {
+                in_flight_ref.remove(&done.job.coord);
+            }
+            keep
+        });
 
         // Rebuild the queue from scratch; jobs still waiting are forgotten.
         let mut queue = self.shared.queue.lock().unwrap();
@@ -521,11 +696,12 @@ fn layered_parts(mesh: &sn_mesh::Mesh, blocks: &BlockSettings, lod: u32) -> Vec<
             max_types: MAX_TYPES[lod as usize],
         },
     );
-    let mut parts: Vec<TerrainPart> = layers
+    let parts: Vec<TerrainPart> = layers
         .into_iter()
         .map(|l| TerrainPart {
             material: l.material,
             rank: l.rank,
+            counted: true,
             positions: l
                 .positions
                 .iter()
@@ -546,6 +722,7 @@ fn layered_parts(mesh: &sn_mesh::Mesh, blocks: &BlockSettings, lod: u32) -> Vec<
                 .collect(),
         })
         .collect();
+    let mut parts = split_terrain_parts(parts);
     share_bounds(&mut parts);
     parts
 }
@@ -582,6 +759,7 @@ fn split_by_material(mesh: &sn_mesh::Mesh) -> Vec<TerrainPart> {
             let part = TerrainPart {
                 material,
                 rank: 0,
+                counted: true,
                 positions: Vec::new(),
                 normals: Vec::new(),
                 uvs: Vec::new(),
@@ -602,15 +780,196 @@ fn split_by_material(mesh: &sn_mesh::Mesh) -> Vec<TerrainPart> {
         });
         part.indices.extend([a, c, b]);
     }
-    parts.into_values().map(|(part, _)| part).collect()
+    split_terrain_parts(parts.into_values().map(|(part, _)| part).collect())
 }
 
-/// Triangles uploaded to the GPU per frame at most, so a burst of finished
-/// batches is spread over several frames instead of causing one long frame.
+/// Triangles uploaded to the GPU per frame at most during initial batch fill.
 const UPLOAD_BUDGET: usize = 300_000;
+
+/// Vertices uploaded to the GPU per frame at most when staging an in-place
+/// level-of-detail transition (`~4 ms` in `render::mesh_alloc`).
+const STAGED_VERTEX_BUDGET: usize = 48_000;
+
+/// Small in-place transitions up to this many vertices swap on the same frame;
+/// larger transitions swap on the next frame after their GPU buffers allocate.
+const STAGED_IMMEDIATE_COMMIT_VERTICES: usize = 16_000;
 
 /// Moves this far before the wanted set is recomputed.
 const UPDATE_DISTANCE: f32 = 8.0;
+
+fn upload_terrain_part(part: TerrainPart, meshes: &mut Assets<Mesh>) -> (StagedPart, usize) {
+    let vertices = part.positions.len();
+    let triangles = part.indices.len() / 3;
+    crate::perf::count("terrain::mesh_vertices", vertices);
+    let mut mesh = Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::RENDER_WORLD,
+    );
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, part.positions);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, part.normals);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, part.uvs);
+    mesh.insert_indices(Indices::U32(part.indices));
+    (
+        StagedPart {
+            mesh: meshes.add(mesh),
+            material: part.material,
+            rank: part.rank,
+            counted: part.counted,
+            triangles,
+        },
+        vertices,
+    )
+}
+
+fn upload_grass_part(
+    part: GrassPart,
+    meshes: &mut Assets<Mesh>,
+    look: &mut TerrainLook,
+    grass_materials: &mut Assets<GrassMaterial>,
+    object_materials: &mut Assets<ObjectMaterial>,
+) -> Option<(StagedGrass, usize)> {
+    let material = look.grass_material(part.ty, grass_materials, object_materials)?;
+    let vertices = part.positions.len();
+    let triangles = part.indices.len() / 3;
+    crate::perf::count("terrain::grass_vertices", vertices);
+    let mut mesh = Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::RENDER_WORLD,
+    );
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, part.positions);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, part.normals);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, part.uvs);
+    if !part.tangents.is_empty() {
+        mesh.insert_attribute(Mesh::ATTRIBUTE_TANGENT, part.tangents);
+    }
+    match &material {
+        GrassHandle::Grass(_) => {
+            // grass.wgsl: wave direction, amount and height in the
+            // colours; in the second uv set the position along
+            // `_ObjectUp` in the game's grass object (Noisey Wave
+            // sways by it; the shader puts the world mask there).
+            let up = look.grass_object_up(part.ty);
+            let along: Vec<[f32; 2]> = part
+                .chunk_local
+                .iter()
+                .map(|l| [l[0] * up[0] + l[1] * up[1] + l[2] * up[2], 0.0])
+                .collect();
+            mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, part.colors);
+            mesh.insert_attribute(Mesh::ATTRIBUTE_UV_1, along);
+            mesh.insert_indices(Indices::U32(part.indices));
+        }
+        GrassHandle::Object(_) => {
+            // The standard material would multiply vertex colours in.
+            mesh.insert_indices(Indices::U32(part.indices));
+        }
+    }
+    Some((
+        StagedGrass {
+            mesh: meshes.add(mesh),
+            material,
+            counted: part.counted,
+            tufts: part.tufts,
+            triangles,
+        },
+        vertices,
+    ))
+}
+
+fn commit_staged_batch(
+    commands: &mut Commands,
+    streamer: &mut TerrainStreamer,
+    materials: &mut Assets<StandardMaterial>,
+    terrain_materials: &mut Assets<TerrainMaterial>,
+    mut look: Option<&mut TerrainLook>,
+    staged: StagingBatch,
+) {
+    let job = staged.job;
+    if streamer.in_flight.get(&job.coord) == Some(&job.lod) {
+        streamer.in_flight.remove(&job.coord);
+    }
+    if streamer.desired.get(&job.coord) != Some(&job.lod) {
+        return;
+    }
+    // Swap: the old mesh stays until all new GPU handles are ready, so no holes.
+    if let Some(old) = streamer.shown.remove(&job.coord) {
+        for entity in old.entities {
+            commands.entity(entity).despawn();
+        }
+    }
+    let mut entities =
+        Vec::with_capacity(staged.uploaded_parts.len() + staged.uploaded_grass.len());
+    let mut shown_meshes = 0;
+    let mut triangles = 0;
+    for part in staged.uploaded_parts {
+        triangles += part.triangles;
+        let mesh = Mesh3d(part.mesh);
+        // The game's material if we have one, else a debug colour (for
+        // the opaque layer only: a blended layer can't fall back).
+        let real = look
+            .as_deref_mut()
+            .and_then(|l| l.material(part.material, part.rank, terrain_materials));
+        let entity = match real {
+            Some(material) => commands.spawn((mesh, MeshMaterial3d(material))).id(),
+            None if part.rank > 0 => continue,
+            None => {
+                let material = streamer
+                    .materials
+                    .entry(part.material)
+                    .or_insert_with(|| {
+                        let [r, g, b] = debug_colour(part.material);
+                        materials.add(StandardMaterial {
+                            base_color: Color::srgb(r, g, b),
+                            perceptual_roughness: 0.9,
+                            ..default()
+                        })
+                    })
+                    .clone();
+                commands.spawn((mesh, MeshMaterial3d(material))).id()
+            }
+        };
+        // The game's shadows reach 50 m (`QualitySettings`, High): only
+        // the nearest level of detail's opaque layer can cast into them.
+        if job.lod > 0 || part.rank > 0 {
+            commands.entity(entity).insert(bevy::light::NotShadowCaster);
+        }
+        if part.counted {
+            shown_meshes += 1;
+        }
+        entities.push(entity);
+    }
+    // Grass: no shadows (the game's grass renderers cast none).
+    let (mut grass_tufts, mut grass_triangles) = (0, 0);
+    for grass in staged.uploaded_grass {
+        grass_tufts += grass.tufts;
+        grass_triangles += grass.triangles;
+        let mesh = Mesh3d(grass.mesh);
+        let entity = match grass.material {
+            GrassHandle::Grass(material) => commands
+                .spawn((mesh, MeshMaterial3d(material), bevy::light::NotShadowCaster))
+                .id(),
+            GrassHandle::Object(material) => commands
+                .spawn((mesh, MeshMaterial3d(material), bevy::light::NotShadowCaster))
+                .id(),
+        };
+        if grass.counted {
+            shown_meshes += 1;
+        }
+        entities.push(entity);
+    }
+    let latency = job.requested.elapsed().as_secs_f32() * 1000.0;
+    streamer.latencies.push((job.lod, latency, staged.mesh_ms));
+    streamer.shown.insert(
+        job.coord,
+        Shown {
+            lod: job.lod,
+            entities,
+            meshes: shown_meshes,
+            triangles,
+            grass_tufts,
+            grass_triangles,
+        },
+    );
+}
 
 /// Every frame: refresh what should be loaded, spawn finished meshes, unload
 /// batches that left the view.
@@ -663,148 +1022,131 @@ pub fn stream(
         }
     }
 
-    let mut uploaded = 0;
-    while uploaded < UPLOAD_BUDGET {
-        let Some(done) = streamer.ready.pop_front() else {
-            break;
-        };
-        let job = done.job;
-        if streamer.in_flight.get(&job.coord) == Some(&job.lod) {
-            streamer.in_flight.remove(&job.coord);
+    // Drop a staged batch if the camera moved past its desired LOD.
+    if streamer
+        .staging
+        .as_ref()
+        .is_some_and(|s| streamer.desired.get(&s.job.coord) != Some(&s.job.lod))
+    {
+        if let Some(s) = streamer.staging.take()
+            && streamer.in_flight.get(&s.job.coord) == Some(&s.job.lod)
+        {
+            streamer.in_flight.remove(&s.job.coord);
         }
-        if streamer.desired.get(&job.coord) != Some(&job.lod) {
-            continue; // stale: the camera moved on
-        }
-        // Swap: the old mesh stays until the new one is ready, so no holes.
-        if let Some(old) = streamer.shown.remove(&job.coord) {
-            for entity in old.entities {
-                commands.entity(entity).despawn();
-            }
-        }
-        let mut entities = Vec::new();
-        let mut triangles = 0;
-        uploaded += done
-            .parts
-            .iter()
-            .map(|p| p.indices.len() / 3)
-            .sum::<usize>();
-        for part in done.parts {
-            crate::perf::count("terrain::mesh_vertices", part.positions.len());
-            triangles += part.indices.len() / 3;
-            let mut mesh = Mesh::new(
-                PrimitiveTopology::TriangleList,
-                RenderAssetUsages::RENDER_WORLD,
-            );
-            mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, part.positions);
-            mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, part.normals);
-            mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, part.uvs);
-            mesh.insert_indices(Indices::U32(part.indices));
-            let mesh = Mesh3d(meshes.add(mesh));
-            // The game's material if we have one, else a debug colour (for
-            // the opaque layer only: a blended layer can't fall back).
-            let real = look
-                .as_mut()
-                .and_then(|l| l.material(part.material, part.rank, &mut terrain_materials));
-            let entity = match real {
-                Some(material) => commands.spawn((mesh, MeshMaterial3d(material))).id(),
-                None if part.rank > 0 => continue,
-                None => {
-                    let material = streamer
-                        .materials
-                        .entry(part.material)
-                        .or_insert_with(|| {
-                            let [r, g, b] = debug_colour(part.material);
-                            materials.add(StandardMaterial {
-                                base_color: Color::srgb(r, g, b),
-                                perceptual_roughness: 0.9,
-                                ..default()
-                            })
-                        })
-                        .clone();
-                    commands.spawn((mesh, MeshMaterial3d(material))).id()
-                }
-            };
-            // The game's shadows reach 50 m (`QualitySettings`, High): only
-            // the nearest level of detail's opaque layer can cast into them.
-            if job.lod > 0 || part.rank > 0 {
-                commands.entity(entity).insert(bevy::light::NotShadowCaster);
-            }
-            entities.push(entity);
-        }
-        // Grass: no shadows (the game's grass renderers cast none).
-        let (mut grass_tufts, mut grass_triangles) = (0, 0);
-        for part in done.grass {
-            let Some(look) = look.as_mut() else {
-                continue;
-            };
-            let Some(material) =
-                look.grass_material(part.ty, &mut grass_materials, &mut object_materials)
-            else {
-                continue;
-            };
-            crate::perf::count("terrain::grass_vertices", part.positions.len());
-            grass_tufts += part.tufts;
-            grass_triangles += part.indices.len() / 3;
-            uploaded += part.indices.len() / 3;
-            let mut mesh = Mesh::new(
-                PrimitiveTopology::TriangleList,
-                RenderAssetUsages::RENDER_WORLD,
-            );
-            mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, part.positions);
-            mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, part.normals);
-            mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, part.uvs);
-            if !part.tangents.is_empty() {
-                mesh.insert_attribute(Mesh::ATTRIBUTE_TANGENT, part.tangents);
-            }
-            let entity = match material {
-                GrassHandle::Grass(material) => {
-                    // grass.wgsl: wave direction, amount and height in the
-                    // colours; in the second uv set the position along
-                    // `_ObjectUp` in the game's grass object (Noisey Wave
-                    // sways by it; the shader puts the world mask there).
-                    let up = look.grass_object_up(part.ty);
-                    let along: Vec<[f32; 2]> = part
-                        .chunk_local
-                        .iter()
-                        .map(|l| [l[0] * up[0] + l[1] * up[1] + l[2] * up[2], 0.0])
-                        .collect();
-                    mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, part.colors);
-                    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_1, along);
-                    mesh.insert_indices(Indices::U32(part.indices));
-                    commands
-                        .spawn((
-                            Mesh3d(meshes.add(mesh)),
-                            MeshMaterial3d(material),
-                            bevy::light::NotShadowCaster,
-                        ))
-                        .id()
-                }
-                GrassHandle::Object(material) => {
-                    // The standard material would multiply vertex colours in.
-                    mesh.insert_indices(Indices::U32(part.indices));
-                    commands
-                        .spawn((
-                            Mesh3d(meshes.add(mesh)),
-                            MeshMaterial3d(material),
-                            bevy::light::NotShadowCaster,
-                        ))
-                        .id()
-                }
-            };
-            entities.push(entity);
-        }
-        let latency = job.requested.elapsed().as_secs_f32() * 1000.0;
-        streamer.latencies.push((job.lod, latency, done.mesh_ms));
-        streamer.shown.insert(
-            job.coord,
-            Shown {
-                lod: job.lod,
-                entities,
-                triangles,
-                grass_tufts,
-                grass_triangles,
-            },
+    }
+
+    // If a staged batch finished uploading its GPU meshes on the previous frame,
+    // swap its entities now (with zero new mesh uploads on this frame).
+    if streamer
+        .staging
+        .as_ref()
+        .is_some_and(|s| s.parts.is_empty() && s.grass.is_empty())
+    {
+        let staged = streamer.staging.take().unwrap();
+        commit_staged_batch(
+            &mut commands,
+            &mut streamer,
+            &mut materials,
+            &mut terrain_materials,
+            look.as_deref_mut(),
+            staged,
         );
+        return;
+    }
+
+    let mut uploaded_triangles = 0;
+    let mut uploaded_vertices = 0;
+    while uploaded_triangles < UPLOAD_BUDGET {
+        if streamer.staging.is_none() {
+            let Some(done) = streamer.ready.pop_front() else {
+                break;
+            };
+            let job = done.job;
+            if streamer.desired.get(&job.coord) != Some(&job.lod) {
+                if streamer.in_flight.get(&job.coord) == Some(&job.lod) {
+                    streamer.in_flight.remove(&job.coord);
+                }
+                continue; // stale: the camera moved on
+            }
+            let in_place = streamer.shown.contains_key(&job.coord);
+            if in_place && (uploaded_triangles > 0 || uploaded_vertices > 0) {
+                streamer.ready.push_front(done);
+                break;
+            }
+            streamer.staging = Some(StagingBatch::new(done, in_place));
+        }
+
+        let staged = streamer.staging.as_mut().unwrap();
+        if staged.in_place {
+            while uploaded_vertices < STAGED_VERTEX_BUDGET {
+                if let Some(part) = staged.parts.pop_front() {
+                    let (staged_part, verts) = upload_terrain_part(part, &mut meshes);
+                    uploaded_vertices += verts;
+                    staged.uploaded_parts.push(staged_part);
+                } else if let Some(part) = staged.grass.pop_front() {
+                    if let Some(look) = look.as_mut()
+                        && let Some((staged_grass, verts)) = upload_grass_part(
+                            part,
+                            &mut meshes,
+                            look,
+                            &mut grass_materials,
+                            &mut object_materials,
+                        )
+                    {
+                        uploaded_vertices += verts;
+                        staged.uploaded_grass.push(staged_grass);
+                    }
+                } else {
+                    break;
+                }
+            }
+            if staged.parts.is_empty()
+                && staged.grass.is_empty()
+                && uploaded_vertices <= STAGED_IMMEDIATE_COMMIT_VERTICES
+            {
+                let staged = streamer.staging.take().unwrap();
+                commit_staged_batch(
+                    &mut commands,
+                    &mut streamer,
+                    &mut materials,
+                    &mut terrain_materials,
+                    look.as_deref_mut(),
+                    staged,
+                );
+            }
+            break;
+        } else {
+            while let Some(part) = staged.parts.pop_front() {
+                let (staged_part, verts) = upload_terrain_part(part, &mut meshes);
+                uploaded_triangles += staged_part.triangles;
+                uploaded_vertices += verts;
+                staged.uploaded_parts.push(staged_part);
+            }
+            while let Some(part) = staged.grass.pop_front() {
+                if let Some(look) = look.as_mut()
+                    && let Some((staged_grass, verts)) = upload_grass_part(
+                        part,
+                        &mut meshes,
+                        look,
+                        &mut grass_materials,
+                        &mut object_materials,
+                    )
+                {
+                    uploaded_triangles += staged_grass.triangles;
+                    uploaded_vertices += verts;
+                    staged.uploaded_grass.push(staged_grass);
+                }
+            }
+            let staged = streamer.staging.take().unwrap();
+            commit_staged_batch(
+                &mut commands,
+                &mut streamer,
+                &mut materials,
+                &mut terrain_materials,
+                look.as_deref_mut(),
+                staged,
+            );
+        }
     }
 }
 
@@ -897,5 +1239,85 @@ mod tests {
         let parts = split_by_material(&two_quads());
         assert_eq!(parts.len(), 2);
         assert!(parts.iter().all(|p| p.rank == 0 && p.indices.len() == 6));
+    }
+
+    #[test]
+    fn oversized_parts_split_into_vertex_budgeted_chunks_and_share_bounds() {
+        let tris = PART_TRIANGLE_BUDGET + 25;
+        let mut positions = Vec::with_capacity(tris * 3);
+        let mut normals = Vec::with_capacity(tris * 3);
+        let mut uvs = Vec::with_capacity(tris * 3);
+        let mut indices = Vec::with_capacity(tris * 3);
+        for t in 0..tris {
+            let base = (t * 3) as u32;
+            let x = t as f32;
+            positions.extend([[x, 0.0, 0.0], [x, 0.0, 1.0], [x + 1.0, 0.0, 0.0]]);
+            normals.extend([[0.0, 1.0, 0.0]; 3]);
+            uvs.extend([[1.0, 0.25]; 3]);
+            indices.extend([base, base + 1, base + 2]);
+        }
+        let mut terrain_chunks = split_terrain_parts(vec![TerrainPart {
+            material: 7,
+            rank: 0,
+            counted: true,
+            positions: positions.clone(),
+            normals: normals.clone(),
+            uvs: uvs.clone(),
+            indices: indices.clone(),
+        }]);
+        share_bounds(&mut terrain_chunks);
+        assert_eq!(terrain_chunks.len(), 2);
+        assert_eq!(
+            terrain_chunks.iter().filter(|p| p.counted).count(),
+            1,
+            "only the first chunk counts toward StreamStats::shown_meshes"
+        );
+        assert_eq!(
+            terrain_chunks
+                .iter()
+                .map(|p| p.indices.len() / 3)
+                .sum::<usize>(),
+            tris
+        );
+        assert!(
+            terrain_chunks
+                .iter()
+                .all(|p| p.indices.len() <= PART_TRIANGLE_BUDGET * 3)
+        );
+        let bounds = |p: &TerrainPart| {
+            let mut lo = [f32::INFINITY; 3];
+            let mut hi = [f32::NEG_INFINITY; 3];
+            for v in &p.positions {
+                for a in 0..3 {
+                    lo[a] = lo[a].min(v[a]);
+                    hi[a] = hi[a].max(v[a]);
+                }
+            }
+            (lo, hi)
+        };
+        assert_eq!(bounds(&terrain_chunks[0]), bounds(&terrain_chunks[1]));
+
+        let grass_chunks = split_grass_part(GrassPart {
+            ty: 3,
+            tufts: 420,
+            counted: true,
+            positions,
+            normals,
+            tangents: vec![[1.0, 0.0, 0.0, 1.0]; tris * 3],
+            uvs,
+            colors: vec![[0.5, 0.6, 0.7, 0.8]; tris * 3],
+            chunk_local: vec![[1.0, 2.0, 3.0]; tris * 3],
+            indices,
+        });
+        assert_eq!(grass_chunks.len(), 2);
+        assert_eq!(grass_chunks.iter().filter(|g| g.counted).count(), 1);
+        assert_eq!(grass_chunks.iter().map(|g| g.tufts).sum::<usize>(), 420);
+        assert_eq!(
+            grass_chunks
+                .iter()
+                .map(|g| g.indices.len() / 3)
+                .sum::<usize>(),
+            tris
+        );
     }
 }

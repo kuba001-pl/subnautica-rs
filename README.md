@@ -375,12 +375,15 @@ dependencies at level 3; use `cargo run --release -p sn-client` for performance
 measurements.
 
 P1 moved object-texture conversion to the asset worker (three release runs:
-player object-stream worst 39-50 ms to under 0.8 ms at view 400 / 1600 x 900),
-stopped player/swim profiling before screenshot capture/exit, and budgeted
-per-frame object GPU texture/mesh uploads (player max 66.5-70.8 ms to
-27.9-36.7 ms; `render::assets` max 48.6-56.7 ms to 5.7-6.5 ms). Inactive UI
-pruning was tested and reverted because repeat runs did not show a reliable
-gameplay frame-time win. Details and commands: [P1 performance evidence](docs/P1-PERFORMANCE.md).
+player object-stream worst 39?50 ms to under 0.8 ms at view 400 / 1600 ? 900),
+stopped player/swim profiling before screenshot capture/exit, budgeted
+per-frame object GPU texture/mesh uploads and per-slot entity spawns (player
+max 66.5?70.8 ms to 22.6?28.5 ms; `render::assets` max 48.6?56.7 ms to
+5.6?8.7 ms), and staged in-place terrain/grass LOD transitions across frames
+(35 s swim route max 166.8?174.8 ms to 23.4?26.5 ms; `render::mesh_alloc` max
+122.9?143.7 ms to 7.9?8.0 ms). Inactive UI pruning was tested and reverted
+because repeat runs did not show a reliable gameplay frame-time win. Details
+and commands: [P1 performance evidence](docs/P1-PERFORMANCE.md).
 
 ## Play together (experimental)
 
