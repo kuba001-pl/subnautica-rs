@@ -483,6 +483,17 @@ impl UiScene {
         self.layout.set_as_last_sibling(node)
     }
 
+    /// `anchorMin = anchorMax = anchor` set by a script once (M9u8b5a:
+    /// `uGUI_NotificationLabel.SetAnchor`). False for an unknown node.
+    pub fn set_anchors(&mut self, node: usize, anchor: [f32; 2]) -> bool {
+        let Some(n) = self.layout.nodes.get_mut(node) else {
+            return false;
+        };
+        n.rect.anchor_min = anchor;
+        n.rect.anchor_max = anchor;
+        true
+    }
+
     /// The number of nodes (grafted ones included).
     pub fn node_count(&self) -> usize {
         self.layout.nodes.len()

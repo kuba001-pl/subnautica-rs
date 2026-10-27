@@ -49,7 +49,7 @@ pub fn message_times(code: &[u8]) -> Result<MessageTimes> {
     })
 }
 
-fn vector(f: &Fields, name: &str) -> Result<[f32; 4]> {
+pub(crate) fn vector(f: &Fields, name: &str) -> Result<[f32; 4]> {
     let s = f
         .get(name)
         .and_then(Value::as_struct)

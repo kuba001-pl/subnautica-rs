@@ -76,6 +76,7 @@ use sn_ui::toolbar::{Toolbar, ToolbarIcon, ToolbarSprites};
 use crate::inventory::{ScreenClick, ScriptedHover};
 
 mod drag;
+mod notify;
 mod tooltip;
 use crate::textures::linear;
 
@@ -888,6 +889,24 @@ fn run_worker(
             .map(|b| b.as_ref().map(|b| (b.name.clone(), b.size)))
             .collect::<Vec<_>>()
     );
+    // The notifications (M9u8b5a): `uGUI.prefabNotificationLabel` and the
+    // toolbar's anchor and offset for the count.
+    let (label_nodes, label_template) =
+        assets.notification_label(&layouts, &tree, &fonts, &tags.sorting_layers)?;
+    info!(
+        "game UI notifications: NotificationLabel background {}, text {} (colour {:?}); toolbar anchor {} offset {:?}",
+        label_nodes.background,
+        label_nodes.text,
+        label_nodes.text_color,
+        toolbar_data.notification_anchor,
+        toolbar_data.notification_offset
+    );
+    let mut notices = notify::Notices::new(
+        label_template,
+        label_nodes,
+        toolbar_data.notification_anchor,
+        toolbar_data.notification_offset,
+    );
     let mut tooltips = tooltip::Tooltips::new(&assets, &layouts, &tree, &game, &set, &language)?;
     let mut tooltip_pose = None;
     // Dragging (M9u8b4): the icons' items by id (from the last sync) and
@@ -1392,6 +1411,22 @@ fn run_worker(
                     rules.apply(&pda_screen.state);
                     rules.apply(&inventory_tab.state);
                     rules.apply(&dragging.state);
+                    // The notifications (M9u8b5a), after the tab's state.
+                    notices.update(
+                        &mut scene,
+                        &inventory_tab,
+                        pda_screen.toolbar.as_ref(),
+                        &tab_contents,
+                        inputs.delta_time,
+                        inputs.time,
+                        &|labels| {
+                            let mut st = start_state.clone();
+                            st.apply(&rules);
+                            st.apply(labels);
+                            st
+                        },
+                    )?;
+                    rules.apply(&notices.state);
                     let before = reticle.icon_type;
                     rules.apply(reticle.update(&reticle_inputs(
                         &reticle,

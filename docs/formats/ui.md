@@ -2401,3 +2401,66 @@ Checked in the client run (scripted drag): grid → locker, locker → grid,
 locker item onto a grid item (swap), grid → empty slot, grid onto a
 filled slot (swap), slot → grid, same-store drop (nothing), release on
 the source (nothing), incompatible slot (denied, nothing).
+
+## Notifications (M9u8b5a) — confirmed (decompiled code, `ui --notifications`, client)
+
+Read from the decompiled `NotificationManager`, `Inventory`,
+`uGUI_ItemIcon`, `uGUI_EquipmentSlot`, `uGUI_ItemsContainer`,
+`uGUI_Equipment`, `uGUI_Toolbar`, `uGUI_PDA`, `uGUI_NotificationLabel`
+and `RectTransformExtensions` (read only; our code is
+`sn_ui::notifications`, `sn_assets` `notification_label` and the client's
+`game_ui/notify.rs`).
+
+- **`NotificationManager`** (*confirmed*, code): notifications by
+  `(Group, key)` with `duration` and `timeLeft`; `Add(group, key, d)` sets
+  both to `max(0.1, d)` and, when new, tells the key's target
+  (`Progress(timeLeft / duration)` = 1). `Remove` tells it `Progress(0)`.
+  `GetCount(group)` counts the group's notifications. Only notifications
+  **with a target** count down: `LateUpdate` (the PDA's delta) walks the
+  targets; a visible one's notification loses the delta and reports
+  `Progress(timeLeft / duration)`, and is removed (`Progress(0)`) at <= 0;
+  a hidden one's is removed once more than 1 s (`thresholdDuration`) of
+  its duration has passed, else it reports `Progress(1)` and starts over.
+  `RegisterTarget` tells the key's previous visible target `Progress(0)`
+  and the new one, if visible, `timeLeft / duration`; `UnregisterTarget`
+  drops the target from every key, removes a notification more than 1 s
+  in (else starts it over), and tells the target `Progress(0)`.
+- **The inventory's** (*confirmed*, code): `Inventory.Pickup` adds
+  `(Inventory, the item's UniqueIdentifier id, 4)` unless `noMessage`
+  (also when the item goes straight into a slot); `OnRemoveItem` (the
+  grid's) and `OnUnequip` remove it, so a move to the locker, a drop and
+  an equip (it leaves the grid) all clear it. Ours: an item that comes into
+  the grid or a slot from none of our stores is a pick-up (*hypothesis*
+  that nothing else does that in what we run: crafting is not ported; the
+  first stores seen are the baseline), keyed by our item id.
+- **The targets** (*confirmed*, code): every item icon of a container
+  (`uGUI_ItemsContainer.OnAddItem` → `RegisterItemTarget`; `OnRemoveItem`
+  and `Uninit` → `UnregisterTarget`) and every filled slot
+  (`uGUI_Equipment.OnEquip` / `OnUnequip` / `Uninit`). `IsVisible`: the
+  icon active and enabled, its foreground (else background) active and
+  enabled, not culled, `GetInheritedAlpha` > 0. With the PDA closed the
+  screen's canvas alpha is 0: a pick-up's notification stays full until
+  the inventory tab is seen, then lasts 4 s.
+- **`uGUI_ItemIcon.SetNotificationProgress(p)`** (*confirmed*, code): a =
+  sin(p·π/2); `SetGodRaysIntensity(a)` (the glow, M9u8b5b) and
+  `SetNotificationAlpha(a)`: above 0 the label is made the first time
+  (`uGUI.prefabNotificationLabel` instantiated under the icon) and
+  `SetAlpha(a)` sets the background's and the text's alpha (rgb kept); at 0
+  it is destroyed. When just made: background colour white (opaque that
+  frame, since it comes after `SetAlpha`), anchor upper right, offset
+  (−10, −10). Text "+". A slot (`uGUI_EquipmentSlot.Progress`) sets the
+  offset to its `iconRect`'s size × −0.1464466 (−(1 − 1/√2)/2: on the
+  circle at 45°).
+- **The toolbar's count** (*confirmed*, code): `uGUI_PDA.OnLateUpdate`
+  calls `toolbar.SetNotificationsAmount(i, tab.notificationsCount)` for
+  each tab; the inventory tab's is `GetCount(Inventory)`.
+  `SetNotificationAlpha(count > 0 ? 1 : 0)`; when made: white,
+  `notificationAnchor` (8, upper right) and `notificationOffset`
+  (−41.5, −3.5); text the count. The other tabs' counts are not ported
+  (shown as 0).
+- **The prefab** (*confirmed*, `ui --notifications`): `NotificationLabel`,
+  2 nodes: the root holds the `Image` (`background`, white), a
+  `ContentSizeFitter`, a `HorizontalLayoutGroup` and the script; its child
+  `Text` is the TMP text, colour (0.494, 0.208, 0.110, 1). Laid out with
+  "1" or "+" it is 36 × 36.97. `GetAnchorPoint`: LowerLeft (0, 0) …
+  UpperRight (1, 1) row by row.

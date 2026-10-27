@@ -34,6 +34,7 @@ mod meshes;
 mod messages;
 mod octree;
 mod orient;
+mod notifications;
 mod pda_tabs;
 mod pickup;
 mod pickups;
@@ -303,6 +304,8 @@ Commands:
                          its icons, OpenTab and clicks against the rule
   ui --inventory         M9u8b1: the PDA's inventory tab without icons:
                          containers, the doll's slots, labels
+  ui --notifications     M9u8b5a: NotificationLabel and NotificationManager on
+                         the PDA screen (the toolbar's count, an icon's +).
   ui --tooltip           M9u8b3b: uGUI_Tooltip and TooltipFactory's item
                          texts
   ui --layout <CLASS> [<NAME>]
@@ -537,6 +540,7 @@ fn run(mut args: Vec<String>) -> Result<ExitCode> {
         ["ui", "--icons"] => icons::run(&game),
         ["ui", "--popup"] => popup::run(&game),
         ["ui", "--pda"] => pda_tabs::run(&game),
+        ["ui", "--notifications"] => notifications::run(&game),
         ["ui", "--inventory"] => inventory_tab::run(&game),
         ["ui", "--tooltip"] => tooltip::run(&game),
         ["ui", "--fonts"] => fonts::run(&game, false),

@@ -2,6 +2,58 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-27 — M9u8b5a: the inventory's notifications (count and "+")
+
+**What/why:** the first half of M9u8b5 (DESIGN, split after reading the
+code). `sn_ui::notifications`: `NotificationManager` (`Add`, `Remove`,
+`GetCount`, `RegisterTarget`, `UnregisterTarget`, `LateUpdate`) with
+targets and the `Progress` calls it makes, the label's state
+(`SetNotificationAlpha` / `SetAlpha` / the made frame's white), the
+anchors, the slot offset; 5 unit tests. `sn_assets`:
+`notification_label` (`uGUI.prefabNotificationLabel` as a scene, its
+`background` / `text` nodes and colours) and `UiScene::set_anchors` (a
+script's `SetAnchor`; the only `ui_scene.rs` change). Client
+`game_ui/notify.rs`: pick-ups (new ids in the grid or slots from none of
+our stores) add `(Inventory, id, 4)`, leaving the grid or a slot removes,
+every tab icon is a target (visible by its active chain and inherited
+alpha), `Progress` shows the "+" label, the toolbar's inventory icon
+shows the count. `sn-inspect ui --notifications`. No new dependencies,
+no `.gitignore` change.
+
+**Dead end:** the first version added on the frame the session reported
+our `PickedUp` events (`plays`); the predicted stores show the item a few
+frames earlier, so nothing was new by then. Now any item that comes into
+the grid or a slot from outside our stores is a pick-up.
+
+**Verified** (Git Bash; `SUBNAUTICA_DIR` set for the game runs; logs in
+`out/m9u8b5/`):
+- `cargo test --workspace` (no game): 739 passed, 0 failed.
+- `cargo clippy --workspace --all-targets -- -D warnings`: pass.
+- `target/release/sn-inspect ui --notifications`: 14 of 14, RUN OK (the
+  prefab's 2 nodes; the count label's pivot at the toolbar icon's upper
+  right + (−41.5, −3.5) and the "+" at the item icon's + (−10, −10), both
+  to 1e-3; label 36 × 36.97; vertex alpha 255 and 180 for sin(π/4); the
+  replay: closed 3 s count 1 and progress 1 each frame, open: count 0 after
+  241 frames = 4.017 s).
+- `target/release/sn-client --view 400 --resolution 960 540 --start
+  -197.3 -35.2 -10.2 --pick-up 3 --panel 6=open --shot 12
+  m9u8b5a-cleared`: 0 WARN/ERROR; 3 acid mushrooms → `Add` × 3, count
+  0 → 3 at 4.954 s, "+" at 1 while the PDA was closed; opened at 7.956 s;
+  progress 0.749 / 0.499 / 0.249 at 8.951 / 9.953 / 10.952 s; count 3 → 0
+  at 11.951 s (3.995 s seen). With `--shot 8 m9u8b5a-count`: the "3" on
+  the inventory tab and a "+" on each new icon (`out/m9u8b5a-count.png`).
+- the same with `--panel 6=open,7=drop --shot 9 m9u8b5a-drop`: the drop
+  removed #6's (count 3 → 2), 0 WARN/ERROR.
+
+**Not tested:** a pick-up straight into a slot (its label offset), the
+PDA closed within a second of seeing (`UnregisterTarget`'s start-over),
+saved notifications (`Serialize` is not ported), Linux/macOS, against the
+running game on screen. **Not 1:1:** the glow (`NOTIFICATION`) waits for
+M9u8b5b; the other tabs' counts (Blueprints, Log, …) are not ported (0);
+a pick-up is recognised by its new id, not by `Inventory.Pickup` itself
+(so `noMessage` pick-ups would count; none happen in what we run). No
+game assets committed.
+
 ## 2026-10-27 — M9u8b4: drag and drop on the inventory tab
 
 **What/why:** finished the previous agent's unfinished drag (kept its
