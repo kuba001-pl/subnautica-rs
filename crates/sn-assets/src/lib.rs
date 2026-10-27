@@ -39,6 +39,7 @@ mod script_layout;
 mod skin;
 mod slots;
 mod sprites;
+mod survival;
 mod terrain;
 mod texts;
 mod tooltip;
@@ -119,6 +120,7 @@ pub use sprites::{
     AtlasSprite, GROUP_ATLASES, GROUP_ITEM, GROUP_ITEM_ACTIONS, GROUP_TAB, LoadedAtlas,
     SPRITE_ATLASES_LABEL, Sprites, cut,
 };
+pub use survival::hunger_rules;
 pub use terrain::{
     BlendSettings, BlockSource, GrassLook, GrassShader, SurfaceLayer, TerrainGrass,
     TerrainMaterial, TerrainMaterials, TerrainTexture, terrain_materials,

@@ -3670,3 +3670,40 @@ fn the_unlock_popup_is_read() {
     assert_eq!(a.values().filter(|e| e.unlock_popup.is_some()).count(), 60);
     assert!(a.values().all(|e| e.unlock_sound.is_some()));
 }
+
+/// M9s1: the hunger rules come from `Survival`'s methods, each constant
+/// matched in its method's IL and against `SurvivalConstants`.
+#[test]
+#[ignore = "needs SUBNAUTICA_DIR pointing at a Subnautica install"]
+fn the_hunger_rules_are_read() {
+    let Some(dir) = std::env::var_os("SUBNAUTICA_DIR") else {
+        eprintln!("SUBNAUTICA_DIR not set; skipping");
+        return;
+    };
+    let game = GameData::locate(Some(PathBuf::from(dir))).unwrap();
+    let code = sn_assets::read_assembly(&game).unwrap();
+    let r = sn_assets::hunger_rules(&code).unwrap();
+    println!("{r:?}");
+    assert_eq!(r.interval, 10.0);
+    assert_eq!((r.food_time, r.water_time), (2520.0, 1800.0));
+    assert_eq!((r.stat_max, r.food_max), (100.0, 200.0));
+    assert_eq!((r.starve_damage, r.heal_threshold), (25.0, 150.0));
+    assert_eq!(r.regen_per_second, f64::from(1.0f32 / 24.0));
+    assert_eq!((r.start_food, r.start_water), (50.5, 90.5));
+    assert_eq!(
+        (r.low, r.critical, r.food_per_temp_damage),
+        (20.0, 10.0, 0.25)
+    );
+    // The DESIGN row's hand calculation with the install's numbers.
+    let mut s = sn_sim::survival::Survival {
+        food: 100.0,
+        water: 100.0,
+        phase: 0.0,
+    };
+    s.advance(&r, 60.0, true, false).unwrap();
+    println!("60 s from 100/100: food {}, water {}", s.food, s.water);
+    assert!((100.0 - s.food - 2.380952).abs() < 1e-5);
+    assert!((100.0 - s.water - 3.333333).abs() < 1e-5);
+    // Two reads agree.
+    assert_eq!(sn_assets::hunger_rules(&code).unwrap(), r);
+}

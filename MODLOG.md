@@ -2,6 +2,50 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-27 — M9s1: hunger rules, headless, numbers from the game's code
+
+**What/why:** first step of M9s. `sn-sim::survival` (new module dir,
+`hunger.rs`) implements `Survival.UpdateHunger`/`UpdateStats`/`ResetStats`/
+`OnHealTempDamage`: food/water drain per scheduled call, shortfall-based
+Starve damage, the after-drain regeneration gate, warning crossings (one
+per stat, empty > critical > low), freeze/no-survival suppressing effects
+but not the schedule, respawn resetting stats not phase. Each call returns
+ordered effects (warnings, damage, heal) instead of the previous draft's
+summed totals, so a caller's health sees the game's order. No balance
+defaults in code: `sn_assets::hunger_rules` reads all 13 numbers from the
+player's DLL (constructor initialiser, the ordered float constants of
+`UpdateStats`/`UpdateHunger`/`OnHealTempDamage`, `ResetStats`), checks
+repeated uses agree and that each equals its `SurvivalConstants`
+declaration, and errors with the IL offset otherwise. New `sn-dotnet::
+float_literals` (every `ldc.r4` with offset) supports this. Live play is
+unchanged (drain is not wired; M9s8/M9s11).
+
+**Review of the previous agent's uncommitted draft:** kept its API shape,
+validation and the Start/advance phase semantics; replaced summed
+damage/healing with ordered per-call effects, added positive-damage gate,
+the 1e-9 s due tolerance (with `+1e-12` on the ratio, many 0.02 s steps
+could reach a call one step late), the `start` constructor (reset then the
+immediate call) and the rule loader; fixed text lost from its gameplay.md
+note (two words had lost their first letter). Our call: f64 state, though
+the game computes in f32 (noted as a residual in gameplay.md).
+
+**Verification:** `cargo test -p sn-sim survival` (7 passed: 60 s from
+100/100 loses 2.380952/3.333333; both empty for 10 s = 23.809524 damage;
+exact/over thresholds; heal gate after drain incl. overfill; freeze, mode,
+respawn; 3001×0.02 s and uneven steps give 6 calls and the same phase;
+NaN/negative/huge/invalid rules refuse without mutation).
+`cargo test -p sn-assets --lib survival` (3 passed: synthetic assembly
+read; changed repeated/fixed/extra constants and declaration mismatch are
+errors with offsets; truncated/flipped bytes never panic).
+`SUBNAUTICA_DIR=D:\SteamLibrary\steamapps\common\Subnautica cargo test -p
+sn-assets --test real_data the_hunger_rules_are_read -- --ignored
+--nocapture` → interval 10, 2520/1800, 100/200, 25, 150, 0.041666668,
+50.5/90.5, 20/10, 0.25; 60 s drain 2.380952/3.333333; two reads equal
+(log `out/m9s1-real.log`). `cargo test --workspace` (758 passed, 0 failed,
+65 ignored), `cargo clippy --workspace --all-targets -- -D warnings` clean,
+`cargo fmt --all`. Not tested: Unity frame timing of the first call
+versus our fixed tick.
+
 
 ## 2026-10-27 — Plan M9s: survival (research and docs only)
 

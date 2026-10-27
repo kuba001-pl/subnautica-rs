@@ -1428,3 +1428,36 @@ prose. Numbers below describe rules, not a shipped balance table.
   extraction coverage is **not tested** in this docs-only change. Multiplayer
   ownership, deterministic loot seeds and paused offline save time are our
   server policy, not facts about the original single-player game.
+
+### M9s1: the hunger rules as implemented (2026-10-27)
+
+- **Confirmed (source: `Survival.Start`, `UpdateHunger`, `ResetStats`,
+  `OnRespawn`):** `Start` schedules `UpdateHunger` with a 0 s first delay
+  and calls `ResetStats` in the same frame, so the first call (a frame
+  later) drains the reset stats. Freezing and a mode without survival skip
+  a call's effects but not the schedule; a respawn resets food/water but
+  not the schedule. Within one call the order is: food drain, water drain,
+  food's warning, water's warning, Starve damage (only when positive: the
+  check is `> float.Epsilon`, the smallest positive float), then the
+  regeneration, whose food + water gate reads the stats *after* the drain.
+  `sn-sim::survival::Survival` returns these as ordered effects; the
+  caller's health applies them (live wiring is M9s8/M9s11).
+- **Confirmed (install, `sn-assets::hunger_rules`, opt-in test
+  `the_hunger_rules_are_read`):** every number is read from the player's
+  `Assembly-CSharp.dll` at runtime: the interval from `Survival`'s
+  constructor (initialiser of `kUpdateHungerInterval`), drain, caps,
+  starvation and thresholds from the 16 float constants of `UpdateStats`
+  in code order, the heal gate and rate from `UpdateHunger`'s 3, the
+  temporary-damage cost from `OnHealTempDamage`'s 3, and the start stats
+  from `ResetStats`. Repeated uses (the 100 scale three times, 25 twice,
+  the 20/10 thresholds for food and for water) must agree, the shape's
+  zeros and `float.Epsilon` must be exactly those, and each value must
+  equal the `SurvivalConstants` declaration of the same name; anything
+  else is an error with the IL offset. Build 10 reads interval 10 s,
+  2,520/1,800 s, 100/200, 25, 150, 1/24 (as a float, 0.041666668),
+  50.5/90.5, 20/10 and 0.25.
+- **Our rule, not the game's:** the schedule's phase is kept in seconds
+  (f64) and a call is due within 1e-9 s of its time, so many small steps
+  reach the same calls as one long step; the game computes in f32 at frame
+  times. Matching Unity's frame of a call to the fixed tick is a
+  **hypothesis** (not measured against the running game).
