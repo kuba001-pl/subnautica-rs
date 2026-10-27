@@ -350,7 +350,10 @@ pub fn item_commons(s: &TooltipStrings, item: &ItemFacts, survival: bool) -> Str
         description = false;
     }
     if item.first_aid_kit {
-        write_description(&mut sb, &cs_format(s.get("HealthFormat"), &[Arg::Float(50.0)]));
+        write_description(
+            &mut sb,
+            &cs_format(s.get("HealthFormat"), &[Arg::Float(50.0)]),
+        );
     }
     if let Some(e) = item.eatable.filter(|_| survival) {
         let food = e.food_now.ceil() as i64;
@@ -359,7 +362,10 @@ pub fn item_commons(s: &TooltipStrings, item: &ItemFacts, survival: bool) -> Str
         }
         let water = e.water_now.ceil() as i64;
         if water != 0 {
-            write_description(&mut sb, &cs_format(s.get("WaterFormat"), &[Arg::Int(water)]));
+            write_description(
+                &mut sb,
+                &cs_format(s.get("WaterFormat"), &[Arg::Int(water)]),
+            );
         }
     }
     if description {
@@ -481,9 +487,17 @@ impl TooltipLayout {
                 },
             );
         };
-        place(c.text_prefix, self.prefix_at, [self.width, self.prefix_height]);
+        place(
+            c.text_prefix,
+            self.prefix_at,
+            [self.width, self.prefix_height],
+        );
         place(c.icon_canvas, self.icons_at, [0.0, 0.0]);
-        place(c.text_postfix, self.postfix_at, [self.width, self.postfix_height]);
+        place(
+            c.text_postfix,
+            self.postfix_at,
+            [self.width, self.postfix_height],
+        );
         st
     }
 }

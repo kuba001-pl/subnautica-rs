@@ -198,13 +198,12 @@ fn check_layout(
         "  layout: widths {widths:?} → a {}, heights {heights:?}, size {:?}",
         layout.width, layout.size
     );
-    let want_h = 20.0
-        + heights[0]
-        + if heights[1] > 0.0 { 10.0 } else { 0.0 }
-        + heights[1]
-        + 20.0;
+    let want_h = 20.0 + heights[0] + if heights[1] > 0.0 { 10.0 } else { 0.0 } + heights[1] + 20.0;
     c.check(
-        layout.width == a && layout.size == [a + 40.0, want_h] && heights[0] > 0.0 && heights[1] > 0.0,
+        layout.width == a
+            && layout.size == [a + 40.0, want_h]
+            && heights[0] > 0.0
+            && heights[1] > 0.0,
         &format!(
             "{name}: OnLayout's size {:?}, expected [{}, {want_h}]",
             layout.size,
@@ -352,7 +351,10 @@ pub fn run(game: &GameData) -> Result<ExitCode> {
     let language = sn_assets::language(game, "English")?;
     let lang = |k: &str| language.get(k).cloned().unwrap_or_else(|| k.to_string());
     let mut buttons: [String; 4] = Default::default();
-    for (b, name) in ["UISubmit", "UICancel", "UIClear", "UIAssign"].iter().enumerate() {
+    for (b, name) in ["UISubmit", "UICancel", "UIClear", "UIAssign"]
+        .iter()
+        .enumerate()
+    {
         let t = sn_assets::format_button(game, &set, &language, name)?;
         println!("FormatButton({name}): {:?}", t.text);
         buttons[b] = t.text;
@@ -409,7 +411,12 @@ pub fn run(game: &GameData) -> Result<ExitCode> {
     }
     inventory
         .equipment
-        .add_to(&rules.techs, EQUIPPED.1, Item::new(100, tech(EQUIPPED.0)?), false)
+        .add_to(
+            &rules.techs,
+            EQUIPPED.1,
+            Item::new(100, tech(EQUIPPED.0)?),
+            false,
+        )
         .map_err(|_| format!("{}: not taken by slot {}", EQUIPPED.0, EQUIPPED.1))?;
     hovered.push((100, EQUIPPED.0, false));
 
@@ -457,13 +464,18 @@ pub fn run(game: &GameData) -> Result<ExitCode> {
         let mut want = vec![title_line(&lang(name))];
         if let Some((charge, capacity)) = values.battery {
             let text = lang("BatteryCharge")
-                .replace("{0:P0}", &format!("{}%", (100.0 * charge / capacity).round()))
+                .replace(
+                    "{0:P0}",
+                    &format!("{}%", (100.0 * charge / capacity).round()),
+                )
                 .replace("{1}", &format!("{}", charge.round()))
                 .replace("{2}", &format!("{capacity}"));
             want.push(desc_line(&text));
         }
         if name == "FirstAidKit" {
-            want.push(desc_line(&lang("HealthFormat").replace("{0:+#;-#;+0}", "+50")));
+            want.push(desc_line(
+                &lang("HealthFormat").replace("{0:+#;-#;+0}", "+50"),
+            ));
         }
         if let Some((food, water, _, _)) = values.eatable {
             for (v, key) in [(food, "FoodFormat"), (water, "WaterFormat")] {

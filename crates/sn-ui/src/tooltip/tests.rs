@@ -112,7 +112,13 @@ fn decomposing_food_gets_its_state_in_the_title() {
         food_now,
         water_now,
     };
-    let title = |f: &ItemFacts| item_commons(&s, f, true).split('\n').next().unwrap().to_string();
+    let title = |f: &ItemFacts| {
+        item_commons(&s, f, true)
+            .split('\n')
+            .next()
+            .unwrap()
+            .to_string()
+    };
     fish.eatable = Some(e(10.0, 4.0));
     assert_eq!(title(&fish), format!("{TITLE}Fish{END}"));
     fish.eatable = Some(e(8.0, 3.0));
@@ -136,7 +142,12 @@ fn item_actions_bind_hint_then_buttons_3_0_2_1() {
     assert_eq!(item_actions(&s, [0; 4], true), act("1-5", "bind it"));
     assert_eq!(
         item_actions(&s, [EAT, DROP, 0, 0], true),
-        [act("1-5", "bind it"), act("L", "eat it"), act("R", "drop it")].join("\n")
+        [
+            act("1-5", "bind it"),
+            act("L", "eat it"),
+            act("R", "drop it")
+        ]
+        .join("\n")
     );
     assert_eq!(
         item_actions(&s, [SWITCH, DROP, DROP, EAT], false),
@@ -193,7 +204,10 @@ fn pointer(x: f32, y: f32) -> PointerOnCanvas {
 fn update_position_beside_the_pointer_or_flipped_at_the_edges() {
     // A 100 × 50 tooltip: 200 × 100 on the canvas, margin (20, 40).
     let size = [100.0, 50.0];
-    assert_eq!(update_position(size, &pointer(0.0, 0.0), 0.5, 0.5).scale, 0.5);
+    assert_eq!(
+        update_position(size, &pointer(0.0, 0.0), 0.5, 0.5).scale,
+        0.5
+    );
     let p = update_position(size, &pointer(0.0, 0.0), 0.5, 1.0);
     assert_eq!(p.scale, 1.0);
     assert_eq!(p.size_on_canvas, [200.0, 100.0]);
