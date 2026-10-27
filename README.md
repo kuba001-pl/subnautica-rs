@@ -406,6 +406,16 @@ network: only positions, animation values, events and checks.
 - **Host:** `sn-client --host` (or `--host PORT`; default UDP 27420).
   The host's flags decide the world (`--lifepod-seed`, `--slot-seed`,
   `--time`, `--aurora…`). A headless `sn-server` works too.
+- **Saves (M9f):** the server (headless or `--host`/solo) keeps the world
+  in our own format in `%LOCALAPPDATA%/subnautica-rs/saves/default`
+  (`--save-dir` for another slot, `--no-save` for none): every 30 s
+  (`--autosave S`), on `--run-for` and on Ctrl-C. Inventories, the locker,
+  picked-up and dropped items, unlocks, each player's pose and health/oxygen
+  come back after a restart; a player rejoins by the same name. A corrupt
+  save stops the server instead of starting fresh (`--load-backup` takes
+  the previous one). Tested: a scripted headless restart on the real
+  install; not tested: saving from `sn-client`, Ctrl-C, Linux/macOS.
+  Game saves are not read or written.
 - **Join:** `sn-client --join ADDRESS[:PORT] --name NAME`. The host's
   world replaces your world flags.
 - **Over the internet:** the host forwards UDP port 27420 on their

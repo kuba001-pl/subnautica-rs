@@ -2,6 +2,33 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-27 — M9f4: real restart proof; M9f done
+
+**What/why:** `apps/sn-server/tests/persistence.rs` (`#[ignore]`, reads
+`SUBNAUTICA_DIR`, skips if unset): starts our dedicated server with a temp
+save slot, `--autosave 1 --run-for 8`, joins a scripted client, moves a
+locker item to the inventory, picks up 2 real 1×1 pickups near Lifepod 5,
+drops one, sends a pose and vitals, says bye; the server stops and saves;
+a second server on the same slot is joined and compared. Server logs go to
+`out/m9f/`. Fixes over the draft: wait for the drop's own event and settle
+before snapshotting (the first run compared a snapshot without the drop),
+pump after `Bye` and tolerate sends to the closed peer. README gains the
+saves paragraph (tested claims only).
+
+**Verified:** `SUBNAUTICA_DIR=D:\SteamLibrary\steamapps\common\Subnautica
+cargo test -p sn-server --test persistence -- --ignored --nocapture`:
+1 passed. Before stop: player 0, inventory 2, locker 5 (fresh 6), removed 2,
+dropped 1, item hash 0a729620226e89d3, pose [-197.33, -36.19, -10.21],
+health 78.25, oxygen 37.5. First server: shutdown save 783 B at tick 399,
+hash 0a729620226e89d3. Restart: "loaded … at tick 399; item hash
+0a729620226e89d3; locker 5, removed 2, dropped 1"; client gets player id 0,
+equal item state, Restore equal to the sent pose and vitals; 0 differences.
+The scripted pose jump logs one "implausible move" (expected; the check
+only logs). Workspace tests/clippy/fmt: see the merge entry. Not tested:
+Ctrl-C (only `--run-for` shutdown), saving from `sn-client` at runtime,
+the platform default folder (the run used a temp slot), Linux/macOS,
+power loss.
+
 ## 2026-10-27 — M9f3: save slot I/O, autosave and shutdown
 
 **What/why:** `sn-server::saves` (app layer, shared by the dedicated server
