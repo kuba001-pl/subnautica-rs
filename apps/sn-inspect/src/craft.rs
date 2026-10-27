@@ -9,6 +9,10 @@ pub fn run(game: &GameData) -> crate::Result<ExitCode> {
     let assets = Assets::index(game)?;
     let code = sn_assets::game_code(&sn_assets::read_assembly(game)?)?;
     let data = sn_assets::tech_data(&assets)?;
+    println!(
+        "initial pod power={} (regeneration not simulated)",
+        sn_assets::pod_crafting_power(game, &assets)?
+    );
     let player = sn_assets::player_data(&assets)?;
     let tree = code
         .craft_trees

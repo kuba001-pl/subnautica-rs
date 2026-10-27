@@ -33,8 +33,8 @@ pub use message::{
 /// The protocol's version, sent first in `Hello`. Raised whenever any
 /// encoding or table changes (2: `WorldHash` names an event count, not a
 /// tick; M10c; 3: the cinematic signals, M10h3; 4: items, M9d3;
-/// 5: persistence vitals/restore, M9f).
-pub const PROTOCOL_VERSION: u16 = 5;
+/// 5: crafting M9e2 and, on a parallel branch, persistence M9f; 6: both).
+pub const PROTOCOL_VERSION: u16 = 6;
 
 /// A physics step of the shared timeline, counted by the server from the
 /// world's start (`Time.fixedDeltaTime` each; 0.02 s in Subnautica, so

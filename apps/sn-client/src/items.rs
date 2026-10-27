@@ -30,6 +30,8 @@ const PICK_UP_MAX: usize = 3;
 /// The item state this machine has made the world follow.
 #[derive(Resource, Default)]
 pub struct ItemsView {
+    pub craft_at: Vec<(f64, String)>,
+    craft_line: String,
     /// World events applied when last looked at.
     events: Option<u32>,
     /// The own inventory's last logged line, and the blueprints known.
@@ -48,8 +50,13 @@ pub struct ItemsView {
 
 impl ItemsView {
     /// With the debug flags' times (seconds of play).
-    pub fn new(pick_up_at: Option<f64>, drop_at: Option<f64>) -> ItemsView {
+    pub fn new(
+        pick_up_at: Option<f64>,
+        drop_at: Option<f64>,
+        craft_at: Vec<(f64, String)>,
+    ) -> ItemsView {
         ItemsView {
+            craft_at,
             pick_up_at,
             drop_at,
             draws: sn_session::drops::Draws(sn_net::random_seed()),
@@ -222,6 +229,35 @@ pub fn sync(
     let Some(sim) = sim else { return };
     let view = &mut *view;
     let play = sim.play_seconds();
+    while view.craft_at.first().is_some_and(|(at, _)| play >= *at) {
+        let (_, name) = view.craft_at.remove(0);
+        let request = if name == "take" {
+            Some(Request::TakeCrafted { crafter: 0 })
+        } else {
+            text.as_ref().and_then(|t| {
+                t.0.tech_names
+                    .iter()
+                    .find(|(_, n)| *n == &name)
+                    .map(|(&tech, _)| Request::Craft { crafter: 0, tech })
+            })
+        };
+        if let Some(q) = request {
+            info!("craft: --craft at {play:.3}s {q:?}");
+            session.request(q);
+        } else {
+            info!("craft: unknown tech {name:?}");
+        }
+    }
+    if let Some(line) = session.with_items(|items, events| {
+        format!(
+            "events={events} power={} job={:?}",
+            items.fabricator.power, items.fabricator.job
+        )
+    }) && line != view.craft_line
+    {
+        info!("craft: {line}");
+        view.craft_line = line;
+    }
     if view.pick_up_at.is_some_and(|t| play >= t) {
         view.pick_up_at = None;
         let near: Vec<_> = sim

@@ -2,6 +2,28 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-27 — Merge main (M9e2 crafting) into M9f
+
+**What/why:** both branches had raised `PROTOCOL_VERSION` to 5 for
+different changes (crafting requests/events; vitals/restore messages), so
+the merged protocol is 6 (protocol.md history updated; its header still
+said 4). Conflicts were only the version comment and MODLOG; both sides
+kept. The fabricator (power, current job with owner/start/end ticks) is part
+of `ItemsState`'s encoding on main, so the save carries it with no extra
+code; job ticks stay valid because elapsed ticks are saved. Saves written
+with protocol 5 (only temp test saves so far) are refused by the version
+check, as designed (no migration).
+
+**Verified:** `cargo test --workspace`: 755 passed, 0 failed. `cargo
+clippy --workspace --all-targets -- -D warnings` clean; `cargo fmt --all
+--check` clean. Real restart run repeated on the merged code (`cargo test
+-p sn-server --test persistence -- --ignored --nocapture` with
+`SUBNAUTICA_DIR`): 1 passed; shutdown save 788 B at tick 399, item hash
+2c04ac9b6bc4c3f3, restart loaded tick 399 with the same hash, 0
+differences. Not tested: saving/restoring an in-progress fabricator job on
+the real install (only through the synthetic `ItemsState` round-trip, which
+compares the whole state including the fabricator).
+
 ## 2026-10-27 — M9f4: real restart proof; M9f done
 
 **What/why:** `apps/sn-server/tests/persistence.rs` (`#[ignore]`, reads
@@ -104,6 +126,55 @@ console shutdown. No ignore changes. Crafted items use ordinary inventory.
 next step: `cargo test -p sn-session -p sn-protocol` (all synthetic tests pass).
 Initial Python console read failed on Windows cp1252 output; set
 PYTHONIOENCODING=utf-8; no files were modified by that failed read.
+
+## 2026-10-27 — M9e2: server-authoritative scripted crafting
+
+**What/why:** protocol 5 adds Craft/TakeCrafted requests, CraftStarted
+(start/end ticks), CraftDone and CraftedTaken item world events, and
+four refusal reasons. ItemsState holds one shared fabricator job and pod
+power, included in its snapshot and hash. The server schedules completion;
+only its events consume/produce items. Partial pickup retains the rest.
+`--craft SECONDS=TECH[,SECONDS=TECH]` (`take` collects) uses that path.
+All 87 runtime recipes and their output prefab facts join ItemRules and
+its fingerprint. Initial power is read from the spawned cells. Three
+new synthetic tests cover protocol round trips, shared busy state,
+snapshot/replay/collection and malformed snapshots; the real item-rules
+test checks all primary/linked output mappings. No dependencies/ignore
+changes.
+
+**Research/dead ends:** a direct scene scan and then direct root components
+both found zero fabricators/cells. Reading addressable prefab spawners
+(as the client does) found one fabricator and three active cell instances,
+each 25/25 power, regeneration threshold 25, interval 20, amount 1.
+`read_script` consumed every field. The first workspace run failed the
+old malformed-message test because tag 5/refusal 7 now mean valid values;
+its unknown-tag probes now use 255. Rerun passed. A relative executable
+path in Python failed to launch the client; the absolute path worked.
+
+**Verified** (PowerShell, game environment unset for workspace checks;
+set to the installed game for runtime checks; logs `out/m9e2-*.log`):
+- `cargo test --workspace`: 751 passed, 0 failed, 64 ignored.
+- `cargo clippy --workspace --all-targets -- -D warnings`: pass;
+  `cargo fmt --all`, `cargo fmt --all -- --check`: clean.
+- `cargo build --release -p sn-client -p sn-inspect`: pass.
+- `target/release/sn-client.exe --view 400 --resolution 960 540
+  --test-supply ScrapMetal --use-item 3 --panel 6=take-all,7=close
+  --craft 8=Titanium,12=take,14=Titanium --shot 17 m9e2-solo`:
+  inventory one Metal salvage → zero at event 10; Titanium zero → four
+  (#7–10) at event 12; start tick 560, end 700 = 140 × 0.02 = 2.8 s;
+  power 75 → 70. Second craft refused MissingIngredients; 0 WARN/ERROR.
+  Screenshot out/m9e2-solo.png is the ordinary pod view, not a menu.
+- `cargo test -p sn-assets item_rules_from_install -- --ignored
+  --nocapture`: 1 passed; 87 recipes, power 75; 240 pickup classes,
+  182 tech types, 0 unreadable candidates, all recipe output mappings valid.
+
+**Not tested:** crafted objects in the world/menu (M9e3–4), automatic
+pickup/range (currently explicit take, in_pod gate), two clients (M9e5),
+original-game screen comparison, Linux/macOS. **Not 1:1:** static pod
+energy reservoir, explicitly not the game's power simulation: no
+regeneration/repair/relay-connection timing. The server's in_pod gate
+must gain the fabricator's stored close distance in M9e3. No assets sent
+over the network or committed.
 
 ## 2026-10-27 — M9e1: fabricator rules, headless
 
