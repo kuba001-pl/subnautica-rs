@@ -185,6 +185,22 @@ use opt-level 1 for workspace code and 3 for dependencies; README commands use
 dev, so measure release rather than assume completely unoptimized development
 builds. No new dependencies or architectural changes are planned.
 
+P1 evidence and exact commands: [P1-PERFORMANCE.md](P1-PERFORMANCE.md).
+Completion checks:
+- [x] Three initial release runs per fixed-camera/player case, raw fixed
+  samples and p50/p95/p99/max/histograms retained in ignored `out/`.
+- [x] Main object-stream system worst below 2 ms in three matched player
+  runs after worker image preparation (0.727–0.779 ms; before 39.214–49.650).
+- [x] P1c tested in three alternating eager/pruned rounds and rejected:
+  worker savings did not establish a net gameplay tail win. Eager UI retained.
+- [x] Static scene snapshots and installed UI parity checked for candidate;
+  candidate was reverted. See the evidence note for exact scope.
+- [ ] Attribute gameplay tails separately from capture/exit; exercise swimming
+  and turning over streaming boundaries, then measure each retained fix three times.
+- [ ] Workspace tests, clippy with warnings denied, and fmt rerun before commits.
+- [ ] Default view-distance and dev/release profile checks recorded, with
+  noise and remaining untested costs stated; no universal FPS claim.
+
 ### Phase A — Terrain, headless → visible
 
 | # | Goal | Done when |

@@ -62,7 +62,11 @@ pub fn frame(
     record("frame", time.delta_secs() * 1000.0, sampling);
     SAMPLING.store(sampling, Ordering::Relaxed);
     *frames += 1;
-    if sampling && (*frames).is_multiple_of(120) {
+    let snapshot_due = *frames >= 120;
+    if snapshot_due {
+        *frames = 0;
+    }
+    if sampling && snapshot_due {
         let mut costs: Vec<_> = diagnostics
             .iter()
             .filter(|d| d.path().as_str().ends_with("elapsed_cpu"))

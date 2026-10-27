@@ -2,6 +2,28 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-27 — P1c: reject inactive UI pruning after matched repeats
+
+**What/why:** reverted the unfinished inactive-hierarchy mesh/material/glyph
+pruning. Three alternating eager/pruned rounds with the existing protocol
+still do not demonstrate a net gameplay frame-time win. Both first fixed
+runs have p99 about 74 ms, confirming shared instability; player p99 remains
+worse in the candidate. Full p50/p95/p99/max table and log paths are in
+`docs/P1-PERFORMANCE.md`. Worker build cost falls roughly in half, and the
+candidate's installed-data oracle passed 32 states / 2,004 visible draws,
+but neither proves the required frame-time benefit. Deferred texture/glyph
+preparation is a possible activation cost, **not proven**. No dependencies,
+whitelist, simulation, or architecture changes. No game data tracked.
+
+**Verify:** `python out/p1/matched.py` documents the archived run sequence
+(do not rerun with existing names); exact executable flags are in each log
+and the evidence note. `cargo test --workspace` and
+`cargo clippy --workspace --all-targets -- -D warnings` run before this commit;
+passed (721 tests, 63 ignored; clippy clean; fmt clean). Restored the bounded profiler snapshot counter after
+clippy caught P1a using an integer API newer than the declared Rust 1.85 MSRV.
+Capture/exit contamination of historical player
+maxima is retained explicitly and will be removed from later attribution.
+
 ## 2026-10-27 — P1b: construct object texture images on the asset worker
 
 **What/why:** `Library::texture` now runs the existing `textures::to_image`

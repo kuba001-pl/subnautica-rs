@@ -374,6 +374,12 @@ ordinary play. The dev profile already optimizes our code at level 1 and
 dependencies at level 3; use `cargo run --release -p sn-client` for performance
 measurements.
 
+P1 moved object-texture conversion to the asset worker (three release runs:
+player object-stream worst 39-50 ms to under 0.8 ms at view 400 / 1600 x 900).
+Inactive UI pruning was tested and reverted because repeat runs did not show
+a reliable gameplay frame-time win. Historical player maxima include capture
+and exit work. Details and commands: [P1 performance evidence](docs/P1-PERFORMANCE.md).
+
 ## Play together (experimental)
 
 Each player needs their own installed copy of Subnautica, the same game
