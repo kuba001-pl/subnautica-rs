@@ -461,7 +461,7 @@ understand it, then write our own.
 | **M10** | Multiplayer as planned (Phase D, "M10 plan", steps M10a–M10i): `sn-protocol`, `sn-net`, `sn-session`, `sn-server`, handshake with the build and rules check, join, player sync (remote players drawn with M9g's body, animated by the values the owner's rules computed). From here solo play also runs against an in-process server (§ 3.1, principle 5), so items and crafting below are written server-authoritative once. | M10's own row. |
 | **M9d** ✅ | **Done 2026-10-12** (steps M9d1–M9d6 below, each in MODLOG; what is not 1:1 yet is listed under "Not 1:1 after M9d"). Pick up and inventory (plan below, steps M9d1–M9d6): `Pickupable` objects within reach, outcrops break into their resource (`BreakableResource`), inventory of the game's size, item sizes from TechData, equipment slots, blueprints unlocked by picking up, dropping, the lifepod's locker with its starting supplies, the `grab` animation; picked objects gone for every player (server state keyed by entity id and slot seed). What stays not 1:1 is listed in the plan with where each item goes. | Inventory rules unit-tested; a scripted pick-up logs item counts; the object's drawn count −1 on both clients. |
 | **M9u** ✅ (2026-10-27, M9u0–M9u9; not compared with the game on screen) | The game's UI (uGUI, sprites, TextMesh Pro): the HUD, hand reticle, messages, the PDA with its inventory tab and equipment; replaces our own HUD and panel. Plan written 2026-10-12 ("M9u plan", below M9d's; steps M9u0–M9u9), approved by the user 2026-10-12. | Each step's own list in the plan. |
-| **M9e** | Crafting at the lifepod's fabricator: the menu from P1's tree, recipes and times from TechData, starting blueprints from `PDAData`; item names from the language files. | Crafting rules unit-tested on synthetic recipes; one real recipe crafted in a scripted run (counts before/after logged); menu node count equal to P1's. |
+| **M9e** (next; plan written 2026-10-27, "M9e plan" below M9u's, steps M9e1–M9e5) | Crafting at the lifepod's fabricator: the menu from P1's tree, recipes and times from TechData, starting blueprints from `PDAData`; item names from the language files. | Crafting rules unit-tested on synthetic recipes; one real recipe crafted in a scripted run (counts before/after logged); menu node count equal to P1's. |
 | **M9f** | Save and load (player, inventory, removed objects, crafted items) on the server, in our own format, in the user's save folder (not `out/`, not the game folder). Becomes M11's persistence. | Round-trip unit test; server restart restores the logged state. |
 
 #### M9a plan (written 2026-10-10)
@@ -1459,6 +1459,65 @@ the gap against the shipped atlas instead of assuming it is small. The
 step-M9u4 oracle (saved driven rects) is a hypothesis. If it does not
 hold, layout is checked against hand-computed cases and the
 screenshots only, and the plan says so. Size: about M9g's, ten steps.
+
+#### M9e plan: crafting at the lifepod's fabricator (written 2026-10-27, after M9u; not started)
+
+**Why next:** the road (§ 4.3, Phase E) puts M9e after M9u, and both of
+its bases are done: the menus are read from the DLL (P1: 7 menus, the
+fabricator's 100 craft nodes), the recipes from TechData (P0), and the
+client can draw, hit-test and animate the game's own canvases (M9u).
+Crafting is the first thing in the game that turns picked-up items into
+new ones, so the inventory, the locker and the notifications get their
+first real use. M9f (saves) comes after it, so a crafted item can be
+saved.
+
+**What the game has** (class and field names checked 2026-10-27 with
+`sn-inspect code --fields`; the behaviour is read in the decompiled code
+in M9e1, so each line below is a *hypothesis* until then):
+- `Fabricator` extends `GhostCrafter` extends `Crafter` extends
+  `HandTarget`: the hand target (`handOverText`, `closeDistance`), the
+  open/close animator, beams, sparks, light and sounds; `craftTree` picks
+  the menu (`Fabricator`).
+- `CrafterLogic`: `timeCraftingBegin`, `timeCraftingEnd`,
+  `craftingTechType`, `linkedIndex`, `numCrafted`; the crafted item waits
+  in the fabricator until the player takes it (`onItemPickup`).
+- `CrafterGhostModel`: the item's ghost model with the fabricating
+  shader (`_EmissiveTex`, `_NoiseTex`) and `VFXFabricating`.
+- `uGUI_CraftingMenu` (an `uGUI_InputGroup`; `uGUI/CraftingCanvas`
+  exists, M9u0): the tree of icons, expand/craft sprites, punch
+  animations on expand and click; grey icons for unknown or unaffordable
+  recipes; the recipe tooltip with its ingredients.
+- Power: the fabricator spends energy per craft from the pod's power
+  (`PowerRelay`); without power it shows `unpoweredSecondaryText`.
+- Craft time: TechData's `craftTime`; an entry without one uses the
+  crafting code's default (`dotnet.md` hypothesis, settled in M9e1).
+
+**Steps** (each one change, revertable alone, with its own MODLOG entry):
+
+| Step | Work | Done when |
+|---|---|---|
+| **M9e1** | **Rules, headless.** Read `Crafter`, `GhostCrafter`, `CrafterLogic`, `Fabricator`, `uGUI_CraftingMenu`, `KnownTech` and the recipe checks in the decompiled code; record them in `docs/formats/gameplay.md` § Crafting (each fact marked). `sn-sim::craft` (pure): can-craft (known, ingredients in the inventory, power, room for the result and linked items), consume, the result and `craftAmount`, linked items, the craft time and its default, the energy cost. `sn-inspect craft`: every fabricator node resolved. | Unit tests on synthetic recipes (missing ingredient, unknown blueprint, no power, full inventory, `craftAmount` > 1, linked items); `sn-inspect craft` on the install: 100 fabricator craft nodes (= P1), each with ingredients, time and energy logged, 0 unresolved; the starting blueprints from `PDAData` counted; the default craft time settled with its source. |
+| **M9e2** | **Server-authoritative crafting.** `sn-protocol`: `Request::Craft { crafter, tech }`, `Request::TakeCrafted { crafter }`; world events for a craft started (with its duration), done and taken; the fabricator's state and the pod's power in the world state and its hash. `sn-session` checks with `sn-sim::craft`; one craft at a time per fabricator, shared by all players. A `--craft SECONDS=TECH` test hook. | Protocol round-trip tests; a scripted solo run crafts one real recipe (e.g. Titanium from Scrap metal picked up nearby): inventory counts before/after, the duration equal to the rule, the energy drop logged; a refused craft (no ingredients) logged with its reason; 0 warnings. |
+| **M9e3** | **The fabricator in the world.** The hand on it (`handOverText` from the language file, `closeDistance`), its animator's open and close, the result shown in the fabricator until taken (the item's model at `itemSpawnPoint`); beams, sparks and `CrafterGhostModel`'s shader drawn if they fit, otherwise kept drawn plainly and logged (never hidden). | Client run: hand text logged; open at the hand, close beyond `closeDistance` (distances logged against the stored value); the crafted item drawn at the spawn point during the craft and gone when taken; 0 warnings; a screenshot for the user. |
+| **M9e4** | **The crafting menu.** `uGUI_CraftingMenu` on `CraftingCanvas`: the fabricator tree's nodes as icons (made as the game makes them), expand and craft sprites, grey for unknown/unaffordable, the punch animations, the recipe tooltip; hover and clicks through the existing hit-test; a click sends `Request::Craft`. The unlock pop-up and `Blueprints` notifications if crafting unlocks anything. `sn-inspect ui --crafting`. | `ui --crafting`: node count and layout of the top level and one sub-menu against a replay of the decompiled code, N/N; client: open the menu, hover a recipe (tooltip text logged), click it: the same craft as M9e2, the item taken into the inventory with its notification; 0 warnings; a screenshot. |
+| **M9e5** | **Close-out.** Two players: one crafts, the other sees the fabricator busy (its menu refuses with the game's message) and the result taken; README, `docs/formats/gameplay.md`, `docs/formats/ui.md`, "Not 1:1 after M9e". | Two-player run logs as listed; `cargo test --workspace` passes without the game; `git status --short` shows only our code and docs. |
+
+**M9e done when:** every step's list above has been run and passed, and
+the original row's checks hold (rules unit-tested on synthetic recipes,
+one real recipe crafted in a scripted run with counts before/after
+logged, the menu's node count equal to P1's).
+
+**Out of scope:** the other crafting machines (Constructor and the
+Mobile Vehicle Bay, Workbench, upgrade consoles, the Cyclops fabricator:
+vehicles, item 5); eating and using what is crafted (item 1); the
+crafting sounds (item 8).
+
+**Risks:** the menu's layout code (`uGUI_CraftingMenu`'s node placement
+and expand animation) may be larger than the tooltip's; M9e4 is split if
+so. The lifepod's power may depend on pod state we do not model yet
+(damage, power cells); M9e1 finds out, and a missing piece gets a
+labelled stand-in ("not the game's") rather than a guess. Size: about
+M9d's, five steps.
 
 #### M9g plan: the player's body (written 2026-10-10)
 

@@ -2,6 +2,20 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-27 — Plan: M9e (crafting at the lifepod's fabricator)
+
+**What/why:** with M9u done, DESIGN's road (§ 4.3, Phase E) has M9e next.
+Wrote "M9e plan" in DESIGN (below the M9u plan): why now, what the game
+has (class and field names checked on the install with `sn-inspect code
+--fields Fabricator`, `GhostCrafter`, `Crafter`, `CrafterLogic`,
+`CrafterGhostModel`, `uGUI_CraftingMenu`; their behaviour marked
+*hypothesis* until M9e1 reads the decompiled code), steps M9e1–M9e5
+each with a "Done when", out of scope and risks. The Phase E row of M9e
+points to it. Plan only: nothing implemented.
+
+**Verified:** docs only; `cargo test --workspace` 743 passed; `git
+status --short` clean after the commit.
+
 ## 2026-10-27 — M9u9: close-out (two players with the game's UI; M9u done)
 
 **What/why:** the last step of M9u (DESIGN). No code change: the merged
