@@ -2,6 +2,52 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+
+## 2026-10-27 — Plan M9s: survival (research and docs only)
+
+**What/why:** promote After Phase E's survival item into Phase E as M9s,
+after M9f, with fifteen individually verifiable steps. Plan pure sn-sim
+rules before runtime loading, server owner/world actions, save extensions,
+client use/tool presentation and live UI. M9e crafting and M9f persistence
+are in progress elsewhere; this change documents their integration contracts
+without editing code or claiming those milestones complete. Live hunger is
+gated on a working acquisition/consumption loop. No dependency, crate,
+architecture or gitignore change.
+
+**Research:** read AGENTS.md, DESIGN's Phase E/M9d/M9u/M9e plans and gaps,
+After Phase E, and gameplay.md. Directly read the full local ILSpy source
+(read only, not fields.py) for Survival/SurvivalConstants, Eatable,
+Inventory/InventoryItem, QuickSlots, PlayerTool, GUIHand/ArmsController,
+Knife/HarvestType/TechData, MedicalCabinet, Oxygen/OxygenManager,
+Fins/UnderwaterMotor/UpdateSwimCharge, Battery/EnergyMixin, SupplyCrate,
+LootSpawner/SpawnStoredLoot, food/water bars and TooltipFactory. Added our
+own prose findings in gameplay.md, each marked confirmed with source or
+hypothesis. Numbers' runtime origins are explicit (serialized fields,
+TechData/defaults, DLL constants/IL); no source code, content dumps or game
+files copied into the repository.
+
+**Findings/dead ends:** FirstAidKit use lives in Survival, not a separate
+class; Fins does not implement speed modifiers. A full-source caller search
+found no caller for the weakness scalar, so adding a hunger speed penalty
+would be speculative. Random stored loot and child-item supply crates are
+different paths; prefab wiring remains to measure. Initial searches under
+ignored out/ needed --no-ignore, and PowerShell does not expand shell brace
+lists. The terminal's cp1252 output also needed Python -X utf8. A first
+patch-context attempt matched nothing and changed nothing. A documentation
+audit caught non-ASCII characters lost in new pipeline input; corrected with
+Unicode escapes and checked that pre-existing Unicode remains intact.
+
+**Verification:** git diff --check (no whitespace errors); a Python document
+audit checks M9s row placement after M9f, plan placement after M9e, all fifteen
+step ids, required Done when headings, and preserved existing Unicode.
+Final git status --short must list only these three Markdown files before
+the local commit, and be clean after the requested merge of local main.
+Exact repeatable commands: git diff --check; git show --stat --oneline HEAD;
+git status --short (expect no entries after commit/merge). Runtime gameplay,
+prefab census, proposed CLI scenarios and cargo test --workspace are
+**not tested**: this is research + plan only, no Rust code changed. The
+proposed CLI commands are labelled not implemented in DESIGN.
+
 ## 2026-10-27 — M9e1: fabricator rules, headless
 
 **What/why:** direct source research (local ILSpy decompile, read only)

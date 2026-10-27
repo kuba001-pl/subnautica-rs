@@ -463,6 +463,7 @@ understand it, then write our own.
 | **M9u** ✅ (2026-10-27, M9u0–M9u9; not compared with the game on screen) | The game's UI (uGUI, sprites, TextMesh Pro): the HUD, hand reticle, messages, the PDA with its inventory tab and equipment; replaces our own HUD and panel. Plan written 2026-10-12 ("M9u plan", below M9d's; steps M9u0–M9u9), approved by the user 2026-10-12. | Each step's own list in the plan. |
 | **M9e** (next; plan written 2026-10-27, "M9e plan" below M9u's, steps M9e1–M9e5) | Crafting at the lifepod's fabricator: the menu from P1's tree, recipes and times from TechData, starting blueprints from `PDAData`; item names from the language files. | Crafting rules unit-tested on synthetic recipes; one real recipe crafted in a scripted run (counts before/after logged); menu node count equal to P1's. |
 | **M9f** | Save and load (player, inventory, removed objects, crafted items) on the server, in our own format, in the user's save folder (not `out/`, not the game folder). Becomes M11's persistence. | Round-trip unit test; server restart restores the logged state. |
+| **M9s** (planned 2026-10-27; M9s1–M9s15 below) | **Survival:** food/water, eating and first aid; per-item decay, tank oxygen and battery charge; tanks/fins, quick slots, held tools and knife harvesting; medical cabinets and supply crates. Pulls forward After Phase E item 1 and the survival gaps in M9d/M9u. Depends on M9e crafting and M9f persistence (both in progress). | Each step’s own Done when below; headless rules first, then runtime data, server, persistence, client and UI; two-player scripted survival loop with 0 state/hash mismatches. |
 
 #### M9a plan (written 2026-10-10)
 
@@ -1529,6 +1530,119 @@ so. The lifepod's power may depend on pod state we do not model yet
 labelled stand-in ("not the game's") rather than a guess. Size: about
 M9d's, five steps.
 
+#### M9s plan: survival (written 2026-10-27)
+
+**Scope and dependencies.** Pull After Phase E item 1 into Phase E after
+M9f. M9d supplies inventory ids, equipment, world keys, outcrops and the
+locker; M9c supplies health, breathing and death; M9g supplies the body;
+M9u supplies the actual HUD/PDA. M9e (crafting, in progress on main by
+another agent) must deliver its server output/collection path and food
+menu before the end-to-end loop. M9f (save/load, also in progress) owns the
+save schema and atomic restart boundary. Coordinate narrow extensions to
+those interfaces; do not rewrite either milestone or mark either complete.
+Rules below can be built headlessly while those integrations are unfinished.
+No new crate, architecture change or dependency is proposed.
+
+**Evidence and boundary.** `docs/formats/gameplay.md` sections “Survival”
+through “M9s runtime provenance” record direct source-confirmed rules and
+unmeasured hypotheses. This is a plan, **not tested implementation**.
+Every gameplay number must be loaded from the player's install at runtime:
+TechData/defaults; prefab/scene fields; DLL metadata constants and bounded
+constructor/method IL patterns for code-only values. In particular neither
+a familiar tank capacity nor a C# field initializer proves the stored prefab
+value. Use `sn-install` for I/O, existing `sn-assets` orchestration and pure
+`sn-unity`/`sn-dotnet` readers. Layers 0–2 take bytes/data only. Missing or
+ambiguous required numbers stop the affected feature with an offset/source
+error; never silently compile these research numbers into balance defaults.
+Stay within the existing limited IL-reader approach; if extracting a rule
+would require a general interpreter, stop and ask before expanding scope.
+
+**Rules to preserve.** Hunger's 10 s cadence and phase, deficit-based Starve
+damage, regeneration, reset/freeze and the 99 food gate; successful
+consumption even when clamped; food age and source-specific oxygen survive
+moves. Binding/held state uses item identities. Knife damage occurs at an
+authorized use event, not both input and animation; DamageAlive and
+DamageDead use before/after liveness. Cabinets, crate contents and harvesting
+are shared; bars, inventory actions and bindings are the owner's. Co-op
+ordering, replay protection and loot seeds are explicitly our server rules.
+
+**Steps** (each one independently revertable change with its own MODLOG;
+synthetic unit tests never embed game fixtures; numbered verification hooks
+below are proposed interfaces, **not available commands yet**):
+
+| Step | Work | Done when |
+|---|---|---|
+| **M9s1** | **Hunger rules in sn-sim, pure.** Typed runtime rule input, survival clock accumulator/phase, food/water, drain, starvation, regeneration, warning crossings, freeze and respawn. Do not enable live drain yet. | Synthetic hand-calculated tests: 60 s starting at food/water 100 loses 2.380952/3.333333 (within float tolerance); both empty for 10 s requests 23.809524 damage; exact/over threshold warnings, combined-stat healing gate after drain, freeze and respawn all pass. Partitioned tick input preserves the same interval count and phase. |
+| **M9s2** | **Per-item state and consumption in sn-sim.** Extend existing item ids with optional Eatable age, oxygen and battery state plus battery-slot ownership, rather than introducing another inventory. Pure eat/drink/first-aid and item initialization rules; move/drop/death preserve state. | Synthetic tests cover food 99 versus >99, 200/100 caps, negative and zero food/water, successful clamped consumption, first-aid actual-heal threshold, and Bladderfish oxygen. Two identical tech types with different ages/charge stay distinct through 1,000 grid/locker/equipment/drop transfers; no item or charge duplicated. |
+| **M9s3** | **Decay and energy rules in sn-sim.** Game-clock freshness/negative floor, active-world rotten despawn, battery add/partial consume, default battery only if absent, compatible swap/unload through existing pending inventory handling. Keep tool-specific costs separate. | Synthetic tests check exact half/nine-tenths freshness boundaries, −25 floor, inactive rotten retention versus active deadline, and disabling decomposition. Empty/full/partial energy changes conserve charge; reload at full grid retains the outgoing battery exactly once; restoring a used battery never fills it. Missing required rule input refuses explicitly. |
+| **M9s4** | **Equipment effects in sn-sim.** Registered oxygen sources, tank swap, surface fill/drain order, totals for M9c suffocation; ordered tank/fins/held-tool swim modifiers; charging-fin gate using actual velocity. | Synthetic player reserve plus two differently filled tanks: equipped tank drains first, spare contributes 0, unequip/re-equip retains its amount, fill adds no more than supplied. Scripted pure movement compares max-speed calculation before/after modifiers in the game's order; charging at exactly 2 m/s adds 0 and above it adds rate × elapsed time up to capacity; holstered/above-water adds 0. |
+| **M9s5** | **Quick-slot and tool state in sn-sim.** Five-slot count supplied by rules, Hand eligibility, auto/manual binding, duplicate-type restrictions, same-type refill, desired versus held slot, draw/hold/holster/drop Sequence, first-use flags and interaction/PDA/death suspension. | Synthetic tests exercise same-slot unbind, moving a binding, first copy/full toolbar, scroll end deselection, removal/refill, changing slot mid-draw, bash/use delaying holster and PDA/death interruption. Event traces assert one equip/unequip per transition, no dangling item id, transition timing within two supplied simulation steps of the Sequence rule. |
+| **M9s6** | **Harvest and supply rules in sn-sim.** Knife target validity/damage/liveness and TechData output; connect existing outcrop bash once. Cabinet ready/door/take timers; crate sealed/open/child state; separate SpawnStoredLoot initialization with seeded sampling and once flag. | Synthetic tests: DamageAlive live/surviving/killed/dead, DamageDead killing/dead hit, final bonus, None, invalid target and full inventory. One input/event produces one hit. Cabinet equality at deadline gives no kit, later gives one; full grid retains it. Crate unopened/sealed/full/empty and absent Animation cases pass. Seeded storage initialization repeats identically and runs once. |
+| **M9s7** | **Install data and rule provenance, headless.** Minimal serialized readers and bounded IL extraction; assemble the prior rule inputs and fingerprint. Census edible/tank/battery/tool/cabinet/crate prefabs, harvest targets’ LiveMixinData and tool animation-event times, plus main-scene charging fields, resolve TechData harvest outputs/defaults and food crafting nodes. Trace crate child activation/loot and tank initial oxygen; settle hypotheses before claiming support. Proposed `sn-inspect survival --check-data`. | Synthetic malformed bytes and altered/missing/ambiguous IL patterns return errors with offsets, 0 panics. Opt-in install run logs each required number with asset field or DLL member/pattern, counts by component, every supported output's resolved prefab, tank capacities and initial-state origin; 0 unresolved required fields. Two reads have identical fingerprints. Properties/NonSerialized fields are excluded. No exported content table enters git. |
+| **M9s8** | **Owner actions on server.** sn-protocol/sn-session validate consume, slot bind/select, battery reload and equip against authoritative inventory/state. Same sn-sim rules in solo and UDP sessions; owner snapshots/deltas and hashes cover survival and per-item state. Implement but gate live hunger until acquisition/use paths work. | Round-trip tests; simultaneous use/drop/craft of the same item succeeds only once, wrong-owner and stale requests refuse without mutation. 10,000 synthetic ticks including swaps/uses match authoritative hashes with 0 differences; malformed requests never panic. Rules fingerprint mismatch refuses join; no game assets sent. |
+| **M9s9** | **World actions on server.** Authorize tool-use timing, reach/occlusion, target eligibility, one attack event per accepted action; shared harvest health/removal/output, cabinet timers, crates and once-only loot keyed by existing EntityKey. Do not trust client-reported damage, health, output or elapsed time. | Two simulated players race a final cut, cabinet kit and crate pickup: each shared result occurs exactly once. Out-of-range/behind-wall, replayed and too-fast attacks grant 0 damage/output. Late join snapshot and 10,000 interleaved-action ticks yield 0 world-hash differences; unloading/reloading a batch never rerolls loot or resets health. |
+| **M9s10** | **Persistence extension with M9f.** Add versioned survival/interval phase, game time, item age/oxygen/charge, nested battery ids, slot identities/used-tool flags, harvest target state, cabinets and crates/loot flags. Preserve M9e in-flight and waiting output state. Default migration only for fields legitimately absent in old project saves. | With M9f, synthetic round-trip retains every id and state. Proposed scripted save/restart mid-decay, mid-cabinet wait and with partially empty tank/battery has 0 state differences after restore; no recharge, freshening or loot reroll. Old-format migration and unsupported-version refusal tested. Offline wall time does not advance survival in our save policy; test that explicitly. |
+| **M9s11** | **Client input and acquisition/use loop.** Route inventory Use/Eat and quick-slot hotkeys/scroll/PDA-hover binding to server; equip tanks/fins; cabinet/crate hand targets and reticle/progress, child loot and harvest collision updates. Integrate M9e food tab/results and initialize every crafted item's state once. Enable live hunger only after this loop passes. Proposed `sn-inspect survival --scenario loop` plus equivalent client hooks. | Install-backed scripted loop obtains supplies, crafts available food/water and equipment using M9e, consumes them, equips/swaps a tank, harvests with a crafted knife and takes a kit/crate item. Log item ids/counts, food/water/health, oxygen and every refusal before/after; acquired amount equals consumed + retained, 0 duplicated objects. After enabling drain run 1,800 game seconds with scripted replenishment; measured interval losses equal runtime rules. |
+| **M9s12** | **Held models and animation events.** Plug tools into existing body sockets with prefab offsets/layers/collider policy; animator holding/first-use/use/bash flags and event timing; apply held-tool speed changes. Replicate remote held identity/action so both clients draw their own installed model. Support the knife path and generic energy/reload hooks; other tools keep their own later behaviour. | Headless client logs active socket/layer and exactly one held model per player, draw/holster timestamps versus prefab times; one knife animation use produces one server hit. PDA, swap, drop, death and respawn leave 0 orphan held models/colliders. Two clients agree on held ids and action ticks. Human visual comparison is a bonus, not a pass criterion. |
+| **M9s13** | **Live HUD, toolbar and per-item UI.** Feed M9u food/water/oxygen bars and onEat/onDrink, bind/select toolbar icons, localized use/full-health/reload messages and battery selector. Add EnergyMixin/Battery/Oxygen/Eatable tooltips, UI/IconBar and GRAYSCALE for grid/equipment/toolbar/dragged icons using TooltipFactory precedence. | Proposed `sn-inspect ui --survival` replay: synthetic empty/half/full/overfilled food, differently aged food, empty/partial tanks/batteries, disabled icons and dragged items give N/N expected values/visibility. HUD ceil/smoothing and event punch timings match rule replay; client click/hotkey/scroll/reload scripts log accepted actions and matching UI ids/values, 0 new unsupported-material warnings. |
+| **M9s14** | **Two-player close-out and regressions.** Proposed `sn-inspect survival --scenario coop` and `--scenario restart` exercise food crafting/consumption, tool swaps/harvest, tanks/fins, cabinets/crates, late join and M9f restart under existing impaired-network harness. Reuse current CLI/session patterns; document final exact syntax in README/MODLOG. | Both scenarios log 0 duplicate grants, 0 hash mismatches and expected rule-sourced times/amounts, with owner UI isolated and shared objects consistent. `cargo test --workspace` passes without game files; opt-in tests skip cleanly without SUBNAUTICA_DIR. With install, `cargo test --workspace -- --ignored` passes applicable M9s checks; record any unrelated failure honestly. |
+| **M9s15** | **Document and audit completion.** Update tested README capabilities, gameplay/UI format findings, Phase E row and the residual list below; retain all older unrelated gaps. | Every prior Done when has recorded command/output evidence; no unchecked hypothesis claimed implemented. `git diff --check` passes; `git status --short` lists only our source/docs. No game content, new binary whitelist, dependency or game-install mutation. Commit/push only when separately authorized for implementation work. |
+
+**Verification commands planned:** implement and document
+`cargo run -p sn-inspect -- survival --check-data --game-dir <install>`,
+`cargo run -p sn-inspect -- survival --scenario loop --game-dir <install>`,
+`cargo run -p sn-inspect -- survival --scenario coop --game-dir <install>`,
+`cargo run -p sn-inspect -- survival --scenario restart --game-dir <install>`
+and `cargo run -p sn-inspect -- ui --survival --game-dir <install>` with the
+checks in their rows. These new flags are **not tested/not implemented**.
+Use synthetic rule values in headless tests and source values only through
+runtime loaders in real runs. Test counts are evidence to record when built,
+not a target to satisfy by mirroring implementation.
+
+**M9s done when:** all fifteen lists pass, M9e's actual food/menu/output
+integration and M9f's restart integration are complete, and survival drain
+is enabled only with working food/water acquisition and consumption. Each
+step is additive at its boundary: pure rules do not change live play, runtime
+loading does not enable drain, server state precedes UI, and each can be
+reverted without refactoring another milestone. Incompatible protocol/save
+changes must use existing version gates rather than pretend compatibility.
+
+**Open questions to settle in M9s7/integration:** actual serialized tank
+capacities and spawn-state initialization, Eatable rates and active-state
+lifecycle, pod cabinet wiring/interval, child-loot versus random storage
+crate population, harvest target destruction/collision changes, and bounded
+IL coverage for inlined constants. Clock phase and animation callback order
+against Unity are hypotheses until measured; equal-priority oxygen-source
+ordering must not be claimed stable. No weakness movement penalty unless
+its caller is proved. If a supported object lacks required data, log the
+miss and keep the corresponding step incomplete rather than substitute a
+remembered number.
+
+**Not 1:1 after M9s** (planned residuals, not claims of work completed):
+- **Audio** (After Phase E item 8) and **particles** (M7i): food/tool/knife,
+  cabinet and crate sounds, hit/break effects and charging-fin loop audio.
+- **Tools and IK** (remaining item 3): generic held flow and knife are in
+  M9s; exact tool-specific IK solvers/aim blending and behaviour of scanner,
+  repair tool, propulsion cannon, builder and vehicle tools stay with their
+  own milestones. Prefab targets are retained; unsupported IK is logged.
+- **Creatures** (item 4): live fish capture/spawning/AI, creature combat,
+  smell and attraction. Do not gate basic food access on unimplemented AI;
+  the verified loop uses installed recipes and reachable existing supplies.
+- **Vehicles/bases/suits** (items 5/6): non-player oxygen sources, water
+  parks, rebreather/suit effects beyond existing rules, base medical cabinets'
+  power/construction lifecycle, powered tools' individual drain/abilities and
+  electronics-disable effects. No new universal tool drain in M9s.
+- **Story/PDA** (items 2/7): custom-goal side effects, infection/cure and
+  full databank/notification integration. Existing M9u formatting, drag,
+  toolbar-tooltip, gamepad and language limitations remain unless a step
+  explicitly verifies them; food/tank/energy tooltips and icon bars move here.
+- **Physics/look** (M11/§ 3.3 and deferred look): rigid-body drops/tumble,
+  floating objects and sky-environment changes remain M9d gaps. Exact Unity
+  frame scheduling and original-game visual comparison are **not tested**.
+- **Co-op/persistence policy:** deterministic server ordering/loot, owner
+  isolation and offline paused time are our rules; original Subnautica is
+  single player. Linux/macOS, VR and gamepad use remain **not tested**.
+
 #### M9g plan: the player's body (written 2026-10-10)
 
 **Why now:** the user wants the player's model and animations before
@@ -1918,7 +2032,7 @@ set (with their items); the intro cinematic (item 3); sounds and effects
 
 **After Phase E** (order to be agreed then; each gets its own plan with
 steps before it starts):
-1. **Survival:** food and water (`Survival`, eating, the fabricator's food
+1. **Survival** (pulled forward as M9s, planned above; not done): food and water (`Survival`, eating, the fabricator's food
    tab), knife and harvesting, first aid, tanks and fins; quick slots,
    held tools and item use; per-item state (battery charge, tank oxygen,
    food decay); supply crates (the gaps M9d leaves, listed in its plan).
