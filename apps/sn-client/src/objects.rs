@@ -3547,6 +3547,7 @@ fn split_geometry(
 }
 
 pub(crate) fn build_mesh(data: MeshData) -> Mesh {
+    let _perf = crate::perf::span("objects::build_mesh");
     let n = data.positions.len();
     let skinned = data.joints.len() == n && data.weights.len() == n && n > 0;
     // A later streamed placement can need this mesh with reversed winding,
@@ -3763,6 +3764,7 @@ pub fn stream_objects(
     mut bindposes: ResMut<Assets<SkinnedMeshInverseBindposes>>,
     mut exit: MessageWriter<AppExit>,
 ) {
+    let _perf = crate::perf::span("objects::stream_objects");
     let streamer = &mut *streamer;
     let mut pixel = |rgba: [u8; 4]| {
         images.add(Image::new(
@@ -4287,6 +4289,7 @@ pub fn switch_lods(
     mut visibility: Query<&mut Visibility>,
     mut last_log: Local<f32>,
 ) {
+    let _perf = crate::perf::span("objects::switch_lods");
     let (Some(settings), Ok((cam, projection))) = (settings, camera.single()) else {
         return;
     };
@@ -4424,6 +4427,7 @@ pub fn update_atmosphere_skies(
     )>,
     mut previous: Local<Vec<sn_sim::atmosphere::Volume>>,
 ) {
+    let _perf = crate::perf::span("objects::update_atmosphere_skies");
     let mut current: Vec<_> = volumes
         .iter()
         .map(|(entity, volume)| {

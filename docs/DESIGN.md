@@ -170,6 +170,21 @@ Each milestone is small, independently verifiable, and ends with a "Done when"
 checklist that is run, not assumed. Later milestones will be refined when we
 reach them — expect the far end of this list to change.
 
+### P1 — Client frame time (plan, 2026-10-27)
+
+| # | Goal | Done when |
+|---|---|---|
+| **P1** | Measure and remove client stalls without changing drawn content or simulation rules. First record release frame distributions and CPU/GPU costs; rank costs, fix each independently, repeat the same runs three times. Keep UI diffs small for concurrent inventory work. | Raw frame samples include p50/p95/p99/max and histogram counts; CPU system/stage and GPU scopes are explicit; three before/after runs per fix record spread and unchanged scene counts; workspace tests and clippy with warnings denied pass. Performance targets are reductions in the measured dominant work, not an unmeasured universal FPS claim. |
+
+Plan: use the existing M8g0 baseline harness (fixed camera, seeds, resolution,
+warm-up, uncapped presentation), plus a scripted player/PDA run. Add opt-in CPU
+timers before optimizing; keep loading and settled samples distinguishable.
+Inspect streaming uploads, animation, UI worker/build/render preparation,
+hot-loop allocation/logging and presentation. Existing dev settings already
+use opt-level 1 for workspace code and 3 for dependencies; README commands use
+dev, so measure release rather than assume completely unoptimized development
+builds. No new dependencies or architectural changes are planned.
+
 ### Phase A — Terrain, headless → visible
 
 | # | Goal | Done when |

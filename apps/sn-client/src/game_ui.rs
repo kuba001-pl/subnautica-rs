@@ -895,6 +895,7 @@ fn run_worker(
     let (mut draw_seconds, mut draws) = (0.0, 0u32);
     let mut logged_second = -1i64;
     while let Ok(first) = requests.recv() {
+        let rules_perf = crate::perf::span("game_ui::worker_rules");
         let mut resized = false;
         let mut frames = 0;
         // Every frame's rules run, in order; only the latest state is drawn.
@@ -1361,6 +1362,7 @@ fn run_worker(
                 }
             }
         }
+        drop(rules_perf);
         let Some(size) = screen else {
             continue;
         };
@@ -1381,10 +1383,14 @@ fn run_worker(
         } else if frames == 0 {
             continue;
         }
+        let _perf = crate::perf::span("game_ui::worker_build");
         let begin = Instant::now();
         let mut state = start_state.clone();
         state.apply(&rules);
-        let d = scene.draw(&assets, &fonts, &set, &mut atlases, &placements, &state)?;
+        let d = {
+            let _perf = crate::perf::span("game_ui::scene_draw");
+            scene.draw(&assets, &fonts, &set, &mut atlases, &placements, &state)?
+        };
         // The scene's tree: the stored nodes and the copies grafted since.
         let mut build = convert(
             &scene.tree,
@@ -2054,6 +2060,7 @@ fn convert(
     log: bool,
     seen: &mut Option<(Vec<String>, Vec<String>)>,
 ) -> UiBuild {
+    let _perf = crate::perf::span("game_ui::convert");
     let mut vertices = Vec::new();
     let mut indices = Vec::new();
     let mut draws = Vec::new();
@@ -2391,6 +2398,7 @@ fn send_inputs(
     frame: Res<GameUiFrame>,
     mut compass_tech: Local<Option<Option<i32>>>,
 ) {
+    let _perf = crate::perf::span("game_ui::send_inputs");
     // Our player's containers for the tab's icons (M9u8b2a).
     let tab_contents = match &session {
         Some(s) => {
@@ -2566,6 +2574,7 @@ fn receive_build(
     mut frame: ResMut<GameUiFrame>,
     mut images: ResMut<Assets<Image>>,
 ) {
+    let _perf = crate::perf::span("game_ui::receive_build");
     let Ok(rx) = worker.builds.lock() else {
         return;
     };
@@ -2655,7 +2664,7 @@ fn receive_build(
 fn pda_pose(
     time: Res<Time>,
     mut frame: ResMut<GameUiFrame>,
-    drive: Res<crate::body::BodyDrive>,
+    drive: Option<Res<crate::body::BodyDrive>>,
     rigs: Query<&crate::objects::NamedNodes, With<crate::objects::PlayerBodyRig>>,
     globals: Query<&GlobalTransform>,
     camera: Query<&GlobalTransform, With<GameUiCamera>>,
@@ -2666,7 +2675,11 @@ fn pda_pose(
         .flat_map(|n| n.0.iter())
         .find(|(name, _)| name == "ScreenAnchor")
         .and_then(|(_, e)| globals.get(*e).ok());
-    let pose = match (drive.pda_model, anchor, camera.single()) {
+    let pose = match (
+        drive.as_ref().is_some_and(|d| d.pda_model),
+        anchor,
+        camera.single(),
+    ) {
         (true, Some(a), Ok(c)) => {
             let rel = c.affine().inverse() * a.affine();
             let (_, r, t) = rel.to_scale_rotation_translation();
@@ -2989,6 +3002,7 @@ fn prepare_buffers(
     device: Res<RenderDevice>,
     queue: Res<RenderQueue>,
 ) {
+    let _perf = crate::perf::span("game_ui::prepare_buffers");
     let begin = Instant::now();
     let Some(frame) = frame else {
         return;
@@ -3160,6 +3174,7 @@ fn game_ui_pass(
     mut cost: Local<PassCost>,
     mut ctx: RenderContext,
 ) {
+    let _perf = crate::perf::span("game_ui::game_ui_pass");
     let begin = Instant::now();
     let (target, ids) = view.into_inner();
     let Some(frame) = frame else {
@@ -3288,6 +3303,16 @@ fn game_ui_pass(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fly_camera_ui_needs_no_player_body() {
+        let mut app = App::new();
+        app.init_resource::<Time>()
+            .init_resource::<GameUiFrame>()
+            .add_systems(Update, pda_pose);
+        app.update();
+        assert!(app.world().resource::<GameUiFrame>().pda_pose.is_none());
+    }
 
     // The decoded formulas, as `game_ui.wgsl` computes them; the tests
     // check the formulas, not the WGSL.

@@ -2,6 +2,50 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-27 ? P1a: opt-in client CPU/frame evidence and benchmark repair
+
+**What/why:** P1 plan added to DESIGN before implementation. Set
+`SN_CLIENT_PERF=1` to collect bounded wall-time distributions for client
+systems, UI worker/build/render preparation and effects; frame histogram,
+p50/p95/p99/max; separate loading/warm-up and benchmark/player samples.
+Recent Bevy render CPU diagnostics are captured every 120 frames when
+`--gpu-timings` is on. README documents the scopes and commands. No dependencies,
+whitelist changes or rendering/simulation changes.
+
+**Benchmark blocker:** the first release `--benchmark` panicked because
+`game_ui::pda_pose` required `BodyDrive`, absent without a player. Its input is
+now optional, yielding no PDA pose in free-camera mode. Added a synthetic
+regression test. This is a harness repair, not a measured FPS improvement.
+Dead-end evidence: `out/p1/p1-before-fixed-1.log` (exit 101); do not treat it
+as a baseline. Dev is already opt-level 1 (our code), 3 (dependencies);
+README's normal solo commands use dev, but unoptimized dependencies are not
+the cause. Dev/release runtime A/B: **not tested**.
+
+**Measured** on i9-10900K / RTX 3080, Vulkan, release; evidence only in ignored
+`out/p1/` and `out/baselines/`. Three runs each, no other client process observed:
+- Fixed camera: 600 frames after 120 settled warm-up frames, view 400,
+  1600 ? 900, fixed seeds/time. p50 9.419?9.544 ms, p95 10.631?10.746,
+  p99 11.246?11.380, max 12.368?12.518. All zero unsettled frames.
+- Player `--use-item 3 --panel 6=take-all,7=drop,9.5=close --shot 12 NAME`:
+  play >= 1 s, p50 10.371?10.449, p95 11.669?11.957,
+  p99 12.983?15.460, max 97.468?119.382 ms (includes capture/exit work).
+- Player main-thread `stream_objects` max 39.214?49.650 ms; late texture
+  conversions total 35.088?43.215 ms (129 calls). UI worker build mean
+  3.973?4.008 ms; fixed-camera 3.624?3.649 ms. Animation mean
+  0.295?0.299 ms, LOD 0.136?0.142; terrain stream 0.008?0.009.
+- GPU recent fixed-camera samples in the first run: opaque 0.870 ms,
+  shafts 0.835, bin unpacking 0.459, transparent 0.446. These are individual
+  recent pass averages, not additive full-frame GPU timings.
+
+**Reproduce:** `cargo build -p sn-client --release`; set `SUBNAUTICA_DIR` and
+`SN_CLIENT_PERF=1`; use the fixed-camera command in README with `--view 400
+--time 12 --benchmark 600` and a fresh name; repeat three times. For the player,
+use the script above plus the same view/resolution/seeds/time/water settings.
+Expect `perf:` distributions/histograms on exit, six accepted locker moves,
+the refused pod drop, no warnings. Full commands are recorded in the logs.
+Release build and six real-data runs passed; workspace tests/clippy and the
+new unit test **not tested yet** (required before P1 completion).
+
 ## 2026-10-20 — M9u8b3a: hover and clicks on the game's inventory tab; our panel removed
 
 **What/why:** the next step of M9u8b (DESIGN). M9u8b3 was split: b3a

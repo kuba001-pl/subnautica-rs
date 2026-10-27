@@ -16,6 +16,7 @@ mod items;
 mod lifepod_light;
 mod object_look;
 mod objects;
+mod perf;
 mod player;
 mod remote;
 mod session;
@@ -890,6 +891,7 @@ struct Started {
 }
 
 fn main() -> AppExit {
+    let cpu_timings = perf::init();
     let mut args = match parse_args() {
         Ok(args) => args,
         Err(message) => {
@@ -1304,7 +1306,12 @@ fn main() -> AppExit {
     if let Some(baseline) = baseline {
         app.insert_resource(baseline);
     }
-    app.run()
+    if cpu_timings {
+        app.add_systems(Last, perf::frame.before(measure));
+    }
+    let result = app.run();
+    perf::report();
+    result
 }
 
 /// The game's "Color grading" option (Unity's Post Processing Stack v1,

@@ -393,6 +393,7 @@ fn extract_effects(
     directional: Extract<Query<(Entity, &GlobalTransform, &GameDirectionalLight)>>,
     mut last_lighting: Local<Option<(usize, usize, usize)>>,
 ) {
+    let _perf = crate::perf::span("effects::extract_effects");
     extracted.instances.clear();
     extracted.meshes.clear();
     extracted.particles.clear();
@@ -672,6 +673,7 @@ fn prepare_buffers(
     device: Res<RenderDevice>,
     queue: Res<RenderQueue>,
 ) {
+    let _perf = crate::perf::span("effects::prepare_buffers");
     let mut buffers = match buffers {
         Some(b) => b,
         None => {
@@ -1056,6 +1058,7 @@ fn effects_pass(
     device: Res<RenderDevice>,
     mut ctx: RenderContext,
 ) {
+    let _perf = crate::perf::span("effects::effects_pass");
     let (target, depth, view_offset, fog_index, ids, targets) = view.into_inner();
     let (Some(buffers), Some(targets)) = (buffers, targets) else {
         return;

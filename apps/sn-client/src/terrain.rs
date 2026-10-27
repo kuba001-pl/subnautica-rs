@@ -627,6 +627,7 @@ pub fn stream(
     camera: Query<&Transform, With<Camera3d>>,
     mut exit: MessageWriter<AppExit>,
 ) {
+    let _perf = crate::perf::span("terrain::stream");
     let Ok(camera) = camera.single() else { return };
     let moved = streamer
         .last_update_at
