@@ -519,3 +519,17 @@ settle):
 Every reliable message arrived exactly once and in order in every run;
 the latest channel never went back.
 
+
+## M9f persistence messages (protocol 5)
+
+The existing state layout is unchanged. Client tag 10 is Vitals: health
+then oxygen, two finite nonnegative f64s (17 B including tag), reported on
+the latest-only channel key 65534. They stay on the server for persistence.
+Server tag 28 is Restore: bool state-present, optional varint tick and state
+body, bool vitals-present, optional health and oxygen f64s. Sent reliably
+after Welcome and before world chunks; applies only to the own player,
+before Ready. Fresh players have both optional fields absent. Restored
+inventories/equipment are already part of world chunks. Names keep their
+server-assigned ids across restart under the existing friends-on-trust model.
+These messages contain no game assets. Numeric vitals add network overhead
+to the earlier M10 bandwidth measurements; that increase is not measured yet.

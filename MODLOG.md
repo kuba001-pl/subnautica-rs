@@ -2,7 +2,44 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
-## 2026-10-27 ? M9f2: pure save codec and reconnect state
+## 2026-10-27 — M9f3: save slot I/O, autosave and shutdown
+
+**What/why:** `sn-server::saves` (app layer, shared by the dedicated server
+and the client's solo/host embedded server): platform save folder
+(`%LOCALAPPDATA%/subnautica-rs/saves/default` etc.), `--save-dir`,
+`--no-save`, `--load-backup`, `--autosave S` (default 30). Writes validate
+the new bytes and the existing primary, copy the primary to `world.sav.bak`,
+flush `world.sav.tmp`, then replace. A missing primary with a backup/temp
+present, corruption or an incompatible save refuses startup and keeps the
+files; recovery is explicit. An OS file lock (`server.lock`) stops two
+processes sharing a slot. Save paths inside the game install or under any
+folder named `out` are refused (conservative: the app does not know the
+repo root, so any `out` component counts). The dedicated server saves on
+autosave, `--run-for` and Ctrl-C; a failed autosave is logged and the
+server keeps running, a failed shutdown save is an error. The client
+applies the M9f2 Restore (pose, velocity, rotation, look, life, health,
+oxygen) and reports numeric vitals each tick; the embedded server saves on
+its interval and when the session drops. `--join` never saves.
+
+New dependency: `ctrlc` 3.5 in `sn-server` — orderly Ctrl-C shutdown so the
+final save is flushed. `sn-server` now declares `rust-version = "1.89"`
+(standard-library `File::try_lock`); the workspace toolchain is 1.96.
+`sn-client` depends on the `sn-server` library for the shared save code.
+Review fixes over the interrupted draft: `--autosave` f32/f64 compile error,
+a mojibake comment in `sn-client/Cargo.toml`, `sn_protocol::message` kept
+public (the draft made it private for no need).
+
+**Verified:** `cargo test --workspace` all pass, 0 fail (new
+`sn-server` temp-dir tests: restart from save, backup is the previous
+save, corrupt primary refused for load and write, explicit backup recovery
+preserves the backup, second lock on a slot refused, game-dir and `out/`
+paths refused, game dir never created). `cargo clippy --workspace
+--all-targets -- -D warnings` clean, `cargo fmt --all` run. No `std::fs`,
+`std::net`, Bevy or tokio in `sn-session`/`sn-protocol` (grep). Real
+install restart run: M9f4. Embedded (client) saving compiles but is not
+tested at runtime; Linux/macOS folders not tested.
+
+## 2026-10-27 — M9f2: pure save codec and reconnect state
 
 **What/why:** `sn-session::save`, bytes only: independent versioned header,
 protocol/build/rules/tick compatibility, bounded length and checksum;
@@ -25,7 +62,7 @@ Further app integration, real-data run and full workspace checks not tested
 at this step; M9f3/M9f4 follow. Verification: repeat the command above;
 expect all tests pass. No assets in status.
 
-## 2026-10-27 ? M9f1: save/load plan and state research
+## 2026-10-27 — M9f1: save/load plan and state research
 
 **What/why:** wrote the M9f plan before implementation: pure versioned
 codec, stable player identities and pose/vitals, complete M9d item state,

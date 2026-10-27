@@ -27,11 +27,13 @@ pub use message::{
     AuroraStart, ClientMessage, DeathCause, LeaveReason, Life, MAX_BUILD, MAX_CHUNK, MAX_NAME,
     MAX_PASSWORD, MAX_PLAYERS, MAX_STATES, PlayerEvent, PlayerEventKind, PlayerInfo, PlayerState,
     PlayerVitals, RejectReason, ServerMessage, WorldEvent, WorldEventKind, WorldSettings,
+    read_settings, write_settings,
 };
 
 /// The protocol's version, sent first in `Hello`. Raised whenever any
 /// encoding or table changes (2: `WorldHash` names an event count, not a
-/// tick; M10c; 3: the cinematic signals, M10h3; 4: items, M9d3).
+/// tick; M10c; 3: the cinematic signals, M10h3; 4: items, M9d3;
+/// 5: persistence vitals/restore, M9f).
 pub const PROTOCOL_VERSION: u16 = 5;
 
 /// A physics step of the shared timeline, counted by the server from the

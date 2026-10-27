@@ -65,6 +65,10 @@ Usage: sn-client [--game-dir <PATH>] [--start <X> <Y> <Z>] [--look <X> <Y> <Z>]
                  [--view <METRES>] [--debug-colours]
                  [--benchmark <FRAMES> | --flythrough <X> <Y> <Z> [--speed <M/S>]]
 
+  --save-dir     our server save slot (default: platform user data folder)
+  --no-save      ephemeral solo/host session (use for scripted fresh runs)
+  --load-backup  explicitly recover the slot's backup
+  --autosave     seconds between solo/host saves (default 30)
   --game-dir     folder containing Subnautica.exe (or set SUBNAUTICA_DIR)
   --start        camera start, Unity world coordinates (default: where the
                  player starts, in Lifepod 5; 0 -10 0 with --no-scenes)
@@ -206,6 +210,10 @@ to move, Q/E down/up, Shift to go fast, mouse wheel to change speed.
 
 struct Args {
     game_dir: Option<PathBuf>,
+    save_dir: Option<PathBuf>,
+    no_save: bool,
+    load_backup: bool,
+    autosave_s: f64,
     start: Vec3,
     /// `--start` given (else the player's spawn in the lifepod).
     start_given: bool,
@@ -302,6 +310,10 @@ fn parse_args() -> Result<Args, String> {
 fn parse_args_from(raw: &[String]) -> Result<Args, String> {
     let mut args = Args {
         game_dir: None,
+        save_dir: None,
+        no_save: false,
+        load_backup: false,
+        autosave_s: 30.0,
         start: Vec3::new(0.0, -10.0, 0.0),
         start_given: false,
         lifepod_seed: 1,
@@ -440,6 +452,14 @@ fn parse_args_from(raw: &[String]) -> Result<Args, String> {
                 let seed = it.next().and_then(|v| v.parse().ok());
                 args.slot_seed = Some(seed.ok_or("--slot-seed needs a whole number")?);
             }
+            "--save-dir" => {
+                args.save_dir = Some(PathBuf::from(
+                    it.next().ok_or("--save-dir needs a directory")?,
+                ))
+            }
+            "--no-save" => args.no_save = true,
+            "--load-backup" => args.load_backup = true,
+            "--autosave" => args.autosave_s = f64::from(number(it.next(), "--autosave")?),
             "--no-slots" => args.slot_seed = None,
             "--no-placeholders" => args.no_placeholders = true,
             "--no-grass" => args.no_grass = true,
@@ -842,12 +862,37 @@ fn start_session(args: &Args, lifepod: bool) -> Result<Started, String> {
         max_speed: rules.max_speed,
         rules: rules.items.clone(),
     };
+    if !args.autosave_s.is_finite()
+        || args.autosave_s <= 0.0
+        || (args.no_save && (args.save_dir.is_some() || args.load_backup))
+    {
+        return Err(
+            "--autosave must be finite and positive; --no-save conflicts with save options".into(),
+        );
+    }
+    let save = if joining || args.no_save {
+        None
+    } else {
+        let dir = args
+            .save_dir
+            .clone()
+            .map_or_else(sn_server::saves::default_dir, Ok)?;
+        Some((
+            sn_server::saves::SaveStore::open(
+                dir,
+                game.data_dir.parent().ok_or("game root missing")?,
+            )?,
+            args.load_backup,
+            (args.autosave_s * 1e6) as u64,
+        ))
+    };
     let mut session = session::Session::start(
         config,
         &args.mode,
         &args.name,
         args.net_sim,
         if joining { &[] } else { &test_supplies },
+        save,
     )?;
     session.log_every = args.log_ticks;
     let pod = match session.settings().lifepod {

@@ -17,7 +17,7 @@ impl Server {
         w.str(&self.config.build);
         w.u64_fixed(self.config.fingerprint);
         w.varint(self.config.tick_us);
-        sn_protocol::message::write_settings(&mut w, &self.world.settings);
+        sn_protocol::write_settings(&mut w, &self.world.settings);
         w.varint(u64::from(self.clock(now_us).0.0));
         w.u64_fixed(self.random);
         w.varint(u64::from(self.next_id));
@@ -96,7 +96,7 @@ impl Server {
         if r.varint("tick duration")? != config.tick_us {
             return Err(r.error(at, "save tick duration mismatch"));
         }
-        config.settings = sn_protocol::message::read_settings(&mut r)?;
+        config.settings = sn_protocol::read_settings(&mut r)?;
         let base_tick = r.varint_u32("elapsed ticks")?;
         let random = r.u64_fixed("random state")?;
         let next_id = r.varint_u16("next player id")?;
@@ -154,10 +154,17 @@ impl Server {
         // Check allocation and ownership invariants before accepting state.
         let items = &server.world.items;
         let rules = items.rules();
-        if items.locker.size() != rules.locker_size || items.players.values().any(|p| p.inventory.container.size() != rules.inventory_size) {
+        if items.locker.size() != rules.locker_size
+            || items
+                .players
+                .values()
+                .any(|p| p.inventory.container.size() != rules.inventory_size)
+        {
             return Err(r.error(at, "saved container size differs from rules"));
         }
-        for c in std::iter::once(&items.locker).chain(items.players.values().map(|p| &p.inventory.container)) {
+        for c in std::iter::once(&items.locker)
+            .chain(items.players.values().map(|p| &p.inventory.container))
+        {
             for (tech, width, height, _) in c.to_parts().entries.into_iter().flatten() {
                 if (width, height) != rules.techs.size(tech) || width <= 0 || height <= 0 {
                     return Err(r.error(at, "invalid saved item dimensions"));
