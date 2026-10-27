@@ -36,7 +36,7 @@ use bevy::render::render_resource::{Extent3d, Face, TextureDimension, TextureFor
 use sn_anim::{Animator, Program, SlotKind};
 use sn_assets::{
     Assets as GameAssets, AuroraShow, BiomeSky, LootTable, MarmoSkies, ObjectRef, Prefab,
-    SHADOWS_OFF, SHADOWS_ON, SHADOWS_ONLY, TerrainTexture, marmo_skies,
+    SHADOWS_OFF, SHADOWS_ON, SHADOWS_ONLY, marmo_skies,
 };
 use sn_install::GameData;
 use sn_protocol::EntityKey;
@@ -591,8 +591,7 @@ enum Update {
     Skies(SkySet),
     Texture {
         id: u32,
-        texture: TerrainTexture,
-        srgb: bool,
+        image: Option<Image>,
     },
     Material {
         id: u32,
@@ -1102,7 +1101,11 @@ impl Library {
             Ok(texture) => {
                 let id = self.id();
                 let srgb = srgb.unwrap_or(texture.texture.color_space == 1);
-                out.push(Update::Texture { id, texture, srgb });
+                // Decode/copy on this asset worker, not in the frame's drain
+                // of a burst of completed prefabs. GPU upload still belongs
+                // to Bevy's render world; this only constructs CPU data.
+                let image = to_image(&texture, srgb);
+                out.push(Update::Texture { id, image });
                 Some(id)
             }
             Err(e) => {
@@ -3796,8 +3799,8 @@ pub fn stream_objects(
                 info!("objects: LOD settings (QualitySettings High) {settings:?}");
                 commands.insert_resource(settings);
             }
-            Update::Texture { id, texture, srgb } => {
-                if let Some(image) = to_image(&texture, srgb) {
+            Update::Texture { id, image } => {
+                if let Some(image) = image {
                     streamer.textures.insert(id, images.add(image));
                 }
             }

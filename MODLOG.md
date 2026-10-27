@@ -2,7 +2,32 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
-## 2026-10-27 ? P1a: opt-in client CPU/frame evidence and benchmark repair
+## 2026-10-27 — P1b: construct object texture images on the asset worker
+
+**What/why:** `Library::texture` now runs the existing `textures::to_image`
+conversion on its worker and sends the resulting CPU `Image`. The main world
+only inserts it into `Assets<Image>`; Bevy still uploads to the GPU. The exact
+conversion, mip selection, colour space, sampler and failure behavior are
+unchanged. This removes copying/decoding an entire completed prefab burst
+from `stream_objects`. No dependencies, game rules or UI changes.
+
+**Measured:** same release commands/settings as P1a; three runs before and
+after, evidence `out/p1/p1-{baseline,textures}-{fixed,player}-N.log`.
+Before: player `stream_objects` worst 39.214-49.650 ms. After: 0.727-0.779 ms across all three runs. The same 129 late
+texture conversions are now worker work, not frame work. Player frame worst
+97.468-119.382 ms before, 64.023-69.920 ms after, including
+capture/exit. Fixed-camera medians remain within noise: before 9.419-9.544,
+after 9.302-9.619 ms; this is a streaming-stall fix, not a steady FPS claim.
+Full suite/clippy **not tested yet**; required before P1 completion.
+
+**Verify:** `cargo build -p sn-client --release`; set `SUBNAUTICA_DIR` and
+`SN_CLIENT_PERF=1`; run P1a's player command with a new capture name three
+times. Expect identical six accepted locker moves/refused pod drop, 129 late
+texture conversions on the asset worker and main `stream_objects` worst
+below 2 ms on this machine. Fixed-camera P1a command: same terrain/object/
+texture counts, zero unsettled frames, warnings and shader errors.
+
+## 2026-10-27 — P1a: opt-in client CPU/frame evidence and benchmark repair
 
 **What/why:** P1 plan added to DESIGN before implementation. Set
 `SN_CLIENT_PERF=1` to collect bounded wall-time distributions for client
@@ -24,15 +49,15 @@ the cause. Dev/release runtime A/B: **not tested**.
 **Measured** on i9-10900K / RTX 3080, Vulkan, release; evidence only in ignored
 `out/p1/` and `out/baselines/`. Three runs each, no other client process observed:
 - Fixed camera: 600 frames after 120 settled warm-up frames, view 400,
-  1600 ? 900, fixed seeds/time. p50 9.419?9.544 ms, p95 10.631?10.746,
-  p99 11.246?11.380, max 12.368?12.518. All zero unsettled frames.
+  1600 × 900, fixed seeds/time. p50 9.419-9.544 ms, p95 10.631-10.746,
+  p99 11.246-11.380, max 12.368-12.518. All zero unsettled frames.
 - Player `--use-item 3 --panel 6=take-all,7=drop,9.5=close --shot 12 NAME`:
-  play >= 1 s, p50 10.371?10.449, p95 11.669?11.957,
-  p99 12.983?15.460, max 97.468?119.382 ms (includes capture/exit work).
-- Player main-thread `stream_objects` max 39.214?49.650 ms; late texture
-  conversions total 35.088?43.215 ms (129 calls). UI worker build mean
-  3.973?4.008 ms; fixed-camera 3.624?3.649 ms. Animation mean
-  0.295?0.299 ms, LOD 0.136?0.142; terrain stream 0.008?0.009.
+  play >= 1 s, p50 10.371-10.449, p95 11.669-11.957,
+  p99 12.983-15.460, max 97.468-119.382 ms (includes capture/exit work).
+- Player main-thread `stream_objects` max 39.214-49.650 ms; late texture
+  conversions total 35.088-43.215 ms (129 calls). UI worker build mean
+  3.973-4.008 ms; fixed-camera 3.624-3.649 ms. Animation mean
+  0.295-0.299 ms, LOD 0.136-0.142; terrain stream 0.008-0.009.
 - GPU recent fixed-camera samples in the first run: opaque 0.870 ms,
   shafts 0.835, bin unpacking 0.459, transparent 0.446. These are individual
   recent pass averages, not additive full-frame GPU timings.
