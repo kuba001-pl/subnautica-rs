@@ -120,7 +120,7 @@ pub use sprites::{
     AtlasSprite, GROUP_ATLASES, GROUP_ITEM, GROUP_ITEM_ACTIONS, GROUP_TAB, LoadedAtlas,
     SPRITE_ATLASES_LABEL, Sprites, cut,
 };
-pub use survival::hunger_rules;
+pub use survival::{consume_rules, hunger_rules};
 pub use terrain::{
     BlendSettings, BlockSource, GrassLook, GrassShader, SurfaceLayer, TerrainGrass,
     TerrainMaterial, TerrainMaterials, TerrainTexture, terrain_materials,

@@ -9,7 +9,7 @@
 use std::collections::BTreeMap;
 
 use sn_dotnet::Assembly;
-use sn_sim::survival::HungerRules;
+use sn_sim::survival::{ConsumeRules, HungerRules};
 
 use crate::Result;
 use crate::code::GAME_ASSEMBLY;
@@ -188,73 +188,223 @@ pub fn hunger_rules(bytes: &[u8]) -> Result<HungerRules> {
     Ok(rules)
 }
 
+/// A `TechType` by name, from the game's enum, and checked to occur
+/// exactly once among `method`'s integer constants (the method compares
+/// with it).
+fn tech_in(asm: &Assembly, name: &str, type_name: &str, method: &str) -> Result<i32> {
+    let what = format!("{GAME_ASSEMBLY}: {type_name}.{method}");
+    let value = sn_dotnet::enum_values(asm, "", "TechType")
+        .map_err(|e| format!("{GAME_ASSEMBLY}: {e}"))?
+        .into_iter()
+        .find(|(n, _)| n == name)
+        .and_then(|(_, v)| i32::try_from(v).ok())
+        .ok_or_else(|| format!("{GAME_ASSEMBLY}: no TechType.{name}"))?;
+    let ints =
+        sn_dotnet::int_literals(asm, "", type_name, method).map_err(|e| format!("{what}: {e}"))?;
+    match ints.iter().filter(|i| i.1 == value).count() {
+        1 => Ok(value),
+        n => Err(format!(
+            "{what}: TechType.{name} ({value}) occurs {n} times, expected 1"
+        )),
+    }
+}
+
+/// [`ConsumeRules`] from the game's code (M9s2): `Survival.Eat` (the
+/// food gate, the vitals notification's threshold, the oxygen food's
+/// oxygen; its caps must equal [`hunger_rules`]'), `Survival.Use` (the
+/// first aid kit's health and success threshold), `Eatable`'s value
+/// getters (the decay floor, the same in both) and the two tech types.
+pub fn consume_rules(bytes: &[u8]) -> Result<ConsumeRules> {
+    let hunger = hunger_rules(bytes)?;
+    let asm = Assembly::parse(bytes).map_err(|e| format!("{GAME_ASSEMBLY}: {e}"))?;
+    let eat = match_literals(
+        &asm,
+        "Survival",
+        "Eat",
+        &[
+            Fixed(0.0),
+            Named("food_gate"),
+            Fixed(0.0),
+            Named("food_max"),
+            Fixed(0.0),
+            Fixed(0.0),
+            Fixed(0.0),
+            Named("stat_max"),
+            Fixed(0.0),
+            Named("vitals_ok"),
+            Named("vitals_ok"),
+            Named("vitals_ok"),
+            Named("vitals_ok"),
+            Named("volume"),
+            Named("oxygen"),
+        ],
+    )?;
+    if f64::from(take(&eat, "food_max")?) != hunger.food_max
+        || f64::from(take(&eat, "stat_max")?) != hunger.stat_max
+    {
+        return Err(format!(
+            "{GAME_ASSEMBLY}: Survival.Eat's caps differ from UpdateStats'"
+        ));
+    }
+    let used = match_literals(
+        &asm,
+        "Survival",
+        "Use",
+        &[
+            Named("first_aid"),
+            Named("success"),
+            Named("sound_distance"),
+            Named("volume"),
+        ],
+    )?;
+    let mut floor = None;
+    for method in ["GetFoodValue", "GetWaterValue"] {
+        let v = take(
+            &match_literals(&asm, "Eatable", method, &[Named("floor")])?,
+            "floor",
+        )?;
+        if floor.is_some_and(|f| f != v) {
+            return Err(format!(
+                "{GAME_ASSEMBLY}: Eatable's food and water floors differ"
+            ));
+        }
+        floor = Some(v);
+    }
+    agrees(&asm, "kBladderFishO2OnEat", take(&eat, "oxygen")?)?;
+    agrees(&asm, "kFirstAidKitHealth", take(&used, "first_aid")?)?;
+    let rules = ConsumeRules {
+        food_gate: f64::from(take(&eat, "food_gate")?),
+        vitals_ok: f64::from(take(&eat, "vitals_ok")?),
+        first_aid: tech_in(&asm, "FirstAidKit", "Survival", "Use")?,
+        first_aid_health: f64::from(take(&used, "first_aid")?),
+        heal_success: f64::from(take(&used, "success")?),
+        oxygen_food: tech_in(&asm, "Bladderfish", "Survival", "Eat")?,
+        oxygen_on_eat: f64::from(take(&eat, "oxygen")?),
+        decay_floor: f64::from(floor.unwrap_or(f32::NAN)),
+    };
+    rules
+        .validate()
+        .map_err(|r| format!("{GAME_ASSEMBLY}: consume rules: {r}"))?;
+    Ok(rules)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use sn_dotnet::encode::{Builder, Il};
 
     const LITERAL: u16 = 0x0056;
+    const VALUE_FIELD: u16 = 0x0606;
     const LDARG_0: u8 = 0x02;
     const POP: u8 = 0x26;
 
-    /// Our own float sequence for a `Survival` type; `change` replaces the
-    /// constant at that index of `UpdateStats` (to test the checks).
-    fn assembly(change: Option<(usize, f32)>, extra: bool) -> Vec<u8> {
+    type Method = (&'static str, &'static str, Vec<f32>, Vec<i32>);
+
+    /// Our own synthetic numbers, in each method's order.
+    fn methods() -> Vec<Method> {
+        vec![
+            (
+                "Survival",
+                "UpdateStats",
+                vec![
+                    0.0,
+                    FLOAT_EPSILON,
+                    300.0,
+                    10.0,
+                    2.0,
+                    0.0,
+                    30.0,
+                    200.0,
+                    10.0,
+                    2.0,
+                    0.0,
+                    10.0,
+                    5.0,
+                    1.0,
+                    5.0,
+                    1.0,
+                ],
+                vec![],
+            ),
+            (
+                "Survival",
+                "UpdateHunger",
+                vec![FLOAT_EPSILON, 20.0, 0.5],
+                vec![],
+            ),
+            (
+                "Survival",
+                "OnHealTempDamage",
+                vec![0.125, 0.0, 30.0],
+                vec![],
+            ),
+            (
+                "Survival",
+                "Eat",
+                vec![
+                    0.0, 9.0, 0.0, 30.0, 0.0, 0.0, 0.0, 10.0, 0.0, 4.0, 4.0, 4.0, 4.0, 1.0, 3.0,
+                ],
+                vec![0, 1, 1, 7002],
+            ),
+            (
+                "Survival",
+                "Use",
+                vec![12.0, 0.5, 20.0, 1.0],
+                vec![0, 7001, 1],
+            ),
+            ("Eatable", "GetFoodValue", vec![-3.0], vec![]),
+            ("Eatable", "GetWaterValue", vec![-3.0], vec![]),
+        ]
+    }
+
+    /// A synthetic assembly shaped like the game's survival code; `edit`
+    /// may change any method's float constants first.
+    fn assembly_with(edit: &dyn Fn(&str, &mut Vec<f32>)) -> Vec<u8> {
         let mut b = Builder::new();
-        b.type_def("", "Survival");
-        let food = b.field(0x0001, "food");
-        let water = b.field(0x0001, "water");
-        let interval = b.field(0x0001, "kUpdateHungerInterval");
-        let ctor = Il::default().op(LDARG_0).ldc_r4(4.0).stfld(interval).ret();
-        b.method(".ctor", 0, Some(&ctor.0));
-        let mut stats = vec![
-            0.0,
-            FLOAT_EPSILON,
-            300.0,
-            10.0,
-            2.0,
-            0.0,
-            30.0,
-            200.0,
-            10.0,
-            2.0,
-            0.0,
-            10.0,
-            5.0,
-            1.0,
-            5.0,
-            1.0,
-        ];
-        if let Some((i, v)) = change {
-            stats[i] = v;
+        type MethodSpec<'a> = (&'a str, Vec<f32>, Vec<i32>);
+        let mut by_type: Vec<(&str, Vec<MethodSpec>)> = Vec::new();
+        for (ty, m, mut floats, ints) in methods() {
+            edit(m, &mut floats);
+            match by_type.iter_mut().find(|t| t.0 == ty) {
+                Some(t) => t.1.push((m, floats, ints)),
+                None => by_type.push((ty, vec![(m, floats, ints)])),
+            }
         }
-        if extra {
-            stats.push(7.0);
+        for (ty, list) in by_type {
+            b.type_def("", ty);
+            if ty == "Survival" {
+                let food = b.field(0x0001, "food");
+                let water = b.field(0x0001, "water");
+                let interval = b.field(0x0001, "kUpdateHungerInterval");
+                let ctor = Il::default().op(LDARG_0).ldc_r4(4.0).stfld(interval).ret();
+                b.method(".ctor", 0, Some(&ctor.0));
+                let reset = Il::default()
+                    .op(LDARG_0)
+                    .ldc_r4(6.0)
+                    .stfld(food)
+                    .op(LDARG_0)
+                    .ldc_r4(8.0)
+                    .stfld(water)
+                    .ret();
+                b.method("ResetStats", 0, Some(&reset.0));
+            }
+            for (m, floats, ints) in list {
+                let mut code = Il::default();
+                for v in floats {
+                    code = code.ldc_r4(v).op(POP);
+                }
+                for v in ints {
+                    code = code.ldc(v).op(POP);
+                }
+                b.method(m, 1, Some(&code.ret().0));
+            }
         }
-        let mut code = Il::default();
-        for v in &stats {
-            code = code.ldc_r4(*v).op(POP);
+        b.type_def("", "TechType");
+        b.field(VALUE_FIELD, "value__");
+        for (name, v) in [("FirstAidKit", 7001), ("Bladderfish", 7002)] {
+            let f = b.field(LITERAL, name);
+            b.constant_i4(f, v);
         }
-        b.method("UpdateStats", 1, Some(&code.ret().0));
-        let mut code = Il::default();
-        for v in [FLOAT_EPSILON, 20.0, 0.5] {
-            code = code.ldc_r4(v).op(POP);
-        }
-        b.method("UpdateHunger", 0, Some(&code.ret().0));
-        let mut code = Il::default();
-        for v in [0.125, 0.0, 30.0] {
-            code = code.ldc_r4(v).op(POP);
-        }
-        b.method("OnHealTempDamage", 1, Some(&code.ret().0));
-        let reset = Il::default()
-            .op(LDARG_0)
-            .ldc_r4(6.0)
-            .stfld(food)
-            .op(LDARG_0)
-            .ldc_r4(8.0)
-            .stfld(water)
-            .ret();
-        b.method("ResetStats", 0, Some(&reset.0));
         b.type_def("", "SurvivalConstants");
         for (name, v) in [
             ("kFoodTime", 300.0),
@@ -271,11 +421,37 @@ mod tests {
             ("kFoodPerTempDamage", 0.125),
             ("kStartFoodStat", 6.0),
             ("kStartWaterStat", 8.0),
+            ("kBladderFishO2OnEat", 3.0),
+            ("kFirstAidKitHealth", 12.0),
         ] {
             let f = b.field(LITERAL, name);
             b.constant_r4(f, v);
         }
         b.build()
+    }
+
+    /// [`assembly_with`] with `UpdateStats`' constant `change.0` set to
+    /// `change.1`, and one more constant when `extra`.
+    fn assembly(change: Option<(usize, f32)>, extra: bool) -> Vec<u8> {
+        assembly_with(&|m, floats| {
+            if m == "UpdateStats" {
+                if let Some((i, v)) = change {
+                    floats[i] = v;
+                }
+                if extra {
+                    floats.push(7.0);
+                }
+            }
+        })
+    }
+
+    /// [`assembly_with`] with float `i` of `method` set to `v`.
+    fn changed(method: &'static str, i: usize, v: f32) -> Vec<u8> {
+        assembly_with(&move |m, floats| {
+            if m == method {
+                floats[i] = v;
+            }
+        })
     }
 
     #[test]
@@ -307,15 +483,42 @@ mod tests {
     }
 
     #[test]
+    fn reads_the_consume_rules() {
+        let c = consume_rules(&assembly(None, false)).unwrap();
+        assert_eq!((c.food_gate, c.vitals_ok), (9.0, 4.0));
+        assert_eq!(
+            (c.first_aid, c.first_aid_health, c.heal_success),
+            (7001, 12.0, 0.5)
+        );
+        assert_eq!((c.oxygen_food, c.oxygen_on_eat), (7002, 3.0));
+        assert_eq!(c.decay_floor, -3.0);
+        // Floors that differ, a cap that differs from UpdateStats', a
+        // threshold used twice with two values, a declaration that
+        // differs: errors.
+        let e = consume_rules(&changed("GetWaterValue", 0, -4.0)).unwrap_err();
+        assert!(e.contains("floors differ"), "{e}");
+        let e = consume_rules(&changed("Eat", 3, 31.0)).unwrap_err();
+        assert!(e.contains("caps differ"), "{e}");
+        let e = consume_rules(&changed("Eat", 11, 5.0)).unwrap_err();
+        assert!(e.contains("vitals_ok") && e.contains("IL offset"), "{e}");
+        let e = consume_rules(&changed("Use", 0, 13.0)).unwrap_err();
+        assert!(e.contains("kFirstAidKitHealth"), "{e}");
+    }
+
+    #[test]
     fn damaged_assemblies_never_panic() {
         let bytes = assembly(None, false);
+        let read = |b: &[u8]| {
+            let _ = hunger_rules(b);
+            let _ = consume_rules(b);
+        };
         for n in 0..bytes.len() {
-            let _ = hunger_rules(&bytes[..n]);
+            read(&bytes[..n]);
         }
         for i in 0..bytes.len() {
             let mut b = bytes.clone();
             b[i] ^= 0xFF;
-            let _ = hunger_rules(&b);
+            read(&b);
         }
     }
 }

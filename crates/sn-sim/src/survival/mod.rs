@@ -1,6 +1,8 @@
 //! Survival (M9s, `docs/DESIGN.md` "M9s plan"): food and water
 //! (`Survival.UpdateHunger`, `UpdateStats`, `ResetStats`,
-//! `OnHealTempDamage`, M9s1). Our own code after reading the game's.
+//! `OnHealTempDamage`, M9s1); eating, drinking, first aid and a new
+//! object's component state (`consume`, M9s2; the state itself is
+//! [`crate::inventory::ItemState`]). Our own code after reading the game's.
 //!
 //! Unlike the older modules, no balance number is ported here: every rule
 //! input is a typed value the caller loads from the player's install
@@ -8,8 +10,13 @@
 //! missing or invalid input refuses explicitly without changing state.
 //! Nothing here runs in live play yet (M9s8/M9s11 wire it in).
 
+mod consume;
 mod hunger;
 
+pub use consume::{
+    ConsumeRules, EatableInfo, Eaten, Refused, Used, UsedItem, add_health, eat, eat_item,
+    initial_state, use_item, use_tech,
+};
 pub use hunger::{HungerEffect, HungerRules, Stat, Survival, Warning, crossing};
 
 /// Invalid or missing runtime rule input, or invalid state. No mutation

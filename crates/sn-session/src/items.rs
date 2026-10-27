@@ -196,6 +196,8 @@ fn make_item(id: ItemId, info: &PickupInfo) -> Item {
         destroy_on_death: info.destroy_on_death,
         eatable: info.eatable,
         charge: None,
+        // M9s2: per-item survival state is not on the wire yet (M9s8).
+        state: inv::ItemState::default(),
     }
 }
 
@@ -808,6 +810,7 @@ fn read_sim_item(r: &mut Reader) -> sn_protocol::Result<Item> {
         destroy_on_death: flags & DESTROY != 0,
         eatable: flags & EATABLE != 0,
         charge,
+        state: inv::ItemState::default(),
     })
 }
 

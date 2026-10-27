@@ -2,6 +2,46 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-27 — M9s2: per-item state, eating, drinking and first aid, headless
+
+**What/why:** second step of M9s. Extended `sn_sim::inventory::Item` with
+`ItemState` (`decay_start`, `oxygen`, `energy: Option<EnergySlot>` holding
+`Option<Box<Item>>`) and `Item::ids` so per-object survival state and
+nested batteries travel with the item across grid, equipment slots,
+storage, drops and death (`lose_items`). Added `sn_sim::survival::consume`
+(`ConsumeRules`, `EatableInfo`, `Eaten`, `Used`, `UsedItem`, `Refused`,
+`eat`, `eat_item`, `use_tech`, `use_item`, `add_health`, `initial_state`),
+`sn_dotnet::int_literals`, and `sn_assets::consume_rules` reading the
+constants and tech types of `Survival.Eat`, `Survival.Use` and
+`Eatable.GetFoodValue`/`GetWaterValue` from `Assembly-CSharp.dll`.
+Also confirmed in `the_consume_rules_are_read` that
+`Survival.GetWeaknessSpeedScalar` has 0 callers in `Assembly-CSharp.dll`.
+
+**Review of the previous agent's uncommitted draft:** kept `ItemState`,
+`EnergySlot`, `int_literals`, `consume_rules` and the core `consume.rs`
+logic; replaced `use_item`'s `(Option<Used>, Option<Item>)` return with
+` Option<UsedItem>` (`Healed(Item, f64)` vs `Full(f64)`) and factored test
+types in `sn-assets::survival` to fix two `-D clippy::type-complexity`
+errors; extended the 1,000-step transfer test to also exercise `lose_items`
+(death); added invalid-input refusal tests and the opt-in real-data test
+`the_consume_rules_are_read`.
+
+**Verification:** `cargo test -p sn-sim survival` (15 passed: 7 hunger + 8
+consume covering food 99 vs 99.5 gate, 200/100 caps, clamped full-stat
+consumption, negative/zero values, `vitals_ok`, Bladderfish +15 O2,
+first-aid >0.1 heal threshold vs full retention, decomposing floor -25,
+invalid input refusal, and 1,000 grid/slot/locker/drop/death transfers
+preserving distinct per-item ages, oxygen and nested battery ids/charges
+with 0 duplicates). `cargo test -p sn-assets --lib survival` (4 passed).
+`SUBNAUTICA_DIR=D:\SteamLibrary\steamapps\common\Subnautica cargo test -p
+sn-assets --test real_data the_consume_rules_are_read -- --ignored
+--nocapture` → `food_gate: 99.0, vitals_ok: 20.0, first_aid: 4514,
+first_aid_health: 50.0, heal_success: 0.10000000149011612, oxygen_food:
+2515, oxygen_on_eat: 15.0, decay_floor: -25.0`, `GetWeaknessSpeedScalar`
+callers: 0 (log `out/m9s2-real.log`). `cargo test --workspace`,
+`cargo clippy --workspace --all-targets -- -D warnings` clean,
+`cargo fmt --all`.
+
 ## 2026-10-27 — M9s1: hunger rules, headless, numbers from the game's code
 
 **What/why:** first step of M9s. `sn-sim::survival` (new module dir,

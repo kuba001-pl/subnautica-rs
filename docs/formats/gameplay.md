@@ -1200,11 +1200,11 @@ prose. Numbers below describe rules, not a shipped balance table.
   health and succeeds only if actual healing exceeds 0.1. Otherwise it
   reports the localized full-health message and retains the item. Tiny
   positive healing at or below the threshold can occur without consumption.
-- **Confirmed (source: `Survival.GetWeaknessSpeedScalar`, full-source
-  call-site search):** a weakness scalar subtracts 0.02 for each food/water
-  unit below 20, but no caller was found in this decompile. **Hypothesis:**
-  this is unused legacy behaviour; do not silently introduce a hunger speed
-  penalty without proving an actual call path.
+- **Confirmed (source: `Survival.GetWeaknessSpeedScalar`; install, opt-in
+  test `the_consume_rules_are_read`):** a weakness scalar subtracts 0.02
+  for each food/water unit below 20, and scanning every method body in the
+  installed `Assembly-CSharp.dll` finds 0 instructions referencing its
+  `MethodDef` token. Unused legacy code; not applied to player speed.
 - **Confirmed (source: `uGUI_FoodBar`, `uGUI_WaterBar`):** both use capacity
   100 for display, smooth the ratio with PDA delta time and serialized
   damping, then ceil the smoothed value for the number. They subscribe to
@@ -1461,3 +1461,31 @@ prose. Numbers below describe rules, not a shipped balance table.
   reach the same calls as one long step; the game computes in f32 at frame
   times. Matching Unity's frame of a call to the fixed tick is a
   **hypothesis** (not measured against the running game).
+
+### M9s2: per-item state, eating, drinking and first aid as implemented (2026-10-27)
+
+- **Confirmed (source: `Survival.Eat`, `Survival.Use`, `Eatable.GetFoodValue`/
+  `GetWaterValue`, `LiveMixin.AddHealth`, `Inventory.ExecuteItemAction`):**
+  `sn_sim::inventory::Item` carries `ItemState` (`decay_start`, `oxygen`,
+  `energy` with a `Box<Item>` battery), so per-object state is preserved
+  across grid, equipment slots, locker, world drops and death (`lose_items`),
+  with `Item::ids` enumerating nested battery ids. `sn_sim::survival::{eat,
+  eat_item, use_tech, use_item, add_health, initial_state}` implements food
+  gating at `<= food_gate`, clamping to `0..food_max` and `0..stat_max`,
+  `onEat`/`onDrink` and positive-value goals even when clamped or gated,
+  `vitalsOkNotification` (`after > vitals_ok && after - delta < vitals_ok`),
+  Bladderfish oxygen on eat, decomposing food/water floored at `decay_floor`,
+  and `FirstAidKit` consumption only when actual healing exceeds
+  `heal_success` (returning `UsedItem::Full` otherwise and leaving the kit
+  in the grid).
+- **Confirmed (install, `sn-assets::consume_rules`, opt-in test
+  `the_consume_rules_are_read`):** every constant and tech type is read at
+  runtime from `Assembly-CSharp.dll`: `Survival.Eat`'s 15 float constants
+  and `TechType.Bladderfish` integer literal, `Survival.Use`'s 4 float
+  constants and `TechType.FirstAidKit` integer literal, and `Eatable`'s
+  two value getters (`GetFoodValue`/`GetWaterValue`), cross-checked against
+  `UpdateStats`' caps and `SurvivalConstants` (`kBladderFishO2OnEat`,
+  `kFirstAidKitHealth`). Build 10 reads `food_gate = 99`, `vitals_ok = 20`,
+  `first_aid = 4514`, `first_aid_health = 50`, `heal_success = 0.1` (as f32,
+  `0.10000000149011612`), `oxygen_food = 2515`, `oxygen_on_eat = 15`,
+  `decay_floor = -25`, and 0 callers of `Survival.GetWeaknessSpeedScalar`.

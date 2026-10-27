@@ -3707,3 +3707,49 @@ fn the_hunger_rules_are_read() {
     // Two reads agree.
     assert_eq!(sn_assets::hunger_rules(&code).unwrap(), r);
 }
+
+/// M9s2: the consumption and first-aid rules come from `Survival.Eat`,
+/// `Survival.Use` and `Eatable`'s getters; `GetWeaknessSpeedScalar` has 0
+/// callers in `Assembly-CSharp.dll`.
+#[test]
+#[ignore = "needs SUBNAUTICA_DIR pointing at a Subnautica install"]
+fn the_consume_rules_are_read() {
+    let Some(dir) = std::env::var_os("SUBNAUTICA_DIR") else {
+        eprintln!("SUBNAUTICA_DIR not set; skipping");
+        return;
+    };
+    let game = GameData::locate(Some(PathBuf::from(dir))).unwrap();
+    let code = sn_assets::read_assembly(&game).unwrap();
+    let c = sn_assets::consume_rules(&code).unwrap();
+    println!("{c:?}");
+    assert_eq!((c.food_gate, c.vitals_ok), (99.0, 20.0));
+    assert_eq!(
+        (c.first_aid_health, c.heal_success),
+        (50.0, f64::from(0.1f32))
+    );
+    assert_eq!(c.oxygen_on_eat, 15.0);
+    assert_eq!(c.decay_floor, -25.0);
+    assert!(c.first_aid > 0 && c.oxygen_food > 0 && c.first_aid != c.oxygen_food);
+    assert_eq!(sn_assets::consume_rules(&code).unwrap(), c);
+
+    // Confirm `Survival.GetWeaknessSpeedScalar` has 0 callers in the DLL.
+    let asm = sn_dotnet::Assembly::parse(&code).unwrap();
+    let survival = asm.find_type("", "Survival").unwrap().unwrap();
+    let weakness = asm
+        .find_method(survival, "GetWeaknessSpeedScalar")
+        .unwrap()
+        .unwrap();
+    let target_token = 0x0600_0000 | weakness;
+    let mut callers = 0usize;
+    for m in 1..=asm.rows(sn_dotnet::Table::METHOD_DEF) {
+        if let Some((body, base)) = asm.method_body(m).unwrap() {
+            for instr in sn_dotnet::decode(body, base).unwrap() {
+                if instr.token() == Some(target_token) {
+                    callers += 1;
+                }
+            }
+        }
+    }
+    println!("Survival.GetWeaknessSpeedScalar callers: {callers}");
+    assert_eq!(callers, 0);
+}
