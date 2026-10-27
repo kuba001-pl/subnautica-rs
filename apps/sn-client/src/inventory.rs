@@ -54,6 +54,22 @@ pub enum Scripted {
     /// A left click at the centre of the PDA toolbar's icon N (M9u8a4b),
     /// `tabN`.
     Tab(u8),
+    /// `hoverN` (M9u8b3b3): the pointer rests on the grid's item N (in
+    /// layout order) at its icon's centre, until the next hover step or
+    /// the close.
+    Hover(u8),
+    /// `hover-empty`: the pointer rests on the grid's last cell.
+    HoverEmpty,
+}
+
+/// Where `--panel`'s scripted pointer rests (M9u8b3b3); the UI worker
+/// projects it to the screen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScriptedHover {
+    /// Item `id`'s icon (or slot) centre.
+    Item(u64),
+    /// The centre of the player's grid's last cell.
+    LastCell,
 }
 
 /// A click on the PDA's screen (M9u8a4b, M9u8b3a), hit-tested by
@@ -80,7 +96,11 @@ impl Scripted {
             "equip" => Scripted::Equip,
             "drop" => Scripted::Drop,
             "unequip" => Scripted::Unequip,
-            _ => Scripted::Tab(s.strip_prefix("tab")?.parse().ok()?),
+            "hover-empty" => Scripted::HoverEmpty,
+            _ => match s.strip_prefix("hover") {
+                Some(n) => Scripted::Hover(n.parse().ok()?),
+                None => Scripted::Tab(s.strip_prefix("tab")?.parse().ok()?),
+            },
         })
     }
 }
@@ -111,6 +131,9 @@ pub struct Panel {
     /// The pointer (physical pixels from the bottom left) while the
     /// screen takes clicks, for the worker's hover.
     pub pointer: Option<[f32; 2]>,
+    /// `--panel`'s scripted pointer (M9u8b3b3), while the screen takes
+    /// clicks.
+    pub hover: Option<ScriptedHover>,
 }
 
 impl Panel {
@@ -138,6 +161,7 @@ impl Panel {
             script,
             screen_clicks: Vec::new(),
             pointer: None,
+            hover: None,
         }
     }
 }
@@ -502,6 +526,9 @@ pub fn input(
     // The screen takes clicks once focused: each mouse click to the
     // worker; the item clicks it found come back (`item_clicks`).
     panel.pointer = None;
+    if !(panel.shown() && panel.pda.focused()) {
+        panel.hover = None;
+    }
     if panel.shown() && panel.pda.focused() {
         let window = windows.iter().next().map(|(w, _)| w);
         if let Some(w) = window
@@ -631,6 +658,11 @@ pub fn input(
                 panel.screen_clicks.push(ScreenClick::Icon(usize::from(i)));
             }
             Scripted::Tab(_) => info!("inventory: the PDA is not open"),
+            Scripted::Hover(n) => match grid.get(usize::from(n)) {
+                Some(&item) => panel.hover = Some(ScriptedHover::Item(u64::from(item.0))),
+                None => info!("inventory: no grid item {n} to hover"),
+            },
+            Scripted::HoverEmpty => panel.hover = Some(ScriptedHover::LastCell),
         }
     }
 }
@@ -646,6 +678,9 @@ mod tests {
         assert_eq!(Scripted::parse("unequip"), Some(Scripted::Unequip));
         assert_eq!(Scripted::parse("tab3"), Some(Scripted::Tab(3)));
         assert_eq!(Scripted::parse("tab"), None);
+        assert_eq!(Scripted::parse("hover2"), Some(Scripted::Hover(2)));
+        assert_eq!(Scripted::parse("hover-empty"), Some(Scripted::HoverEmpty));
+        assert_eq!(Scripted::parse("hover"), None);
         assert_eq!(Scripted::parse("nope"), None);
     }
 }

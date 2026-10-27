@@ -2,6 +2,41 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-27 ? M9u8b3b3: the tooltip in the client
+
+**What/why:** reviewed and completed the previous agent's unfinished input,
+placement and canvas-sorting edits. The worker builds the hovered item's
+tooltip with sn-ui's tested text/layout/placement rules; caches prefab facts
+per class; receives current actions, class and battery charge from the sim;
+inherits the hit graphic's nested alpha and PDA sorting +2. Scripted hover
+projects icon centres through the same screen ray as mouse input. Clear
+disables the tooltip canvas at alpha zero. No dependencies or ignore changes.
+
+**Verified** (PowerShell; SUBNAUTICA_DIR set to the installed game; logs
+out/tooltip-*.log):
+- cargo test --workspace: 727 passed, 0 failed (game environment unset).
+- cargo clippy --workspace --all-targets -- -D warnings: pass.
+- cargo build --release -p sn-client -p sn-inspect: pass.
+- target/release/sn-inspect.exe ui --tooltip: 65/65, RUN OK.
+- target/release/sn-client.exe --view 400 --resolution 960 540 --use-item 3
+  --panel 6=take-all,7=hover0,8=hover1,9=hover-empty,10=hover2
+  --shot 12 m9u8b3b3-tooltip: 0 WARN/ERROR; three tooltips and one clear.
+  First hover: pointer (-463,246), top-left (-452.649,225.298), size
+  469?186.15 (485.466?192.685 on the canvas), scale 0.000219246,
+  alpha 1, sorting (1,0)+2. Margin offsets 10.351 and -20.702 are
+  exactly (10,-20) times scale/canvas-scale. Flare and water texts and
+  switch-container hints logged from the runtime language file.
+- target/release/sn-client.exe --view 400 --resolution 960 540 --use-item 3
+  --panel 6=take-all,7=hover0,9=hover-empty --shot 11 m9u8b3b3-clear:
+  0 WARN/ERROR; clear logs alpha 0, active false; screenshot saved.
+  Both PNGs are in out/ (365848 and 360873 bytes).
+- git diff --check: pass; status contains only our source/docs.
+
+**Not tested:** real mouse input, comparison with the running game's screen,
+Linux/macOS. **Not 1:1:** existing b3b1 omissions (food decay, oxygen/tool
+charge and other unported tooltip components); canvas deactivated on Clear
+instead of only zero alpha (same visible result). No game assets committed.
+
 ## 2026-10-27 — M9u8b3b2: the tooltip's layout and placement
 
 **What/why:** the second step of M9u8b3b (DESIGN): the tooltip's size

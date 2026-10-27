@@ -147,7 +147,10 @@ Usage: sn-client [--game-dir <PATH>] [--start <X> <Y> <Z>] [--look <X> <Y> <Z>]
                  grid item that equips, drop: a right click on the first
                  grid item, unequip: a left click on the first slot item,
                  tabN: a left click on the PDA toolbar's icon N, 0–5;
-                 a debug check, M9d5b, M9u8a4b)
+                 hoverN: the pointer rests on grid item N's icon,
+                 hover-empty: on the grid's last cell, until the next
+                 hover step or the close; a debug check, M9d5b, M9u8a4b,
+                 M9u8b3b3)
   --use-hatch    --use-hatch <SECONDS[,SECONDS…]>: at each time (seconds of
                  play), aim at the nearest usable lifepod hatch and use it
                  (a debug check of the hatch cinematics, M9g5e)

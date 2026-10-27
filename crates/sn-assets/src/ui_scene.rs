@@ -493,10 +493,55 @@ impl UiScene {
         self.layout.nodes.get(node).map(|n| &n.rect)
     }
 
+    /// A canvas's sorting layer (its index in the TagManager's list) and
+    /// order; `None` if the node has no canvas.
+    pub fn canvas_sorting(&self, node: usize) -> Option<(i32, i32)> {
+        self.parts
+            .canvases
+            .get(&node)
+            .map(|c| (c.sorting_layer, c.sorting_order))
+    }
+
+    /// `Canvas.sortingLayerID` and `sortingOrder` set by a script
+    /// (M9u8b3b3: `uGUI_Tooltip.OnUpdate`); false if the node has no
+    /// canvas.
+    pub fn set_canvas_sorting(&mut self, node: usize, layer: i32, order: i32) -> bool {
+        match self.parts.canvases.get_mut(&node) {
+            Some(c) => {
+                c.sorting_layer = layer;
+                c.sorting_order = order;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The nested CanvasGroup alpha at a graphic, with this frame's state.
+    pub fn inherited_alpha(&self, node: usize, state: &UiState) -> f32 {
+        let mut alpha = 1.0;
+        let mut at = Some(node);
+        while let Some(i) = at {
+            let Some(n) = self.layout.nodes.get(i) else {
+                break;
+            };
+            if let Some(g) = self.parts.groups.get(&i).filter(|g| g.enabled) {
+                alpha *= state.group_alpha.get(&i).copied().unwrap_or(g.alpha);
+                if g.ignore_parent_groups {
+                    break;
+                }
+            }
+            at = n.parent;
+        }
+        alpha
+    }
+
     /// A text node's parameters as stored (M9u8b3b); `None` if the node
     /// has no text.
     pub fn text_params(&self, node: usize) -> Option<&TextParams> {
-        self.texts.iter().find(|t| t.node == node).map(|t| &t.params)
+        self.texts
+            .iter()
+            .find(|t| t.node == node)
+            .map(|t| &t.params)
     }
 
     /// Sorting layer ids not in the TagManager.

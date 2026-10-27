@@ -285,6 +285,18 @@ wrap, rich text, aligned top left; stored texts "Prefix" and
 "Postfix
 " (replaced before the first draw).
 
+**Client integration (M9u8b3b3). Confirmed by source research:**
+ExtractParams uses the hit graphic's nested CanvasGroup alpha and the
+PDA canvas's sorting order plus two. Our client keeps the tooltip on its
+own canvas, with the same rotation as the PDA and its top-left pivot in
+PDA canvas coordinates. The worker reads prefab facts once per class;
+current charge and available actions arrive from the simulation. Pointer
+projection and hit testing use the same ray for scripted and real input.
+Off an icon, on another tab, or without PDA focus, our canvas is inactive
+and alpha zero. The game's Clear leaves the canvas active at zero
+alpha; disabling it is a rendering optimization with no visible effect.
+Runtime verification results are recorded in MODLOG.
+
 **When it shows** (`FPSInputModule`, each frame with the mouse): the
 graphic under the pointer's nearest `ITooltip` up the hierarchy. None, or
 one with `showTooltipOnDrag` false while a button drags (an item icon's
