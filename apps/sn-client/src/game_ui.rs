@@ -75,6 +75,7 @@ use sn_ui::toolbar::{Toolbar, ToolbarIcon, ToolbarSprites};
 
 use crate::inventory::{ScreenClick, ScriptedHover};
 
+mod drag;
 mod tooltip;
 use crate::textures::linear;
 
@@ -262,6 +263,7 @@ pub(crate) struct UiBuild {
     pub resized: bool,
     /// Item clicks found since the last build (M9u8b3a).
     pub item_clicks: Vec<(u64, u8)>,
+    pub item_moves: Vec<sn_protocol::Request>,
     /// The tooltip while shown (M9u8b3b3): placed from the PDA's pose each
     /// frame.
     pub tooltip: Option<TooltipOnPda>,
@@ -324,6 +326,7 @@ struct TabEntry {
 /// Our player's containers this frame, for the inventory tab's icons.
 #[derive(Clone, Debug, Default, PartialEq)]
 struct TabContents {
+    stores: Option<drag::Stores>,
     inventory: Vec<TabEntry>,
     locker: Vec<TabEntry>,
     /// (slot, item) of the player's equipped items.
@@ -341,6 +344,7 @@ struct PdaClicks {
     pointer: Option<[f32; 2]>,
     /// `--panel`'s scripted pointer (M9u8b3b3): over it, not the mouse.
     hover: Option<ScriptedHover>,
+    drag: Vec<crate::inventory::DragInput>,
 }
 
 /// The PDA's flags this frame (M9u8a4a, `sn_sim::pda::Pda`): their changes
@@ -395,6 +399,7 @@ pub(crate) struct GameUiFrame {
     /// Item clicks the worker found on the PDA's inventory tab (M9u8b3a):
     /// (item, button), for `crate::inventory` to act on.
     pub(crate) item_clicks: Vec<(u64, u8)>,
+    pub(crate) item_moves: Vec<sn_protocol::Request>,
 }
 
 /// Marks the camera the UI is drawn over.
@@ -885,6 +890,25 @@ fn run_worker(
     );
     let mut tooltips = tooltip::Tooltips::new(&assets, &layouts, &tree, &game, &set, &language)?;
     let mut tooltip_pose = None;
+    // Dragging (M9u8b4): the icons' items by id (from the last sync) and
+    // `ItemActions/Swap` at its native size (`SetNativeSize`, the drag
+    // canvas's 100 pixels per unit).
+    let mut dragging = drag::Dragging::default();
+    let mut drag_items: BTreeMap<u64, TabItem> = BTreeMap::new();
+    let mut pending_moves = Vec::new();
+    let swap_sprite = item_sprites
+        .get_no_default(sn_assets::GROUP_ITEM_ACTIONS, "Swap")
+        .map(|s| {
+            let k = 100.0 / s.sprite.pixels_to_units.max(f32::EPSILON);
+            (
+                scene.sprite_id(&s.object),
+                [s.sprite.rect[2] * k, s.sprite.rect[3] * k],
+            )
+        });
+    info!(
+        "game UI drag: ItemActions/Swap {:?}",
+        swap_sprite.map(|(_, size)| size)
+    );
     let mut tab_seen = TabContents::default();
     // The census's shader sets last logged.
     let mut census_seen: Option<(Vec<String>, Vec<String>)> = None;
@@ -1175,6 +1199,12 @@ fn run_worker(
                                 .map(|i| (slot.clone(), i))
                             })
                             .collect();
+                        drag_items = inv
+                            .iter()
+                            .chain(&locker)
+                            .chain(equipment.iter().map(|(_, i)| i))
+                            .map(|i| (i.id, *i))
+                            .collect();
                         let mut failed = None;
                         inventory_tab.sync_items(&inv, &locker, &equipment, &mut |m| {
                             let (t, parent) = match m {
@@ -1236,13 +1266,17 @@ fn run_worker(
                     }
                     rules.apply(&pda_screen.state);
                     rules.apply(&inventory_tab.state);
+                    rules.apply(&dragging.state);
                     // The pointer on the screen (M9u8a4b's toolbar, M9u8b3a's
                     // tab): the hover when the pointer, the icons or the PDA
                     // change; the clicks.
                     let hover_on =
                         pda.focused && (pda_clicks.pointer.is_some() || pda_clicks.hover.is_some());
                     tooltip_pose = None;
-                    if !pda_clicks.clicks.is_empty() || hover_on {
+                    if !pda.focused || pda_screen.tab_open != Some(sn_ui::pda::Tab::Inventory) {
+                        dragging.stop(&mut inventory_tab, inputs.time);
+                    }
+                    if !pda_clicks.clicks.is_empty() || !pda_clicks.drag.is_empty() || hover_on {
                         if let (Some((position, rotation)), Some(size)) = (pda_clicks.pose, screen)
                         {
                             let mut st = start_state.clone();
@@ -1269,6 +1303,31 @@ fn run_worker(
                             .then(|| canvas.and_then(|c| inventory_tab.hit(&l, pda_root, c)))
                             .flatten()
                             .and_then(|h| h.item());
+                            // The left button's press, drag and release
+                            // (M9u8b4).
+                            let dragged = dragging.update(
+                                &drag::DragFrame {
+                                    l: &l,
+                                    root: pda_root,
+                                    placed: &placed,
+                                    camera: &camera,
+                                    screen: size,
+                                    canvas,
+                                    inputs: &pda_clicks.drag,
+                                    dt: inputs.delta_time,
+                                    time: inputs.time,
+                                },
+                                &mut inventory_tab,
+                                &tab_contents,
+                                &drag_items,
+                                swap_sprite,
+                                &mut scene,
+                                &slot_icon_template,
+                            )?;
+                            pending_moves.extend(dragged.moves);
+                            pending_item_clicks.extend(dragged.item_clicks);
+                            // No hover and no tooltip while dragging.
+                            let over = over.filter(|_| !dragging.active());
                             let entry = over.and_then(|id| {
                                 tab_contents
                                     .inventory
@@ -1278,7 +1337,10 @@ fn run_worker(
                                     .find(|e| e.id == id)
                             });
                             let slots = entry.map(|e| e.compatible.as_slice()).unwrap_or_default();
-                            if inventory_tab.set_hovered(over.map(|i| (i, slots))) {
+                            if !dragging.active()
+                                && !dragging.hover_held()
+                                && inventory_tab.set_hovered(over.map(|i| (i, slots)))
+                            {
                                 info!(
                                     "game UI PDA inventory tab at {:.3} s: hovered {over:?}, slots lit {:?}",
                                     inputs.time, inventory_tab.highlighted
@@ -1304,7 +1366,7 @@ fn run_worker(
                                 &mut rules,
                                 inputs.time,
                             )?;
-                            for click in &pda_clicks.clicks {
+                            for click in pda_clicks.clicks.iter().chain(&dragged.screen_clicks) {
                                 if let Some(c) = screen_click(
                                     &mut pda_screen,
                                     &mut inventory_tab,
@@ -1329,6 +1391,7 @@ fn run_worker(
                     }
                     rules.apply(&pda_screen.state);
                     rules.apply(&inventory_tab.state);
+                    rules.apply(&dragging.state);
                     let before = reticle.icon_type;
                     rules.apply(reticle.update(&reticle_inputs(
                         &reticle,
@@ -1423,7 +1486,9 @@ fn run_worker(
         let begin = Instant::now();
         let mut state = start_state.clone();
         state.apply(&rules);
-        let d = scene.draw(&assets, &fonts, &set, &mut atlases, &placements, &state)?;
+        let mut d = scene.draw(&assets, &fonts, &set, &mut atlases, &placements, &state)?;
+        // The dragged icon over the rest (M9u8b4).
+        dragging.draw_last(&mut d);
         // The scene's tree: the stored nodes and the copies grafted since.
         let mut build = convert(
             &scene.tree,
@@ -1436,6 +1501,7 @@ fn run_worker(
         );
         build.pda_root = Some(pda_root);
         build.tooltip = tooltip_pose;
+        build.item_moves = std::mem::take(&mut pending_moves);
         build.item_clicks = std::mem::take(&mut pending_item_clicks);
         for (key, object) in &d.textures {
             if sent.contains(key) {
@@ -2393,6 +2459,7 @@ fn convert(
         seconds: 0.0,
         resized: log,
         item_clicks: Vec::new(),
+        item_moves: Vec::new(),
         tooltip: None,
     }
 }
@@ -2512,7 +2579,7 @@ fn send_inputs(
                                 id: i.id.0,
                                 tech: i.tech,
                                 at: (0, 0),
-                                size: (1, 1),
+                                size: techs.size(i.tech),
                                 compatible: compatible(i.tech),
                                 actions,
                                 bind,
@@ -2523,6 +2590,11 @@ fn send_inputs(
                     })
                     .collect();
                 Some(TabContents {
+                    stores: Some(drag::Stores {
+                        inventory: p.inventory.clone(),
+                        locker: items.locker.clone(),
+                        techs: techs.clone(),
+                    }),
                     inventory: entries(&p.inventory.container),
                     locker: entries(&items.locker),
                     equipment,
@@ -2541,6 +2613,10 @@ fn send_inputs(
         pose: frame.pda_pose,
         pointer: panel.as_ref().and_then(|p| p.pointer),
         hover: panel.as_ref().and_then(|p| p.hover),
+        drag: panel
+            .as_mut()
+            .map(|p| std::mem::take(&mut p.drag_inputs))
+            .unwrap_or_default(),
     };
     // `TechType.Compass`, by its name in the game's code.
     let compass_tech = *compass_tech.get_or_insert_with(|| {
@@ -2661,6 +2737,7 @@ fn receive_build(
             Ok(mut b) => {
                 // Every build's item clicks.
                 frame.item_clicks.append(&mut b.item_clicks);
+                frame.item_moves.append(&mut b.item_moves);
                 if let Some(old) = latest.take() {
                     let mut textures = old.textures;
                     textures.append(&mut b.textures);

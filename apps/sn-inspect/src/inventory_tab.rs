@@ -27,14 +27,23 @@
 //! `Tank` tints exactly the slots of its `EquipmentType` (written in
 //! DESIGN before the run: the Tank slot only), `Titanium` none; nothing is
 //! drawn over an icon's centre after the icons.
+//!
+//! Dragging (M9u8b4): the Tank and the Fins dragged over each shown slot
+//! tint the slots by `UpdateFeedbackState` (written before the run: the
+//! compatible slot allowed when hovered, else highlighted; another hovered
+//! slot denied, the rest default); an empty slot's snap lands on its icon
+//! with its radius; a locked icon draws at 0.3; `ItemActions/Swap` exists.
 
 use std::collections::{BTreeSet, HashMap};
 use std::process::ExitCode;
 
 use sn_assets::{Assets, GlyphAtlases, UiScene, UiState};
 use sn_install::GameData;
+use sn_ui::drag::{LOCK_ALPHA, Snap, TINT_ALLOWED, TINT_DENIED, slot_tint};
 use sn_ui::draw::{apply, to_ancestor};
-use sn_ui::inventory_tab::{CELL, InventoryTab, MakeIcon, TINT_HIGHLIGHTED, TabHit, UsedStorage};
+use sn_ui::inventory_tab::{
+    CELL, InventoryTab, MakeIcon, TINT_DEFAULT, TINT_HIGHLIGHTED, TabHit, UsedStorage,
+};
 use sn_ui::item_icons::{ContainerIcons, IconNodes, Sprite, TabItem, icon_position, icon_size};
 use sn_ui::layout::{Tree, V2};
 use sn_ui::pda::PdaScreen;
@@ -617,6 +626,98 @@ pub fn run(game: &GameData) -> Result<ExitCode> {
     );
     c.check(lit(&tab).is_empty(), "hovering Titanium lights nothing");
     tab.set_hovered(None);
+
+    // Dragging (M9u8b4): the slots' feedback while the Tank and the Fins
+    // are dragged over each shown slot, against the rule written before the
+    // run (the compatible slot allowed when hovered, highlighted when not;
+    // any other hovered slot denied, else default).
+    for (name, want) in [("Tank", "Tank"), ("Fins", "Foots")] {
+        let comp = compatible(name);
+        c.check(comp == [want], &format!("{name}: compatible {comp:?}"));
+        for over in shown_slots(&l) {
+            let mut bad = Vec::new();
+            for s in shown_slots(&l) {
+                let tint = slot_tint(comp.contains(&s), s == over, true);
+                let rule = match (s == want, s == over) {
+                    (true, true) => TINT_ALLOWED,
+                    (true, false) => TINT_HIGHLIGHTED,
+                    (false, true) => TINT_DENIED,
+                    (false, false) => TINT_DEFAULT,
+                };
+                if tint != rule {
+                    bad.push(s);
+                }
+            }
+            c.check(
+                bad.is_empty(),
+                &format!("dragging {name} over {over}: wrong tints {bad:?}"),
+            );
+        }
+    }
+    // An empty slot's snap: its `iconRect`'s centre and size, the radius a
+    // slot icon gets (`GetBackgroundRadius`).
+    let st = state(&screen, &tab);
+    for (slot, si) in &tab.slot_icons {
+        let Some(sc) = config.slots.iter().find(|s| &s.slot == slot) else {
+            continue;
+        };
+        let snap = Snap::slot(centre(&l, sc.icon_rect), l.rect(sc.icon_rect).size());
+        let radius = st
+            .material
+            .get(&si.icon.background)
+            .and_then(|m| m.floats.get("_Radius"))
+            .copied();
+        let at = centre(&l, si.icon.root);
+        println!(
+            "  drag snap {slot}: at {:?}, size {:?}, radius {} (the slot icon's {radius:?})",
+            snap.at, snap.size, snap.radius
+        );
+        c.check(
+            radius == Some(snap.radius)
+                && (snap.at[0] - at[0]).abs() < 1e-3
+                && (snap.at[1] - at[1]).abs() < 1e-3,
+            &format!("{slot}: the snap on the slot's icon, its radius"),
+        );
+    }
+    // The locked icon (`OnLock`): its two graphics drawn at 0.3 of their
+    // alpha.
+    let (first, _) = tab
+        .inventory_icons
+        .icons
+        .values()
+        .next()
+        .copied()
+        .ok_or("no grid icon")?;
+    let alpha_of = |d: &sn_assets::UiDraw| -> Vec<f32> {
+        d.list
+            .items
+            .iter()
+            .filter(|it| it.node == first.background || it.node == first.foreground)
+            .map(|it| it.alpha)
+            .collect()
+    };
+    let before = alpha_of(&scene.draw(&assets, &fonts, &set, &mut atlases, &placements, &st)?);
+    let mut locked = st.clone();
+    locked.renderer_alpha.insert(first.background, LOCK_ALPHA);
+    locked.renderer_alpha.insert(first.foreground, LOCK_ALPHA);
+    let after = alpha_of(&scene.draw(&assets, &fonts, &set, &mut atlases, &placements, &locked)?);
+    println!("  locked icon: alpha {before:?} → {after:?}");
+    c.check(
+        before.len() == 2
+            && after.len() == 2
+            && before
+                .iter()
+                .zip(&after)
+                .all(|(b, a)| (a - b * LOCK_ALPHA).abs() < 1e-5),
+        "the locked icon draws at 0.3",
+    );
+    // The swap hint's sprite.
+    let swap = sprites.get_no_default(sn_assets::GROUP_ITEM_ACTIONS, "Swap");
+    println!(
+        "  ItemActions/Swap: {:?}",
+        swap.map(|s| (s.sprite.rect, s.sprite.pixels_to_units))
+    );
+    c.check(swap.is_some(), "ItemActions/Swap found");
 
     // A move and a removal in the grid, then an unequip.
     let mut grid2 = grid.clone();

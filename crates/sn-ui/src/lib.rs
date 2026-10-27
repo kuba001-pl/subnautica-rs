@@ -38,6 +38,7 @@ pub mod compass;
 pub mod death;
 pub mod depth;
 pub mod draw;
+pub mod drag;
 pub mod font;
 pub mod hud;
 pub mod icon;

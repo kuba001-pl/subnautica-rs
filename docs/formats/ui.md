@@ -2312,3 +2312,92 @@ readers (`Oxygen`, `MainCameraControl`, `LiveMixin` and its
 - **Depth limit:** nested custom classes stop at depth 7
   (*hypothesis*: no object in the game is that deep, so it is not
   tested).
+
+## Drag and drop (M9u8b4) — confirmed (decompiled code, `ui --inventory`, client)
+
+Read from the decompiled `FPSInputModule`, `ItemDragManager`,
+`uGUI_ItemIcon`, `uGUI_ItemsContainer`, `uGUI_Equipment`,
+`uGUI_EquipmentSlot`, `uGUI_InventoryTab`, `Inventory.CanSwap` and
+`MathExtensions.StableLerp` (read only; our code is `sn_ui::drag` and
+the client's `game_ui/drag.rs`).
+
+**The pointer** (*confirmed*, code):
+- `ProcessMousePress`: a press sets `pointerPress` (the object's
+  `IPointerDownHandler` or `IPointerClickHandler`; an item icon or a slot)
+  and `pointerDrag` (its `IDragHandler`: the same object), and
+  `eligibleForClick`. `ProcessDrag` starts the drag (`OnBeginDrag`) once
+  the pointer is `pixelDragThreshold` pixels or more from the press;
+  `eligibleForClick` stays true because `pointerPress == pointerDrag`.
+- On the release: if the object under the pointer is the pressed one and
+  `eligibleForClick`, `OnPointerClick`; **otherwise** `OnDrop` on what is
+  under the pointer. Then `OnEndDrag` (→ `ItemDragManager.DragStop`). So
+  a click comes on the release, not the press, and a drag released back on
+  its own icon is a click — which `uGUI_InventoryTab.OnPointerClick`
+  ignores because `isDragging` is still true at that moment. Nothing moves.
+- `pixelDragThreshold`: *hypothesis* 10 (Unity's `EventSystem` default);
+  the game's `EventSystem` object was not found in `main`, `essentials`
+  or the `uGUI` prefab (not tested against the game).
+- Enter and exit still fire during a drag, but `uGUI_InventoryTab`'s
+  `OnPointerEnter` / `OnPointerExit` do nothing while `isDragging`. After
+  a release no new enter fires until the pointer enters another object
+  (`HandlePointerExitAndEnter` only when the object changes). A slot's
+  icon takes no raycasts, so a slot that has just been filled stays unlit.
+  The tooltip is not shown during a drag (`showTooltipOnDrag` is false on
+  icons and slots).
+
+**`ItemDragManager`** (*confirmed*, code):
+- `DragStart(item, icon, …, position, size, size, radius)`: from a grid
+  the icon's centre, `GetIconSize(itemSize)` and radius 33; from a slot
+  the `iconRect`'s centre and size and `GetBackgroundRadius` (min ÷ 2).
+  `dragSnapT = 1` (the icon starts on its source); the source is locked
+  (`OnLock`: background, foreground and bar alpha 0.3); `onItemDragStart`
+  → `uGUI_Equipment.HighlightSlots(the item's EquipmentType)`.
+- Each frame (`OnLateUpdate`, queue `PreCanvasDrag`): `dragSnapT =
+  StableLerp(t, dragSnap ? 1 : 0, dragSnapSpeed = 15, PDA.deltaTime)`,
+  where `StableLerp(c, t, k, dt) = lerp(c, t, 1 − (1 − k/60)^(60·dt))`;
+  `dragSnap` is reset to false after use, so only a target's
+  `OnDragHoverStay` this frame keeps it snapped. The icon is at
+  `lerp(cursor, snapPosition, t)` with size `lerp(GetIconSize, snapSize,
+  t)` and radius `lerp(33, snapRadius, t)`.
+- `DragStop`: `t = 0`, the icon hidden, the source unlocked,
+  `onItemDragStop` → `ExtinguishSlots`.
+- The action hint (`ItemActions/Swap`, 64 × 64 at 100 pixels per unit:
+  *confirmed* by `ui --inventory`): `SetNativeSize`, at
+  (−0.45·w, 0.45·h) of the dragged item's grid size from the icon's
+  centre, scaled by `depth × 0.001080918` (depth along the camera's
+  forward). Shown only while a target set it this frame.
+- Its canvas: world space, sorting layer `ItemDragManager`,
+  `blocksRaycasts = false`. Ours: two grafted icons under the PDA
+  screen's root, drawn after everything else in the screen's draw list.
+
+**Targets** (*confirmed*, code):
+- An item icon in a store (`uGUI_ItemsContainer.OnDragHoverStay`): if
+  `Inventory.CanSwap(dragged, item)`, snap down-right of its centre by half
+  the dragged size, at the dragged size, radius 33; its foreground at
+  alpha 0.3 (back to 1 on exit); the Swap hint. `OnDrop(itemB)`: nothing if
+  `itemB`'s container is the dragged item's; else `AddOrSwap(a, b)`, then
+  `AddOrSwap(a, b's container)` if that failed.
+- A store's empty cells: `OnDrop(null)`: `AddOrSwap(a, container)` if it
+  is another container. No snap.
+- A slot (`uGUI_Equipment.CanSwitchOrSwap`): not compatible (`Equipment.
+  IsCompatible`) → nothing; empty → Switch (snap to the `iconRect`'s
+  centre and size, radius min ÷ 2); holding an item `CanSwap` allows →
+  Swap (snap as for an icon, the slot icon's foreground at 0.3, the hint);
+  else nothing. `OnDrop`: `AddOrSwap(a, equipment, slot)` for Switch or
+  Swap.
+- `uGUI_EquipmentSlot.UpdateFeedbackState` (on enter, exit, begin drag,
+  drop, `MarkCompatible`): selected (gamepad) cyan; else compatible:
+  `tintAllowed` (0, 255, 0) while dragging and hovered, else
+  `tintHighlighted`; not compatible: `tintDenied` (255, 0, 0) while
+  dragging and hovered, else `tintDefault` (white, alpha 127). It ignores
+  whether the drop would succeed.
+
+**Our moves.** Each drop is one `Request::Move { item, to, target }`
+(Store, Item or Slot): the existing message clicks send. The client finds
+it by running `sn_sim::inventory::add_or_swap` on a copy of its stores
+(*hypothesis*: that it agrees with `CanSwap` in every case; the cases
+the client run met agreed); the server runs the same rule again.
+Checked in the client run (scripted drag): grid → locker, locker → grid,
+locker item onto a grid item (swap), grid → empty slot, grid onto a
+filled slot (swap), slot → grid, same-store drop (nothing), release on
+the source (nothing), incompatible slot (denied, nothing).

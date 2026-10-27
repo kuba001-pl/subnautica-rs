@@ -2,7 +2,78 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
-## 2026-10-27 ? M9u8b3b3: the tooltip in the client
+## 2026-10-27 — M9u8b4: drag and drop on the inventory tab
+
+**What/why:** finished the previous agent's unfinished drag (kept its
+plan, its scripted steps and the `Stores` copy idea; rewrote the
+controller). `sn_ui::drag`: the press/drag/release rule (`FPSInputModule`:
+the click on the release, a release on the dragged item ignored),
+`UpdateFeedbackState`'s slot tints, `StableLerp` and the snaps; 5 unit
+tests. Client `game_ui/drag.rs`: the source locked at 0.3, the dragged
+icon and the `ItemActions/Swap` hint grafted under the PDA's root and
+drawn last, the snap to slots and swap targets, the swap target dimmed,
+the drop's `Request::Move` found by `add_or_swap` on a copy of the stores
+(no protocol or server change), no hover or tooltip while dragging and
+no re-lit slots after a drop until the pointer enters something else;
+2 unit tests. The left button now goes through the drag (its click on
+the release); right and middle clicks still act on the press.
+`--panel` steps `dragN`, `drag-lockerN`, `drag-slotS`, `over-grid`,
+`over-locker`, `over-slotS`, `press`, `release`. `sn-inspect ui
+--inventory` gained the drag checks. `sn_assets::GROUP_ITEM_ACTIONS`
+added. Also fixed mojibake in the M9u8b3b3 DESIGN row / MODLOG title and
+literal `
+`s in README. No new dependencies, no `.gitignore` change.
+
+**Dead end:** the first placement check read the layout made before the
+drag's state was applied (the worker rebuilds its rules each frame), so
+it measured the template's (0, 0); the drag now owns its state, applied
+with the tab's before the layout, and the check reads 0.000.
+
+**Verified** (Git Bash; `SUBNAUTICA_DIR` set for the game runs; logs in
+`out/m9u8b4/`):
+- `cargo test --workspace` (no game): 734 passed, 0 failed.
+- `cargo clippy --workspace --all-targets -- -D warnings`: pass.
+- `target/release/sn-inspect ui --inventory`: 74 of 74, RUN OK (Tank
+  and Fins over each of the 7 slots: tints by the rule; Foots, Head and
+  Tank snaps at their icons, radius 62 = the icons' `_Radius`; a locked
+  icon's alpha 1 → 0.3; `ItemActions/Swap` 64 × 64 at 100 px/unit).
+- `target/release/sn-client --view 400 --resolution 960 540 --use-item 3
+  --test-supply Tank,Fins --panel 6=take-all,7=drag0,8=over-locker,
+  9=release,10=drag1,11=over-locker,12=release,13=drag-locker0,14=hover0,
+  15=release,16=drag0,17=over-grid,18=release,19=drag-locker0,19.5=hover1
+  --shot 20 m9u8b4-drag-swap`: 0 WARN/ERROR; grid → locker
+  `Move{6, PodLocker, Store}` and `Move{4, PodLocker, Store}`, locker
+  onto a grid item `Move{6, Grid, Item(7)}` (snap, Swap hint), a drop on
+  its own grid "nothing to do"; each applied by the server (world events
+  10–12); dragged icon 0.000 off its place.
+- the same with `--test-supply Tank,Tank,Fins --panel 6=take-all,7=close,
+  8=open,10=drag2,10.5=over-slotTank,11=over-slotFoots,12=release,
+  13=drag0,13.5=over-slotFoots,14=over-slotTank,15=release,16=drag0,
+  17=over-slotTank,18=release,19=drag-slotTank,20=over-grid,21=release,
+  22=drag-slotFoots,22.5=over-slotFoots,23=release,24=hover0,24.2=press,
+  24.4=release --shot 26 m9u8b4-slots-end`: 0 WARN/ERROR; Fins over Tank
+  denied, over Foots allowed and snapped, `Move{8, Slots, Slot(Foots)}`;
+  Tank over the filled Foots denied, `Move{6, Slots, Slot(Tank)}`; the
+  second Tank onto the filled Tank slot: Swap snap and hint,
+  `Move{7, Slots, Slot(Tank)}`; slot → grid `Move{7, Grid, Store}`;
+  release on its own slot ignored; press + release on a grid Tank clicks
+  (equip, `Move{6, Slots, Store}`) — all applied by the server (events
+  11–15). Shots `out/m9u8b4-drag-swap.png`, `out/m9u8b4-slot-swap.png`
+  (green slot, hint), `out/m9u8b4-denied.png`.
+
+**Not tested:** a real mouse drag (the threshold path; scripted drags
+start past it), the drag threshold's value (10, Unity's default, a
+*hypothesis*), comparison with the running game on screen, the hint's
+size against the game, Linux/macOS. **Not 1:1:** right and middle clicks
+still act on the press (the game's on the release; the game also drags
+with them); the slot tints are worked out each frame (the game only on
+events; same result in the cases met); a swap target that `CanSwap`
+allowed but the move refused is set back to alpha 1 at the drop (the
+game leaves it dimmed); `CanSwap` is approximated by `AddOrSwap` on a
+copy; no bar on the dragged icon (bars not ported). No game assets
+committed.
+
+## 2026-10-27 — M9u8b3b3: the tooltip in the client
 
 **What/why:** reviewed and completed the previous agent's unfinished input,
 placement and canvas-sorting edits. The worker builds the hovered item's

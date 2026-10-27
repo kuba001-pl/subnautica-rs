@@ -98,7 +98,13 @@ Tested on Windows 11 with game build 10 (Steam):
   slice-9 and `UI/Circle` ported). Clicks go to the game's tab (M9u8b3a):
   the cursor is hit-tested on the PDA's screen, and hovering an item
   lights the slots that take it. Our own stand-in panel (M9d5b) is gone.
-  Item tooltips (M9u8b3b3) show the runtime language text and action hints,\n  sized and placed beside the pointer on the PDA; an empty cell clears them.\n  Drag and drop and the new-item counts are not done yet. The model and
+  Item tooltips (M9u8b3b3) show the runtime language text and action hints,
+  sized and placed beside the pointer on the PDA; an empty cell clears them.
+  Items drag and drop between the grid, the locker and the slots
+  (M9u8b4): the dragged icon snaps to slots and swap targets, the slots
+  turn green or red by the game's rule, and a drop sends the same move a
+  click sends (checked with scripted drags; a real mouse drag is not
+  tested). The new-item counts are not done yet. The model and
   screen are not compared with the game on screen. A left click does what
   the game's click does (take out of or put into the locker, equip,
   unequip), a right click drops the item where the game would (not in

@@ -234,8 +234,29 @@ pub(super) fn pointer(
             );
             camera.project(apply(&placed.world_from_canvas(), p), screen)
         }
-        Some(ScriptedHover::LastCell) => {
-            let node = tab.config.inventory.node;
+        Some(ScriptedHover::Slot(slot)) => {
+            let node = tab
+                .config
+                .slots
+                .iter()
+                .find(|s| s.slot == slot && l.active(s.node))?
+                .node;
+            let r = l.rect(node);
+            let p = apply(
+                &to_ancestor(l, node, root),
+                [r.x + r.width * 0.5, r.y + r.height * 0.5, 0.0],
+            );
+            camera.project(apply(&placed.world_from_canvas(), p), screen)
+        }
+        Some(ScriptedHover::LastCell | ScriptedHover::LockerCell) => {
+            let node = if clicks.hover == Some(ScriptedHover::LockerCell) {
+                tab.config.storage.node
+            } else {
+                tab.config.inventory.node
+            };
+            if !l.active(node) {
+                return None;
+            }
             let r = l.rect(node);
             let p = apply(
                 &to_ancestor(l, node, root),

@@ -14,7 +14,10 @@
 //! (`sn_sim::inventory::item_action`), a right click drops it where the
 //! game would ([`drop_request`]). Each mouse click while focused goes to
 //! the UI worker ([`ScreenClick`]), which finds the toolbar icon, item icon
-//! or slot under it and sends an item's click back ([`item_clicks`]).
+//! or slot under it and sends an item's click back ([`item_clicks`]); the
+//! left button's press and release go as [`DragInput`]s (M9u8b4: a press on
+//! an item clicks on the release, or drags it, and the drop comes back as
+//! the `Move` a click would send).
 //! `--panel` does the same from a script, clicking at the icons' centres,
 //! for checking from the logs.
 
@@ -60,6 +63,24 @@ pub enum Scripted {
     Hover(u8),
     /// `hover-empty`: the pointer rests on the grid's last cell.
     HoverEmpty,
+    /// `dragN` (M9u8b4): the left button pressed on the grid's item N and
+    /// dragged at once (the threshold passed); `drag-lockerN` the
+    /// locker's item N, `drag-slotS` the item in slot S.
+    Drag(u8),
+    DragLocker(u8),
+    DragSlot(&'static str),
+    /// `over-grid`, `over-locker`, `over-slotS`: the pointer moves to the
+    /// grid's last cell, the locker's, or slot S's centre.
+    OverGrid,
+    OverLocker,
+    OverSlot(&'static str),
+    /// `press`: the left button pressed where the pointer is (a
+    /// `release` without moving clicks, as the mouse does).
+    Press,
+    /// `release`: the left button released where the pointer is.
+    Release,
+    /// `cancel`: the drag stopped without a drop.
+    Cancel,
 }
 
 /// Where `--panel`'s scripted pointer rests (M9u8b3b3); the UI worker
@@ -70,6 +91,24 @@ pub enum ScriptedHover {
     Item(u64),
     /// The centre of the player's grid's last cell.
     LastCell,
+    /// The centre of the locker's last cell (M9u8b4).
+    LockerCell,
+    /// A slot's centre.
+    Slot(&'static str),
+}
+
+/// The left button on the PDA's screen, for the UI worker's drag
+/// (M9u8b4): it finds what is under the pointer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DragInput {
+    /// Pressed.
+    Down,
+    /// Released.
+    Up,
+    /// `--panel`: pressed on the item and dragged past the threshold.
+    Start(u64),
+    /// The drag stopped without a drop.
+    Cancel,
 }
 
 /// A click on the PDA's screen (M9u8a4b, M9u8b3a), hit-tested by
@@ -87,6 +126,13 @@ pub enum ScreenClick {
     Item { id: u64, button: u8 },
 }
 
+/// The player's slot names a `--panel` step may name.
+fn slot_name(s: &str) -> Option<&'static str> {
+    ["Head", "Body", "Gloves", "Foots", "Chip1", "Chip2", "Tank"]
+        .into_iter()
+        .find(|&name| name == s)
+}
+
 impl Scripted {
     pub fn parse(s: &str) -> Option<Scripted> {
         Some(match s {
@@ -97,6 +143,21 @@ impl Scripted {
             "drop" => Scripted::Drop,
             "unequip" => Scripted::Unequip,
             "hover-empty" => Scripted::HoverEmpty,
+            "over-grid" => Scripted::OverGrid,
+            "over-locker" => Scripted::OverLocker,
+            "press" => Scripted::Press,
+            "release" => Scripted::Release,
+            "cancel" => Scripted::Cancel,
+            _ if s.starts_with("drag-locker") => {
+                Scripted::DragLocker(s.strip_prefix("drag-locker")?.parse().ok()?)
+            }
+            _ if s.starts_with("drag-slot") => {
+                Scripted::DragSlot(slot_name(s.strip_prefix("drag-slot")?)?)
+            }
+            _ if s.starts_with("over-slot") => {
+                Scripted::OverSlot(slot_name(s.strip_prefix("over-slot")?)?)
+            }
+            _ if s.starts_with("drag") => Scripted::Drag(s.strip_prefix("drag")?.parse().ok()?),
             _ => match s.strip_prefix("hover") {
                 Some(n) => Scripted::Hover(n.parse().ok()?),
                 None => Scripted::Tab(s.strip_prefix("tab")?.parse().ok()?),
@@ -134,6 +195,8 @@ pub struct Panel {
     /// `--panel`'s scripted pointer (M9u8b3b3), while the screen takes
     /// clicks.
     pub hover: Option<ScriptedHover>,
+    /// The left button's presses and releases (M9u8b4), for the worker.
+    pub drag_inputs: Vec<DragInput>,
 }
 
 impl Panel {
@@ -162,6 +225,7 @@ impl Panel {
             screen_clicks: Vec::new(),
             pointer: None,
             hover: None,
+            drag_inputs: Vec::new(),
         }
     }
 }
@@ -545,8 +609,27 @@ pub fn input(
             .find(|(b, _)| buttons.just_pressed(*b));
             if let Some((b, button)) = pressed {
                 buttons.clear_just_pressed(b);
-                panel.screen_clicks.push(ScreenClick::At { pixel, button });
+                // The left button goes to the drag (M9u8b4): an item's
+                // click comes on the release, as `FPSInputModule` sends it.
+                if button == 0 {
+                    panel.drag_inputs.push(DragInput::Down);
+                } else {
+                    panel.screen_clicks.push(ScreenClick::At { pixel, button });
+                }
             }
+        }
+        if buttons.just_released(MouseButton::Left) {
+            panel.drag_inputs.push(DragInput::Up);
+        }
+        // The drops the worker found (M9u8b4): the same `Move` a click
+        // sends.
+        let moves = frame
+            .as_mut()
+            .map(|f| std::mem::take(&mut f.item_moves))
+            .unwrap_or_default();
+        for request in moves {
+            info!("inventory: drag → {request:?}");
+            session.request(request);
         }
         let clicks = frame
             .as_mut()
@@ -562,6 +645,7 @@ pub fn input(
         }
     } else if let Some(f) = frame.as_mut() {
         f.item_clicks.clear();
+        f.item_moves.clear();
     }
 
     // `--panel`.
@@ -662,7 +746,48 @@ pub fn input(
                 Some(&item) => panel.hover = Some(ScriptedHover::Item(u64::from(item.0))),
                 None => info!("inventory: no grid item {n} to hover"),
             },
-            Scripted::HoverEmpty => panel.hover = Some(ScriptedHover::LastCell),
+            Scripted::HoverEmpty | Scripted::OverGrid => {
+                panel.hover = Some(ScriptedHover::LastCell)
+            }
+            Scripted::OverLocker => panel.hover = Some(ScriptedHover::LockerCell),
+            Scripted::OverSlot(slot) => panel.hover = Some(ScriptedHover::Slot(slot)),
+            Scripted::Drag(n) | Scripted::DragLocker(n) => {
+                let list = if matches!(step, Scripted::DragLocker(_)) {
+                    &locker
+                } else {
+                    &grid
+                };
+                if let Some(item) = list.get(usize::from(n)) {
+                    let id = u64::from(item.0);
+                    panel.hover = Some(ScriptedHover::Item(id));
+                    panel.drag_inputs.push(DragInput::Start(id));
+                } else {
+                    info!("inventory: drag source {step:?} absent");
+                }
+            }
+            Scripted::DragSlot(slot) => {
+                panel.hover = Some(ScriptedHover::Slot(slot));
+                if let Some(id) = session
+                    .with_items(|items, _| {
+                        Some(
+                            items
+                                .players
+                                .get(&me?)?
+                                .inventory
+                                .equipment
+                                .item_in(slot)?
+                                .id
+                                .0,
+                        )
+                    })
+                    .flatten()
+                {
+                    panel.drag_inputs.push(DragInput::Start(id));
+                }
+            }
+            Scripted::Press => panel.drag_inputs.push(DragInput::Down),
+            Scripted::Release => panel.drag_inputs.push(DragInput::Up),
+            Scripted::Cancel => panel.drag_inputs.push(DragInput::Cancel),
         }
     }
 }
@@ -681,6 +806,23 @@ mod tests {
         assert_eq!(Scripted::parse("hover2"), Some(Scripted::Hover(2)));
         assert_eq!(Scripted::parse("hover-empty"), Some(Scripted::HoverEmpty));
         assert_eq!(Scripted::parse("hover"), None);
+        assert_eq!(Scripted::parse("drag2"), Some(Scripted::Drag(2)));
+        assert_eq!(
+            Scripted::parse("drag-locker1"),
+            Some(Scripted::DragLocker(1))
+        );
+        assert_eq!(
+            Scripted::parse("drag-slotTank"),
+            Some(Scripted::DragSlot("Tank"))
+        );
+        assert_eq!(Scripted::parse("drag-slotNope"), None);
+        assert_eq!(
+            Scripted::parse("over-slotChip1"),
+            Some(Scripted::OverSlot("Chip1"))
+        );
+        assert_eq!(Scripted::parse("over-locker"), Some(Scripted::OverLocker));
+        assert_eq!(Scripted::parse("release"), Some(Scripted::Release));
+        assert_eq!(Scripted::parse("press"), Some(Scripted::Press));
         assert_eq!(Scripted::parse("nope"), None);
     }
 }

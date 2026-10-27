@@ -72,7 +72,7 @@ pub struct TabItem {
 
 /// `SetBackgroundSprite` (on a Resources sprite) and `SetForegroundSprite`
 /// then `SetSize(size)` and the radius: the icon's graphics.
-fn set_item(state: &mut UiState, icon: IconNodes, item: &TabItem, size: V2, radius: f32) {
+pub fn set_item(state: &mut UiState, icon: IconNodes, item: &TabItem, size: V2, radius: f32) {
     state
         .sprite
         .insert(icon.background, Some(item.background.0));
