@@ -648,6 +648,7 @@ impl Drop for Session {
 /// First in every frame: the session's time (it starts with the first
 /// frame), the network thread's log lines, the world events now due.
 pub fn update(session: Res<Session>) {
+    let _perf = crate::perf::span("session::update");
     let lines = {
         let mut i = session.lock();
         let epoch = *i.epoch.get_or_insert_with(Instant::now);

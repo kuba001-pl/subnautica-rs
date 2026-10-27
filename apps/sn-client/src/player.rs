@@ -979,6 +979,7 @@ pub fn update(
     item_text: Option<Res<crate::items::Text>>,
     panel: Option<Res<crate::inventory::Panel>>,
 ) {
+    let _perf = crate::perf::span("player::update");
     let sim = &mut *sim;
     // The PDA (M9u8a3): in use, the look is locked and the hand off
     // (`GUIHand`'s `isInUse` check); focused, the cursor is the screen's

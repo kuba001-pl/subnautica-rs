@@ -17,7 +17,7 @@
 //! spawned again), and the objects the server made are drawn at their
 //! point ([`ObjectStreamer::hide_keys`], [`ObjectStreamer::set_spawned`]).
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -36,7 +36,7 @@ use bevy::render::render_resource::{Extent3d, Face, TextureDimension, TextureFor
 use sn_anim::{Animator, Program, SlotKind};
 use sn_assets::{
     Assets as GameAssets, AuroraShow, BiomeSky, LootTable, MarmoSkies, ObjectRef, Prefab,
-    SHADOWS_OFF, SHADOWS_ON, SHADOWS_ONLY, TerrainTexture, marmo_skies,
+    SHADOWS_OFF, SHADOWS_ON, SHADOWS_ONLY, marmo_skies,
 };
 use sn_install::GameData;
 use sn_protocol::EntityKey;
@@ -71,7 +71,15 @@ const BATCH_LOAD_RINGS: i32 = 1;
 
 /// Entities spawned per frame at most, so a burst of finished batches is
 /// spread over several frames.
-const SPAWN_BUDGET: usize = 20_000;
+const SPAWN_BUDGET: usize = 600;
+
+/// Maximum texture bytes added to `Assets<Image>` per frame so GPU texture
+/// uploads in `RenderSystems::PrepareAssets` do not stall a frame (P1d).
+const TEXTURE_UPLOAD_BYTES_PER_FRAME: usize = 8 * 1024 * 1024;
+
+/// Maximum object mesh vertices added to `Assets<Mesh>` per frame so vertex
+/// slab uploads in `allocate_and_free_meshes` do not stall a frame (P1d).
+const MESH_UPLOAD_VERTICES_PER_FRAME: usize = 32_000;
 
 /// The worker forgets loaded bundles beyond this many bytes.
 const BUNDLE_CACHE_BYTES: usize = 512 << 20;
@@ -591,8 +599,7 @@ enum Update {
     Skies(SkySet),
     Texture {
         id: u32,
-        texture: TerrainTexture,
-        srgb: bool,
+        image: Option<Image>,
     },
     Material {
         id: u32,
@@ -658,6 +665,15 @@ enum Update {
     },
     Warning(String),
     Error(String),
+}
+
+/// Sends worker updates to the main thread as soon as each asset is ready.
+struct Out<'a>(&'a Sender<Update>);
+
+impl Out<'_> {
+    fn push(&mut self, update: Update) {
+        let _ = self.0.send(update);
+    }
 }
 
 /// What the worker knows: the game's assets and everything already sent.
@@ -1092,7 +1108,7 @@ impl Library {
         &mut self,
         object: &ObjectRef,
         srgb: Option<bool>,
-        out: &mut Vec<Update>,
+        out: &mut Out<'_>,
     ) -> Option<u32> {
         let key = (object.key(), srgb);
         if let Some(id) = self.textures.get(&key) {
@@ -1102,7 +1118,11 @@ impl Library {
             Ok(texture) => {
                 let id = self.id();
                 let srgb = srgb.unwrap_or(texture.texture.color_space == 1);
-                out.push(Update::Texture { id, texture, srgb });
+                // Decode/copy on this asset worker, not in the frame's drain
+                // of a burst of completed prefabs. GPU upload still belongs
+                // to Bevy's render world; this only constructs CPU data.
+                let image = to_image(&texture, srgb);
+                out.push(Update::Texture { id, image });
                 Some(id)
             }
             Err(e) => {
@@ -1114,7 +1134,7 @@ impl Library {
         id
     }
 
-    fn material(&mut self, object: &ObjectRef, out: &mut Vec<Update>) -> Option<u32> {
+    fn material(&mut self, object: &ObjectRef, out: &mut Out<'_>) -> Option<u32> {
         if let Some(id) = self.materials.get(&object.key()) {
             return Some(*id);
         }
@@ -1200,7 +1220,7 @@ impl Library {
         &mut self,
         material_object: &ObjectRef,
         material: &Material,
-        out: &mut Vec<Update>,
+        out: &mut Out<'_>,
     ) -> Arc<ShaderInfo> {
         let named = |name: &str| {
             Arc::new(ShaderInfo {
@@ -1251,7 +1271,7 @@ impl Library {
         &mut self,
         base: u32,
         glow: &sn_assets::VolumetricGlow,
-        out: &mut Vec<Update>,
+        out: &mut Out<'_>,
     ) -> u32 {
         let (Some(light), Some(mut desc)) =
             (&glow.light, self.effect_materials.get(&base).cloned())
@@ -1301,7 +1321,7 @@ impl Library {
 
     /// The sub-meshes of an effect mesh (with vertex colours), sent as
     /// `Update::EffectMesh`; cached like `mesh`.
-    fn effect_mesh(&mut self, object: &ObjectRef, out: &mut Vec<Update>) -> Vec<Option<u32>> {
+    fn effect_mesh(&mut self, object: &ObjectRef, out: &mut Out<'_>) -> Vec<Option<u32>> {
         let key = object.key();
         if self.effect_meshes.contains_key(&(key.clone(), 0)) {
             return (0..)
@@ -1381,7 +1401,7 @@ impl Library {
     }
 
     /// Ids of the mesh's sub-meshes (`None` for sub-meshes that failed).
-    fn mesh(&mut self, object: &ObjectRef, out: &mut Vec<Update>) -> Vec<Option<u32>> {
+    fn mesh(&mut self, object: &ObjectRef, out: &mut Out<'_>) -> Vec<Option<u32>> {
         let key = object.key();
         if self.meshes.contains_key(&(key.clone(), 0)) {
             return (0..)
@@ -1406,7 +1426,7 @@ impl Library {
         &mut self,
         prefab: &Prefab,
         node: usize,
-        out: &mut Vec<Update>,
+        out: &mut Out<'_>,
     ) -> Option<Vec<Option<u32>>> {
         let n = &prefab.nodes[node];
         let key = n.object.clone();
@@ -1434,7 +1454,7 @@ impl Library {
         &mut self,
         key: Key,
         geometry: &sn_unity::MeshGeometry,
-        out: &mut Vec<Update>,
+        out: &mut Out<'_>,
     ) -> Vec<Option<u32>> {
         let mut ids = Vec::new();
         for (i, data) in split_geometry(geometry, None, None).into_iter().enumerate() {
@@ -1448,7 +1468,7 @@ impl Library {
 
     /// A prefab's id; `spawn`: with what its placeholders spawn (false for a
     /// placement whose saved objects already hold it, `placeholders_saved`).
-    fn prefab_as(&mut self, path: &str, spawn: bool, out: &mut Vec<Update>) -> Option<u32> {
+    fn prefab_as(&mut self, path: &str, spawn: bool, out: &mut Out<'_>) -> Option<u32> {
         let key = (path.to_string(), spawn);
         if let Some(id) = self.prefabs.get(&key) {
             return *id;
@@ -1484,7 +1504,7 @@ impl Library {
     /// object" (4 placements in the world, all found that way: `sn-inspect
     /// prefab --placeholders`). `below`: the class ids of the saved objects
     /// below it.
-    fn placeholders_saved(&mut self, path: &str, below: &[&str], out: &mut Vec<Update>) -> bool {
+    fn placeholders_saved(&mut self, path: &str, below: &[&str], out: &mut Out<'_>) -> bool {
         if below.is_empty() || path.starts_with("WorldEntities/Creatures/") {
             return false;
         }
@@ -1517,17 +1537,12 @@ impl Library {
 
     /// Sends a loaded hierarchy's drawn parts and lights, with what its
     /// placeholders spawn; its id, `None` if it has nothing to draw.
-    fn prefab_parts(&mut self, prefab: &Prefab, out: &mut Vec<Update>) -> Option<u32> {
+    fn prefab_parts(&mut self, prefab: &Prefab, out: &mut Out<'_>) -> Option<u32> {
         self.prefab_parts_as(prefab, true, out)
     }
 
     /// `prefab_parts`; `spawn`: with what its placeholders spawn.
-    fn prefab_parts_as(
-        &mut self,
-        prefab: &Prefab,
-        spawn: bool,
-        out: &mut Vec<Update>,
-    ) -> Option<u32> {
+    fn prefab_parts_as(&mut self, prefab: &Prefab, spawn: bool, out: &mut Out<'_>) -> Option<u32> {
         let PrefabContent {
             parts,
             lights,
@@ -1560,7 +1575,7 @@ impl Library {
 
     /// A controller compiled with its clips (cached; `None` if it failed
     /// to load).
-    fn program(&mut self, controller: &ObjectRef, out: &mut Vec<Update>) -> Option<Arc<Program>> {
+    fn program(&mut self, controller: &ObjectRef, out: &mut Out<'_>) -> Option<Arc<Program>> {
         let key = controller.key();
         if let Some(p) = self.programs.get(&key) {
             return p.clone();
@@ -1592,7 +1607,7 @@ impl Library {
         &mut self,
         prefab: &Prefab,
         shapes: &HashMap<usize, sn_unity::BlendShapes>,
-        out: &mut Vec<Update>,
+        out: &mut Out<'_>,
     ) -> Vec<RigBuild> {
         let mut rigs = Vec::new();
         for (i, node) in prefab.nodes.iter().enumerate() {
@@ -1695,7 +1710,7 @@ impl Library {
         program: &Program,
         slot_nodes: &[Option<usize>],
         node_map: &HashMap<usize, u16>,
-        out: &mut Vec<Update>,
+        out: &mut Out<'_>,
     ) -> (HashMap<usize, u16>, Vec<ShapeDesc>) {
         // Prefab node → (channel, pose offset) of each driven channel.
         let mut driven: BTreeMap<usize, Vec<(usize, usize)>> = BTreeMap::new();
@@ -1772,7 +1787,7 @@ impl Library {
         prefab: &Prefab,
         node: usize,
         rigs: &mut [RigBuild],
-        out: &mut Vec<Update>,
+        out: &mut Out<'_>,
     ) -> Option<GpuSkin> {
         let n = &prefab.nodes[node];
         if n.bones.is_empty() || n.bones.len() > 256 {
@@ -1845,7 +1860,7 @@ impl Library {
         geometry: &sn_unity::MeshGeometry,
         shapes: &sn_unity::BlendShapes,
         joints: Option<usize>,
-        out: &mut Vec<Update>,
+        out: &mut Out<'_>,
     ) -> Vec<Option<u32>> {
         let skinned = joints.is_some();
         if self.morph_meshes.contains_key(&(key.clone(), skinned, 0)) {
@@ -1896,7 +1911,7 @@ impl Library {
     fn prefab_content(
         &mut self,
         prefab: &Prefab,
-        out: &mut Vec<Update>,
+        out: &mut Out<'_>,
         depth: usize,
     ) -> PrefabContent {
         let mut parts = Vec::new();
@@ -2145,7 +2160,7 @@ impl Library {
         &mut self,
         prefab: &Prefab,
         content: &mut PrefabContent,
-        out: &mut Vec<Update>,
+        out: &mut Out<'_>,
         depth: usize,
     ) {
         for group in &prefab.placeholder_groups {
@@ -2262,7 +2277,7 @@ impl Library {
     fn placeholder_content(
         &mut self,
         path: &str,
-        out: &mut Vec<Update>,
+        out: &mut Out<'_>,
         depth: usize,
     ) -> Option<Arc<PrefabContent>> {
         if let Some(c) = self.spawned_contents.get(path) {
@@ -2290,7 +2305,7 @@ impl Library {
         scene: &mut sn_assets::Scene,
         point: [f32; 3],
         instances: &mut Vec<Instance>,
-        out: &mut Vec<Update>,
+        out: &mut Out<'_>,
     ) -> Result<String, String> {
         let spawn = scene.place_escape_pod(&self.assets, point)?;
         let following = scene.follow_targets(&self.assets)?;
@@ -2334,7 +2349,7 @@ impl Library {
 
     /// The scenes the game spawns at start (`docs/DESIGN.md` M7f): each
     /// top-level object becomes an instance at its world placement.
-    fn scenes(&mut self, options: &SceneOptions, out: &mut Vec<Update>) {
+    fn scenes(&mut self, options: &SceneOptions, out: &mut Out<'_>) {
         let start = Instant::now();
         let autoload = match self.assets.startup_scenes() {
             Ok((_, autoload)) => autoload,
@@ -2468,7 +2483,7 @@ impl Library {
     /// the equipment rule for a new game, as one prefab at the identity
     /// (the client moves its rig to the player). Its placeholders are not
     /// spawned (it has none in use; the tools come with their items).
-    fn body(&mut self, options: &BodyOptions, out: &mut Vec<Update>) {
+    fn body(&mut self, options: &BodyOptions, out: &mut Out<'_>) {
         let start = Instant::now();
         let mut body = match self.assets.player_body() {
             Ok(b) => b,
@@ -2546,12 +2561,12 @@ impl Library {
 
     /// A prefab drawn as a still object: creatures move and animate, so
     /// they are left out (a later milestone).
-    fn still_prefab(&mut self, path: &str, out: &mut Vec<Update>) -> Option<u32> {
+    fn still_prefab(&mut self, path: &str, out: &mut Out<'_>) -> Option<u32> {
         self.still_prefab_as(path, true, out)
     }
 
     /// `still_prefab`; `spawn`: with what its placeholders spawn.
-    fn still_prefab_as(&mut self, path: &str, spawn: bool, out: &mut Vec<Update>) -> Option<u32> {
+    fn still_prefab_as(&mut self, path: &str, spawn: bool, out: &mut Out<'_>) -> Option<u32> {
         if path.starts_with("WorldEntities/Creatures/") {
             return None;
         }
@@ -2570,7 +2585,7 @@ impl Library {
     }
 
     /// A server-made object of `class` at `at` (M9d4b).
-    fn spawned(&mut self, id: u32, class: &str, at: Placement, out: &mut Vec<Update>) {
+    fn spawned(&mut self, id: u32, class: &str, at: Placement, out: &mut Out<'_>) {
         let instance = self
             .class_paths
             .get(class)
@@ -2594,7 +2609,7 @@ impl Library {
         placeholder: &Placement,
         instances: &mut Vec<Instance>,
         keys: &mut Vec<(usize, EntityKey)>,
-        out: &mut Vec<Update>,
+        out: &mut Out<'_>,
     ) {
         let Some(tables) = &self.slots else { return };
         let slots = match sn_world::parse_slots(data) {
@@ -2643,7 +2658,7 @@ impl Library {
         }
     }
 
-    fn batch(&mut self, game: &GameData, coord: BatchCoord, out: &mut Vec<Update>) {
+    fn batch(&mut self, game: &GameData, coord: BatchCoord, out: &mut Out<'_>) {
         let start = Instant::now();
         let mut instances = Vec::new();
         let mut keys = Vec::new();
@@ -2957,23 +2972,12 @@ fn worker(
     let _ = tx.send(Update::Ready {
         ms: start.elapsed().as_secs_f32() * 1000.0,
     });
+    let mut out = Out(&tx);
     if let Some(options) = scenes {
-        let mut out = Vec::new();
         library.scenes(&options, &mut out);
-        for update in out {
-            if tx.send(update).is_err() {
-                return;
-            }
-        }
     }
     if let Some(options) = body {
-        let mut out = Vec::new();
         library.body(&options, &mut out);
-        for update in out {
-            if tx.send(update).is_err() {
-                return;
-            }
-        }
     }
     loop {
         let coord = {
@@ -2995,18 +2999,12 @@ fn worker(
                 queue = shared.wake.wait(queue).unwrap();
             }
         };
-        let mut out = Vec::new();
         match coord {
             Ok(coord) => library.batch(game, coord, &mut out),
             Err(spawns) => {
                 for (id, class, at) in spawns {
                     library.spawned(id, &class, at, &mut out);
                 }
-            }
-        }
-        for update in out {
-            if tx.send(update).is_err() {
-                return;
             }
         }
     }
@@ -3023,6 +3021,10 @@ struct BatchObjects {
     level_keys: [Vec<EntityKey>; SLOTS],
     /// Spawned entities per cell level, `None` when not spawned.
     shown: [Option<Vec<Entity>>; SLOTS],
+    /// Next instance index to inspect when spawning a cell level across frames.
+    spawn_cursor: [usize; SLOTS],
+    /// Shown objects (not entities) that spawn slots filled, per cell level.
+    slot_objects: [usize; SLOTS],
     /// Whether its entities cast sun shadows (only the nearest level of
     /// detail: the game's shadows reach 50 m).
     casting: bool,
@@ -3085,6 +3087,7 @@ pub struct ObjectStats {
 pub struct ObjectStreamer {
     shared: Arc<Shared>,
     rx: Mutex<Receiver<Update>>,
+    pending: VecDeque<Update>,
     ready: bool,
     textures: HashMap<u32, Handle<Image>>,
     /// Materials as the worker described them, made per sky on first use.
@@ -3208,6 +3211,7 @@ impl ObjectStreamer {
         ObjectStreamer {
             shared,
             rx: Mutex::new(rx),
+            pending: VecDeque::new(),
             ready: false,
             textures: HashMap::new(),
             material_descs: HashMap::new(),
@@ -3352,12 +3356,7 @@ impl ObjectStreamer {
                 if let Some(e) = shown {
                     s.entities += e.len();
                     s.per_level[level] += e.len();
-                    s.slot_objects += b
-                        .instances
-                        .iter()
-                        .flatten()
-                        .filter(|i| i.from_slot && i.level == level)
-                        .count();
+                    s.slot_objects += b.slot_objects[level];
                 }
             }
         }
@@ -3373,12 +3372,17 @@ impl ObjectStreamer {
     /// True when every wanted batch has its objects on screen.
     pub fn settled(&self, terrain: &TerrainStreamer) -> bool {
         self.ready
+            && self.pending.is_empty()
             && terrain.shown_lods().all(|(coord, lod)| {
                 self.batches.get(&coord).is_some_and(|b| {
-                    b.instances.is_some()
-                        && (0..SLOTS).all(|l| {
-                            b.shown[l].is_some() == shows_slot(l, lod, coord, self.camera_batch)
-                        })
+                    let Some(instances) = &b.instances else {
+                        return false;
+                    };
+                    (0..SLOTS).all(|l| {
+                        let want = shows_slot(l, lod, coord, self.camera_batch);
+                        b.shown[l].is_some() == want
+                            && (!want || b.spawn_cursor[l] >= instances.len())
+                    })
                 })
             })
     }
@@ -3547,6 +3551,7 @@ fn split_geometry(
 }
 
 pub(crate) fn build_mesh(data: MeshData) -> Mesh {
+    let _perf = crate::perf::span("objects::build_mesh");
     let n = data.positions.len();
     let skinned = data.joints.len() == n && data.weights.len() == n && n > 0;
     // A later streamed placement can need this mesh with reversed winding,
@@ -3743,6 +3748,30 @@ pub(crate) fn apply_sky(params: &mut ObjectParams, sky: Option<&SkyLook>) {
     params.sh = sky.sh.map(|c| Vec3::from(c).extend(0.0));
 }
 
+fn update_upload_cost(update: &Update) -> (usize, usize) {
+    match update {
+        Update::Texture {
+            image: Some(image), ..
+        } => (image.data.as_ref().map_or(0, Vec::len), 0),
+        Update::Mesh { data, .. } => (0, data.positions.len()),
+        _ => (0, 0),
+    }
+}
+
+fn within_upload_budget(uploaded_bytes: usize, uploaded_vertices: usize, next: &Update) -> bool {
+    let (bytes, vertices) = update_upload_cost(next);
+    if bytes == 0 && vertices == 0 {
+        return true;
+    }
+    if uploaded_bytes == 0 && uploaded_vertices == 0 {
+        return true;
+    }
+    uploaded_bytes < TEXTURE_UPLOAD_BYTES_PER_FRAME
+        && uploaded_vertices < MESH_UPLOAD_VERTICES_PER_FRAME
+        && uploaded_bytes.saturating_add(bytes) <= TEXTURE_UPLOAD_BYTES_PER_FRAME
+        && uploaded_vertices.saturating_add(vertices) <= MESH_UPLOAD_VERTICES_PER_FRAME
+}
+
 /// Every frame: take what the worker sent, follow the terrain's batches,
 /// spawn and despawn objects.
 #[allow(clippy::too_many_arguments)] // a Bevy system: one parameter per resource
@@ -3763,6 +3792,7 @@ pub fn stream_objects(
     mut bindposes: ResMut<Assets<SkinnedMeshInverseBindposes>>,
     mut exit: MessageWriter<AppExit>,
 ) {
+    let _perf = crate::perf::span("objects::stream_objects");
     let streamer = &mut *streamer;
     let mut pixel = |rgba: [u8; 4]| {
         images.add(Image::new(
@@ -3783,8 +3813,19 @@ pub fn stream_objects(
         white: defaults.white.clone(),
     };
 
-    let updates: Vec<Update> = streamer.rx.lock().unwrap().try_iter().collect();
-    for update in updates {
+    streamer
+        .pending
+        .extend(streamer.rx.lock().unwrap().try_iter());
+    let mut uploaded_bytes = 0usize;
+    let mut uploaded_vertices = 0usize;
+    while let Some(next) = streamer.pending.front() {
+        if !within_upload_budget(uploaded_bytes, uploaded_vertices, next) {
+            break;
+        }
+        let (bytes, vertices) = update_upload_cost(next);
+        uploaded_bytes = uploaded_bytes.saturating_add(bytes);
+        uploaded_vertices = uploaded_vertices.saturating_add(vertices);
+        let update = streamer.pending.pop_front().unwrap();
         match update {
             Update::Ready { ms } => {
                 info!("objects: asset index ready after {ms:.0} ms");
@@ -3794,8 +3835,12 @@ pub fn stream_objects(
                 info!("objects: LOD settings (QualitySettings High) {settings:?}");
                 commands.insert_resource(settings);
             }
-            Update::Texture { id, texture, srgb } => {
-                if let Some(image) = to_image(&texture, srgb) {
+            Update::Texture { id, image } => {
+                if let Some(image) = image {
+                    crate::perf::count(
+                        "objects::image_bytes",
+                        image.data.as_ref().map_or(0, Vec::len),
+                    );
                     streamer.textures.insert(id, images.add(image));
                 }
             }
@@ -3816,6 +3861,7 @@ pub fn stream_objects(
                 streamer.material_descs.insert(id, *desc);
             }
             Update::Mesh { id, data } => {
+                crate::perf::count("objects::mesh_vertices", data.positions.len());
                 streamer
                     .mesh_triangles
                     .insert(id, (data.indices.len() / 3) as u32);
@@ -4037,56 +4083,83 @@ pub fn stream_objects(
             let Some(b) = streamer.batches.get_mut(&coord) else {
                 break;
             };
-            match (&b.shown[level], want) {
-                (Some(_), false) => {
+            if !want {
+                if b.shown[level].is_some() {
                     for key in std::mem::take(&mut b.level_keys[level]) {
                         streamer.keyed.remove(&key);
                     }
                     for entity in b.shown[level].take().into_iter().flatten() {
                         commands.entity(entity).despawn();
                     }
+                    b.spawn_cursor[level] = 0;
+                    b.slot_objects[level] = 0;
                 }
-                (None, true) if budget > 0 => {
-                    let todo: Vec<(Instance, Option<EntityKey>)> = b
-                        .instances
-                        .iter()
-                        .flatten()
-                        .enumerate()
-                        .filter(|(_, i)| i.level == level)
-                        .map(|(n, i)| (*i, b.keys.get(&n).cloned()))
-                        .collect();
-                    let mut entities = Vec::new();
-                    let mut level_keys = Vec::new();
-                    let mut spawner = Spawner {
-                        commands: &mut commands,
-                        materials: &mut materials,
-                        defaults: &defaults,
-                        light: &light,
-                        water: water.as_deref(),
-                    };
-                    for (inst, key) in &todo {
-                        if key.as_ref().is_some_and(|k| streamer.gone.contains(k)) {
-                            streamer.item_stats.skipped_gone += 1;
-                            continue;
-                        }
-                        let first = entities.len();
-                        streamer.spawn_instance(inst, casting, &mut spawner, &mut entities);
-                        if let Some(key) = key {
-                            streamer
-                                .keyed
-                                .entry(key.clone())
-                                .or_default()
-                                .extend_from_slice(&entities[first..]);
-                            level_keys.push(key.clone());
+                continue;
+            }
+            let total = b.instances.as_ref().map_or(0, Vec::len);
+            let needs_spawn = b.shown[level].is_none() || b.spawn_cursor[level] < total;
+            if needs_spawn && budget > 0 {
+                let start_cursor = b.spawn_cursor[level];
+                let mut cursor = start_cursor;
+                let mut todo: Vec<(usize, Instance, Option<EntityKey>)> = Vec::new();
+                if let Some(instances) = &b.instances {
+                    for (n, inst) in instances.iter().enumerate().skip(start_cursor) {
+                        if inst.level == level {
+                            todo.push((n, *inst, b.keys.get(&n).cloned()));
+                        } else if todo.is_empty() {
+                            cursor = n + 1;
                         }
                     }
-                    budget = budget.saturating_sub(entities.len().max(1));
-                    if let Some(b) = streamer.batches.get_mut(&coord) {
-                        b.shown[level] = Some(entities);
-                        b.level_keys[level] = level_keys;
+                }
+                let mut entities = Vec::new();
+                let mut level_keys = Vec::new();
+                let mut slot_objects = 0;
+                let mut spawner = Spawner {
+                    commands: &mut commands,
+                    materials: &mut materials,
+                    defaults: &defaults,
+                    light: &light,
+                    water: water.as_deref(),
+                };
+                for (idx, (n, inst, key)) in todo.iter().enumerate() {
+                    if budget == 0 {
+                        break;
+                    }
+                    cursor = *n + 1;
+                    if idx + 1 == todo.len() {
+                        cursor = total;
+                    }
+                    if key.as_ref().is_some_and(|k| streamer.gone.contains(k)) {
+                        streamer.item_stats.skipped_gone += 1;
+                        continue;
+                    }
+                    if inst.from_slot {
+                        slot_objects += 1;
+                    }
+                    let first = entities.len();
+                    streamer.spawn_instance(inst, casting, &mut spawner, &mut entities);
+                    let spawned_now = entities.len() - first;
+                    budget = budget.saturating_sub(spawned_now.max(1));
+                    if let Some(key) = key {
+                        streamer
+                            .keyed
+                            .entry(key.clone())
+                            .or_default()
+                            .extend_from_slice(&entities[first..]);
+                        level_keys.push(key.clone());
                     }
                 }
-                _ => {}
+                if todo.is_empty() {
+                    cursor = total;
+                    budget = budget.saturating_sub(1);
+                }
+                crate::perf::count("objects::spawn_entities", entities.len());
+                if let Some(b) = streamer.batches.get_mut(&coord) {
+                    b.shown[level].get_or_insert_with(Vec::new).extend(entities);
+                    b.level_keys[level].extend(level_keys);
+                    b.spawn_cursor[level] = cursor;
+                    b.slot_objects[level] += slot_objects;
+                }
             }
         }
     }
@@ -4287,6 +4360,7 @@ pub fn switch_lods(
     mut visibility: Query<&mut Visibility>,
     mut last_log: Local<f32>,
 ) {
+    let _perf = crate::perf::span("objects::switch_lods");
     let (Some(settings), Ok((cam, projection))) = (settings, camera.single()) else {
         return;
     };
@@ -4424,6 +4498,7 @@ pub fn update_atmosphere_skies(
     )>,
     mut previous: Local<Vec<sn_sim::atmosphere::Volume>>,
 ) {
+    let _perf = crate::perf::span("objects::update_atmosphere_skies");
     let mut current: Vec<_> = volumes
         .iter()
         .map(|(entity, volume)| {
@@ -5690,6 +5765,59 @@ mod tests {
     fn levels_follow_the_terrain_detail() {
         assert!(shows(0, 0) && shows(3, 0) && shows(3, 3));
         assert!(!shows(0, 1) && !shows(2, 3));
+    }
+
+    #[test]
+    fn upload_budget_caps_textures_and_meshes_without_starving_large_assets() {
+        let make_tex = |len: usize| Update::Texture {
+            id: 1,
+            image: Some(Image {
+                data: Some(vec![0u8; len]),
+                ..Default::default()
+            }),
+        };
+        let make_mesh = |verts: usize| Update::Mesh {
+            id: 1,
+            data: MeshData {
+                positions: vec![[0.0; 3]; verts],
+                normals: Vec::new(),
+                tangents: Vec::new(),
+                colors: Vec::new(),
+                uvs: Vec::new(),
+                indices: Vec::new(),
+                joints: Vec::new(),
+                weights: Vec::new(),
+                morphs: Vec::new(),
+            },
+        };
+        // Even an oversized single texture or mesh is allowed when nothing has been uploaded yet.
+        assert!(within_upload_budget(
+            0,
+            0,
+            &make_tex(TEXTURE_UPLOAD_BYTES_PER_FRAME * 2)
+        ));
+        assert!(within_upload_budget(
+            0,
+            0,
+            &make_mesh(MESH_UPLOAD_VERTICES_PER_FRAME * 2)
+        ));
+        // Once part of the budget is used, an update that would exceed the cap waits for next frame.
+        let half_tex = TEXTURE_UPLOAD_BYTES_PER_FRAME / 2;
+        assert!(within_upload_budget(half_tex, 0, &make_tex(half_tex)));
+        assert!(!within_upload_budget(half_tex + 1, 0, &make_tex(half_tex)));
+        let half_mesh = MESH_UPLOAD_VERTICES_PER_FRAME / 2;
+        assert!(within_upload_budget(0, half_mesh, &make_mesh(half_mesh)));
+        assert!(!within_upload_budget(
+            0,
+            half_mesh + 1,
+            &make_mesh(half_mesh)
+        ));
+        // Non-GPU-upload metadata updates pass through without consuming upload budget.
+        assert!(within_upload_budget(
+            TEXTURE_UPLOAD_BYTES_PER_FRAME,
+            MESH_UPLOAD_VERTICES_PER_FRAME,
+            &Update::Ready { ms: 1.0 }
+        ));
     }
 }
 

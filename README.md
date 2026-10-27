@@ -368,6 +368,32 @@ Three 300-frame runs at these settings matched the static scene counts and
 are performance baselines, not proof of pixel-identical captures or a match
 to the original game. Original-game visual comparison: **not tested**.
 
+For opt-in CPU wall-time distributions and frame histograms, set
+`$env:SN_CLIENT_PERF='1'` before either a benchmark or a scripted player run
+(for example `--view 400 --use-item 3 --panel 6=take-all,7=drop,9.5=close
+--shot 12 p1-player`). Redirect stdout/stderr into `out/`. On exit, `perf:`
+lines report count, mean, p50/p95/p99/max and frame histogram bins. Benchmark
+samples follow the measurement interval; player samples begin at one second
+of play and include streaming and screenshot/exit work. Other samples cover
+loading/warm-up. System spans can overlap across threads; do not add them to
+estimate frame cost. `--gpu-timings` also supplies recent render CPU diagnostic
+averages (snapshots every 120 frames), distinct from whole-run distributions.
+At most 120,000 samples are retained per series. Unset `SN_CLIENT_PERF` for
+ordinary play. The dev profile already optimizes our code at level 1 and
+dependencies at level 3; use `cargo run --release -p sn-client` for performance
+measurements.
+
+P1 moved object-texture conversion to the asset worker (three release runs:
+player object-stream worst 39–50 ms to under 0.8 ms at view 400 / 1600 × 900),
+stopped player/swim profiling before screenshot capture/exit, budgeted
+per-frame object GPU texture/mesh uploads and per-slot entity spawns (player
+max 66.5–70.8 ms to 22.6–28.5 ms; `render::assets` max 48.6–56.7 ms to
+5.6–8.7 ms), and staged in-place terrain/grass LOD transitions across frames
+(35 s swim route max 166.8–174.8 ms to 23.4–26.5 ms; `render::mesh_alloc` max
+122.9–143.7 ms to 7.9–8.0 ms). Inactive UI pruning was tested and reverted
+because repeat runs did not show a reliable gameplay frame-time win. Details
+and commands: [P1 performance evidence](docs/P1-PERFORMANCE.md).
+
 ## Play together (experimental)
 
 Each player needs their own installed copy of Subnautica, the same game

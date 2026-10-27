@@ -27,6 +27,7 @@ pub fn repeat_sampler() -> ImageSampler {
 /// with every complete mip level; other formats are decoded to RGBA (base
 /// level only).
 pub fn to_image(t: &TerrainTexture, srgb: bool) -> Option<Image> {
+    let _perf = crate::perf::span("textures::to_image");
     let tex = &t.texture;
     let (w, h) = (tex.width as u32, tex.height as u32);
     let compressed = match (tex.format, srgb) {

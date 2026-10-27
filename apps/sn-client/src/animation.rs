@@ -158,6 +158,7 @@ pub fn animate(
     mut transforms: Query<&mut Transform, Without<AnimatedRig>>,
     mut morphs: Query<&mut MeshMorphWeights>,
 ) {
+    let _perf = crate::perf::span("animation::animate");
     let start = Instant::now();
     let dt = time.delta_secs();
     let (mut count, mut updated, mut applied, mut shaped) = (0, 0, 0, 0);

@@ -16,6 +16,7 @@ mod items;
 mod lifepod_light;
 mod object_look;
 mod objects;
+mod perf;
 mod player;
 mod remote;
 mod session;
@@ -893,6 +894,7 @@ struct Started {
 }
 
 fn main() -> AppExit {
+    let cpu_timings = perf::init();
     let mut args = match parse_args() {
         Ok(args) => args,
         Err(message) => {
@@ -1307,7 +1309,13 @@ fn main() -> AppExit {
     if let Some(baseline) = baseline {
         app.insert_resource(baseline);
     }
-    app.run()
+    if cpu_timings {
+        perf::install(&mut app);
+        app.add_systems(Last, perf::frame.before(measure));
+    }
+    let result = app.run();
+    perf::report();
+    result
 }
 
 /// The game's "Color grading" option (Unity's Post Processing Stack v1,
@@ -1403,6 +1411,7 @@ fn play_shot(mut commands: Commands, mut shot: ResMut<PlayShot>, sim: Res<player
     if shot.taken || sim.play_seconds() < shot.seconds {
         return;
     }
+    perf::capture_started();
     shot.taken = true;
     if let Err(e) = std::fs::create_dir_all("out") {
         error!("out/: {e}");

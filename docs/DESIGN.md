@@ -170,6 +170,47 @@ Each milestone is small, independently verifiable, and ends with a "Done when"
 checklist that is run, not assumed. Later milestones will be refined when we
 reach them — expect the far end of this list to change.
 
+### Perf P1 — Client frame time (not the gameplay P1 below; commits P1a–P1e) (plan, 2026-10-27)
+
+| # | Goal | Done when |
+|---|---|---|
+| **Perf P1** ✅ | Measure and remove client stalls without changing drawn content or simulation rules. First record release frame distributions and CPU/GPU costs; rank costs, fix each independently, repeat the same runs three times. Keep UI diffs small for concurrent inventory work. | Raw frame samples include p50/p95/p99/max and histogram counts; CPU system/stage and GPU scopes are explicit; three before/after runs per fix record spread and unchanged scene counts; workspace tests and clippy with warnings denied pass. Performance targets are reductions in the measured dominant work, not an unmeasured universal FPS claim. |
+
+Plan: use the existing M8g0 baseline harness (fixed camera, seeds, resolution,
+warm-up, uncapped presentation), plus a scripted player/PDA run. Add opt-in CPU
+timers before optimizing; keep loading and settled samples distinguishable.
+Inspect streaming uploads, animation, UI worker/build/render preparation,
+hot-loop allocation/logging and presentation. Existing dev settings already
+use opt-level 1 for workspace code and 3 for dependencies; README commands use
+dev, so measure release rather than assume completely unoptimized development
+builds. No new dependencies or architectural changes are planned.
+
+P1 evidence and exact commands: [P1-PERFORMANCE.md](P1-PERFORMANCE.md).
+Completion checks:
+- [x] Three initial release runs per fixed-camera/player case, raw fixed
+  samples and p50/p95/p99/max/histograms retained in ignored `out/`.
+- [x] Main object-stream system worst below 2 ms in three matched player
+  runs after worker image preparation (0.727–0.779 ms; before 39.214–49.650).
+- [x] P1c tested in three alternating eager/pruned rounds and rejected:
+  worker savings did not establish a net gameplay tail win. Eager UI retained.
+- [x] Static scene snapshots and installed UI parity checked for candidate;
+  candidate was reverted. See the evidence note for exact scope.
+- [x] P1d: attribute gameplay tails separately from capture/exit across fixed,
+  player, and 35 s swim routes; budget object GPU texture/mesh uploads per frame
+  (player max `66.462–70.822 ms -> 27.872–36.735 ms`, `render::assets` max
+  `48.557–56.673 ms -> 5.719–6.519 ms`, swim object burst `74.958–77.408 ms ->
+  24.290–31.679 ms`).
+- [x] P1e: chunk oversized terrain/grass meshes (`<= 12,000` triangles), stage
+  in-place LOD transitions across frames (`48,000` vertices/frame), and enforce
+  `SPAWN_BUDGET = 600` within each `(batch, level)` object slot (35 s swim max
+  `168.571–171.400 ms -> 23.447–26.508 ms`, `render::mesh_alloc` max
+  `122.900–143.738 ms -> 7.901–8.014 ms`, `objects::stream_objects` max
+  `13.904–20.892 ms -> 1.703–2.015 ms`; player max `22.645–28.515 ms`).
+- [x] Workspace tests (`724 passed, 0 failed, 63 ignored`), clippy with warnings
+  denied, and fmt rerun before commits.
+- [x] Default view-distance and dev/release profile checks recorded, with
+  noise and remaining untested costs stated; no universal FPS claim.
+
 ### Phase A — Terrain, headless → visible
 
 | # | Goal | Done when |

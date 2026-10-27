@@ -191,6 +191,7 @@ fn update_params(
     directional: Query<(&GameDirectionalLight, &Transform)>,
     mut params: ResMut<GameLightParams>,
 ) {
+    let _perf = crate::perf::span("game_light::update_params");
     let Ok(fog) = cameras.single() else {
         return;
     };
@@ -296,6 +297,7 @@ fn upload_params(
     gpu_images: Res<RenderAssets<GpuImage>>,
     queue: Res<RenderQueue>,
 ) {
+    let _perf = crate::perf::span("game_light::upload_params");
     let (Some(params), Some(images)) = (params, images) else {
         return;
     };

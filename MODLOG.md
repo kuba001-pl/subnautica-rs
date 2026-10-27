@@ -257,6 +257,218 @@ No new dependencies.
   spacing is a hypothesis); the Tank's oxygen line, tools' `EnergyMixin`
   charge and food decay are not ported.
 
+## 2026-10-27 — P1e: staged terrain/grass LOD uploads and intra-slot object spawn budget
+
+**What/why:** Fixed the remaining movement-boundary frame spikes in the 35 s
+swimming/turning scenario (`--start -5 -10 -5 --look 200 -10 -5 --hold-forward 1
+--turn 8 --shot 35`). Each LOD-0 terrain batch completion in `terrain::stream`
+previously uploaded all `TerrainPart`s (`668k–848k` vertices, single base layer
+up to `261,530` vertices) and `GrassPart`s (`521k–736k` vertices, single grass
+layer up to `583,375` vertices) in a single frame (`render::mesh_alloc`
+`103.1–143.7 ms`), while `objects::stream_objects` spawned all `2,118–4,914`
+fine-detail (`level == 0`) entities of that batch in one frame (`8.4–20.9 ms`)
+because `SPAWN_BUDGET` was checked only between `(batch, level)` slots.
+
+- `apps/sn-client/src/terrain.rs`: split oversized `TerrainPart` and `GrassPart`
+  meshes on the worker thread into chunks of at most `PART_TRIANGLE_BUDGET =
+  12,000` triangles (`<= 36,000` vertices, preserving shared batch bounding
+  boxes and counting one logical mesh per layer in `StreamStats::shown_meshes`),
+  and stage in-place LOD transitions across frames in `TerrainStreamer::staging`
+  under `STAGED_VERTEX_BUDGET = 48,000` vertices per frame, swapping the batch's
+  entities on the frame after its GPU buffers finish allocating so the old LOD
+  remains on screen without holes. Added unit test
+  `oversized_parts_split_into_vertex_budgeted_chunks_and_share_bounds`.
+- `apps/sn-client/src/objects.rs`: track `spawn_cursor` and `slot_objects` per
+  `(batch, level)` slot in `BatchObjects` and lower `SPAWN_BUDGET` from `1,500`
+  to `600` entities per frame so dense fine-detail slots are spread across
+  frames while `settled()` requires `spawn_cursor[l] >= instances.len()`.
+
+Three matched before/after release runs at `--view 400 --resolution 1600 900`:
+- Fixed camera (`600` frames): before (P1d) p50 `10.230 / 9.847 / 9.773 ms`,
+  p95 `12.436 / 11.884 / 10.998 ms`, p99 `14.109 / 13.694 / 11.826 ms`, max
+  `17.956 / 15.741 / 12.434 ms`; after p50 `9.852 / 9.895 / 9.859 ms`, p95
+  `10.763 / 11.163 / 10.848 ms`, p99 `11.434 / 11.796 / 11.505 ms`, max
+  `12.659 / 16.137 / 11.759 ms`. All nine fixed-camera static snapshots across
+  P1d-before, P1d-after, and P1e-after match byte-for-byte (`103` batches,
+  `4,393,498` terrain triangles, `589` terrain meshes, `25,311` grass tufts,
+  `1,970,238` grass triangles, `17,194` object entities, `0` warnings).
+- Player + PDA (`--shot 12`, excluding capture/exit): before (P1d) p50
+  `10.812 / 11.726 / 10.566 ms`, p95 `12.423 / 25.528 / 11.997 ms`, p99
+  `15.852 / 29.413 / 14.340 ms`, max `27.872 / 36.735 / 28.438 ms`
+  (`objects::stream_objects` max `2.460 / 2.264 / 2.296 ms`); after p50
+  `10.714 / 10.791 / 10.660 ms`, p95 `12.389 / 12.437 / 12.201 ms`, p99
+  `14.301 / 13.974 / 14.628 ms`, max `22.645 / 26.272 / 28.515 ms`
+  (`objects::stream_objects` max `0.503 / 0.488 / 0.518 ms`). All runs perform
+  the six locker `switch` moves and refuse the pod drop with `0` warnings.
+- Swim route (`--shot 35`, excluding capture/exit): before (P1d) p50
+  `8.967 / 8.887 / 10.194 ms`, p95 `11.179 / 11.097 / 17.421 ms`, p99
+  `12.642 / 12.590 / 20.997 ms`, max `168.571 / 171.400 / 169.033 ms`
+  (`render::assets` max `127.600 / 126.900 / 144.364 ms`, `render::mesh_alloc`
+  max `123.300 / 122.900 / 143.738 ms`, `objects::stream_objects` max
+  `14.316 / 13.904 / 20.892 ms`); after p50 `8.989 / 8.984 / 8.967 ms`, p95
+  `11.783 / 11.517 / 11.562 ms`, p99 `16.358 / 16.317 / 16.494 ms`, max
+  `25.256 / 26.508 / 23.447 ms` (`render::assets` max `11.021 / 11.635 /
+  11.083 ms`, `render::mesh_alloc` max `8.014 / 7.957 / 7.901 ms`,
+  `objects::stream_objects` max `1.703 / 2.015 / 1.766 ms`), with `0` frames
+  `>= 33.333 ms` across `3,630–3,635` frames and identical end-of-route scene
+  counts (`102` batches, `2,950,338` terrain triangles, `16,852` grass tufts,
+  `13,171` object entities, `0` warnings).
+
+**Verify:** `cargo test --workspace` (724 passed, 0 failed, 63 ignored without
+`SUBNAUTICA_DIR`), `cargo clippy --workspace --all-targets -- -D warnings`,
+`cargo fmt --all -- --check`.
+
+## 2026-10-27 — P1d: render-stage spike attribution and object GPU upload budget
+
+**What/why:** Extended `SN_CLIENT_PERF=1` (`apps/sn-client/src/perf.rs`,
+`main.rs`, `objects.rs`, `terrain.rs`, `game_ui.rs`) to stop sampling at
+`play_shot` before screenshot capture/exit, write `out/p1/frames.csv` and
+`out/p1/spans.csv` on exit, time `Render` schedule sub-stages
+(`render::assets`, `render::images`, `render::mesh_alloc`, `render::meshes`,
+`render::specialize`, `render::queue`, `render::prepare`, `render::render`),
+and correlate slow frames with main-thread work counters across Bevy's
+pipelined extract boundary. Attribution across player and a 35 s swimming/
+turning route (`--start -5 -10 -5 --look 200 -10 -5 --hold-forward 1 --turn 8
+--shot 35`) identified two dominant gameplay stall causes:
+1. Unbounded object asset bursts in `objects::stream_objects`: `library.scenes`
+   and `library.batch` buffered whole-scene/batch updates and `stream_objects`
+   drained all ready textures and meshes in one frame (152.9 MB textures +
+   193,562 mesh vertices at `play=1.36-1.62 s` in player mode -> `render::assets`
+   47.6-56.7 ms -> 64.7-70.8 ms frame spike; 45.0 MB textures + 401,807 mesh
+   vertices at `play=3.94-3.98 s` in swim mode -> `render::assets` 47.1-49.0 ms
+   -> 75.0-78.7 ms frame spike).
+2. Unstaged LOD-0 terrain + grass batch uploads in `terrain::stream` during
+   movement across streaming boundaries (1.19M-1.58M vertices uploaded in one
+   frame at `play=7.6-9.0 s` and `32.4-33.5 s` in swim mode -> `render::mesh_alloc`
+   103.1-141.7 ms -> 125.5-174.8 ms frame spikes; addressed next in P1e).
+
+Fixed cause #1 in `apps/sn-client/src/objects.rs`: the object worker now streams
+updates through `Out(&tx)` as each asset is decoded instead of holding a full
+scene/batch buffer, and `ObjectStreamer` queues updates in `pending: VecDeque`
+with per-frame GPU upload budgets (`TEXTURE_UPLOAD_BYTES_PER_FRAME = 8 MiB`,
+`MESH_UPLOAD_VERTICES_PER_FRAME = 32,000`, `SPAWN_BUDGET = 1,500`) while
+requiring `pending.is_empty()` in `settled()`. Three matched before/after release
+runs at `--view 400 --resolution 1600 900`:
+- Fixed camera (`600` frames): before p50 `9.776 / 9.789 / 9.736 ms`, p95
+  `10.859 / 10.541 / 10.712 ms`, p99 `11.469 / 11.335 / 11.166 ms`, max
+  `11.910 / 11.984 / 12.223 ms`; after p50 `10.230 / 9.847 / 9.773 ms`, p95
+  `12.436 / 11.884 / 10.998 ms`, p99 `14.109 / 13.694 / 11.826 ms`, max
+  `17.956 / 15.741 / 12.434 ms`. All six static scene snapshots match
+  byte-for-byte (`103` batches, `4,393,498` terrain triangles, `589` terrain
+  meshes, `25,311` grass tufts, `17,194` object entities, `2,599` object
+  meshes, `598` materials, `1,079` textures, `0` unsettled frames, `0` warnings).
+- Player + PDA (`--shot 12`, excluding capture/exit): before p50
+  `10.694 / 11.366 / 10.704 ms`, p95 `12.190 / 26.040 / 12.123 ms`, p99
+  `13.816 / 29.635 / 13.425 ms`, max `70.822 / 66.462 / 69.706 ms`
+  (`render::assets` max `56.673 / 48.557 / 55.165 ms`); after p50
+  `10.812 / 11.726 / 10.566 ms`, p95 `12.423 / 25.528 / 11.997 ms`, p99
+  `15.852 / 29.413 / 14.340 ms`, max `27.872 / 36.735 / 28.438 ms` (and
+  `21.936 ms` on an isolated warm run; `render::assets` max reduced ~9x to
+  `5.719 / 6.519 / 5.863 ms`, `render::images` max `46.940-48.638 ms ->
+  5.668-5.867 ms`, `render::mesh_alloc` max `36.749-38.850 ms -> 3.868-5.237 ms`).
+  All six runs perform the six locker `switch` moves and refuse the pod drop.
+- Swim route (`--shot 35`, excluding capture/exit): `render::images` max drops
+  from `17.646 / 18.530 / 17.458 ms` to `4.244 / 3.608 / 5.216 ms` and the
+  `play~3.95 s` object burst spike drops from `76.129 / 74.958 / 77.408 ms` to
+  `24.290 / 25.000 / 31.679 ms`; whole-run max (`168.571 / 171.400 / 169.033 ms`
+  vs before `166.824 / 166.956 / 174.818 ms`) remains governed by the four
+  LOD-0 terrain batch uploads (`render::mesh_alloc` 120-144 ms, targeted in P1e).
+
+**Verify:** `cargo test --workspace` (723 passed, 0 failed, 63 ignored without
+`SUBNAUTICA_DIR`), `cargo clippy --workspace --all-targets -- -D warnings`,
+`cargo fmt --all -- --check`.
+
+## 2026-10-27 — P1c: reject inactive UI pruning after matched repeats
+
+**What/why:** reverted the unfinished inactive-hierarchy mesh/material/glyph
+pruning. Three alternating eager/pruned rounds with the existing protocol
+still do not demonstrate a net gameplay frame-time win. Both first fixed
+runs have p99 about 74 ms, confirming shared instability; player p99 remains
+worse in the candidate. Full p50/p95/p99/max table and log paths are in
+`docs/P1-PERFORMANCE.md`. Worker build cost falls roughly in half, and the
+candidate's installed-data oracle passed 32 states / 2,004 visible draws,
+but neither proves the required frame-time benefit. Deferred texture/glyph
+preparation is a possible activation cost, **not proven**. No dependencies,
+whitelist, simulation, or architecture changes. No game data tracked.
+
+**Verify:** `python out/p1/matched.py` documents the archived run sequence
+(do not rerun with existing names); exact executable flags are in each log
+and the evidence note. `cargo test --workspace` and
+`cargo clippy --workspace --all-targets -- -D warnings` run before this commit;
+passed (722 tests, 63 ignored; clippy clean; fmt clean). Restored the bounded profiler snapshot counter after
+clippy caught P1a using an integer API newer than the declared Rust 1.85 MSRV.
+Capture/exit contamination of historical player
+maxima is retained explicitly and will be removed from later attribution.
+
+## 2026-10-27 — P1b: construct object texture images on the asset worker
+
+**What/why:** `Library::texture` now runs the existing `textures::to_image`
+conversion on its worker and sends the resulting CPU `Image`. The main world
+only inserts it into `Assets<Image>`; Bevy still uploads to the GPU. The exact
+conversion, mip selection, colour space, sampler and failure behavior are
+unchanged. This removes copying/decoding an entire completed prefab burst
+from `stream_objects`. No dependencies, game rules or UI changes.
+
+**Measured:** same release commands/settings as P1a; three runs before and
+after, evidence `out/p1/p1-{baseline,textures}-{fixed,player}-N.log`.
+Before: player `stream_objects` worst 39.214-49.650 ms. After: 0.727-0.779 ms across all three runs. The same 129 late
+texture conversions are now worker work, not frame work. Player frame worst
+97.468-119.382 ms before, 64.023-69.920 ms after, including
+capture/exit. Fixed-camera medians remain within noise: before 9.419-9.544,
+after 9.302-9.619 ms; this is a streaming-stall fix, not a steady FPS claim.
+Full suite/clippy **not tested yet**; required before P1 completion.
+
+**Verify:** `cargo build -p sn-client --release`; set `SUBNAUTICA_DIR` and
+`SN_CLIENT_PERF=1`; run P1a's player command with a new capture name three
+times. Expect identical six accepted locker moves/refused pod drop, 129 late
+texture conversions on the asset worker and main `stream_objects` worst
+below 2 ms on this machine. Fixed-camera P1a command: same terrain/object/
+texture counts, zero unsettled frames, warnings and shader errors.
+
+## 2026-10-27 — P1a: opt-in client CPU/frame evidence and benchmark repair
+
+**What/why:** P1 plan added to DESIGN before implementation. Set
+`SN_CLIENT_PERF=1` to collect bounded wall-time distributions for client
+systems, UI worker/build/render preparation and effects; frame histogram,
+p50/p95/p99/max; separate loading/warm-up and benchmark/player samples.
+Recent Bevy render CPU diagnostics are captured every 120 frames when
+`--gpu-timings` is on. README documents the scopes and commands. No dependencies,
+whitelist changes or rendering/simulation changes.
+
+**Benchmark blocker:** the first release `--benchmark` panicked because
+`game_ui::pda_pose` required `BodyDrive`, absent without a player. Its input is
+now optional, yielding no PDA pose in free-camera mode. Added a synthetic
+regression test. This is a harness repair, not a measured FPS improvement.
+Dead-end evidence: `out/p1/p1-before-fixed-1.log` (exit 101); do not treat it
+as a baseline. Dev is already opt-level 1 (our code), 3 (dependencies);
+README's normal solo commands use dev, but unoptimized dependencies are not
+the cause. Dev/release runtime A/B: **not tested**.
+
+**Measured** on i9-10900K / RTX 3080, Vulkan, release; evidence only in ignored
+`out/p1/` and `out/baselines/`. Three runs each, no other client process observed:
+- Fixed camera: 600 frames after 120 settled warm-up frames, view 400,
+  1600 × 900, fixed seeds/time. p50 9.419-9.544 ms, p95 10.631-10.746,
+  p99 11.246-11.380, max 12.368-12.518. All zero unsettled frames.
+- Player `--use-item 3 --panel 6=take-all,7=drop,9.5=close --shot 12 NAME`:
+  play >= 1 s, p50 10.371-10.449, p95 11.669-11.957,
+  p99 12.983-15.460, max 97.468-119.382 ms (includes capture/exit work).
+- Player main-thread `stream_objects` max 39.214-49.650 ms; late texture
+  conversions total 35.088-43.215 ms (129 calls). UI worker build mean
+  3.973-4.008 ms; fixed-camera 3.624-3.649 ms. Animation mean
+  0.295-0.299 ms, LOD 0.136-0.142; terrain stream 0.008-0.009.
+- GPU recent fixed-camera samples in the first run: opaque 0.870 ms,
+  shafts 0.835, bin unpacking 0.459, transparent 0.446. These are individual
+  recent pass averages, not additive full-frame GPU timings.
+
+**Reproduce:** `cargo build -p sn-client --release`; set `SUBNAUTICA_DIR` and
+`SN_CLIENT_PERF=1`; use the fixed-camera command in README with `--view 400
+--time 12 --benchmark 600` and a fresh name; repeat three times. For the player,
+use the script above plus the same view/resolution/seeds/time/water settings.
+Expect `perf:` distributions/histograms on exit, six accepted locker moves,
+the refused pod drop, no warnings. Full commands are recorded in the logs.
+Release build and six real-data runs passed; workspace tests/clippy and the
+new unit test **not tested yet** (required before P1 completion).
+
 ## 2026-10-20 — M9u8b3a: hover and clicks on the game's inventory tab; our panel removed
 
 **What/why:** the next step of M9u8b (DESIGN). M9u8b3 was split: b3a
