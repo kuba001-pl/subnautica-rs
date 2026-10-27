@@ -225,6 +225,17 @@ culling, repeated-mesh batching, material/bind-group churn, shadows, fog/post,
 Bevy systems, allocations, and PDA activation. Do not reduce view distance,
 disable effects, or change visibility rules to meet targets.
 
+Implementation order after attribution: (1) measure Bevy direct instanced
+submission against the indirect path for these CPU-culled, non-occlusion
+views, preserving effective mesh draws and instances; (2) repair winding only
+when a mesh/transform/material component changes, retrying unavailable meshes;
+(3) update only newly written font-atlas regions rather than replacing whole
+images on PDA activation. Keep these changes in separate commits. The inherited
+atmosphere-volume candidate is deferred: it addresses streaming updates rather
+than the measured steady render bottleneck. No dependency, whitelist, game-rule
+or architecture change is planned. Machine contention is recorded per run;
+contended frame distributions do not establish an uncontended FPS target.
+
 - [ ] Repeated baseline and ranked CPU/GPU/PDA attribution recorded.
 - [ ] Each retained fix has repeated before/after evidence and scene/draw parity.
 - [ ] Default-view median and PDA activation targets above passed.

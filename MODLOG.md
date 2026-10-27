@@ -2,6 +2,35 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-27 — P2b: avoid indirect preprocessing for CPU-culled views
+
+**What/why:** the default-view bottleneck is CPU/driver render preparation,
+not normal GPU shading. Use Bevy's direct instanced path on the existing
+CPU-culled camera; preserve shadows, visibility, materials and effects. The
+old submission path remains available with `SN_CLIENT_INDIRECT_DRAWING=1`.
+Retain/refine the inherited opt-in render-stage probes and phase census.
+Discard the temporary readiness logging and defer the unmeasured atmosphere
+candidate. The winding candidate remains separate for the next fix.
+
+**Measured:** three paired 600-frame, view-1200 runs; frame p50 before
+36.227 / 176.883 / 36.112 ms, after 23.570 / 36.502 / 24.823 ms. These are
+heavily contended; the middle baseline has a 149.947 ms recent opaque GPU
+scope. Normal-round batching medians 7.678 / 7.913 → 1.729 / 1.850 ms;
+bind-group medians 4.283 / 4.332 → 0.422 / 0.453 ms. Bin unpacking disappears.
+All six scene snapshots match, including 37,183 mesh instances, 6,171 visible
+instances, 2,765 visible unique meshes and 39,353 object entities. Details,
+full spreads, GPU passes and reproduction: `docs/P1-PERFORMANCE.md` § P2b.
+The 16.667 ms target is not established by these runs.
+
+**Verification:** workspace tests 748 passed, 64 ignored, 0 failed, with
+SUBNAUTICA_DIR unset. Clippy with warnings denied and fmt pass. Supplemental effective-draw
+parity: opaque 1,814, mask 298, shadows 627, transparent 1,071 sorted
+items in both paths. Release build passes; all six fixed and six scripted player runs
+exit 0. A separate `cargo check` attempt failed while the shared disk was
+full (os error 112); no test result came from it. Free space recovered and
+validation was retried with CARGO_BUILD_JOBS=2. No dependencies or whitelist
+changes; game data remains in ignored out/, install read-only.
+
 ## 2026-10-27 — P2a: default-view plan and attribution probes
 
 **What/why:** planned Perf P2 beside P1 before implementation. Extend the

@@ -15,6 +15,7 @@ static RENDER_CPU: Mutex<Vec<(String, f64)>> = Mutex::new(Vec::new());
 static ORIGIN: OnceLock<Instant> = OnceLock::new();
 static TRACE: Mutex<Vec<Event>> = Mutex::new(Vec::new());
 static FRAMES: Mutex<Vec<Frame>> = Mutex::new(Vec::new());
+static PHASES: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
 struct Event {
     name: &'static str,
@@ -123,6 +124,120 @@ pub fn install(app: &mut App) {
                     .before(RenderSystems::Cleanup),
             ),
         );
+        render.add_systems(
+            Render,
+            phase_census
+                .after(RenderSystems::Prepare)
+                .before(RenderSystems::Render),
+        );
+        // Nested in the coarse stages above: views/specialization, batching
+        // and buffer writes, bind groups, and the render graph (encode,
+        // submit, present).
+        render.add_systems(
+            Render,
+            (
+                (|| stage_begin("render::views"))
+                    .after(RenderSystems::PrepareMeshes)
+                    .before(RenderSystems::CreateViews),
+                (|| stage_end("render::views"))
+                    .after(RenderSystems::PrepareViews)
+                    .before(RenderSystems::Queue),
+                (|| stage_begin("render::batch"))
+                    .after(RenderSystems::PhaseSort)
+                    .before(RenderSystems::Prepare),
+                (|| {
+                    stage_end("render::batch");
+                    stage_begin("render::bind_groups");
+                })
+                .after(RenderSystems::PrepareResourcesFlush)
+                .before(RenderSystems::PrepareBindGroups),
+                (|| {
+                    stage_end("render::bind_groups");
+                    stage_begin("render::graph");
+                })
+                .after(RenderSystems::PrepareBindGroups)
+                .before(RenderSystems::Render),
+                (|| stage_end("render::graph"))
+                    .after(RenderSystems::Render)
+                    .before(RenderSystems::Cleanup),
+            ),
+        );
+    }
+}
+
+/// Draw-structure census of the latest sampled frame: per view, how many
+/// multi-draw batch sets (one indirect draw and one bin-unpacking dispatch
+/// each), batchable and unbatchable bins, and sorted items each phase has.
+fn phase_census(
+    opaque: Res<
+        bevy::render::render_phase::ViewBinnedRenderPhases<bevy::core_pipeline::core_3d::Opaque3d>,
+    >,
+    mask: Res<
+        bevy::render::render_phase::ViewBinnedRenderPhases<
+            bevy::core_pipeline::core_3d::AlphaMask3d,
+        >,
+    >,
+    shadow: Res<bevy::render::render_phase::ViewBinnedRenderPhases<bevy::pbr::Shadow>>,
+    transparent: Res<
+        bevy::render::render_phase::ViewSortedRenderPhases<
+            bevy::core_pipeline::core_3d::Transparent3d,
+        >,
+    >,
+    indirect: Res<bevy::render::batching::gpu_preprocessing::IndirectParametersBuffers>,
+) {
+    if !SAMPLING.load(Ordering::Relaxed) {
+        return;
+    }
+    fn binned<B: bevy::render::render_phase::BinnedPhaseItem>(
+        out: &mut Vec<String>,
+        name: &str,
+        phases: &bevy::render::render_phase::ViewBinnedRenderPhases<B>,
+        indirect: &bevy::render::batching::gpu_preprocessing::IndirectParametersBuffers,
+    ) {
+        let mut rows: Vec<_> = phases
+            .values()
+            .map(|p| {
+                [
+                    p.multidrawable_meshes.len(),
+                    p.batchable_meshes.len(),
+                    p.unbatchable_meshes.len(),
+                ]
+            })
+            .collect();
+        rows.sort_unstable();
+        let indirect_draws = indirect
+            .buffers
+            .get(&std::any::TypeId::of::<B>())
+            .map_or(0, |b| b.indexed.batch_count() + b.non_indexed.batch_count());
+        let direct_draws: usize = phases
+            .values()
+            .map(|p| {
+                p.batchable_meshes.len()
+                    + p.unbatchable_meshes
+                        .values()
+                        .map(|b| b.entities.len())
+                        .sum::<usize>()
+            })
+            .sum();
+        let instances: usize = phases
+            .values()
+            .flat_map(|p| p.batchable_meshes.values())
+            .map(|b| b.entities().len())
+            .sum();
+        out.push(format!(
+            "{name}: {} views, [multidraw batch sets, batchable bins, unbatchable bins] per view {rows:?}; effective mesh draws={}; direct batch instances={instances}",
+            rows.len(), indirect_draws + direct_draws
+        ));
+    }
+    let mut out = Vec::new();
+    binned(&mut out, "opaque", &opaque, &indirect);
+    binned(&mut out, "alpha_mask", &mask, &indirect);
+    binned(&mut out, "shadow", &shadow, &indirect);
+    let mut sorted: Vec<_> = transparent.values().map(|p| p.items.len()).collect();
+    sorted.sort_unstable();
+    out.push(format!("transparent: sorted items per view {sorted:?}"));
+    if let Ok(mut phases) = PHASES.lock() {
+        *phases = out;
     }
 }
 
@@ -285,6 +400,11 @@ pub fn report() {
     println!(
         "perf: wall milliseconds; sampled=benchmark interval or player play>=1s; other=loading/warmup; cap={MAX_SAMPLES} per series; overlapping spans are not additive"
     );
+    if let Ok(phases) = PHASES.lock() {
+        for line in phases.iter() {
+            println!("perf: phases {line}");
+        }
+    }
     if let Ok(costs) = RENDER_CPU.lock() {
         for (name, ms) in costs.iter() {
             println!(

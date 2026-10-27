@@ -1,5 +1,8 @@
 # P1 client performance evidence (2026-10-27)
 
+Perf P2 continuation is recorded at the end of this document. P1 measurements
+below are historical evidence, not a P2 baseline.
+
 P1b removes main-thread texture conversion stalls. P1c inactive UI pruning
 was rejected after repeat measurements failed to establish a net frame-time win.
 The retained change preserves the scene and game rules. A universal
@@ -310,3 +313,95 @@ from the previous agent; matched-eager/pruned runs and c-test-final /
 c-clippy-final were run by the continuation. Repeat static snapshots match
 exactly across all six fixed runs; all twelve runs have zero warnings/errors
 and every player run performs six item moves.
+
+## Perf P2 (2026-10-27): default view and PDA activation
+
+Plan and numerical acceptance targets: DESIGN § Perf P2. P2a adds attribution
+probes without changing drawing or simulation. `main::schedules` covers First
+through Last (including nested systems); it excludes pipelined extraction,
+rendering and presentation outside those schedules. Player reports now retain
+recent GPU scopes as well as CPU scopes every 120 frames. `game_ui` GPU timing
+covers its render pass. UI counters record actual submitted indexed draws,
+texture binding groups and newly queued pipeline variants. The baseline mesh
+census counts main-world `ViewVisibility`, including any view; these instance
+and unique-mesh counts are **not** GPU draw-call or instancing statistics.
+
+Reproduce P1's commands above with `--view 1200` and fresh `p2-*` names;
+preserve `out/p1/frames.csv` and `spans.csv` under separate `out/p2/` names after
+each player run (the profiler overwrites them on exit). Keep three repetitions
+per case/build, record other clients/compiler processes, and compare the same
+camera/seeds/resolution/effects. PDA activation attribution uses the scripted
+3 s use-item event, independently from the 6 s take-all and 9.5 s close events.
+Capture/exit remain excluded. Targets and runtime verification: **not tested**
+until the repeated results below are recorded.
+
+### P2b — direct instanced submission for CPU-culled views
+
+The default camera has CPU frustum/range culling and no GPU occlusion culling.
+Bevy 0.19's indirect path nevertheless rebuilds bin buffers and preprocessing
+bind groups for 503 opaque + 137 alpha-mask + 106 shadow batch sets each frame.
+Use `NoIndirectDrawing` on the camera: Bevy retains mesh/material instancing,
+the existing CPU visibility rules, all four shadow views, and every effect.
+`SN_CLIENT_INDIRECT_DRAWING=1` restores the old path for repeat attribution.
+No dependencies, whitelist changes, asset changes or game-rule changes.
+
+Initial paired rounds (`out/p2/r{0,1,2}-{baseline,direct}-fixed-1.*`) used one
+archived release executable, switching only the camera flag. Order was B/A,
+A/B, B/A. Each measured 600 frames after 120 consecutive settled frames.
+All six had zero unsettled samples and identical drawn scene counts. Concurrent
+clients/compiler processes were present; round 1 suffered extreme contention,
+including a 149.947 ms recent opaque GPU scope. Keep that result visible rather
+than treating its before/after ratio as the optimization's intrinsic speedup.
+
+| Metric, ms; rounds 0 / 1 / 2 | Indirect before | Direct after |
+|---|---|---|
+| Frame p50 | 36.227 / 176.883 / 36.112 | 23.570 / 36.502 / 24.823 |
+| Frame p95 | 63.042 / 305.159 / 121.890 | 42.165 / 91.648 / 43.444 |
+| Frame p99 | 114.365 / 402.090 / 189.644 | 63.967 / 133.021 / 68.616 |
+| Render batching mean | 8.889 / 30.225 / 14.713 | 2.123 / 8.772 / 2.360 |
+| Bind-group preparation mean | 4.983 / 18.152 / 7.810 | 0.611 / 3.658 / 0.640 |
+| Render graph mean | 23.591 / 36.526 / 23.217 | 21.113 / 26.101 / 21.430 |
+
+Normal-round stage medians are less sensitive to descheduling: batching
+7.678 / 7.913 → 1.729 / 1.850 ms; bind groups 4.283 / 4.332 → 0.422 / 0.453 ms.
+Opaque CPU encoding rises (more direct API calls); the savings come from
+removing indirect preprocessing, buffer/bind-group churn and bin unpacking,
+not reducing mesh draws. The old path has 746 multi-draw batch sets; the direct
+path has 1,814 opaque + 298 mask draws, and shadow draws [52, 53, 232, 290].
+The transparent phase retains 1,071 sorted items (items are not draw calls).
+A supplemental post-preparation census records effective indirect draw slots
+as well as direct bins so these different submission APIs can be compared.
+
+Static parity in all six reports: 1,393 terrain batches [8, 35, 205, 1,145],
+7,759,704 terrain triangles, 2,083 logical terrain meshes; 34,469 grass tufts,
+2,891,017 grass triangles; 39,353 object entities, 12,493 object meshes,
+1,968 materials, 2,265 textures; 37,183 mesh instances, 6,171 view-visible
+instances and 2,765 visible unique meshes; face census 2,819 off / 31,687 back,
+524 reflected instances / 325 reversed variants / 0 unsupported. LRU cache
+occupancy is not drawn content and varies. Four shadow views are preserved.
+
+Direct-path recent GPU scopes across these rounds, ms: opaque 2.981–3.882,
+transparent 1.209–1.480, shafts 1.293–2.134, UI 0.194–0.449, water surface
+0.218–0.318, FFT 0.162–0.279, clustering 0.084–0.133. Bin unpacking disappears.
+The instrumented GPU-scope sum is 6.472–9.094 ms versus 21.113–26.101 ms CPU
+render graph wall time: the normal default-view cases are CPU/driver limited.
+These scopes are recent windows, not total GPU-frame timings. Separate GPU
+shadow timing and a full heap-allocation trace are **not tested**; the inherited
+Bevy trace attributes 0.290 ms/frame CPU shadow recording under its own load.
+GPU buffer/bind-group churn is attributed through batch-set counts and stage
+costs, not presented as a count of all CPU heap allocations.
+
+The absolute 16.667 ms target is not met by these contended runs. Workspace tests (748 passed, 64 ignored), clippy with warnings denied,
+and fmt pass (`out/p2/p2b-validation.log`). Supplemental counted runs
+`census-{baseline,direct}-fixed-1` confirm exactly 1,814 opaque, 298 mask and
+627 shadow effective mesh draws in both paths; 1,071 transparent sorted items.
+Direct instancing contains 3,926 opaque, 713 mask and 1,392 shadow instances.
+
+Reproduce from PowerShell using the common flags in § Reproduction, with
+`--view 1200`, `SN_CLIENT_PERF=1`, and a release build. For each of three rounds,
+run the fixed command once with `$env:SN_CLIENT_INDIRECT_DRAWING='1'` (before)
+and once after `Remove-Item Env:SN_CLIENT_INDIRECT_DRAWING -ErrorAction
+SilentlyContinue` (after), alternating order. Use new baseline/log names and
+archive profiler CSVs after each run. Expected: zero unsettled samples; scene
+and effective draw counts above, with bin unpacking present only before.
+Actual timing depends strongly on concurrent GPU/compiler work.
