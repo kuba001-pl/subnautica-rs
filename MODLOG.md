@@ -2,6 +2,93 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-27 — M9e3 checkpoint: world fabricator, animation check unresolved
+
+**What/why:** reviewed the inherited uncommitted M9e3 changes and kept the
+runtime fabricator discovery, hand colliders/text/progress, strict server
+range, animator parameters and preview. Moved range/lid/beam rules into
+sn-sim with synthetic boundary tests. Corrected preview loading to copy
+only the activated model subtree and reset its root before VFX offsets.
+Automatic completion pickup is owner-only (our multiplayer policy); an
+explicit take still lets another player collect. Beams/sparks use logged
+plain geometry and ordinary ghost materials, not the unported FX_BUILDING,
+particle simulation or fabrication light. Inspector reports ghost coverage.
+No dependencies or whitelist changes.
+
+**Animation finding:** the initial client runs had no bound fabricator
+animator. The prefab is another optimized generic avatar: 11 skeleton
+nodes, empty serialized renderer bones. Scoped reuse of the existing
+key-terminal avatar restoration yields 120/120 bindings rather than 0/120,
+and restores the skin palette. Added an exposed spawn-point anchor and
+preview parenting. Synthetic avatar nodes return no serialized components.
+Facts and limits are in gameplay.md/animation.md. DESIGN keeps M9e3 open;
+README labels this a checkpoint. M9e4 and M9e5 were not started.
+
+**Stopped under AGENTS.md:** two attempts at the new ignored close-cycle
+check both failed. Open for 180 frames at 60 Hz: maximum scalar pose
+change 0.7428153. Close for 240 frames: raw residual 1.4142408; accounting
+for equivalent quaternion signs leaves 0.031879187 (required <1e-4).
+The remaining channel is unidentified. Clip time sampling or a retained
+curve/default is a hypothesis, not a finding. STATUS.md records the exact
+reproducer and next investigation. The ignored failing assertion is kept;
+M9e3 is **not done**.
+
+**Verified before avatar restoration** (release, installed-game environment,
+logs/screenshots `out/m9e3-solo.*`, `out/m9e3-close.*`):
+- `target/release/sn-client.exe --view 400 --resolution 960 540
+  --test-supply ScrapMetal --use-item 3 --panel 6=take-all,7=close
+  --craft 8=open,9=Titanium --shot 14 m9e3-solo`: exit 0, zero WARN/ERROR;
+  localized hand text; open at 0.8086 m; ghost drawn (one entity) at event
+  10, removed at 12; automatic pickup at 2.8 s, four Titanium, power 75→70;
+  two beams and six plain sparks per beam after one second.
+- `target/release/sn-client.exe --view 400 --resolution 960 540
+  --craft 3=open --hold-back 6 --shot 12 m9e3-close`: exit 0, zero
+  WARN/ERROR; logical open at 2.0634 m, close at 3.0057 m, stored limit 3.
+- `cargo test --workspace`: 752 passed, 65 ignored; Clippy with warnings
+  denied and formatting check passed at that point.
+- `$env:SUBNAUTICA_DIR='D:\SteamLibrary\steamapps\common\Subnautica'`;
+  `target/release/sn-inspect.exe craft`: RUN OK, 100 tree/87 craft nodes,
+  90/90 output classes, 88 VFX models, two without ghosts, two inactive
+  roots; `fabricator_world` read-only install test passed before it gained
+  the failing animation cycle check.
+
+**Final-code reproduction:** with that environment,
+`cargo test -p sn-assets fabricator_world -- --ignored --nocapture`
+**fails** at the close residual as above. `cargo run -p sn-inspect -- anim
+Submarine/Build/Fabricator.prefab --states` resolves 120 bindings, zero
+missing. Original-game screen comparison, crafting menu, unlock popups,
+two-player crafting, accurate fabrication effects and Linux/macOS are
+**not tested**.
+
+**Other dead ends:** inverse preview placement rejected a real non-uniform
+transform; replaced with subtree rebasing. Restored virtual nodes initially
+triggered a nonexistent serialized-file lookup; component enumeration now
+skips them (as existing atmosphere enumeration does). A relative executable
+path in Python failed; absolute launch works. The inspector needs its
+catalog key, not the displayed Assets/AddressableResources prefix. A
+concurrent workspace compilation ended in rustc STATUS_STACK_BUFFER_OVERRUN;
+the final check retry limits this invocation to two build jobs.
+
+**Final standard checks:** `CARGO_BUILD_JOBS=2 cargo test --workspace`
+(environment supplied to the process, game environment unset): 752 passed,
+0 failed, 65 ignored. `cargo clippy --workspace --all-targets -- -D warnings`
+and `cargo fmt --all -- --check`: pass. The opt-in real-data close-cycle
+failure remains separate and is not concealed by the default test result.
+
+**Final client/build check:** `cargo build --release -p sn-client -p
+sn-inspect` passes. Repeated the solo/walk-away commands above with
+screenshot names `m9e3-solo-final` and `m9e3-close-final`: both exit 0,
+zero WARN/ERROR. Solo open distance 0.8826 m; one animator bound with the
+open/fabricating transitions logged; preview attached to animated spawn
+point, drawn/removed at events 10/12; craft ticks 652→792 (2.8 s), power
+75→70. Walk-away open at 2.0634 m, close at 3.0754 m (limit 3); the bound
+animator's open parameter changes true→false. This proves the wiring, not
+the unresolved pose equivalence check. Craft-in-progress screenshot run:
+same solo flags with `--shot 10.8 m9e3-during-final`: exit 0, zero
+WARN/ERROR; one preview entity attached and two plain beams/twelve sparks
+logged before capture. Final status contains only our Rust and Markdown;
+all generated output remains ignored.
+
 ## 2026-10-27 — M9e2: server-authoritative scripted crafting
 
 **What/why:** protocol 5 adds Craft/TakeCrafted requests, CraftStarted

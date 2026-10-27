@@ -30,6 +30,18 @@ const PICK_UP_MAX: usize = 3;
 /// The item state this machine has made the world follow.
 #[derive(Resource, Default)]
 pub struct ItemsView {
+    fx: Vec<Entity>,
+    fx_active: bool,
+    animation_line: Option<(bool, bool)>,
+    pub fabricator_open: bool,
+    opened_seen: u32,
+    /// The fabricator's ghost: tech, class and placement (drawn as the
+    /// local-only object [`GHOST_ID`]).
+    preview: Option<(i32, String, Placement)>,
+    /// The output tech the ghost was last made for.
+    ghost_tech: Option<i32>,
+    /// The end tick of the craft whose completion was handled.
+    pickup_tried: Option<u32>,
     pub craft_at: Vec<(f64, String)>,
     craft_line: String,
     /// World events applied when last looked at.
@@ -121,7 +133,7 @@ pub fn sync(
     mut view: ResMut<ItemsView>,
     mut session: ResMut<Session>,
     mut streamer: Option<ResMut<ObjectStreamer>>,
-    sim: Option<Res<PlayerSim>>,
+    mut sim: Option<ResMut<PlayerSim>>,
 ) {
     let me = session.player();
     let seen = view.events;
@@ -195,24 +207,13 @@ pub fn sync(
                 .iter()
                 .map(|(id, (c, p, r))| (*id, c.clone(), *p, *r))
                 .collect();
+            view.objects = objects;
             if let Some(s) = streamer.as_mut() {
-                let placed: Vec<(u32, String, Placement)> = list
-                    .iter()
-                    .map(|(id, c, p, r)| {
-                        let at = Placement {
-                            position: *p,
-                            rotation: rotation(*r),
-                            scale: [1.0; 3],
-                        };
-                        (id.0, c.clone(), at)
-                    })
-                    .collect();
-                s.set_spawned(&mut commands, &placed, events);
+                s.set_spawned(&mut commands, &placed(&view), events);
             }
             if let Some(sim) = sim.as_ref() {
                 sim.send_objects(list);
             }
-            view.objects = objects;
         }
         if !new_gone.is_empty() || objects_changed {
             info!(
@@ -226,11 +227,112 @@ pub fn sync(
     }
 
     // Debug requests.
-    let Some(sim) = sim else { return };
+    let Some(mut sim) = sim.take() else { return };
     let view = &mut *view;
     let play = sim.play_seconds();
+    let fabricator = session.with_items(|items, _| items.fabricator.clone());
+    if let Some(f) = &sim.fabricator {
+        let distance = sim.position().map_or(f64::INFINITY, |p| {
+            (p - sn_sim::V3::from_f32(f.at.position)).length()
+        });
+        let has_output = fabricator.as_ref().is_some_and(|f| f.job.is_some());
+        let was_open = view.fabricator_open;
+        view.fabricator_open = sn_sim::craft::opened(
+            was_open,
+            sim.fabricator_opened != view.opened_seen,
+            has_output,
+            distance < f64::from(f.close_distance),
+            fabricator.as_ref().map_or(0.0, |f| f.power),
+        );
+        view.opened_seen = sim.fabricator_opened;
+        if was_open != view.fabricator_open {
+            info!(
+                "fabricator: open={} distance={distance:.4} closeDistance={}",
+                view.fabricator_open, f.close_distance
+            );
+        }
+        // GhostCrafter.OnCraftingEnd, once per craft: pickup in range, else
+        // the CraftingEnd message.
+        if let Some(job) = fabricator.as_ref().and_then(|f| f.job.as_ref()) {
+            if job.done && view.pickup_tried != Some(job.end) {
+                view.pickup_tried = Some(job.end);
+                if Some(job.owner) != me {
+                    info!("fabricator: craft done (another player's)");
+                } else if distance < f64::from(f.close_distance) {
+                    info!(
+                        "fabricator: craft done, pickup at distance {distance:.4} < closeDistance {}",
+                        f.close_distance
+                    );
+                    session.request(Request::TakeCrafted { crafter: 0 });
+                } else {
+                    info!(
+                        "fabricator: craft done at distance {distance:.4} >= closeDistance {}: CraftingEnd (formatted message not shown: not ported)",
+                        f.close_distance
+                    );
+                }
+            }
+        }
+        // CrafterGhostModel.UpdateModel(currentTechType): the output's ghost
+        // at itemSpawnPoint while the machine holds it (crafting or done).
+        let tech = fabricator
+            .as_ref()
+            .and_then(|f| f.job.as_ref())
+            .and_then(|j| j.output.current());
+        if tech != view.ghost_tech {
+            view.ghost_tech = tech;
+            let class = tech.and_then(|tech| {
+                session
+                    .with_items(|items, _| items.rules().tech_class.get(&tech).cloned())
+                    .flatten()
+            });
+            let ghost = class.as_ref().map(|c| f.ghosts.get(c));
+            let at = match ghost {
+                Some(Some(Some(g))) => {
+                    info!(
+                        "fabricator: ghost of tech {tech:?} ({:?}, node {:?}) at itemSpawnPoint {:?}, root {:?}; drawn plainly: FX_BUILDING (_Built progress) not ported",
+                        class, g.node, f.item_spawn.position, g.root.position
+                    );
+                    Some(f.item_spawn.then(&g.root))
+                }
+                Some(Some(None)) => {
+                    info!(
+                        "fabricator: tech {tech:?} ({class:?}) has no ghost model in the game; none drawn"
+                    );
+                    None
+                }
+                Some(g) => {
+                    info!(
+                        "fabricator: tech {tech:?} ({class:?}): {}; whole prefab drawn plainly at itemSpawnPoint {:?} (not the game's)",
+                        if g.is_some() {
+                            "ghost node inactive in the prefab"
+                        } else {
+                            "ghost not read"
+                        },
+                        f.item_spawn.position
+                    );
+                    Some(f.item_spawn)
+                }
+                None => {
+                    info!("fabricator: ghost removed (the machine is empty)");
+                    None
+                }
+            };
+            if let Some(streamer) = streamer.as_mut() {
+                let events = view.events.unwrap_or(0);
+                if view.preview.take().is_some() {
+                    streamer.set_spawned(&mut commands, &placed(view), events);
+                }
+                view.preview = tech.zip(class).zip(at).map(|((t, c), a)| (t, c, a));
+                streamer.set_spawned(&mut commands, &placed(view), events);
+            }
+        }
+    }
     while view.craft_at.first().is_some_and(|(at, _)| play >= *at) {
         let (_, name) = view.craft_at.remove(0);
+        if name == "open" {
+            sim.use_fabricator = true;
+            continue;
+        }
         let request = if name == "take" {
             Some(Request::TakeCrafted { crafter: 0 })
         } else {
@@ -305,5 +407,189 @@ pub fn sync(
             }
             None => info!("items: --drop at {play:.1} s: nothing held"),
         }
+    }
+}
+
+/// The fabricator ghost's object id: item ids never reach it (allocation
+/// checks `next + 1`), and it is never simulated or sent.
+const GHOST_ID: u32 = u32::MAX;
+
+#[derive(Component)]
+pub struct FabricatorGhostAttached;
+
+/// The preview follows the animator's exposed spawn point. Its initial world
+/// transform was authored relative to the stored spawn point, so rebase once.
+pub fn attach_fabricator_preview(
+    mut commands: Commands,
+    sim: Option<Res<PlayerSim>>,
+    streamer: Option<Res<ObjectStreamer>>,
+    anchors: Query<&crate::objects::NamedNodes>,
+    mut parts: Query<&mut Transform, Without<FabricatorGhostAttached>>,
+) {
+    let Some(f) = sim.as_ref().and_then(|s| s.fabricator.as_ref()) else {
+        return;
+    };
+    let Some(anchor) = anchors
+        .iter()
+        .flat_map(|n| &n.0)
+        .find(|(name, _)| name == "FabricatorSpawnPoint")
+        .map(|(_, e)| *e)
+    else {
+        return;
+    };
+    let Some(streamer) = streamer else {
+        return;
+    };
+    let t = f.item_spawn;
+    let [x, y, z, w] = t.rotation;
+    let inverse = Mat4::from_scale_rotation_translation(
+        Vec3::from_array(t.scale),
+        Quat::from_xyzw(-x, -y, z, w),
+        Vec3::new(t.position[0], t.position[1], -t.position[2]),
+    )
+    .inverse();
+    for &entity in streamer.fabricator_preview() {
+        if let Ok(mut transform) = parts.get_mut(entity) {
+            let world = Mat4::from_scale_rotation_translation(
+                transform.scale,
+                transform.rotation,
+                transform.translation,
+            );
+            *transform = Transform::from_matrix(inverse * world);
+            commands
+                .entity(entity)
+                .insert((ChildOf(anchor), FabricatorGhostAttached));
+            info!("fabricator: preview entity attached to animated itemSpawnPoint");
+        }
+    }
+}
+
+/// The server-made objects to draw, and the fabricator's ghost.
+fn placed(view: &ItemsView) -> Vec<(u32, String, Placement)> {
+    view.objects
+        .iter()
+        .map(|(id, (class, point, rot))| {
+            let at = Placement {
+                position: *point,
+                rotation: rotation(*rot),
+                scale: [1.0; 3],
+            };
+            (id.0, class.clone(), at)
+        })
+        .chain(
+            view.preview
+                .iter()
+                .map(|(_, class, at)| (GHOST_ID, class.clone(), *at)),
+        )
+        .collect()
+}
+
+/// Fabricator.OnOpenedChanged / OnStateChanged; unrelated rigs simply have
+/// neither parameter. The installed controller supplies the motion.
+pub fn fabricator_animation(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    sim: Option<Res<PlayerSim>>,
+    mut view: ResMut<ItemsView>,
+    session: Res<Session>,
+    mut rigs: Query<&mut crate::animation::AnimatedRig>,
+) {
+    let tick = session.server_tick();
+    let job = session
+        .with_items(|items, _| items.fabricator.job.clone())
+        .flatten();
+    let crafting = job.as_ref().is_some_and(|j| !j.done);
+    let mut bound = 0;
+    for mut rig in &mut rigs {
+        bound += usize::from(
+            rig.animator
+                .set_bool(sn_unity::name_hash("open_fabricator"), view.fabricator_open),
+        );
+        rig.animator
+            .set_bool(sn_unity::name_hash("fabricating"), crafting);
+    }
+    if bound > 0 && view.animation_line != Some((view.fabricator_open, crafting)) {
+        info!(
+            "fabricator: {bound} animator bound, open={} fabricating={crafting}",
+            view.fabricator_open
+        );
+        view.animation_line = Some((view.fabricator_open, crafting));
+    }
+    let fx = job
+        .as_ref()
+        .is_some_and(|j| !j.done && (tick - f64::from(j.start)) * session.tick_seconds() > 1.0);
+    if fx == view.fx_active {
+        return;
+    }
+    view.fx_active = fx;
+    for entity in view.fx.drain(..) {
+        commands.entity(entity).despawn();
+    }
+    if !fx {
+        info!("fabricator: beams/sparks plain fallback removed");
+        return;
+    }
+    let Some(f) = sim.as_ref().and_then(|s| s.fabricator.as_ref()) else {
+        return;
+    };
+    let mesh = meshes.add(Cuboid::new(1.0, 1.0, 1.0));
+    let beam = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.35, 0.65, 1.0),
+        unlit: true,
+        ..default()
+    });
+    let spark = materials.add(StandardMaterial {
+        base_color: Color::srgb(1.0, 0.75, 0.3),
+        unlit: true,
+        ..default()
+    });
+    let v = |p: [f32; 3]| Vec3::new(p[0], p[1], -p[2]);
+    for b in f.beams {
+        let mut point = f.item_spawn.position;
+        point[1] = point[1].min(b.position[1]);
+        let Some(end) = sn_sim::craft::beam_end(
+            sn_sim::V3::from_f32(b.position),
+            sn_sim::V3::from_f32(b.rotate_vector([0.0, 0.0, 1.0])),
+            sn_sim::V3::from_f32(point),
+            sn_sim::V3::from_f32(f.item_spawn.rotate_vector([0.0, 1.0, 0.0])),
+        ) else {
+            continue;
+        };
+        let end = [end.x as f32, end.y as f32, end.z as f32];
+        let delta = v(end) - v(b.position);
+        let transform = Transform {
+            translation: (v(end) + v(b.position)) * 0.5,
+            rotation: Quat::from_rotation_arc(Vec3::Y, delta.normalize_or_zero()),
+            scale: Vec3::new(0.006, delta.length(), 0.006),
+        };
+        view.fx.push(
+            commands
+                .spawn((
+                    Mesh3d(mesh.clone()),
+                    MeshMaterial3d(beam.clone()),
+                    transform,
+                ))
+                .id(),
+        );
+        for i in 0..6 {
+            let angle = i as f32 * std::f32::consts::TAU / 6.0;
+            view.fx.push(
+                commands
+                    .spawn((
+                        Mesh3d(mesh.clone()),
+                        MeshMaterial3d(spark.clone()),
+                        Transform::from_translation(
+                            v(end) + Vec3::new(angle.cos() * 0.025, 0.01, angle.sin() * 0.025),
+                        )
+                        .with_scale(Vec3::splat(0.008)),
+                    ))
+                    .id(),
+            );
+        }
+        info!(
+            "fabricator: beam {:?} -> {end:?}, six sparks; plain geometry fallback (particle simulation and fabrication light not ported)",
+            b.position
+        );
     }
 }

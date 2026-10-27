@@ -9,6 +9,14 @@ pub fn run(game: &GameData) -> crate::Result<ExitCode> {
     let assets = Assets::index(game)?;
     let code = sn_assets::game_code(&sn_assets::read_assembly(game)?)?;
     let data = sn_assets::tech_data(&assets)?;
+    let fabricator = sn_assets::pod_fabricator(game, &assets, [0.0; 3])?;
+    println!(
+        "fabricator at {:?} itemSpawnPoint {:?} closeDistance={} handText={}",
+        fabricator.at.position,
+        fabricator.item_spawn.position,
+        fabricator.close_distance,
+        fabricator.hand_text
+    );
     println!(
         "initial pod power={} (regeneration not simulated)",
         sn_assets::pod_crafting_power(game, &assets)?
@@ -79,6 +87,50 @@ pub fn run(game: &GameData) -> crate::Result<ExitCode> {
     if total != 100 || nodes != 87 || unresolved != 0 {
         return Err("fabricator recipe checks failed".into());
     }
+    // M9e3: each output's ghost (CrafterGhostModel.SetupGhostModelAsync).
+    let (rules, _) = sn_assets::item_rules(game, &assets, &sn_assets::read_assembly(game)?)?;
+    let mut classes: Vec<String> = rules
+        .recipes
+        .values()
+        .flat_map(|r| std::iter::once(r.tech).chain(r.linked.iter().copied()))
+        .filter_map(|t| rules.tech_class.get(&t).cloned())
+        .collect();
+    classes.sort();
+    classes.dedup();
+    let ghosts = sn_assets::fabricator_ghosts(game, &assets, &classes)?;
+    let (mut vfx, mut model, mut none, mut inactive) = (0, 0, 0, 0);
+    for (class, ghost) in &ghosts {
+        match ghost {
+            Some(g) => {
+                if g.constructable {
+                    model += 1;
+                } else {
+                    vfx += 1;
+                }
+                if !g.active {
+                    inactive += 1;
+                }
+                println!(
+                    "ghost {class}: node {:?} constructable={} active={} root in itemSpawnPoint {:?} {:?} {:?}",
+                    g.node,
+                    g.constructable,
+                    g.active,
+                    g.root.position,
+                    g.root.rotation,
+                    g.root.scale
+                );
+            }
+            None => {
+                none += 1;
+                println!("ghost {class}: none (no Constructable.model, no VFXFabricating)");
+            }
+        }
+    }
+    println!(
+        "ghosts: output classes={} read={} VFXFabricating={vfx} Constructable.model={model} none={none} inactive node={inactive}",
+        classes.len(),
+        ghosts.len()
+    );
     println!("RUN OK");
     Ok(ExitCode::SUCCESS)
 }

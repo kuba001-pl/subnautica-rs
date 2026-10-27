@@ -1508,6 +1508,13 @@ the original row's checks hold (rules unit-tested on synthetic recipes,
 one real recipe crafted in a scripted run with counts before/after
 logged, the menu's node count equal to P1's).
 
+**M9e3 checkpoint (2026-10-27, incomplete):** hand, range, preview and
+automatic collection verified in scripted runs; scoped optimized-avatar
+restoration resolves 120/120 bindings. The new ignored open/close pose
+cycle check still fails (residual 0.031879187 after quaternion sign
+equivalence). Stopped after two attempts under AGENTS.md; see STATUS.md
+and MODLOG. No done mark; M9e4–M9e5 not started.
+
 **M9e1 as built (2026-10-27):** pure recipe validation/consumption and
 incremental output collection, runtime TechData conversion, `sn-inspect
 craft` and an opt-in install test. Corrections to the hypotheses: P1's

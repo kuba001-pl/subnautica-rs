@@ -21,11 +21,35 @@ maps the palette and sorts parents before children while preserving object
 references. Existing animation/skin code then applies the default closed
 state and moves the glyph with its restored parent. Scoped to active,
 enabled `PrecursorKeyTerminal` scripts: other optimized families have not
-been validated. Purple, orange and blue templates each resolve 240/240
+been validated at that milestone. M9e3 also scopes restoration to Fabricator
+scripts; its checkpoint and unresolved cycle check are described below.
+Purple, orange and blue templates each resolve 240/240
 clip bindings and 7/7 bones; a one-second closed-pose test reports finite
 skin vertices and a 0.215570 m glyph-centre/nearest-body-vertex distance
 (this is not a triangle-surface gap). Original-game visual parity and key
 insertion interaction remain **not tested**. Research logs stay ignored.
+
+## Optimized fabricator — partial confirmation (2026-10-27)
+
+**Confirmed by Rust install reads:** the pod fabricator has an optimized
+generic avatar with 11 skeleton nodes. The serialized skinned renderer
+has no bone references. Restoring hidden nodes/exposed paths and mapping
+the mesh palette with the existing avatar rule changes clip binding from
+0/120 to 120/120. Source script symbols drive the open/fabricating bools.
+Synthetic virtual bones have no serialized GameObject/components; component
+queries return an empty list for them.
+
+**Confirmed by the ignored runtime test:** opening for 180 frames at 60 Hz
+changes the sampled pose by 0.7428153 in the maximum scalar component.
+After closing for 240 frames, the residual from the initial closed sample
+is 0.031879187 after accounting for quaternion sign equivalence, above
+the test's 1e-4 bound. The test fails; this is **not** evidence of a correct
+close cycle. The earlier raw quaternion comparison gave 1.4142408.
+
+**Hypothesis:** clip sampling times or a retained curve/default channel may
+explain the remaining difference. The affected slot is not yet identified.
+Stopped after two attempts; see STATUS.md. Original-game visual parity is
+**not tested**. M9e3 remains incomplete.
 
 Described build: game build `10` (Unity 2019.4.36f1). Reader:
 `crates/sn-unity/src/anim.rs` (M7f4a); runtime: `crates/sn-anim` (M7f4b).

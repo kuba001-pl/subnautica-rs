@@ -2329,6 +2329,12 @@ impl Library {
                 }
             };
             let transform = s.placement(&prefab.nodes[0].local);
+            if prefab.nodes.first().is_some_and(|n| n.name == "Fabricator") {
+                match sn_assets::pod_fabricator(self.assets.game(), &self.assets, point) {
+                    Ok(f) => self.name_nodes = vec![(f.spawn_node, "FabricatorSpawnPoint".into())],
+                    Err(e) => out.push(Update::Warning(format!("fabricator anchors: {e}"))),
+                }
+            }
             if let Some(id) = self.prefab_parts(&prefab, out) {
                 instances.push(Instance {
                     level: 0,
@@ -2339,6 +2345,7 @@ impl Library {
                 });
                 spawned.push(s.name.clone());
             }
+            self.name_nodes.clear();
         }
         Ok(format!(
             ", Lifepod 5 at {:?}, player spawn {:?}, {following} objects on their targets, spawned {spawned:?}",
@@ -2586,6 +2593,73 @@ impl Library {
 
     /// A server-made object of `class` at `at` (M9d4b).
     fn spawned(&mut self, id: u32, class: &str, at: Placement, out: &mut Out<'_>) {
+        // The local fabricator preview copies only the selected model subtree,
+        // activates it, and keeps the ordinary materials as an explicit fallback.
+        if id == u32::MAX {
+            let result = (|| -> Result<Option<u32>, String> {
+                let path = self
+                    .class_paths
+                    .get(class)
+                    .ok_or("ghost class not found")?
+                    .clone();
+                let mut prefab = self.assets.prefab(&self.catalog, &path)?;
+                let ghosts = sn_assets::fabricator_ghosts(
+                    self.assets.game(),
+                    &self.assets,
+                    &[class.to_owned()],
+                )?;
+                let ghost = ghosts
+                    .get(class)
+                    .and_then(Option::as_ref)
+                    .ok_or("ghost model not found")?;
+                if let Some(root) = prefab.nodes.get_mut(ghost.index) {
+                    root.parent = None;
+                    root.local = Placement::default();
+                    root.in_prefab = Placement::default();
+                }
+                prefab.set_active(ghost.index, true);
+                for i in 0..prefab.nodes.len() {
+                    let mut node = Some(i);
+                    let mut inside = false;
+                    while let Some(n) = node {
+                        if n == ghost.index {
+                            inside = true;
+                            break;
+                        }
+                        node = prefab.nodes.get(n).and_then(|n| n.parent);
+                    }
+                    if !inside {
+                        prefab.nodes[i].renderer_enabled = false;
+                    } else if i != ghost.index
+                        && let Some(parent) = prefab.nodes[i].parent
+                    {
+                        prefab.nodes[i].in_prefab =
+                            prefab.nodes[parent].in_prefab.then(&prefab.nodes[i].local);
+                    }
+                    prefab.nodes[i].animator = None;
+                    prefab.nodes[i].lights.clear();
+                }
+                Ok(self.prefab_parts_as(&prefab, false, out))
+            })();
+            let prefab = match result {
+                Ok(p) => p,
+                Err(e) => {
+                    out.push(Update::Warning(format!("fabricator ghost: {e}")));
+                    None
+                }
+            };
+            out.push(Update::Spawned {
+                id,
+                instance: prefab.map(|prefab| Instance {
+                    level: 0,
+                    prefab,
+                    transform: at,
+                    from_slot: false,
+                    pod_sky: true,
+                }),
+            });
+            return;
+        }
         let instance = self
             .class_paths
             .get(class)
@@ -3160,6 +3234,10 @@ pub struct ItemDrawStats {
 }
 
 impl ObjectStreamer {
+    pub fn fabricator_preview(&self) -> &[Entity] {
+        self.spawned.get(&u32::MAX).map_or(&[], Vec::as_slice)
+    }
+
     pub(crate) fn effect_sky(&self, key: SkyKey) -> Option<SkyLook> {
         self.skies.look(key).copied()
     }

@@ -10,6 +10,38 @@ pub const MIN_TIME: f32 = 1.0 + 1.7;
 /// CrafterLogic.Craft adds this to its end time.
 pub const END_DELAY: f32 = 0.1;
 
+/// GhostCrafter.PlayerIsInRange uses a strict radius from the player root.
+pub fn in_range(player: [f32; 3], machine: [f32; 3], distance: f32) -> bool {
+    distance.is_finite()
+        && distance > 0.0
+        && player
+            .into_iter()
+            .zip(machine)
+            .map(|(p, m)| (p - m).powi(2))
+            .sum::<f32>()
+            < distance * distance
+}
+
+/// Closing a GhostCrafter with an item only closes its menu, not its lid.
+pub fn opened(was_open: bool, hand: bool, has_output: bool, in_range: bool, power: f32) -> bool {
+    has_output || ((was_open || hand) && in_range && power >= ENERGY)
+}
+
+/// Fabricator.GetBeamEnd: intersect the beam ray with the spawn plane.
+pub fn beam_end(
+    origin: crate::V3,
+    forward: crate::V3,
+    point: crate::V3,
+    up: crate::V3,
+) -> Option<crate::V3> {
+    let direction = forward.normalized()?;
+    let denominator = direction.dot(up);
+    if !denominator.is_finite() || denominator.abs() < 1e-9 {
+        return None;
+    }
+    Some(origin + direction * ((point - origin).dot(up) / denominator))
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Recipe {
     pub tech: TechType,
@@ -133,6 +165,38 @@ impl Pending {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn range_and_lid_preserve_held_output() {
+        assert!(in_range([2.99, 0.0, 0.0], [0.0; 3], 3.0));
+        assert!(!in_range([3.0, 0.0, 0.0], [0.0; 3], 3.0));
+        assert!(!in_range([f32::NAN, 0.0, 0.0], [0.0; 3], 3.0));
+        assert!(!in_range([0.0; 3], [0.0; 3], -3.0));
+        assert!(opened(false, true, false, true, ENERGY));
+        assert!(!opened(true, false, false, false, ENERGY));
+        assert!(!opened(true, false, false, true, ENERGY - 0.1));
+        assert!(opened(true, false, true, false, 0.0));
+        assert!(opened(false, false, true, false, 0.0));
+        use crate::V3;
+        assert_eq!(
+            beam_end(
+                V3::new(1.0, 2.0, 3.0),
+                V3::new(0.0, -1.0, 0.0),
+                V3::ZERO,
+                V3::new(0.0, 1.0, 0.0)
+            ),
+            Some(V3::new(1.0, 0.0, 3.0))
+        );
+        assert_eq!(
+            beam_end(
+                V3::ZERO,
+                V3::new(1.0, 0.0, 0.0),
+                V3::ZERO,
+                V3::new(0.0, 1.0, 0.0)
+            ),
+            None
+        );
+    }
 
     fn recipe() -> Recipe {
         Recipe {

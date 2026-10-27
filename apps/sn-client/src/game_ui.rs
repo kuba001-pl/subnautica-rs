@@ -2132,7 +2132,9 @@ fn reticle_inputs(r: &HandReticle, button: &str, i: &HudInputs, hand: &HandFrame
         out.texts[HAND_SUBSCRIPT] = h.subscript.clone();
         if let Some(icon) = h.icon {
             out.icon = icon;
+            out.icon_scale = h.icon_scale.unwrap_or(1.0);
         }
+        out.progress = h.progress;
     }
     out
 }

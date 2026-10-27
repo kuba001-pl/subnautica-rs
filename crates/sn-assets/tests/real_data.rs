@@ -10,6 +10,133 @@ use sn_install::GameData;
 
 #[test]
 #[ignore = "needs SUBNAUTICA_DIR pointing at a Subnautica install"]
+fn fabricator_world() {
+    let Some(dir) = std::env::var_os("SUBNAUTICA_DIR") else {
+        return;
+    };
+    let game = GameData::locate(Some(PathBuf::from(dir))).unwrap();
+    let assets = Assets::index(&game).unwrap();
+    let f = sn_assets::pod_fabricator(&game, &assets, [0.0; 3]).unwrap();
+    assert_eq!(f.close_distance, 3.0);
+    assert!(f.item_spawn.position.into_iter().all(f32::is_finite));
+    let (rules, _) =
+        sn_assets::item_rules(&game, &assets, &sn_assets::read_assembly(&game).unwrap()).unwrap();
+    let mut classes: Vec<_> = rules
+        .recipes
+        .values()
+        .flat_map(|r| std::iter::once(r.tech).chain(r.linked.iter().copied()))
+        .filter_map(|t| rules.tech_class.get(&t).cloned())
+        .collect();
+    classes.sort();
+    classes.dedup();
+    let ghosts = sn_assets::fabricator_ghosts(&game, &assets, &classes).unwrap();
+    println!(
+        "fabricator: close={} at={:?} spawn={:?} beams={:?} ghosts={}/{}",
+        f.close_distance,
+        f.at.position,
+        f.item_spawn.position,
+        f.beams,
+        ghosts.len(),
+        classes.len()
+    );
+    assert_eq!(ghosts.len(), classes.len());
+    assert!(ghosts.values().flatten().all(|g| {
+        g.root
+            .position
+            .into_iter()
+            .chain(g.root.rotation)
+            .chain(g.root.scale)
+            .all(f32::is_finite)
+    }));
+    let catalog = assets.catalog().unwrap();
+    let mut scene = assets.scene("escapepod").unwrap();
+    scene.spawn_lightmapped_prefab();
+    let mut bindings = 0;
+    let mut palette = 0;
+    let mut cache = std::collections::HashMap::new();
+    for spawn in scene.spawns(&assets).unwrap() {
+        let sn_unity::SpawnPrefab::Address(guid) = &spawn.spawner.prefab else {
+            continue;
+        };
+        let p = assets.prefab(&catalog, guid).unwrap();
+        let is_fabricator = p.nodes.iter().any(|n| {
+            assets
+                .node_components(n)
+                .unwrap()
+                .iter()
+                .any(|c| assets.script_class(c).as_deref() == Some("Fabricator"))
+        });
+        if !is_fabricator {
+            continue;
+        }
+        for (i, n) in p.nodes.iter().enumerate() {
+            palette += n.bones.len();
+            if let Some(c) = n.animator.as_ref().and_then(|a| a.controller.as_ref()) {
+                let set = assets.animation_set(c, &mut cache).unwrap();
+                let program =
+                    sn_anim::Program::new(std::sync::Arc::new(set.controller), &set.clips);
+                let b = p.bind_animator(i, &program, &|_| Vec::new());
+                assert_eq!(b.missing, 0);
+                bindings += b.nodes.len();
+                let program = std::sync::Arc::new(program);
+                let mut animator = sn_anim::Animator::new(program.clone(), b.defaults);
+                animator.update(1.0 / 60.0);
+                let closed = animator.pose().to_vec();
+                assert!(animator.set_bool(sn_unity::name_hash("open_fabricator"), true));
+                for _ in 0..180 {
+                    animator.update(1.0 / 60.0);
+                }
+                let opened = animator.pose().to_vec();
+                let change = closed
+                    .iter()
+                    .zip(&opened)
+                    .map(|(a, b)| (a - b).abs())
+                    .fold(0.0f32, f32::max);
+                assert!(change > 0.01);
+                animator.set_bool(sn_unity::name_hash("open_fabricator"), false);
+                for _ in 0..240 {
+                    animator.update(1.0 / 60.0);
+                }
+                let residual = program
+                    .slots
+                    .iter()
+                    .map(|s| {
+                        let width = match s.kind {
+                            sn_anim::SlotKind::Rotation => 4,
+                            sn_anim::SlotKind::Position | sn_anim::SlotKind::Scale => 3,
+                            _ => 1,
+                        };
+                        let a = &closed[s.offset..s.offset + width];
+                        let b = &animator.pose()[s.offset..s.offset + width];
+                        let d = a
+                            .iter()
+                            .zip(b)
+                            .map(|(a, b)| (a - b).abs())
+                            .fold(0.0f32, f32::max);
+                        if s.kind == sn_anim::SlotKind::Rotation {
+                            d.min(
+                                a.iter()
+                                    .zip(b)
+                                    .map(|(a, b)| (a + b).abs())
+                                    .fold(0.0f32, f32::max),
+                            )
+                        } else {
+                            d
+                        }
+                    })
+                    .fold(0.0f32, f32::max);
+                println!("fabricator open/close: pose change={change}, closed residual={residual}");
+                assert!(residual < 1e-4);
+                assert!(animator.pose().iter().all(|v| v.is_finite()));
+            }
+        }
+    }
+    println!("fabricator animation: {bindings} slots, {palette} palette bones");
+    assert!(bindings > 0 && palette > 0);
+}
+
+#[test]
+#[ignore = "needs SUBNAUTICA_DIR pointing at a Subnautica install"]
 fn fabricator_recipes() {
     let Some(dir) = std::env::var_os("SUBNAUTICA_DIR") else {
         return;

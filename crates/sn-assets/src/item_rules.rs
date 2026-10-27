@@ -323,7 +323,10 @@ pub fn item_rules_with(
             techs.equipment.insert(e.tech_type, t);
         }
     }
+    let fabricator = crate::pod_fabricator(game, assets, [0.0; 3])?;
     let rules = ItemRules {
+        fabricator_offset: fabricator.at.position,
+        fabricator_close_distance: fabricator.close_distance,
         recipes,
         pod_power: crate::pod_crafting_power(game, assets)?,
         techs,

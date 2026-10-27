@@ -53,8 +53,11 @@ Tested on Windows 11 with game build 10 (Steam):
   `--test-supply ScrapMetal --use-item 3 --panel 6=take-all,7=close
   --craft 8=Titanium,12=take,14=Titanium --shot 17 m9e2-solo`
   consumed one salvage, produced four Titanium after 2.8 s, spent 5 power
-  and refused the next craft for missing ingredients. World hand/menu
-  integration and power regeneration are not implemented yet.
+  and refused the next craft for missing ingredients. M9e3 checkpoint:
+  localized world hand, range checks, automatic output pickup, output
+  preview and logged plain beams/sparks pass scripted runs. Fabricator
+  animation close-pose verification is unresolved (STATUS.md); M9e3 is
+  incomplete. The crafting menu and power regeneration are not implemented.
 - The player's body: the suit models the game shows in a new game,
   animated by the game's controller with its empty-hand rules (walking,
   swimming, surface, falling, death), turned and bobbed with the view as

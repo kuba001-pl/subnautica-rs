@@ -52,6 +52,8 @@ pub struct ItemRules {
     pub recipes: BTreeMap<TechType, crate::craft::Recipe>,
     /// Initial pod relay power; regeneration is not yet simulated.
     pub pod_power: f32,
+    pub fabricator_offset: [f32; 3],
+    pub fabricator_close_distance: f32,
     pub techs: Techs,
     pub slots: SlotTable,
     /// `Inventory.UnlockDefaultEquipmentSlots`.

@@ -162,7 +162,9 @@ Usage: sn-client [--game-dir <PATH>] [--start <X> <Y> <Z>] [--look <X> <Y> <Z>]
   --hold-back    --hold-back <SECONDS>: from then on, hold S (M9u8a3: walk
                  away from the locker with the PDA open)
   --craft        --craft SECONDS=TECH[,SECONDS=TECH…]; TECH=take collects
-                 finished output (debug hook, server checks the request)
+                 finished output, TECH=open turns to the fabricator and
+                 clicks it with the hand (debug hook, server checks the
+                 request)
   --test-supply  --test-supply <TECH>[,<TECH>…]: a debug aid for a solo or
                  host run: one item of each tech type (by its name in the
                  game's code, e.g. Compass) put into the new world's
@@ -1292,6 +1294,16 @@ fn main() -> AppExit {
                         items::sync
                             .after(player::update)
                             .before(objects::stream_objects),
+                    )
+                    .add_systems(
+                        Update,
+                        items::fabricator_animation
+                            .after(items::sync)
+                            .before(animation::animate),
+                    )
+                    .add_systems(
+                        Update,
+                        items::attach_fabricator_preview.after(objects::stream_objects),
                     );
                 if let Some((seconds, name)) = args.shot.clone() {
                     app.insert_resource(PlayShot {

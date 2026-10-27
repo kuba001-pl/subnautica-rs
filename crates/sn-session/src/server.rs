@@ -674,9 +674,22 @@ impl Server {
             .and_then(|j| j.state)
             .is_some_and(|s| s.in_pod);
         let items = &self.world.items;
+        let craft_in_range = self
+            .world
+            .settings
+            .lifepod
+            .zip(self.players.get(&player).and_then(|p| p.state))
+            .is_some_and(|(pod, state)| {
+                let r = items.rules();
+                sn_sim::craft::in_range(
+                    state.position,
+                    [0, 1, 2].map(|i| pod[i] + r.fabricator_offset[i]),
+                    r.fabricator_close_distance,
+                )
+            });
         let event = match q {
             Request::Craft { crafter, tech } => {
-                if crafter != 0 || !in_pod || self.world.settings.lifepod.is_none() {
+                if crafter != 0 || !in_pod || !craft_in_range {
                     return self.refuse(conn, player, req, RefuseReason::NotHere);
                 }
                 let Some(recipe) = items.rules().recipes.get(&tech) else {
@@ -696,7 +709,7 @@ impl Server {
                 }
             }
             Request::TakeCrafted { crafter } => {
-                if crafter != 0 || !in_pod {
+                if crafter != 0 || !in_pod || !craft_in_range {
                     return self.refuse(conn, player, req, RefuseReason::NotHere);
                 }
                 ItemEvent::CraftedTaken { crafter }
