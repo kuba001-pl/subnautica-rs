@@ -2,6 +2,19 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-28 — Perf P2 close-out (DESIGN only)
+
+**What/why:** closed Perf P2 in DESIGN. It records P2a–P2d with their measured
+results and marks which "Done when" items passed. The default-view median and
+PDA activation targets are **not met**, and the open items are listed as text
+(PDA open frame: UI worker build + pipeline specialization; P2d take-all
+window regression not attributed; uncontended re-measurement; font-atlas
+partial updates and atmosphere volumes not started). No code changes. The
+merge with main is left to the orchestrator.
+
+**Verification:** docs only. `git diff --check` is clean and the status lists only
+DESIGN.md and MODLOG.md.
+
 ## 2026-10-28 — P2d: send PDA and item-atlas textures ahead of first use
 
 **What/why:** the first time the PDA shows items, the game UI uploaded
