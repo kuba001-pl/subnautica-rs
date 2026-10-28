@@ -24,6 +24,7 @@ pub mod look;
 mod math;
 pub mod pda;
 pub mod player;
+pub mod survival;
 pub mod vitals;
 
 pub use math::{Pose, Q, V3, lerp_angle};

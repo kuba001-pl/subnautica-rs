@@ -36,8 +36,8 @@ pub use equipment::{Equipment, SlotTable};
 pub use known::{AnalysisEntry, KnownTech};
 pub use luck::{FairRandomizer, HitKind, Outcrop, PlayerEntropy, Resource, draw_resources};
 pub use moves::{
-    GRAB_TIME, Inventory, PickedInto, Store, Target, add_or_swap, grab_active, lose_items, pickup,
-    spawn_supplies,
+    GRAB_TIME, Inventory, PickedInto, Store, Target, add_or_swap, flush_pending, force_pickup,
+    grab_active, lose_items, pickup, spawn_supplies,
 };
 pub use rules::{ItemRules, OutcropDrop, OutcropInfo, PickupInfo};
 
@@ -69,6 +69,42 @@ pub struct Item {
     /// `IBattery.charge`, for the items that are batteries
     /// (`ItemsContainer.RemoveItem(TechType)` takes the emptiest).
     pub charge: Option<f32>,
+    /// What its other components keep per object (M9s2).
+    pub state: ItemState,
+}
+
+/// What an item's components keep per object rather than per tech type
+/// (M9s2): saved with the object, and carried through every move, drop
+/// and death because it is part of the [`Item`] value. Two items of one
+/// tech type with different state stay different items.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ItemState {
+    /// `Eatable.timeDecayStart`, game seconds (0 while not decomposing);
+    /// `None` without an `Eatable`.
+    pub decay_start: Option<f64>,
+    /// `Oxygen.oxygenAvailable`; `None` without an `Oxygen` (a tank's).
+    pub oxygen: Option<f64>,
+    /// `EnergyMixin`'s battery slot; `None` without an `EnergyMixin`.
+    pub energy: Option<EnergySlot>,
+}
+
+/// A tool's `EnergyMixin.batterySlot`: the battery item it holds, which
+/// is an item of its own (its id, tech type and charge).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct EnergySlot {
+    pub battery: Option<Box<Item>>,
+}
+
+impl Item {
+    /// This item's id and those of the items inside it (a battery in its
+    /// slot), for checks that no item exists twice.
+    pub fn ids(&self) -> Vec<ItemId> {
+        let mut out = vec![self.id];
+        if let Some(b) = self.state.energy.as_ref().and_then(|e| e.battery.as_ref()) {
+            out.extend(b.ids());
+        }
+        out
+    }
 }
 
 impl Item {
@@ -79,6 +115,7 @@ impl Item {
             destroy_on_death: true,
             eatable: false,
             charge: None,
+            state: ItemState::default(),
         }
     }
 }

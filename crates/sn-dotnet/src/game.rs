@@ -734,6 +734,45 @@ pub fn multipliers_f32(
         .collect())
 }
 
+/// Every float constant a method loads (`ldc.r4 v`), in code order, with
+/// its byte offset in the method body: for rules whose numbers the
+/// compiler inlined, such as the 2520 and 100 of `Survival.UpdateStats`'
+/// food drain (M9s1). The caller matches the whole sequence against the
+/// shape it expects, so an edited method is an error, not a misread.
+pub fn float_literals(
+    asm: &Assembly,
+    namespace: &str,
+    type_name: &str,
+    method: &str,
+) -> Result<Vec<(usize, f32)>> {
+    let ty = find_type(asm, namespace, type_name)?;
+    let code = method_code(asm, ty, method)?;
+    Ok(code
+        .iter()
+        .filter_map(|i| match (i.opcode, &i.operand) {
+            (LDC_R4, Operand::F32(v)) => Some((i.offset, *v)),
+            _ => None,
+        })
+        .collect())
+}
+
+/// Every integer constant a method loads (any `ldc.i4` form), in code
+/// order, with its byte offset: e.g. the `TechType` a method compares
+/// with, such as `Survival.Use`'s first aid kit (M9s2).
+pub fn int_literals(
+    asm: &Assembly,
+    namespace: &str,
+    type_name: &str,
+    method: &str,
+) -> Result<Vec<(usize, i32)>> {
+    let ty = find_type(asm, namespace, type_name)?;
+    let code = method_code(asm, ty, method)?;
+    Ok(code
+        .iter()
+        .filter_map(|i| i.ldc_i4().map(|v| (i.offset, v)))
+        .collect())
+}
+
 /// Every `MonoBehaviour.Invoke(name, delay)` of a method, in code order,
 /// e.g. `uGUI_PlayerDeath.TriggerDeathVignette`'s `Invoke("BeginFadeOut",
 /// 6f)` (M9u6e1). Only constant arguments are accepted (`ldstr name;
@@ -1255,6 +1294,17 @@ mod tests {
             multipliers_f32(&asm, "", "Vignette", "Update").unwrap(),
             vec![5.0, 2.0]
         );
+        let literals = float_literals(&asm, "", "Vignette", "Update").unwrap();
+        let values: Vec<f32> = literals.iter().map(|l| l.1).collect();
+        assert_eq!(values, [0.98, 5.0, 2.0, 0.02]);
+        assert!(literals.windows(2).all(|w| w[0].0 < w[1].0));
+        assert!(float_literals(&asm, "", "Vignette", "Missing").is_err());
+        assert!(
+            int_literals(&asm, "", "Vignette", "Update")
+                .unwrap()
+                .is_empty()
+        );
+        assert!(int_literals(&asm, "", "Vignette", "Missing").is_err());
         let alpha = ("UnityEngine", "Color", "a");
         assert_eq!(
             field_compares_f32(&asm, "", "Vignette", "Update", alpha).unwrap(),
@@ -1291,6 +1341,8 @@ mod tests {
                 let _ = random_range_f32(&asm, "", "Exploder", "SetExplodeTime");
                 let _ = static_initializer_f32(&asm, "", "Settings", "fov");
                 let _ = multiplier_f32(&asm, "", "Exploder", "SetExplodeTime");
+                let _ = float_literals(&asm, "", "Vignette", "Update");
+                let _ = int_literals(&asm, "", "Vignette", "Update");
                 for m in 1..=asm.rows(Table::METHOD_DEF) {
                     if let Ok(Some((code, base))) = asm.method_body(m) {
                         let _ = decode(code, base);

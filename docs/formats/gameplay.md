@@ -1194,3 +1194,524 @@ Scene.behaviours and the direct roots alone report zero of them.
 sources and summed. Regeneration/relay connection timing and repair are
 not yet simulated; this static reservoir is **not the game's power
 simulation**. Full source/relay behavior remains unimplemented.
+## Survival: drain, eating, first aid and HUD (M9s research, 2026-10-27)
+
+The research sections describe source rules; the dated implementation sections
+below distinguish headless tests from deferred integration. Evidence
+is direct reading of the local full ILSpy output in
+`D:/subnautica-rs/out/decompiled/full` (read only), not `fields.py`:
+properties are not serialized fields. **Confirmed (source)** means a method
+or declaration confirms the rule; it does not claim a runtime prefab census
+or comparison with the original running game. All descriptions are our own
+prose. Numbers below describe rules, not a shipped balance table.
+
+- **Confirmed (source: `Survival.Start`, `UpdateHunger`, `UpdateStats`,
+  `ResetStats`; `SurvivalConstants`):** hunger is scheduled immediately,
+  then every 10 s, only when survival is required and stats are not frozen.
+  Food loses 100 units per 2,520 s; water loses 100 per 1,800 s. Each
+  interval clamps food to 0–200 and water to 0–100. For each stat, the
+  shortfall below zero contributes 25 damage per missing unit, summed
+  before applying Starve damage. Both empty for one 10 s interval therefore
+  produce approximately 23.809524 damage, not two fixed damage amounts.
+  After draining, food + water at least 150 heals at 1/24 health per second
+  of that interval. Reset/respawn starts food at 50.5 and water at 90.5.
+  Temporary-damage healing costs 0.25 food per health healed, clamped.
+- **Confirmed (source: `Survival.UpdateWarningSounds`):** warning selection
+  prioritizes crossing zero, then crossing strictly below 10, then strictly
+  below 20. Only one warning per stat per update; equality at 10/20 has not
+  yet crossed. Notification references are serialized, not text to copy.
+- **Confirmed (source: `Survival.Eat`; `Inventory.ExecuteItemAction`):** an
+  `Eatable` with either current value nonzero counts as successful use.
+  Food changes only if current food is at most 99, and can overfill to 200;
+  water always changes and clamps to 100. Nonzero values still fire eat/
+  drink events when clamping or the food gate prevents a stat increase.
+  Negative values can reduce stats. Success removes/destroys that exact
+  inventory item; two zero values leave it alone. An edible can consequently
+  be consumed at full stats. Bladderfish additionally adds 15 oxygen on
+  successful eating. `allowOverfill` and stomach fields do not control this
+  method: do not infer mechanics from their names.
+- **Confirmed (source: `Inventory.GetAllItemActions`, `GetItemAction`,
+  `ExecuteItemAction`):** the formerly unidentified component in the
+  inventory-panel section is `Eatable`. Eating is offered from the player's
+  grid when equipment is the opposite container, subject to the mode gate
+  (Bladderfish has the oxygen exception). Use precedes Eat, then equipment
+  actions for the ordinary inventory click. A storage view can change the
+  opposite-container choice; do not make every click consume an item.
+- **Confirmed (source: `Survival.Use`):** FirstAidKit is handled here;
+  there is no separate `FirstAidKit.cs` in this decompile. It requests 50
+  health and succeeds only if actual healing exceeds 0.1. Otherwise it
+  reports the localized full-health message and retains the item. Tiny
+  positive healing at or below the threshold can occur without consumption.
+- **Confirmed (source: `Survival.GetWeaknessSpeedScalar`; install, opt-in
+  test `the_consume_rules_are_read`):** a weakness scalar subtracts 0.02
+  for each food/water unit below 20, and scanning every method body in the
+  installed `Assembly-CSharp.dll` finds 0 instructions referencing its
+  `MethodDef` token. Unused legacy code; not applied to player speed.
+- **Confirmed (source: `uGUI_FoodBar`, `uGUI_WaterBar`):** both use capacity
+  100 for display, smooth the ratio with PDA delta time and serialized
+  damping, then ceil the smoothed value for the number. They subscribe to
+  eat/drink events for a 2.5 s punch whose scale depends on the event value;
+  PDA use flips the icon to numbers. Pulse curves and spring parameters
+  come from the UI asset. Food overfill is not permission to clamp the
+  simulation to the HUD's reference capacity. M9u already provides the
+  drawing/animation foundation; M9s must feed live values and events.
+
+## Eatable: individual age and decay (M9s research)
+
+- **Confirmed (source: `Eatable` declarations, getters, `SetDecomposes`):**
+  base food/water, `decomposes`, decay rate, despawn settings and delay are
+  prefab fields. Current food and water each lose elapsed game time since
+  `timeDecayStart` times `kDecayRate`, independently floored at −25. Turning
+  decomposition off clears its start time; enabling it sets the start only
+  if zero. The timestamp is saved per instance. Storage must not replace
+  this with a fresh item's age on moves, drops or rejoining.
+- **Confirmed (source: `Eatable.GetSecondaryTooltip`, `IsRotten`):** rotten
+  requires both current values negative; otherwise freshness labels depend
+  on food falling below half or nine tenths of its base value. These labels
+  are language keys. No item-value table belongs in source or this document.
+- **Confirmed (source: `Eatable.SetDecomposes`, `IterateDespawn`):** enabling
+  decomposition schedules checks every 5 s after an initial random delay
+  of 0–5 s. Notably `SetDecomposes(true)` schedules them without checking
+  `despawns`. A rotten inactive object resets the active tracking flag;
+  a subsequently active rotten object starts a timer and is destroyed only
+  after elapsed active time is strictly greater than `despawnDelay`
+  (initializer 300 s). **Confirmed (source: `Pickupable.Initialize`,
+  `Deactivate`, `Activate`, `Drop`, `StorageSlot.UnsafeAdd`,
+  `Inventory.AddPending`):** `Initialize` (called on `Pickup`,
+  `CraftData.AddToInventory` and `SpawnStoredLoot`) calls `Deactivate()`,
+  which sets `gameObject.SetActive(false)`; `StorageSlot.UnsafeAdd` and
+  `Inventory.AddPending` also set `gameObject.SetActive(false)`, whereas
+  `Pickupable.Drop` calls `Activate` (`SetActive(true)`). Stored items are
+  therefore inactive (`!gameObject.activeSelf`), so `IterateDespawn` resets
+  `wasActive = false` and retains rotten items in storage while preserving
+  `timeDecayStart` across moves.
+
+## Quick slots and the held-tool flow (M9s research)
+
+- **Confirmed (source: `Inventory.Awake`, `InventoryItem.isBindable`,
+  `QuickSlots.OnAddItem`):** the player constructs five slots; the six
+  strings in `slotNames` are not the slot count. Bindability is TechData
+  equipment type Hand. Automatic binding skips scrap metal, requires a
+  tool or eligible Use/Eat action and the first copy of its tech type, and
+  uses the first empty slot. Its Eat branch excludes Plantable objects and
+  objects without LiveMixin. Automatic selection also needs no held item
+  and enabled avatar input. Manual binding is a different path.
+- **Confirmed (source: `QuickSlots.Bind`, `SlotKeyDown`, `Select`,
+  `SlotNext`, `SlotPrevious`, `OnRemoveItem`, `TryRefill`):** bindings refer
+  to individual inventory objects. Rebinding the same item to its own slot
+  unbinds it; moving it to another clears the old slot. With the PDA in use,
+  a slot key binds the hovered eligible item; otherwise it selects/toggles
+  a desired slot. Scroll selects selectable slot types and deselects at an
+  end, rather than wrapping continuously. Removal unbinds and attempts a
+  replacement of the same tech type from unbound grid items on update.
+  Save/restore matches item identities, not just tech types.
+- **Confirmed (source: `QuickSlots.UpdateState`, `GetTransitionTime`,
+  `PlayerTool`):** None → Draw → Hold and Holster → None use a Sequence;
+  a removal also enters Drop. Draw may be reversed by a new desired slot;
+  held-tool use and bashing postpone holstering. Per-tool draw, holster,
+  drop and bash times are prefab fields, with code initializers 0.5,
+  0.35, 1 and 0.7 s. Transition times clamp to 0–10 s. Suspension for the
+  PDA must not duplicate or lose the held inventory object.
+- **Confirmed (source: `QuickSlots.DrawAsTool`, `HolsterAsTool`,
+  `PlayerTool.OnDraw`, `OnHolster`):** tools plug into their hand or camera
+  socket, use the view-model layer, disable their main collider and become
+  kinematic while drawn; holstering restores storage parent/layer/collider.
+  Animator holding flags use the tool name. First-use state is per player
+  and tech type, with tool flags and animation events controlling visibility
+  and IK targets. This is more than drawing another world model at the eye.
+- **Confirmed (source: `GUIHand.OnUpdate`, `OnToolUseAnim`,
+  `ArmsController.OnToolUseAnim`, `PlayerTool` input methods):** the hand
+  dispatches tool input and inventory use while interaction is allowed;
+  world actions are suppressed with the PDA. RightHand can execute Use/Eat
+  for held ordinary items; live non-plant edibles take a different hand
+  path, so inventory eating and held eating are not interchangeable.
+  Tool input drives animation; its use event performs the knife action.
+  `GUIHand` rejects use-animation events until strictly more than 0.5 s
+  since the preceding one. The server must validate the action sequence;
+  an arbitrary client animation callback cannot authorize extra damage.
+
+## Knife damage and harvesting (M9s research)
+
+- **Confirmed (source: `Knife.OnToolUseAnim`, `IsValidTarget`):** knife
+  damage and attack distance are serialized fields (initializers 25 and
+  2 m); damage type is also a prefab field. The forward trace can fall
+  back to the most recent interaction volume. A LiveMixin target is rejected
+  if weldable, not knifeable, or an escape pod. No LiveMixin permits surface
+  feedback, but grants no damage harvest in this method.
+- **Confirmed (source: `Knife.GiveResourceOnDamage`; `TechData` harvest
+  getters; `HarvestType`):** DamageAlive harvest requires alive before
+  damage; its killing hit also adds `harvestFinalCutBonus`. DamageDead
+  requires dead after damage, including a killing hit. These are distinct
+  from Break, Pick and Click harvest types. Output and bonus come from
+  TechData, with DLL defaults when missing. No output for None; ordinary
+  output count is one. Inventory addition sets `spawnIfCantAdd` false:
+  insufficient room does not justify spawning loose bonus resources.
+  **Hypothesis:** exact failed-add feedback and whether subsequent dead
+  hits find a despawned target need a lifecycle test per harvestable prefab.
+- **Confirmed (source: `BreakableResource.OnHandClick`, `Player.PlayBash`):**
+  an outcrop with a bash-capable held tool starts the bash rather than the
+  empty-hand hit path. M9d's outcrop use must remain connected to the tool
+  animation path and must not apply both hits for one input.
+
+## Tanks, fins and batteries (M9s research)
+
+- **Confirmed (source: `Oxygen`, `OxygenManager`):** tank capacity is
+  `Oxygen.oxygenCapacity` on each prefab, not TechData or a tank-name
+  constant. Available oxygen is individual saved state; a negative loaded
+  value is repaired to full, while zero is not. The player's source is
+  registered at start, other sources on equip and unregistered on unequip.
+  Totals count breathable registered sources. Sources sort player first,
+  other breathable next, non-breathable last; filling walks forward,
+  draining walks backward and drains breathable sources only. Thus a tank
+  normally empties before the player's reserve. Equal-priority ordering
+  is not proved stable; do not invent an ordering rule for multiple tanks.
+- **Confirmed (source: `Inventory.ChangeOxygen`, `TryUpdateOxygen`):** grid
+  removal unregisters that object's source, and grid additions re-register
+  the equipped tank if present. A spare in the grid is not automatically
+  another breathing reserve. Fill rate is the DLL's 30 units/s and the
+  previously documented surface/cinematic gates still apply. **Hypothesis:**
+  prefab tank capacities and initial availability for picked, crafted and
+  loaded tanks remain to be measured; no capacity catalogue was extracted
+  in this research. Existing player capacity 45 is confirmed by P0, above.
+- **Confirmed (source: `Fins`, `UnderwaterMotor.AlterMaxSpeed`):** Fins only
+  tracks equipment state; the motor applies equipped fins' speed bonus
+  (ordinary fins +1.9, ultra glide +3.2, skipped in Seaglide mode). Before
+  that, tank penalties differ by equipped type, spare high-capacity tanks
+  have their own penalty, and a minimum speed is applied; a held tool then
+  subtracts 1 outside Seaglide mode. Surface multiplier is applied later.
+  These modifiers are DLL rules, not TechData. Preserve operation order
+  and read each coefficient at runtime rather than copying a balance list.
+- **Confirmed (source: `UpdateSwimCharge.FixedUpdate`):** equipped charging
+  fins, underwater state and actual velocity strictly greater than 2 m/s
+  permit charging the held tool's EnergyMixin. `chargePerSecond` is a
+  serialized field, initializer 0.25. Speed equality does not charge;
+  neither does swimming with the tool holstered. The charging loop sound
+  depends on actual energy accepted, not merely satisfying the motion gate.
+- **Confirmed (source: `Battery` property bodies and serialization hooks):**
+  `_capacity` is serialized (initializer 100), `_charge` is instance saved
+  state. Unity deserialization initializes charge to capacity; protobuf
+  restores charge separately. The setter caps at capacity, not at zero.
+  Do not mistake the `charge`/`capacity` properties for serialized fields
+  or use prefab initialization to refill a restored used battery.
+- **Confirmed (source: `EnergyMixin` properties, `ModifyCharge`,
+  `ConsumeEnergy`, `OnCraftEnd`, `InitiateReload`, `Select`):** a tool has
+  an actual battery in a StorageSlot, with prefab default type, normalized
+  default charge, compatibility and replacement permission. Crafting spawns
+  a default battery only if absent. Accepted additions/removals clamp to
+  room/available charge; ConsumeEnergy succeeds for any positive amount
+  removed, even less than requested. The tool-specific caller determines
+  cost; there is no universal passive drain here. Reload offers compatible
+  grid batteries and the stored battery, including unload. Replacement
+  returns the previous battery through ForcePickup; full-grid behaviour
+  must follow that existing pending-item path without copying items.
+- **Confirmed (source: `EnergyMixin.charge`, `ModifyCharge`):** effective
+  charge is zero while electronics are disabled, with a two-second recovery
+  ramp on re-enable; underlying battery state is separate. **Hypothesis:**
+  disable effects are outside the initial survival slice; retain this as
+  an explicit deferred behaviour rather than treating it as ordinary drain.
+
+## Medical cabinets and supply crates (M9s research)
+
+- **Confirmed (source: `MedicalCabinet.Start`, `Update`, `OnHandClick`):**
+  cabinet readiness and next-spawn game time are saved state. The prefab
+  supplies interval (initializer 600 s), starting-kit flag and construction
+  reference. On first start the deadline is now or now + interval; readiness
+  uses strictly greater than the deadline. First click opens a ready closed
+  cabinet; taking from an open ready cabinet requires 1×1 room, adds one
+  kit, schedules a new deadline and toggles the door after 2 s. Full-grid
+  clicks can toggle a ready door without taking the kit. Empty cabinets
+  show progress and do not toggle on click. **Hypothesis:** actual pod
+  interval, initial flag and construction wiring need a serialized census;
+  the initializer alone does not prove the pod's balance.
+- **Confirmed (source: `SupplyCrate`):** this is not an ItemsContainer.
+  It searches for a child Pickupable. A closed unsealed crate opens; an
+  open crate tries Pickup on its child. A sealed crate refuses; its sealed
+  opened event toggles the lid. Toggling updates `open` only if an Animation
+  component exists, and opening activates `setActiveOnOpen`. Open is saved;
+  loading an open crate snaps the animation. An empty open crate offers no
+  take action; the public click path does not offer an ordinary close.
+  Pickup failure clears the cached child reference but the next hover/click
+  searches again, so a full inventory must not permanently erase its item.
+- **Confirmed (source: `LootSpawner.GetSupplyTechTypes`, `SpawnStoredLoot`):**
+  randomized storage loot is a separate mechanism: a serialized list and
+  requested count select distinct list indices; the count is capped by list
+  length. SpawnStoredLoot derives count from serialized bounds and a sampled
+  curve, fills a StorageContainer once while room remains, then saves its
+  `lootSpawned` flag. **Hypothesis:** which placed crates use child items,
+  placeholder activation or SpawnStoredLoot, and the population of each,
+  must be traced in prefab data. Do not put random storage loot into every
+  SupplyCrate merely because both use the word supply.
+
+
+- **Confirmed (source: `TooltipFactory.GetBarValue`, `uGUI_ItemsContainer.DoUpdate`):**
+  icon bars prioritize EnergyMixin, then a battery, then Eatable, then an
+  oxygen source. Battery/oxygen use available divided by capacity; decay
+  uses nonnegative current food/water divided by positive base values,
+  combining both when both bases are positive. Non-decomposing food has no
+  decay bar. Inventory flags can hide bars; values are refreshed as items
+  age. Tooltips read the same individual components, not tech-type averages.
+
+## M9s runtime provenance and remaining measurements
+
+- **Confirmed (source locations above; existing P0/P1 readers):** TechData
+  supplies harvest/slot/equipment rules, sizes, recipes and declared energy
+  costs; its missing-key defaults and enum identities come from the DLL.
+  Prefabs supply Eatable values/rates, Oxygen capacities, Battery capacity,
+  EnergyMixin battery policy, PlayerTool timings/targets, Knife damage/range,
+  cabinet settings and crate references. Main-scene components supply player fields; charging-component placement
+  remains unconfirmed after M9s4; UI prefabs supply bar curves and presentation.
+  Read serialized fields before applying code defaults; properties are not
+  fields, and NonSerialized/ProtoMember state is not a prefab balance field.
+- **Confirmed (source):** SurvivalConstants metadata contains many constants,
+  but compilers inline their uses. Hunger interval, food gate, regeneration,
+  first-aid success threshold, negative decay floor, animation guard,
+  movement coefficients and surface refill also occur in constructors or
+  method IL. M9s must identify each runtime source (metadata constant or a
+  bounded method/constructor IL pattern), log provenance and reject missing/
+  ambiguous patterns with offsets. Initializers are fallbacks only where
+  Unity does not serialize an override. No implementation may use these
+  prose numbers as its runtime balance source.
+- **Hypothesis / not tested:** original frame scheduling versus the project's
+  fixed tick, actual prefab values listed as unmeasured above, loaded-item
+  active state, harvest target destruction and crate loot wiring. Runtime
+  extraction coverage is **not tested** in this docs-only change. Multiplayer
+  ownership, deterministic loot seeds and paused offline save time are our
+  server policy, not facts about the original single-player game.
+
+### M9s1: the hunger rules as implemented (2026-10-27)
+
+- **Confirmed (source: `Survival.Start`, `UpdateHunger`, `ResetStats`,
+  `OnRespawn`):** `Start` schedules `UpdateHunger` with a 0 s first delay
+  and calls `ResetStats` in the same frame, so the first call (a frame
+  later) drains the reset stats. Freezing and a mode without survival skip
+  a call's effects but not the schedule; a respawn resets food/water but
+  not the schedule. Within one call the order is: food drain, water drain,
+  food's warning, water's warning, Starve damage (only when positive: the
+  check is `> float.Epsilon`, the smallest positive float), then the
+  regeneration, whose food + water gate reads the stats *after* the drain.
+  `sn-sim::survival::Survival` returns these as ordered effects; the
+  caller's health applies them (live wiring is M9s8/M9s11).
+- **Confirmed (install, `sn-assets::hunger_rules`, opt-in test
+  `the_hunger_rules_are_read`):** every number is read from the player's
+  `Assembly-CSharp.dll` at runtime: the interval from `Survival`'s
+  constructor (initialiser of `kUpdateHungerInterval`), drain, caps,
+  starvation and thresholds from the 16 float constants of `UpdateStats`
+  in code order, the heal gate and rate from `UpdateHunger`'s 3, the
+  temporary-damage cost from `OnHealTempDamage`'s 3, and the start stats
+  from `ResetStats`. Repeated uses (the 100 scale three times, 25 twice,
+  the 20/10 thresholds for food and for water) must agree, the shape's
+  zeros and `float.Epsilon` must be exactly those, and each value must
+  equal the `SurvivalConstants` declaration of the same name; anything
+  else is an error with the IL offset. Build 10 reads interval 10 s,
+  2,520/1,800 s, 100/200, 25, 150, 1/24 (as a float, 0.041666668),
+  50.5/90.5, 20/10 and 0.25.
+- **Our rule, not the game's:** the schedule's phase is kept in seconds
+  (f64) and a call is due within 1e-9 s of its time, so many small steps
+  reach the same calls as one long step; the game computes in f32 at frame
+  times. Matching Unity's frame of a call to the fixed tick is a
+  **hypothesis** (not measured against the running game).
+
+### M9s2: per-item state, eating, drinking and first aid as implemented (2026-10-27)
+
+- **Confirmed (source: `Survival.Eat`, `Survival.Use`, `Eatable.GetFoodValue`/
+  `GetWaterValue`, `LiveMixin.AddHealth`, `Inventory.ExecuteItemAction`):**
+  `sn_sim::inventory::Item` carries `ItemState` (`decay_start`, `oxygen`,
+  `energy` with a `Box<Item>` battery), so per-object state is preserved
+  across grid, equipment slots, locker, world drops and death (`lose_items`),
+  with `Item::ids` enumerating nested battery ids. `sn_sim::survival::{eat,
+  eat_item, use_tech, use_item, add_health, initial_state}` implements food
+  gating at `<= food_gate`, clamping to `0..food_max` and `0..stat_max`,
+  `onEat`/`onDrink` and positive-value goals even when clamped or gated,
+  `vitalsOkNotification` (`after > vitals_ok && after - delta < vitals_ok`),
+  Bladderfish oxygen on eat, decomposing food/water floored at `decay_floor`,
+  and `FirstAidKit` consumption only when actual healing exceeds
+  `heal_success` (returning `UsedItem::Full` otherwise and leaving the kit
+  in the grid).
+- **Confirmed (install, `sn-assets::consume_rules`, opt-in test
+  `the_consume_rules_are_read`):** every constant and tech type is read at
+  runtime from `Assembly-CSharp.dll`: `Survival.Eat`'s 15 float constants
+  and `TechType.Bladderfish` integer literal, `Survival.Use`'s 4 float
+  constants and `TechType.FirstAidKit` integer literal, and `Eatable`'s
+  two value getters (`GetFoodValue`/`GetWaterValue`), cross-checked against
+  `UpdateStats`' caps and `SurvivalConstants` (`kBladderFishO2OnEat`,
+  `kFirstAidKitHealth`). Build 10 reads `food_gate = 99`, `vitals_ok = 20`,
+  `first_aid = 4514`, `first_aid_health = 50`, `heal_success = 0.1` (as f32,
+  `0.10000000149011612`), `oxygen_food = 2515`, `oxygen_on_eat = 15`,
+  `decay_floor = -25`, and 0 callers of `Survival.GetWeaknessSpeedScalar`.
+
+### M9s3: decay, battery charge and replacement as implemented (2026-10-27)
+
+- **Confirmed (source: `Eatable.IsRotten`, `GetSecondaryTooltip`,
+  `SetDecomposes`, `StartDespawnInvoke`, `IterateDespawn`;
+  `Battery.set_charge`, `OnProtoDeserialize`; `EnergyMixin.SpawnDefaultAsync`,
+  `ModifyCharge`, `AddEnergy`, `ConsumeEnergy`, `Filter`, `Sort`, `Select`;
+  `Inventory.ForcePickup`, `FlushPendingItemsAsync`):**
+  `sn_sim::survival::decay` implements `is_rotten` (both current values
+  strictly `< 0`), `freshness` (`Rotting` when both `< 0`, else `Ripe`
+  when `food < ripe_fraction * base_food`, else `Decomposing` when
+  `food < decomposing_fraction * base_food`, else `Fresh`), `set_decomposes`
+  (disabling clears `decay_start` to `0`; enabling sets `decay_start = now`
+  only if `0`), and `iterate_despawn` (inactive items reset `was_active =
+  false` and never despawn; active rotten items set `despawn_start` on the
+  first active check and despawn only when `now - despawn_start >
+  despawn_delay`). `sn_sim::survival::energy` and
+  `sn_sim::inventory::{force_pickup, flush_pending}` implement `make_battery`,
+  `restore_battery` (preserving saved charge without refilling used/empty
+  batteries), `spawn_default_battery` (spawning only when `slot.battery` is
+  `None` and `default_battery != TechType.None`), `modify_charge`/`add_energy`/
+  `consume_energy` (clamped to `0..=capacity`, `consume_energy` succeeding
+  for any positive charge removed), `sort_reload_candidates` (stored battery
+  at index `0`, then compatible grid batteries by `compatible_batteries`
+  order and descending charge), and `select_battery` (returning the outgoing
+  battery through `force_pickup` into `inv.pending` when the grid is full).
+- **Confirmed (install, `sn-assets::{decay_rules, energy_rules}`, opt-in
+  test `the_decay_and_energy_rules_are_read`):** all constants are read at
+  runtime from `Assembly-CSharp.dll`: `Eatable.despawnDelay` (`300`),
+  `GetFoodValue`/`GetWaterValue` (`-25`), `GetSecondaryTooltip` (`0, 0,
+  0.5, 0.9` as f32 `0.8999999761581421`), `IsRotten` (`0, 0`),
+  `SetDecomposes` (`0, 0`), `StartDespawnInvoke` (`0, 5, 5`),
+  `Battery._capacity` (`100`, equal to `EnergyMixin.maxEnergy`),
+  `EnergyMixin.defaultBattery` (`TechType.Battery = 504`),
+  `EnergyMixin.defaultBatteryCharge` (`1`), `EnergyMixin.get_charge`
+  (`0, 2, 2`), and `EnergyMixin.ModifyCharge` (six `0`s).
+
+### M9s2–3 audit (2026-10-27)
+
+- **Confirmed (direct source read and opt-in install tests):** consume/decay/
+  energy code constants are read from DLL IL, not production literals. The
+  serialized Eatable/Battery/EnergyMixin inputs remain caller-supplied until
+  M9s7; these checks do not claim a prefab census. Electronics disable/recovery
+  is deferred, as documented above. Negative saved battery charge is rejected
+  by our input contract; the game setter itself only caps the upper bound.
+- **Confirmed (source: EnergyMixin.Sort; synthetic duplicate-type test):** a
+  compatible tech group is emitted once even if compatibility lists repeat a
+  type. Fixed our selector to preserve this property.
+- Historical diffs contain question marks introduced by the shell encoding;
+  current M9s1–3 prose and source already contain proper UTF-8. Unrelated
+  older MODLOG encoding damage is outside this change.
+
+### M9s4: equipment effects as implemented (2026-10-27)
+
+- **Confirmed (direct Oxygen/OxygenManager source read; synthetic borrowed-source
+  tests):** registrations borrow the authoritative amounts, sort player first,
+  fill forward (including nonbreathable sources), drain breathable sources in
+  reverse, and totals exclude nonbreathable sources. Unregistering does not
+  change amounts. The caller registers equipped tanks only; spare tanks remain
+  separate items. Equal-priority registration order is **our policy, not the
+  game's**. Surface/cinematic booleans are resolved by the caller.
+- **Confirmed (runtime metadata layouts and four installed tank prefabs, opt-in
+  `the_equipment_rules_are_read`):** capacities are stored fields, read as
+  30/90/90/180 for the four tested tank types. Available oxygen is excluded by
+  NonSerialized. Direct `Oxygen.Awake`/`OnProtoDeserialize` reading confirms
+  negative-to-full repair, zero retained; no field initializer means fresh CLR
+  state starts at zero. CraftData/Pickupable contain no oxygen refill assignment.
+  This confirms component initialization, not an original-game acquisition run.
+- **Confirmed (source UnderwaterMotor.AlterMaxSpeed and runtime bounded IL
+  sequence):** tank/spare penalties precede minimum; reinforced suit uses
+  another minimum; fins then held-tool penalty (both skipped for Seaglide),
+  surface multiplication, and smoothed player multiplier follow. DLL values,
+  including the actually inlined half penalties for equipped tanks, are loaded
+  at runtime. A synthetic scripted multiplier trace checks the operation order.
+- **Confirmed (UpdateSwimCharge.FixedUpdate source + runtime IL):** actual speed
+  must be strictly above the extracted threshold 2; underwater/equipped/held
+  gates and accepted energy determine charging. Synthetic rate/capacity tests
+  check equality, holstering, surface and saturation.
+- **Open, stopped after two genuine placement checks:** no UpdateSwimCharge in
+  main scene or SwimChargeFins hierarchy. Serialized rate/active placement is
+  unresolved; see STATUS.md and out/m9s4-placement-dead-end.log. The field
+  accessor is ready but the pure rule requires an explicit rate. No initializer
+  is substituted, no live charging claimed. M9s7 owns the broader census.
+- Pure max-speed and oxygen rules are ready for M9s integration; the live player
+  motor/vitals and equipment event plumbing are **not tested** here.
+
+### M9s5: quick slots and held state as implemented (2026-10-27)
+
+- **Confirmed (QuickSlots/Sequence/PlayerTool/PDA/Inventory direct source read;
+  six synthetic tests):** item-id bindings are distinct from desired and held
+  state. Automatic binding requires the first grid copy and Hand eligibility,
+  skips scrap and disallowed edibles, and does not replace a full toolbar.
+  Manual binding can bind duplicate tech types; same-item same-slot unbinds.
+  Removal/refill uses the removed identity's type and an unbound grid item.
+  Binding metadata retains the removed type until reconciliation; no cloned
+  item is created. Scroll ends deselect rather than wrap.
+- **Confirmed (Sequence.Update and QuickSlots.Update source; synthetic event
+  traces):** Sequence completion is notified on the update after reaching the
+  endpoint. Reversals reset current to the specified endpoint, rather than
+  preserving partial progress. Repeated identical clock values do not advance
+  Sequence. Draw/hold/holster/drop keep equip/unequip events once each; held
+  removal releases immediately on reconciliation and waits its drop duration
+  before drawing a refill. Use/bash can delay holstering in Hold.
+- **Confirmed (PDA.Open/Deactivated, Inventory.ReturnHeld, Player.OnKill):** PDA
+  opening refuses a tool in use, remembers the active slot, returns held
+  immediately and suspends activation; closing restores desired selection.
+  Slot keys during suspension bind the hovered eligible item. Interaction
+  teardown/death deselect immediately. Bindings still reference grid ownership;
+  no item is copied or moved by this state machine. Caller supplies interaction
+  permission and current tool-use/bash/VR/debug state. First-use flags are per
+  player/type, set only when a first-use animation is requested; ordinary
+  subsequent draws do not request it. Empty named-animation input on an
+  animated tool refuses explicitly rather than inventing an animation.
+- **Confirmed (runtime `the_quick_slot_rules_are_read`):** Inventory.quickSlots
+  is a property; the bounded count pattern ends in its setter call, not stfld.
+  Initial draft searched for a field and correctly refused (0 patterns); fixed
+  after reading the declaration. Slot count is 5; transition cap 10; default
+  timings 0.5/0.35/1/0.7. Installed Knife stored timings are 0/0.1/0/0.7,
+  with animations and first-use enabled. Constructor values are not substituted
+  for these stored fields. Synthetic assemblies check missing/zero/duplicate
+  slot-count patterns return offset errors; installed reads repeat identically.
+- View-model rendering, collider/socket/IK application and live input dispatch
+  are **not tested**, deferred to M9s11; events describe the headless boundary.
+
+### M9s6: knife harvest, cabinets, crates and stored loot as implemented (2026-10-27)
+
+- **Confirmed (direct read of `Knife.OnToolUseAnim`, `IsValidTarget`,
+  `GiveResourceOnDamage`; six synthetic `sn_sim::survival::world` tests):**
+  a target with a LiveMixin is rejected (no damage, no harvest) when
+  weldable, not knifeable, or an escape pod; a target without one is valid
+  but receives no damage or harvest. Liveness is read before `TakeDamage`
+  and after it; DamageAlive grants 1 while it was alive, plus the final-cut
+  bonus on the killing hit; DamageDead grants 1 whenever it is dead after
+  the hit (killing or already dead). Output `None` grants nothing.
+  `sn_sim` asks a caller-supplied damage resolver once per accepted event
+  and never models `LiveMixin.TakeDamage` modifiers itself (M9s9).
+- **Confirmed (install, opt-in `the_world_survival_rules_are_read`):**
+  `GUIHand.OnToolUseAnim`'s re-entry guard is strict `Time.time > last +
+  0.5`; `MedicalCabinet.OnHandClick` checks `HasInventoryRoom(1, 1)`, adds
+  one `FirstAidKit` (4514 on build 10) and has exactly one
+  `Invoke("ToggleDoorState", 2)`; `HarvestType` DamageAlive = 3,
+  DamageDead = 4; Knife's base output count is 1. Each method's integer
+  literal sequence is matched exactly, so a changed method is an error
+  with its IL offset. Stored `Knife.prefab` fields: damage 20, attackDist
+  1.2 (f32), damageType 0. Stored `MedicalCabinet.prefab`
+  (`Submarine/Build/`): interval 600, startWithMedKit false, constructable
+  non-null. TechData harvest types over all entries (defaults applied):
+  None 384, Break 8, Pick 17, DamageAlive 46, DamageDead 3, Click 5;
+  Creepvine is DamageAlive → CreepvinePiece, final bonus 0.
+- **Confirmed (source `MedicalCabinet` field types):** `timeSpawnMedKit` is a
+  float: both the first deadline (`(float)timePassed + …`) and the one after
+  a take (`timePassedAsFloat + interval`) are computed in single precision
+  and compared to the double clock strictly. Our `Cabinet` rounds the same
+  way. The 2 s door toggle runs on Unity's scaled `Time.time`, a second
+  clock, separate from the kit deadline's `DayNightCycle` clock.
+- **Hypothesis settled (install, same test):** all 8 `WorldEntities/Natural/
+  SupplyCrate_*` prefabs (Battery, DisinfectedWater, FirstAidKit, Flare,
+  PowerCell, Ration, Sealed, Signal) have one `Animation`, `setActiveOnOpen`
+  null, 0 `Pickupable`s and exactly one active `PrefabPlaceholder` child; only
+  `SupplyCrate_Sealed` has a `Sealed` component. So a crate's item is the
+  placeholder's spawned child, never `SpawnStoredLoot`, and opening never
+  activates anything in these prefabs. `StarshipCargoCrate` has no
+  `SupplyCrate`. **Still open:** resolving each placeholder's prefab and the
+  spawned child's tech type belongs to the M9s7 census.
+- **Open (install scan):** 0 of the 3,336 catalog-loadable prefabs in the
+  prefab database contain `SpawnStoredLoot`. Its users (scene objects, or
+  none) are unknown; M9s7's scene census must settle it. The headless rule
+  is implemented but has no installed caller yet.
+- **Confirmed (firstpass `UWE.Utils.Sample` IL recognised at runtime by
+  `verify_loot_sampler`; `LootSpawner.GetRandomTechTypes`,
+  `MathExtensions.UniqueRandomNumbersInRange`):** the curve is sampled by
+  strict rejection (`y < curve(x)`), the count is
+  `RoundToInt(min + x·(max − min))` (ties to even), capped by the list
+  length, with distinct indices. Our RNG (SplitMix64 from a server seed)
+  and the 4,096-attempt limit are **ours, not the game's**: Unity's
+  `Random` sequence is not reproduced, and a curve that never accepts is
+  an explicit error instead of an endless loop.

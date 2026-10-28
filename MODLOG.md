@@ -2,7 +2,23 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
-## 2026-10-28 ? M9e4b: ordered UI script acknowledgements; menu verified
+## 2026-10-28 — Merge M9s (survival) into main
+
+Merged `t3/176d97aa` (M9s1–M9s6). MODLOG conflict resolved by
+keeping both histories; source merged automatically. Crafted items retain
+the branch's default empty per-item survival state; initialization/live
+survival integration remains later M9s work. Preserved that branch's
+tracked STATUS.md about swim-charge provenance. Corrected shell-converted
+Unicode in the new M9e4b entry and completion markers using explicit
+Unicode escapes. No new dependency or whitelist changes in this merge.
+
+Verification: `cargo test --workspace` without SUBNAUTICA_DIR: 815 passed,
+0 failed, 72 ignored; `cargo clippy --workspace --all-targets -- -D warnings`
+and `cargo fmt --all -- --check` pass. Logs out/m9s-merge-check{0,1,2}.log.
+Real-client integration is checked in M9e5 next; no claim of live survival
+support. No other worktree touched.
+
+## 2026-10-28 — M9e4b: ordered UI script acknowledgements; menu verified
 
 **What/why:** retained the inherited client menu, lock latch, notifications,
 tooltip and transfer-confirmation work. Test scripts now execute at most
@@ -18,11 +34,11 @@ emitted only for menu scripts. No game-rule, dependency or whitelist changes.
 `cargo fmt --all -- --check` pass. Release build passed.
 `python out/m9e-runs.py`, fresh system-temp slot, pre-run cargo/rustc 0:
 first ordered run skipped 0 own steps, 22 hash checks, 0 differences,
-exit 0, zero WARN/ERROR. All 7 transfers confirmed; locker 7 ? 0.
+exit 0, zero WARN/ERROR. All 7 transfers confirmed; locker 7 → 0.
 Menu steps at play 9.900/10.180/11.100/12.020 s in separate frames;
 Titanium tooltip includes the green salvage ingredient; Craft(16) sent
-at 12.320 s; job ticks 741 ? 881 (140 ticks, 2.8 s), power 75 ? 70,
-one salvage consumed, four Titanium IDs 7?10 delivered with four inventory
+at 12.320 s; job ticks 741 → 881 (140 ticks, 2.8 s), power 75 → 70,
+one salvage consumed, four Titanium IDs 7–10 delivered with four inventory
 notifications. Lock logged, alpha reached 0 at progress .344, completion
 restored interactability and alpha 1. Screenshot out/m9e4b-menu.png.
 Final-binary repeat: pre-run count 0, skipped 0, 23 hash checks, 0 differ;
@@ -158,6 +174,311 @@ inspector (the client must do the same).
 
 **Not tested:** anything on screen (M9e4b); original-game comparison.
 
+## 2026-10-27 — Merge main (M9e1–e3 crafting, M9f save/load) into M9s
+
+Kept both sides in MODLOG, DESIGN (main's M9f ✅ row and plan, then the M9s
+row and plan) and gameplay.md (main's M9e findings, then the M9s sections).
+One semantic conflict: `sn-session` crafting builds `Item` literals without
+M9s2's `state`; it now uses `ItemState::default()` (crafted-item survival
+state is M9s11's `initial_state`; save of item state is M9s10). M9s row now
+says M9f is done. Verification: `cargo test --workspace` (804 passed, 0
+failed, 72 ignored; out/m9s6-merge-workspace.log), clippy `-D warnings` and
+`cargo fmt --all -- --check` clean; with SUBNAUTICA_DIR the six opt-in
+`*_rules_are_read` survival tests pass. Other main install tests: **not
+re-run** after the merge.
+
+## 2026-10-27 — M9s6: knife harvest, cabinets, supply crates and stored loot, headless
+
+**What/why:** sixth step of M9s. `sn_sim::survival::world`: `ToolUseGate`
+(one move-only `ToolAction` per accepted sequence; knife events behind the
+strict 0.5 s re-entry guard), `knife_strike` (target validity, one call to a
+caller-supplied damage resolver, before/after liveness, DamageAlive/
+DamageDead output and final-cut bonus), `grant_harvest` (failed additions
+returned, never spawned loose), `outcrop_click`/`bash_outcrop` (a held bash
+tool waits for its event: one input, one hit), `Cabinet` (strict deadline,
+door/take/full-grid paths, 2 s delayed toggle on a second clock, f32
+deadlines like the game's float field), `SupplyCrate` (sealed/closed/open/
+full/empty, absent Animation) and `draw_stored_loot`/`StoredLoot`
+(rejection sampling, distinct indices, once flag). `sn_assets`:
+`world_survival_rules` (Assembly-CSharp IL), `verify_loot_sampler`
+(firstpass `UWE.Utils.Sample` recogniser), `knife_info`, `cabinet_info`,
+`harvest_info`, `stored_loot_info` (stored fields/TechData).
+
+**Review of the previous agent's uncommitted draft:** kept the sn-sim module
+and readers. Fixed a compile error (closure type inference) in
+`world_survival_rules`; replaced the cabinet door delay's bare float match
+with `sn_dotnet::invokes`, requiring exactly one
+`Invoke("ToggleDoorState", …)`; made cabinet deadlines single precision
+(source: `timeSpawnMedKit` is a float) with a 2^24 s rounding test; added
+`stored_loot_info`, synthetic reader fixtures (shape changes, wrong branch,
+truncations: errors, 0 panics) and the opt-in install test with a crate census.
+
+**Decisions (ours, not the game's):** SplitMix64 seeded loot RNG; 4,096
+rejection attempts then an explicit error; negative/inverted loot bounds
+refused; monotone action sequences for replay protection.
+
+**Findings:** crate contents are a single active `PrefabPlaceholder` child in
+all 8 SupplyCrate prefabs (setActiveOnOpen null in all), so SupplyCrate
+never uses SpawnStoredLoot. Dead end recorded: a bounded scan of all 3,336
+catalog-loadable prefabs found 0 `SpawnStoredLoot` users; its installed
+caller (scene objects or none) is left to M9s7. Details in
+`docs/formats/gameplay.md` § M9s6.
+
+**Verification:** `cargo test -p sn-sim survival::world` (6 passed);
+`cargo test -p sn-assets --lib reader_tests` (4 passed, 2 new);
+`SUBNAUTICA_DIR=D:\SteamLibrary\steamapps\common\Subnautica cargo test -p
+sn-assets --test real_data the_world_survival_rules_are_read -- --ignored
+--nocapture` → guard 0.5, door delay 2, room (1,1), FirstAidKit 4514 ×1,
+DamageAlive 3/DamageDead 4, base count 1; Knife damage 20, reach 1.2,
+type 0; cabinet interval 600, startWithMedKit false; harvest kinds
+{0:384,1:8,2:17,3:46,4:3,5:5}; Creepvine → CreepvinePiece bonus 0; 8 crates
+(log `out/m9s6-real.log`). `cargo test --workspace` (796 passed, 0
+failed, 70 ignored; log `out/m9s6-workspace.log`), `cargo clippy --workspace
+--all-targets -- -D warnings` and `cargo fmt --all -- --check` clean. This
+full run also closes M9s5's pending workspace check (STATUS.md, DESIGN row).
+**Not tested:** server authority/reach/occlusion (M9s9), save of cabinet/
+crate/loot flags (M9s10), live hand targets/UI (M9s11/13), placeholder child
+resolution and any SpawnStoredLoot caller (M9s7).
+
+## 2026-10-27 — M9s5: item-identity quick slots and held-tool state
+
+Add pure binding/automatic eligibility/refill, desired vs held identities,
+Sequence draw/hold/holster/drop, per-player first-use flags and PDA/death
+teardown. Six synthetic tests cover row checklist, including same-clock
+updates and reverse transitions. No inventory clones, dependency or whitelist
+change. Runtime rules read from bounded IL and enum identities; stored tool
+fields use metadata layouts.
+
+Dead end corrected: the initial slot count pattern assumed a field; source
+shows a property, so require the setter call after newobj instead. Runtime
+reader now reports five slots, cap 10, default timings 0.5/0.35/1/0.7;
+stored Knife timings 0/0.1/0/0.7 (first-use enabled). Draft fixture used an
+unavailable IL emitter method; replaced it with the existing newobj helper.
+
+Host-resource dead end: default workspace build failed out-of-memory/pagefile
+1455; CARGO_BUILD_JOBS=1 retry failed writing client output (no space). Stop
+after these two attempts; STATUS.md and DESIGN explicitly leave completion
+pending. Targeted tests/install checks pass; no claim of a clean workspace
+build at this step. Required post-merge verification remains.
+
+Verification: `cargo test --workspace`, `cargo clippy --workspace --all-targets
+-- -D warnings`, `cargo fmt --all -- --check`; with SUBNAUTICA_DIR,
+`cargo test -p sn-assets the_quick_slot_rules_are_read -- --ignored --nocapture`.
+Clippy/format/install pass (logs out/m9s5-serial-1/2/3.log); workspace tests
+remain resource-blocked above. Synthetic slot-count fixture passes separately
+(out/m9s5-reader-test.log). Visual sockets,
+IK/colliders and live input are **not tested**; M9s11 consumes the events.
+
+## 2026-10-27 — M9s4: oxygen sources and ordered equipment effects
+
+Borrow authoritative oxygen amounts; tank unregister/re-register preserves them,
+spares contribute nothing, totals and fill/drain follow source ordering. Add
+ordered speed calculation and gated charging with actual velocity/accepted
+energy. Read coefficients from bounded DLL patterns, and stored fields through
+existing metadata layouts (no new dependency). Four synthetic rule tests plus
+runtime-reader malformed/ambiguity test. No whitelist change.
+
+Environment: first workspace test link failed with LNK1180 (insufficient disk
+space). Cache deletion was rejected automatically; no files removed. Free
+space subsequently recovered; retry logged separately in
+out/m9s4-workspace-retry.log (passed). Clippy/format/install checks passed first run.
+
+Dead end: main-scene UpdateSwimCharge count 0; charging-fin prefab count 0.
+Stop placement search after these two attempts; record STATUS.md. Correct M9s7
+measurement wording, require an explicit serialized rate and leave active
+placement/rate open. No balance fallback. DLL threshold is read successfully.
+
+Verification: `cargo test --workspace`, `cargo clippy --workspace --all-targets
+-- -D warnings`, `cargo fmt --all -- --check`; with SUBNAUTICA_DIR,
+`cargo test -p sn-assets the_equipment_rules_are_read -- --ignored --nocapture`.
+Logs out/m9s4-check-*.log. Expected: all pass; four capacities 30/90/90/180,
+surface fill 30/s, threshold 2; repeated reads identical. Live movement/vitals
+integration and original-game acquisition comparison: **not tested**.
+
+## 2026-10-27 — M9s2–3 fixes: audit and unique battery selector entries
+
+Read the full repository rules and compared consumption, Eatable and battery
+methods directly with ILSpy source (read only). All initial workspace checks
+passed. Duplicate compatibility entries previously repeated grid batteries in
+the reload selector; match the source's once-per-group behavior and test it.
+Clarify research versus implemented claims and caller-supplied prefab inputs.
+No new dependency or whitelist pattern. Old diffs have encoding damage; the
+current M9s sections are UTF-8. No game content copied.
+
+Verification: `cargo test --workspace`, `cargo clippy --workspace --all-targets
+-- -D warnings`, `cargo fmt --all -- --check`; all pass. With SUBNAUTICA_DIR,
+`cargo test -p sn-assets the_consume_rules_are_read -- --ignored --nocapture`
+and `cargo test -p sn-assets the_decay_and_energy_rules_are_read -- --ignored
+--nocapture` pass (logs out/audit-0.log, out/audit-1.log): food gate 99,
+heal threshold f32 0.1, oxygen 15, decay floor -25, fractions 0.5/f32 0.9,
+despawn 5/300 s, default battery 504, charge/capacity/recovery 1/100/2.
+Full prefab input loading and live application are **not tested** (M9s7+).
+
+## 2026-10-27 — M9s3: decay, battery charge and replacement in sn-sim, headless
+
+**What/why:** third step of M9s. Added `sn_sim::survival::decay`
+(`DecayRules`, `Freshness`, `DespawnState`, `is_rotten`, `freshness`,
+`set_decomposes`, `iterate_despawn`), `sn_sim::survival::energy`
+(`EnergyRules`, `EnergyMixinInfo`, `ReloadOutcome`, `ReloadRefused`,
+`make_battery`, `restore_battery`, `set_battery_charge`,
+`spawn_default_battery`, `energy_charge`, `energy_capacity`,
+`energy_scalar`, `modify_charge`, `add_energy`, `consume_energy`,
+`sort_reload_candidates`, `select_battery`), and
+`sn_sim::inventory::{force_pickup, flush_pending}` (`Inventory.pending`) so
+replacing or unloading a battery at a full grid retains the outgoing
+battery in `inv.pending` without losing or duplicating it. Added
+`sn_assets::{decay_rules, energy_rules}` reading `Eatable`, `Battery` and
+`EnergyMixin` constants from `Assembly-CSharp.dll`. Settled the stored-item
+active-state hypothesis in `docs/formats/gameplay.md` from `Pickupable` /
+`StorageSlot` / `Inventory`.
+
+**Verification:** `cargo test -p sn-sim survival` (22 passed: 7 hunger + 8
+consume + 3 decay + 4 energy covering exact 0.5 and 0.9 freshness
+boundaries, -25 floor, inactive rotten retention vs active >300 s deadline,
+disabling/re-enabling decomposition, default battery only when absent,
+restored used/empty batteries never refilling, charge conservation across
+empty/full/partial changes, candidate sorting, full-grid swap/unload into
+`inv.pending` and `flush_pending` with 0 duplicate ids, and explicit error
+on missing rule inputs). `cargo test -p sn-assets --lib survival` (5
+passed). `SUBNAUTICA_DIR=D:\SteamLibrary\steamapps\common\Subnautica cargo
+test -p sn-assets --test real_data the_decay_and_energy_rules_are_read --
+--ignored --nocapture` → `decay_floor: -25.0, ripe_fraction: 0.5,
+decomposing_fraction: 0.8999999761581421, despawn_check_interval: 5.0,
+default_despawn_delay: 300.0`; `default_battery_tech: 504,
+default_battery_charge: 1.0, default_battery_capacity: 100.0,
+recovery_time: 2.0` (log `out/m9s3-real.log`). `cargo test --workspace`,
+`cargo clippy --workspace --all-targets -- -D warnings` clean,
+`cargo fmt --all`.
+
+## 2026-10-27 — M9s2: per-item state, eating, drinking and first aid, headless
+
+**What/why:** second step of M9s. Extended `sn_sim::inventory::Item` with
+`ItemState` (`decay_start`, `oxygen`, `energy: Option<EnergySlot>` holding
+`Option<Box<Item>>`) and `Item::ids` so per-object survival state and
+nested batteries travel with the item across grid, equipment slots,
+storage, drops and death (`lose_items`). Added `sn_sim::survival::consume`
+(`ConsumeRules`, `EatableInfo`, `Eaten`, `Used`, `UsedItem`, `Refused`,
+`eat`, `eat_item`, `use_tech`, `use_item`, `add_health`, `initial_state`),
+`sn_dotnet::int_literals`, and `sn_assets::consume_rules` reading the
+constants and tech types of `Survival.Eat`, `Survival.Use` and
+`Eatable.GetFoodValue`/`GetWaterValue` from `Assembly-CSharp.dll`.
+Also confirmed in `the_consume_rules_are_read` that
+`Survival.GetWeaknessSpeedScalar` has 0 callers in `Assembly-CSharp.dll`.
+
+**Review of the previous agent's uncommitted draft:** kept `ItemState`,
+`EnergySlot`, `int_literals`, `consume_rules` and the core `consume.rs`
+logic; replaced `use_item`'s `(Option<Used>, Option<Item>)` return with
+` Option<UsedItem>` (`Healed(Item, f64)` vs `Full(f64)`) and factored test
+types in `sn-assets::survival` to fix two `-D clippy::type-complexity`
+errors; extended the 1,000-step transfer test to also exercise `lose_items`
+(death); added invalid-input refusal tests and the opt-in real-data test
+`the_consume_rules_are_read`.
+
+**Verification:** `cargo test -p sn-sim survival` (15 passed: 7 hunger + 8
+consume covering food 99 vs 99.5 gate, 200/100 caps, clamped full-stat
+consumption, negative/zero values, `vitals_ok`, Bladderfish +15 O2,
+first-aid >0.1 heal threshold vs full retention, decomposing floor -25,
+invalid input refusal, and 1,000 grid/slot/locker/drop/death transfers
+preserving distinct per-item ages, oxygen and nested battery ids/charges
+with 0 duplicates). `cargo test -p sn-assets --lib survival` (4 passed).
+`SUBNAUTICA_DIR=D:\SteamLibrary\steamapps\common\Subnautica cargo test -p
+sn-assets --test real_data the_consume_rules_are_read -- --ignored
+--nocapture` → `food_gate: 99.0, vitals_ok: 20.0, first_aid: 4514,
+first_aid_health: 50.0, heal_success: 0.10000000149011612, oxygen_food:
+2515, oxygen_on_eat: 15.0, decay_floor: -25.0`, `GetWeaknessSpeedScalar`
+callers: 0 (log `out/m9s2-real.log`). `cargo test --workspace`,
+`cargo clippy --workspace --all-targets -- -D warnings` clean,
+`cargo fmt --all`.
+
+## 2026-10-27 — M9s1: hunger rules, headless, numbers from the game's code
+
+**What/why:** first step of M9s. `sn-sim::survival` (new module dir,
+`hunger.rs`) implements `Survival.UpdateHunger`/`UpdateStats`/`ResetStats`/
+`OnHealTempDamage`: food/water drain per scheduled call, shortfall-based
+Starve damage, the after-drain regeneration gate, warning crossings (one
+per stat, empty > critical > low), freeze/no-survival suppressing effects
+but not the schedule, respawn resetting stats not phase. Each call returns
+ordered effects (warnings, damage, heal) instead of the previous draft's
+summed totals, so a caller's health sees the game's order. No balance
+defaults in code: `sn_assets::hunger_rules` reads all 13 numbers from the
+player's DLL (constructor initialiser, the ordered float constants of
+`UpdateStats`/`UpdateHunger`/`OnHealTempDamage`, `ResetStats`), checks
+repeated uses agree and that each equals its `SurvivalConstants`
+declaration, and errors with the IL offset otherwise. New `sn-dotnet::
+float_literals` (every `ldc.r4` with offset) supports this. Live play is
+unchanged (drain is not wired; M9s8/M9s11).
+
+**Review of the previous agent's uncommitted draft:** kept its API shape,
+validation and the Start/advance phase semantics; replaced summed
+damage/healing with ordered per-call effects, added positive-damage gate,
+the 1e-9 s due tolerance (with `+1e-12` on the ratio, many 0.02 s steps
+could reach a call one step late), the `start` constructor (reset then the
+immediate call) and the rule loader; fixed text lost from its gameplay.md
+note (two words had lost their first letter). Our call: f64 state, though
+the game computes in f32 (noted as a residual in gameplay.md).
+
+**Verification:** `cargo test -p sn-sim survival` (7 passed: 60 s from
+100/100 loses 2.380952/3.333333; both empty for 10 s = 23.809524 damage;
+exact/over thresholds; heal gate after drain incl. overfill; freeze, mode,
+respawn; 3001×0.02 s and uneven steps give 6 calls and the same phase;
+NaN/negative/huge/invalid rules refuse without mutation).
+`cargo test -p sn-assets --lib survival` (3 passed: synthetic assembly
+read; changed repeated/fixed/extra constants and declaration mismatch are
+errors with offsets; truncated/flipped bytes never panic).
+`SUBNAUTICA_DIR=D:\SteamLibrary\steamapps\common\Subnautica cargo test -p
+sn-assets --test real_data the_hunger_rules_are_read -- --ignored
+--nocapture` → interval 10, 2520/1800, 100/200, 25, 150, 0.041666668,
+50.5/90.5, 20/10, 0.25; 60 s drain 2.380952/3.333333; two reads equal
+(log `out/m9s1-real.log`). `cargo test --workspace` (758 passed, 0 failed,
+65 ignored), `cargo clippy --workspace --all-targets -- -D warnings` clean,
+`cargo fmt --all`. Not tested: Unity frame timing of the first call
+versus our fixed tick.
+
+
+## 2026-10-27 — Plan M9s: survival (research and docs only)
+
+**What/why:** promote After Phase E's survival item into Phase E as M9s,
+after M9f, with fifteen individually verifiable steps. Plan pure sn-sim
+rules before runtime loading, server owner/world actions, save extensions,
+client use/tool presentation and live UI. M9e crafting and M9f persistence
+are in progress elsewhere; this change documents their integration contracts
+without editing code or claiming those milestones complete. Live hunger is
+gated on a working acquisition/consumption loop. No dependency, crate,
+architecture or gitignore change.
+
+**Research:** read AGENTS.md, DESIGN's Phase E/M9d/M9u/M9e plans and gaps,
+After Phase E, and gameplay.md. Directly read the full local ILSpy source
+(read only, not fields.py) for Survival/SurvivalConstants, Eatable,
+Inventory/InventoryItem, QuickSlots, PlayerTool, GUIHand/ArmsController,
+Knife/HarvestType/TechData, MedicalCabinet, Oxygen/OxygenManager,
+Fins/UnderwaterMotor/UpdateSwimCharge, Battery/EnergyMixin, SupplyCrate,
+LootSpawner/SpawnStoredLoot, food/water bars and TooltipFactory. Added our
+own prose findings in gameplay.md, each marked confirmed with source or
+hypothesis. Numbers' runtime origins are explicit (serialized fields,
+TechData/defaults, DLL constants/IL); no source code, content dumps or game
+files copied into the repository.
+
+**Findings/dead ends:** FirstAidKit use lives in Survival, not a separate
+class; Fins does not implement speed modifiers. A full-source caller search
+found no caller for the weakness scalar, so adding a hunger speed penalty
+would be speculative. Random stored loot and child-item supply crates are
+different paths; prefab wiring remains to measure. Initial searches under
+ignored out/ needed --no-ignore, and PowerShell does not expand shell brace
+lists. The terminal's cp1252 output also needed Python -X utf8. A first
+patch-context attempt matched nothing and changed nothing. A documentation
+audit caught non-ASCII characters lost in new pipeline input; corrected with
+Unicode escapes and checked that pre-existing Unicode remains intact.
+
+**Verification:** git diff --check (no whitespace errors); a Python document
+audit checks M9s row placement after M9f, plan placement after M9e, all fifteen
+step ids, required Done when headings, and preserved existing Unicode.
+Final git status --short must list only these three Markdown files before
+the local commit, and be clean after the requested merge of local main.
+Exact repeatable commands: git diff --check; git show --stat --oneline HEAD;
+git status --short (expect no entries after commit/merge). Runtime gameplay,
+prefab census, proposed CLI scenarios and cargo test --workspace are
+**not tested**: this is research + plan only, no Rust code changed. The
+proposed CLI commands are labelled not implemented in DESIGN.
 ## 2026-10-27 — M9e3: fabricator close cycle resolved; M9e3 done
 
 **What/why:** resolved the checkpoint's blocking pose check (STATUS.md,

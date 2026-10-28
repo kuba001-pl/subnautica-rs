@@ -3822,3 +3822,373 @@ fn the_unlock_popup_is_read() {
     assert_eq!(a.values().filter(|e| e.unlock_popup.is_some()).count(), 60);
     assert!(a.values().all(|e| e.unlock_sound.is_some()));
 }
+
+/// M9s1: the hunger rules come from `Survival`'s methods, each constant
+/// matched in its method's IL and against `SurvivalConstants`.
+#[test]
+#[ignore = "needs SUBNAUTICA_DIR pointing at a Subnautica install"]
+fn the_hunger_rules_are_read() {
+    let Some(dir) = std::env::var_os("SUBNAUTICA_DIR") else {
+        eprintln!("SUBNAUTICA_DIR not set; skipping");
+        return;
+    };
+    let game = GameData::locate(Some(PathBuf::from(dir))).unwrap();
+    let code = sn_assets::read_assembly(&game).unwrap();
+    let r = sn_assets::hunger_rules(&code).unwrap();
+    println!("{r:?}");
+    assert_eq!(r.interval, 10.0);
+    assert_eq!((r.food_time, r.water_time), (2520.0, 1800.0));
+    assert_eq!((r.stat_max, r.food_max), (100.0, 200.0));
+    assert_eq!((r.starve_damage, r.heal_threshold), (25.0, 150.0));
+    assert_eq!(r.regen_per_second, f64::from(1.0f32 / 24.0));
+    assert_eq!((r.start_food, r.start_water), (50.5, 90.5));
+    assert_eq!(
+        (r.low, r.critical, r.food_per_temp_damage),
+        (20.0, 10.0, 0.25)
+    );
+    // The DESIGN row's hand calculation with the install's numbers.
+    let mut s = sn_sim::survival::Survival {
+        food: 100.0,
+        water: 100.0,
+        phase: 0.0,
+    };
+    s.advance(&r, 60.0, true, false).unwrap();
+    println!("60 s from 100/100: food {}, water {}", s.food, s.water);
+    assert!((100.0 - s.food - 2.380952).abs() < 1e-5);
+    assert!((100.0 - s.water - 3.333333).abs() < 1e-5);
+    // Two reads agree.
+    assert_eq!(sn_assets::hunger_rules(&code).unwrap(), r);
+}
+
+/// M9s2: the consumption and first-aid rules come from `Survival.Eat`,
+/// `Survival.Use` and `Eatable`'s getters; `GetWeaknessSpeedScalar` has 0
+/// callers in `Assembly-CSharp.dll`.
+#[test]
+#[ignore = "needs SUBNAUTICA_DIR pointing at a Subnautica install"]
+fn the_consume_rules_are_read() {
+    let Some(dir) = std::env::var_os("SUBNAUTICA_DIR") else {
+        eprintln!("SUBNAUTICA_DIR not set; skipping");
+        return;
+    };
+    let game = GameData::locate(Some(PathBuf::from(dir))).unwrap();
+    let code = sn_assets::read_assembly(&game).unwrap();
+    let c = sn_assets::consume_rules(&code).unwrap();
+    println!("{c:?}");
+    assert_eq!((c.food_gate, c.vitals_ok), (99.0, 20.0));
+    assert_eq!(
+        (c.first_aid_health, c.heal_success),
+        (50.0, f64::from(0.1f32))
+    );
+    assert_eq!(c.oxygen_on_eat, 15.0);
+    assert_eq!(c.decay_floor, -25.0);
+    assert!(c.first_aid > 0 && c.oxygen_food > 0 && c.first_aid != c.oxygen_food);
+    assert_eq!(sn_assets::consume_rules(&code).unwrap(), c);
+
+    // Confirm `Survival.GetWeaknessSpeedScalar` has 0 callers in the DLL.
+    let asm = sn_dotnet::Assembly::parse(&code).unwrap();
+    let survival = asm.find_type("", "Survival").unwrap().unwrap();
+    let weakness = asm
+        .find_method(survival, "GetWeaknessSpeedScalar")
+        .unwrap()
+        .unwrap();
+    let target_token = 0x0600_0000 | weakness;
+    let mut callers = 0usize;
+    for m in 1..=asm.rows(sn_dotnet::Table::METHOD_DEF) {
+        if let Some((body, base)) = asm.method_body(m).unwrap() {
+            for instr in sn_dotnet::decode(body, base).unwrap() {
+                if instr.token() == Some(target_token) {
+                    callers += 1;
+                }
+            }
+        }
+    }
+    println!("Survival.GetWeaknessSpeedScalar callers: {callers}");
+    assert_eq!(callers, 0);
+}
+
+/// M9s3: the decay (`Eatable`) and energy (`Battery`/`EnergyMixin`) rules
+/// come from `Assembly-CSharp.dll`.
+#[test]
+#[ignore = "needs SUBNAUTICA_DIR pointing at a Subnautica install"]
+fn the_decay_and_energy_rules_are_read() {
+    let Some(dir) = std::env::var_os("SUBNAUTICA_DIR") else {
+        eprintln!("SUBNAUTICA_DIR not set; skipping");
+        return;
+    };
+    let game = GameData::locate(Some(PathBuf::from(dir))).unwrap();
+    let code = sn_assets::read_assembly(&game).unwrap();
+    let d = sn_assets::decay_rules(&code).unwrap();
+    let e = sn_assets::energy_rules(&code).unwrap();
+    println!("{d:?}");
+    println!("{e:?}");
+    assert_eq!(d.decay_floor, -25.0);
+    assert_eq!(
+        (d.ripe_fraction, d.decomposing_fraction),
+        (0.5, f64::from(0.9f32))
+    );
+    assert_eq!(
+        (d.despawn_check_interval, d.default_despawn_delay),
+        (5.0, 300.0)
+    );
+    assert_eq!(e.default_battery_tech, 504);
+    assert_eq!(
+        (
+            e.default_battery_charge,
+            e.default_battery_capacity,
+            e.recovery_time
+        ),
+        (1.0, 100.0, 2.0)
+    );
+    assert_eq!(sn_assets::decay_rules(&code).unwrap(), d);
+    assert_eq!(sn_assets::energy_rules(&code).unwrap(), e);
+}
+
+#[test]
+#[ignore = "needs SUBNAUTICA_DIR"]
+fn the_equipment_rules_are_read() {
+    let Some(dir) = std::env::var_os("SUBNAUTICA_DIR") else {
+        eprintln!("SUBNAUTICA_DIR not set; skipping");
+        return;
+    };
+    let game = GameData::locate(Some(PathBuf::from(dir))).unwrap();
+    let code = sn_assets::read_assembly(&game).unwrap();
+    let r = sn_assets::equipment_rules(&code).unwrap();
+    println!("{r:?}");
+    assert_eq!(r.charge_speed_threshold, 2.0);
+    assert_eq!(r.surface_fill, 30.0);
+    assert_eq!(r.tank_penalties.len(), 4);
+    assert_eq!(sn_assets::equipment_rules(&code).unwrap(), r);
+    let assets = sn_assets::Assets::index(&game).unwrap();
+    let assemblies = sn_assets::ScriptAssemblies::load(&game).unwrap();
+    let layouts = assemblies.layouts().unwrap();
+    // Stored fields must not include the saved oxygen amount.
+    let oxygen_layout = layouts.script("Assembly-CSharp", "", "Oxygen").unwrap();
+    assert!(
+        !oxygen_layout
+            .fields
+            .iter()
+            .any(|f| f.name == "oxygenAvailable")
+    );
+    let catalog = assets.catalog().unwrap();
+    let mut count = 0;
+    for name in ["Tank", "DoubleTank", "PlasteelTank", "HighCapacityTank"] {
+        let db = game.read_prefab_database().unwrap();
+        let path = db
+            .values()
+            .find(|p| {
+                p.to_lowercase()
+                    .ends_with(&format!("/{}.prefab", name.to_lowercase()))
+            })
+            .unwrap_or_else(|| panic!("no prefab for {name}"));
+        let locations = catalog.locate(path);
+        let location = locations
+            .iter()
+            .find(|l| l.resource_type == "UnityEngine.GameObject")
+            .unwrap();
+        let root = assets.catalog_object(location, 1).unwrap().unwrap();
+        let tree = assets.ui_tree(name, &root).unwrap();
+        let mut found = 0;
+        for (_, c) in tree.scripts("Oxygen") {
+            let f = sn_assets::survival_fields(&c.object, &layouts, "Oxygen").unwrap();
+            let cap = sn_assets::oxygen_capacity(&f).unwrap();
+            println!("tank {name}: capacity={cap}, initial=0 (NonSerialized CLR zero-init)");
+            assert!(cap > 0.0);
+            found += 1;
+        }
+        assert_eq!(found, 1);
+        count += found;
+    }
+    println!("tank prefabs read: {count}");
+}
+
+#[test]
+#[ignore = "needs SUBNAUTICA_DIR"]
+fn the_quick_slot_rules_are_read() {
+    let Some(dir) = std::env::var_os("SUBNAUTICA_DIR") else {
+        eprintln!("SUBNAUTICA_DIR not set; skipping");
+        return;
+    };
+    let game = GameData::locate(Some(PathBuf::from(dir))).unwrap();
+    let code = sn_assets::read_assembly(&game).unwrap();
+    let r = sn_assets::quick_rules(&code).unwrap();
+    println!("{r:?}");
+    assert_eq!(r.slots, 5);
+    assert_eq!(r.transition_max, 10.0);
+    assert_eq!(r.defaults.bash, 0.7);
+    assert_eq!(sn_assets::quick_rules(&code).unwrap(), r);
+    let assets = sn_assets::Assets::index(&game).unwrap();
+    let assemblies = sn_assets::ScriptAssemblies::load(&game).unwrap();
+    let layouts = assemblies.layouts().unwrap();
+    let db = game.read_prefab_database().unwrap();
+    let path = db
+        .values()
+        .find(|p| p.to_lowercase().ends_with("/knife.prefab"))
+        .unwrap();
+    let catalog = assets.catalog().unwrap();
+    let locations = catalog.locate(path);
+    let location = locations
+        .iter()
+        .find(|l| l.resource_type == "UnityEngine.GameObject")
+        .unwrap();
+    let root = assets.catalog_object(location, 1).unwrap().unwrap();
+    let tree = assets.ui_tree("knife", &root).unwrap();
+    let knives = tree.scripts("Knife").collect::<Vec<_>>();
+    assert_eq!(knives.len(), 1);
+    let fields = sn_assets::survival_fields(&knives[0].1.object, &layouts, "Knife").unwrap();
+    let timing = sn_assets::tool_timing(&fields, true).unwrap();
+    println!("serialized knife timing {timing:?}");
+    assert!(timing.draw.is_finite() && timing.holster.is_finite());
+}
+
+fn prefab_tree(assets: &Assets, catalog: &sn_unity::Catalog, path: &str) -> sn_assets::UiTree {
+    let locations = catalog.locate(path);
+    let location = locations
+        .iter()
+        .find(|l| l.resource_type == "UnityEngine.GameObject")
+        .unwrap_or_else(|| panic!("{path}: no GameObject location"));
+    let root = assets.catalog_object(location, 1).unwrap().unwrap();
+    assets.ui_tree(path, &root).unwrap()
+}
+
+#[test]
+#[ignore = "needs SUBNAUTICA_DIR"]
+fn the_world_survival_rules_are_read() {
+    let Some(dir) = std::env::var_os("SUBNAUTICA_DIR") else {
+        eprintln!("SUBNAUTICA_DIR not set; skipping");
+        return;
+    };
+    let game = GameData::locate(Some(PathBuf::from(dir))).unwrap();
+    let code = sn_assets::read_assembly(&game).unwrap();
+    let r = sn_assets::world_survival_rules(&code).unwrap();
+    println!("{r:?}");
+    assert_eq!(sn_assets::world_survival_rules(&code).unwrap(), r);
+    let names = sn_assets::game_code(&code).unwrap();
+    assert_eq!(names.tech_name(r.first_aid), Some("FirstAidKit"));
+    assert_eq!((r.animation_guard, r.cabinet_door_delay), (0.5, 2.0));
+    assert_eq!(
+        (r.cabinet_room, r.cabinet_count, r.harvest_count),
+        ((1, 1), 1, 1)
+    );
+    let firstpass = game
+        .read_file(&game.data_dir.join("Managed/Assembly-CSharp-firstpass.dll"))
+        .unwrap();
+    sn_assets::verify_loot_sampler(&firstpass).unwrap();
+    println!("UWE.Utils.Sample: strict rejection loop recognised");
+
+    let assets = sn_assets::Assets::index(&game).unwrap();
+    let assemblies = sn_assets::ScriptAssemblies::load(&game).unwrap();
+    let layouts = assemblies.layouts().unwrap();
+    let catalog = assets.catalog().unwrap();
+    let db = game.read_prefab_database().unwrap();
+    let mut paths: Vec<&String> = db.values().collect();
+    paths.sort();
+    let find = |suffix: &str| {
+        paths
+            .iter()
+            .copied()
+            .find(|p| p.to_lowercase().ends_with(&suffix.to_lowercase()))
+            .unwrap_or_else(|| panic!("no prefab {suffix}"))
+    };
+
+    let tree = prefab_tree(&assets, &catalog, find("/Knife.prefab"));
+    let knives = tree.scripts("Knife").collect::<Vec<_>>();
+    assert_eq!(knives.len(), 1);
+    let f = sn_assets::survival_fields(&knives[0].1.object, &layouts, "Knife").unwrap();
+    let knife = sn_assets::knife_info(&f).unwrap();
+    println!("Knife.prefab: {knife:?}");
+
+    let tree = prefab_tree(&assets, &catalog, find("/MedicalCabinet.prefab"));
+    let cabinets = tree.scripts("MedicalCabinet").collect::<Vec<_>>();
+    assert_eq!(cabinets.len(), 1);
+    let f = sn_assets::survival_fields(&cabinets[0].1.object, &layouts, "MedicalCabinet").unwrap();
+    let (cabinet, constructable) = sn_assets::cabinet_info(&f).unwrap();
+    println!(
+        "MedicalCabinet.prefab: {cabinet:?}, constructable null={}",
+        constructable.is_null()
+    );
+
+    let data = sn_assets::tech_data(&assets).unwrap();
+    let tech = |name: &str| {
+        names
+            .tech_types
+            .iter()
+            .find(|(_, n)| n == name)
+            .map(|(v, _)| *v)
+            .unwrap()
+    };
+    let mut kinds = std::collections::BTreeMap::new();
+    for e in &data.entries {
+        let h = sn_assets::harvest_info(Some(e), &names.tech_defaults).unwrap();
+        *kinds.entry(h.kind).or_insert(0usize) += 1;
+    }
+    println!("TechData harvest types (kind: entries): {kinds:?}");
+    let creepvine = tech("Creepvine");
+    let entry = data.entries.iter().find(|e| e.tech_type == creepvine);
+    let h = sn_assets::harvest_info(entry, &names.tech_defaults).unwrap();
+    println!(
+        "Creepvine harvest: kind {} output {:?} final bonus {}",
+        h.kind,
+        names.tech_name(h.output),
+        h.final_bonus
+    );
+    assert_eq!(h.kind, r.damage_alive);
+
+    let mut crates = 0;
+    for p in paths.iter().filter(|p| {
+        let l = p.to_lowercase();
+        l.starts_with("worldentities/natural/supplycrate")
+            || l.ends_with("/starshipcargocrate.prefab")
+    }) {
+        let tree = prefab_tree(&assets, &catalog, p);
+        let animations = tree.components().filter(|(_, c)| c.class_id == 111).count();
+        let sealed = tree.scripts("Sealed").count();
+        let pickups = tree.scripts("Pickupable").count();
+        let active_pickups = tree
+            .scripts("Pickupable")
+            .filter(|(n, _)| tree.nodes[*n].active)
+            .count();
+        let placeholders = tree
+            .scripts("PrefabPlaceholder")
+            .filter(|(n, _)| tree.nodes[*n].active)
+            .count();
+        let mut line = format!(
+            "{p}: Animation {animations}, Sealed {sealed}, Pickupable {pickups} (active {active_pickups}), active PrefabPlaceholder {placeholders}"
+        );
+        for (_, c) in tree.scripts("SupplyCrate") {
+            crates += 1;
+            // Every crate's item is a placeholder child, not a stored Pickupable.
+            assert_eq!((animations, placeholders, pickups), (1, 1, 0), "{p}");
+            let f = sn_assets::survival_fields(&c.object, &layouts, "SupplyCrate").unwrap();
+            let target = f
+                .get("setActiveOnOpen")
+                .and_then(sn_unity::Value::as_pptr)
+                .unwrap();
+            let node = tree.nodes.iter().find(|n| {
+                n.game_object
+                    .as_ref()
+                    .is_some_and(|g| g.path_id == target.path_id && target.file_id == 0)
+            });
+            line += &format!(
+                ", setActiveOnOpen {}",
+                match node {
+                    Some(n) => format!("{} (activeSelf {})", n.path, n.active_self),
+                    None if target.is_null() => "null".into(),
+                    None => "outside prefab".into(),
+                }
+            );
+        }
+        for (_, c) in tree.scripts("SpawnStoredLoot") {
+            let f = sn_assets::survival_fields(&c.object, &layouts, "SpawnStoredLoot").unwrap();
+            let loot = sn_assets::stored_loot_info(&f).unwrap();
+            line += &format!(
+                ", SpawnStoredLoot min {} max {} keys {}",
+                loot.min,
+                loot.max,
+                loot.distribution.keys.len()
+            );
+        }
+        println!("{line}");
+    }
+    println!("SupplyCrate components: {crates}");
+    assert_eq!(crates, 8);
+}

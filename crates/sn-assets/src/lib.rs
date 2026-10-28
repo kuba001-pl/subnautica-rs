@@ -41,6 +41,12 @@ mod script_layout;
 mod skin;
 mod slots;
 mod sprites;
+mod survival;
+mod survival_data;
+pub use survival_data::{
+    StoredLootInfo, cabinet_info, harvest_info, knife_info, oxygen_capacity, stored_loot_info,
+    survival_fields, swim_charge_rate, tool_timing,
+};
 mod terrain;
 mod texts;
 mod tooltip;
@@ -125,6 +131,10 @@ pub use sn_ui::state::{LocalTransform, MaterialValues, SpriteId, UiState, color3
 pub use sprites::{
     AtlasSprite, GROUP_ATLASES, GROUP_ITEM, GROUP_ITEM_ACTIONS, GROUP_TAB, LoadedAtlas,
     SPRITE_ATLASES_LABEL, Sprites, cut,
+};
+pub use survival::{
+    consume_rules, decay_rules, energy_rules, equipment_rules, hunger_rules, quick_rules,
+    verify_loot_sampler, world_survival_rules,
 };
 pub use terrain::{
     BlendSettings, BlockSource, GrassLook, GrassShader, SurfaceLayer, TerrainGrass,

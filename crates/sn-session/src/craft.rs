@@ -161,6 +161,9 @@ impl ItemsState {
                         destroy_on_death: info.destroy_on_death,
                         eatable: info.eatable,
                         charge: None,
+                        // Survival state for crafted output is set up in
+                        // M9s11 (`initial_state`), not here.
+                        state: Default::default(),
                     };
                     match job
                         .output
