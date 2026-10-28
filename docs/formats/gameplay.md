@@ -1618,7 +1618,7 @@ prose. Numbers below describe rules, not a shipped balance table.
   check equality, holstering, surface and saturation.
 - **Open, stopped after two genuine placement checks:** no UpdateSwimCharge in
   main scene or SwimChargeFins hierarchy. Serialized rate/active placement is
-  unresolved; see STATUS.md and out/m9s4-placement-dead-end.log. The field
+  unresolved; see DESIGN's M9s4 row and out/m9s4-placement-dead-end.log. The field
   accessor is ready but the pure rule requires an explicit rate. No initializer
   is substituted, no live charging claimed. M9s7 owns the broader census.
 - Pure max-speed and oxygen rules are ready for M9s integration; the live player

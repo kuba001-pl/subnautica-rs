@@ -2,6 +2,22 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-28 — README and status clean-up before push
+
+**What/why:** README's "what works" now lists only tested claims: the
+crafting menu (M9e4) is implemented (it said "not implemented"); the
+survival rules (M9s1–M9s6) are listed as headless only, with food/water
+drain, eating, drinking and using items stated as not in the game yet;
+two-player crafting and saves marked not tested. The survival note that
+sat under Credits moved into "What works". STATUS.md (M9s4 swim-charge
+placement, unresolved) moved into DESIGN's M9s4 row and deleted;
+gameplay.md points there. The unmerged G-A1 (shadows/lights) and G-B2
+(post-processing) work was dropped, not merged: G-A1 was never committed
+and G-B2's frame-time acceptance never passed. M9e5 was not started.
+
+**Verified:** docs only; `cargo test --workspace` unchanged from the Perf
+P2 merge (816 passed, 0 failed, 72 ignored).
+
 ## 2026-10-28 — Merge M9s (survival) into main
 
 Merged `t3/176d97aa` (M9s1–M9s6). MODLOG conflict resolved by

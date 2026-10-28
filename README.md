@@ -58,7 +58,24 @@ Tested on Windows 11 with game build 10 (Steam):
   beyond its stored 3 m), its open/close animation (the cycle returns to
   the resting pose in an opt-in install test), automatic output pickup and
   the output preview on the tray pass scripted runs; the fabrication
-  shader, particles and light are drawn plainly, not ported. The crafting menu and power regeneration are not implemented.
+  shader, particles and light are drawn plainly, not ported. M9e4: the
+  fabricator's crafting menu (`uGUI_CraftingMenu`) opens at its hand, with
+  the game's icons, grey for unknown or unaffordable recipes, the recipe
+  tooltip and clicks; a scripted client run crafted Titanium from the
+  menu (one salvage in, four Titanium out, the menu locked during the
+  craft and released after it), and `sn-inspect ui --crafting` passes
+  22/22 checks. Not tested: crafting with two players, a craft surviving
+  a save and restart, the 2 s refusal timeout and the unlock pop-up.
+  Power regeneration is not implemented.
+- Survival rules, headless only (M9s1–M9s6; unit tests and opt-in
+  install tests, numbers read from the game's code at runtime): hunger and
+  thirst, eating, drinking and first aid, per-item decay, oxygen and
+  battery state, battery reload, oxygen sources, swimming equipment
+  effects, quick slots and held tools, knife harvesting, medical cabinets,
+  supply crates and stored loot. **None of it is in the game yet:** food
+  and water do not drain while playing and the player cannot eat, drink
+  or use items (server and client wiring are later M9s steps). The
+  swim-charge fins' stored rate is unresolved (DESIGN, M9s4).
 - The player's body: the suit models the game shows in a new game,
   animated by the game's controller with its empty-hand rules (walking,
   swimming, surface, falling, death), turned and bobbed with the view as
@@ -305,7 +322,8 @@ meshes not yet decoded are flat; matched original-game SIG rock/coral comparison
 `docs/formats/materials.md`), creatures (including the
 ~100,000 the spawn slots would add); the intro cinematic, tools and IK, tanks and fins changing
 speeds, the game's other screens (the content of the PDA's tabs other
-than the inventory, the fabricator menu, the main and in-game menus), quick
+than the inventory, the main and in-game menus), survival in play (food
+and water drain, eating, drinking, using items), quick
 slots and held tools, the items' bars (battery, oxygen), and
 damage effects; audio,
 multiplayer (so far the headless `sn-server` and bot players, also with
@@ -447,7 +465,8 @@ network: only positions, animation values, events and checks.
   death's "You died and lost some belongings." show only on the player
   it happened to, while the other sees the items vanish or the drops
   appear. **Not yet:**
-  crafting, saves, creatures, chat, players colliding; other players'
+  crafting and saves with two players (not tested), creatures, chat,
+  players colliding; other players'
   held items and the locker's flap.
 - **Trust:** no encryption and no password in the client yet: for
   friends, not public servers.
@@ -489,10 +508,3 @@ belong to their owners and are not part of this project.
 Projects we learn from (reading, not copying): Nitrox,
 Subnautica-TerrainPatcher, UnityPy, AssetStudio, OpenMW, hl2-rs, benilla,
 gang-beasts-rust, and the AI Game Modding Guides.
-
-Headless survival rules (M9s1–5, unit/opt-in install tested): hunger,
-consumption/first aid, individual decay/oxygen/battery state, battery reload,
-registered oxygen, ordered swimming equipment effects, and item-id quick slots
-with held-tool transitions/PDA suspension. DLL coefficients and
-four tank capacities are read at runtime. Live survival integration is pending;
-serialized charging-component placement/rate remains unresolved (STATUS.md).
