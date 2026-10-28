@@ -43,6 +43,12 @@ pub struct ItemsView {
     /// The end tick of the craft whose completion was handled.
     pickup_tried: Option<u32>,
     pub craft_at: Vec<(f64, String)>,
+    /// `--menu`'s steps by play seconds (M9e4b).
+    menu_script: Vec<(f64, MenuStep)>,
+    script_sent: u64,
+    script_ack: u64,
+    script_ready: bool,
+    script_paths: Vec<String>,
     craft_line: String,
     /// World events applied when last looked at.
     events: Option<u32>,
@@ -66,9 +72,11 @@ impl ItemsView {
         pick_up_at: Option<f64>,
         drop_at: Option<f64>,
         craft_at: Vec<(f64, String)>,
+        menu_script: Vec<(f64, MenuStep)>,
     ) -> ItemsView {
         ItemsView {
             craft_at,
+            menu_script,
             pick_up_at,
             drop_at,
             draws: sn_session::drops::Draws(sn_net::random_seed()),
@@ -126,6 +134,57 @@ fn rotation(q: [i16; 4]) -> [f32; 4] {
     q.map(|c| f32::from(c) / 32_767.0)
 }
 
+/// The crafting menu's main-world side (M9e4b): `GhostCrafter.OnHandClick`
+/// opens it, Escape, a press on no icon or the lid closing closes it; the
+/// UI worker draws it (`crate::game_ui::CraftFrame`).
+#[derive(Clone, Debug, Default)]
+pub struct CraftMenu {
+    pub open: bool,
+    /// `Crafter.OnCraftingBegin`'s `Lock`, once.
+    pub lock: bool,
+    /// A craft request sent and not yet seen as a job: play seconds.
+    pub pending: Option<f64>,
+    /// The mouse (physical pixels from the bottom left) while open.
+    pub pointer: Option<[f32; 2]>,
+    pub clicks: Vec<u8>,
+    /// `--menu`'s pointer: the node path it rests on.
+    pub scripted: Option<String>,
+    pub script_sequence: u64,
+    pub test_script: bool,
+    /// The own job last seen (its start tick), for `OnCraftingBegin`.
+    pub job_seen: Option<u32>,
+}
+
+/// One `--menu` step.
+#[derive(Clone, Debug, PartialEq)]
+pub enum MenuStep {
+    /// The pointer rests on the icon of this node path.
+    Hover(String),
+    /// The button (0 left, 1 right) at that icon.
+    Click(String, u8),
+    /// The left button on no icon.
+    Away,
+}
+
+impl MenuStep {
+    /// `hover:PATH`, `click:PATH`, `right:PATH`, `away`.
+    pub fn parse(s: &str) -> Result<MenuStep, String> {
+        match s.split_once(':') {
+            Some(("hover", p)) => Ok(MenuStep::Hover(p.into())),
+            Some(("click", p)) => Ok(MenuStep::Click(p.into(), 0)),
+            Some(("right", p)) => Ok(MenuStep::Click(p.into(), 1)),
+            None if s == "away" => Ok(MenuStep::Away),
+            _ => Err(format!("--menu: unknown step {s:?}")),
+        }
+    }
+}
+
+/// `Crafter.craftingTimeAutoCloseThreshold`: a longer craft closes the
+/// menu, a shorter one locks it.
+pub const AUTO_CLOSE: f32 = 5.9;
+/// A craft request with no job after this long was refused (or lost).
+const PENDING_TIMEOUT: f64 = 2.0;
+
 #[allow(clippy::too_many_arguments)]
 pub fn sync(
     text: Option<Res<Text>>,
@@ -134,6 +193,8 @@ pub fn sync(
     mut session: ResMut<Session>,
     mut streamer: Option<ResMut<ObjectStreamer>>,
     mut sim: Option<ResMut<PlayerSim>>,
+    mut ui_frame: Option<ResMut<crate::game_ui::GameUiFrame>>,
+    panel: Res<crate::inventory::Panel>,
 ) {
     let me = session.player();
     let seen = view.events;
@@ -231,6 +292,7 @@ pub fn sync(
     let view = &mut *view;
     let play = sim.play_seconds();
     let fabricator = session.with_items(|items, _| items.fabricator.clone());
+    let mut menu = std::mem::take(&mut sim.craft_menu);
     if let Some(f) = &sim.fabricator {
         let distance = sim.position().map_or(f64::INFINITY, |p| {
             (p - sn_sim::V3::from_f32(f.at.position)).length()
@@ -250,6 +312,38 @@ pub fn sync(
                 "fabricator: open={} distance={distance:.4} closeDistance={}",
                 view.fabricator_open, f.close_distance
             );
+        }
+        // `OnOpenedChanged(false)` → `craftingMenu.Close(this)`.
+        if !view.fabricator_open && menu.open {
+            menu.open = false;
+            info!("crafting menu: closed with the lid (distance {distance:.4}, power or range)");
+        }
+        // `Crafter.OnCraftingBegin` for our own craft: a long one closes the
+        // menu, a short one locks it (Sprint held is not checked: not
+        // ported).
+        let own_job = fabricator
+            .as_ref()
+            .and_then(|f| f.job.as_ref())
+            .filter(|j| !j.done && Some(j.owner) == me);
+        if let Some(j) = own_job
+            && menu.job_seen != Some(j.start)
+        {
+            menu.job_seen = Some(j.start);
+            menu.pending = None;
+            let t = j.output.recipe.animation_time();
+            if menu.open {
+                if t > AUTO_CLOSE {
+                    menu.open = false;
+                    info!("crafting menu: craft of {t} s > {AUTO_CLOSE} s began: Close");
+                } else {
+                    menu.lock = true;
+                    info!("crafting menu: craft of {t} s began: Lock");
+                }
+            }
+        }
+        if menu.pending.is_some_and(|at| play - at > PENDING_TIMEOUT) {
+            menu.pending = None;
+            info!("crafting menu: no job {PENDING_TIMEOUT} s after the request (refused)");
         }
         // GhostCrafter.OnCraftingEnd, once per craft: pickup in range, else
         // the CraftingEnd message.
@@ -327,27 +421,87 @@ pub fn sync(
             }
         }
     }
-    while view.craft_at.first().is_some_and(|(at, _)| play >= *at) {
+    menu.test_script = !view.menu_script.is_empty() || view.script_sent > 0;
+    sim.craft_menu = menu;
+    // The menu's clicks from the UI worker (M9e4b).
+    let outs = ui_frame
+        .as_mut()
+        .map(|f| std::mem::take(&mut f.craft_out))
+        .unwrap_or_default();
+    for o in outs {
+        match o {
+            crate::game_ui::CraftOut::ScriptAck(seq, ready, paths) => {
+                view.script_ack = seq;
+                view.script_ready = ready;
+                view.script_paths = paths;
+            }
+            crate::game_ui::CraftOut::Craft(tech) => {
+                let q = Request::Craft { crafter: 0, tech };
+                info!("crafting menu: click at {play:.3}s → {q:?}");
+                session.request(q);
+                sim.craft_menu.pending = Some(play);
+            }
+            crate::game_ui::CraftOut::Deselect => {
+                if std::mem::take(&mut sim.craft_menu.open) {
+                    info!("crafting menu: deselected (a press on no icon)");
+                }
+            }
+        }
+    }
+    // `--menu`'s steps.
+    if panel.script_ready()
+        && sim.craft_menu.open
+        && view.script_ack == view.script_sent
+        && view.script_ready
+        && view.craft_at.is_empty()
+        && view.menu_script.first().is_some_and(|(at, step)| {
+            play >= *at
+                && match step {
+                    MenuStep::Hover(p) | MenuStep::Click(p, _) => view.script_paths.contains(p),
+                    MenuStep::Away => true,
+                }
+        })
+    {
+        view.script_sent += 1;
+        sim.craft_menu.script_sequence = view.script_sent;
+        let (_, step) = view.menu_script.remove(0);
+        info!("crafting menu: --menu at {play:.3}s {step:?}");
+        match step {
+            MenuStep::Hover(p) => sim.craft_menu.scripted = Some(p),
+            MenuStep::Click(p, b) => {
+                sim.craft_menu.scripted = Some(p);
+                sim.craft_menu.clicks.push(b);
+            }
+            MenuStep::Away => {
+                sim.craft_menu.scripted = Some(String::new());
+                sim.craft_menu.clicks.push(0);
+            }
+        }
+    }
+    if panel.script_ready()
+        && view.script_ack == view.script_sent
+        && view.craft_at.first().is_some_and(|(at, _)| play >= *at)
+    {
         let (_, name) = view.craft_at.remove(0);
         if name == "open" {
             sim.use_fabricator = true;
-            continue;
-        }
-        let request = if name == "take" {
-            Some(Request::TakeCrafted { crafter: 0 })
         } else {
-            text.as_ref().and_then(|t| {
-                t.0.tech_names
-                    .iter()
-                    .find(|(_, n)| *n == &name)
-                    .map(|(&tech, _)| Request::Craft { crafter: 0, tech })
-            })
-        };
-        if let Some(q) = request {
-            info!("craft: --craft at {play:.3}s {q:?}");
-            session.request(q);
-        } else {
-            info!("craft: unknown tech {name:?}");
+            let request = if name == "take" {
+                Some(Request::TakeCrafted { crafter: 0 })
+            } else {
+                text.as_ref().and_then(|t| {
+                    t.0.tech_names
+                        .iter()
+                        .find(|(_, n)| *n == &name)
+                        .map(|(&tech, _)| Request::Craft { crafter: 0, tech })
+                })
+            };
+            if let Some(q) = request {
+                info!("craft: --craft at {play:.3}s {q:?}");
+                session.request(q);
+            } else {
+                info!("craft: unknown tech {name:?}");
+            }
         }
     }
     if let Some(line) = session.with_items(|items, events| {

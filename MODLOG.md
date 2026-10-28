@@ -2,6 +2,117 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-28 ? M9e4b: ordered UI script acknowledgements; menu verified
+
+**What/why:** retained the inherited client menu, lock latch, notifications,
+tooltip and transfer-confirmation work. Test scripts now execute at most
+one panel/menu/craft step per frame. Fabricator script waits for the panel
+script to finish, authoritative transfers and the PDA's Closed state;
+menu steps wait for worker sequence acknowledgement, selected/interactable
+menu, placed canvas and a target accepted by the actual hit-test. No
+arbitrary readiness delay or overdue-step draining. Acknowledgements are
+emitted only for menu scripts. No game-rule, dependency or whitelist changes.
+
+**Verified:** `cargo test --workspace`: 767 passed, 0 failed, 66 ignored;
+`cargo clippy --workspace --all-targets -- -D warnings` and
+`cargo fmt --all -- --check` pass. Release build passed.
+`python out/m9e-runs.py`, fresh system-temp slot, pre-run cargo/rustc 0:
+first ordered run skipped 0 own steps, 22 hash checks, 0 differences,
+exit 0, zero WARN/ERROR. All 7 transfers confirmed; locker 7 ? 0.
+Menu steps at play 9.900/10.180/11.100/12.020 s in separate frames;
+Titanium tooltip includes the green salvage ingredient; Craft(16) sent
+at 12.320 s; job ticks 741 ? 881 (140 ticks, 2.8 s), power 75 ? 70,
+one salvage consumed, four Titanium IDs 7?10 delivered with four inventory
+notifications. Lock logged, alpha reached 0 at progress .344, completion
+restored interactability and alpha 1. Screenshot out/m9e4b-menu.png.
+Final-binary repeat: pre-run count 0, skipped 0, 23 hash checks, 0 differ;
+same craft/lock/output/recovery, exit 0, zero WARN/ERROR. Inspector
+`target/release/sn-inspect.exe ui --crafting`: 22/22, RUN OK.
+Logs out/m9e4b-order-attempt{1,2}.log. Earlier dead ends retained below,
+including the quiet run's unexplained 767 skipped steps; not investigated.
+
+**Not tested:** 2 s refusal timeout in a real client (normal craft succeeds;
+no fault injection added), manual input, original-game visual parity,
+unlock-on-craft popup with a real unlocking recipe, Linux/macOS.
+
+## 2026-10-28 — M9e4b follow-up: two quiet-start attempts
+
+**What/why:** test-script-only barrier: TakeAll blocks subsequent scripted
+panel/craft/menu steps until every requested ID is in our authoritative
+grid. Retry only IDs still in the server locker, once per play second:
+the animated screen may not have a usable pose for the first clicks.
+Ignored `out/m9e-runs.py` polls cargo/rustc every 10 s (20-minute bound)
+and starts only at zero. No dependencies or whitelist changes.
+
+**Verified:** `cargo test --workspace`: 767 passed, 0 failed, 66 ignored;
+`cargo clippy --workspace --all-targets -- -D warnings`,
+`cargo fmt --all -- --check`, release client build passed. With game env,
+`target/release/sn-inspect.exe ui --crafting`: 22/22, RUN OK.
+Logs: `out/m9e4b-final-{0,1,2}.log`, `out/m9e4b-build2.log`,
+`out/m9e4b-ui-quiet.log`.
+
+**Two attempts / stop:** both `python out/m9e-runs.py`, fresh temp slots,
+pre-launch cargo/rustc **0**. First: skipped **16**, 23 hash checks,
+0 differ; locker stayed 7, inventory empty, no Move requests reached the
+session (clicks queued before usable PDA pose). Second, after retry:
+skipped **767**, 39 hash checks, 0 differ; requests 0..6 applied,
+locker **7 → 0**, events **2 → 9**, all 7 items confirmed at **12.620 s**.
+No server refusals. Both exit 0, zero WARN/ERROR. Second did not craft:
+overdue --menu steps drained together at **12.820 s** without a usable
+open menu. Build count was also 0 after the run; overload is not confirmed.
+Logs `out/m9e4b-quiet-attempt{1,2}.log`.
+
+Stopped under the user/AGENTS two-attempt rule; STATUS.md updated.
+Final lock latch/fade/completion/timeout: **not tested** successfully.
+M9e4 remains open; no commits/stash/push. M9s merge skipped to avoid
+mixing overlapping dirty work; M9e5 multiplayer and craft save/restart
+**not tested**. Next hypothesis: readiness/ack barriers for PDA close,
+fabricator open and individual menu actions, rather than draining overdue
+absolute timestamps. No third variation attempted.
+
+## 2026-10-28 — M9e4b checkpoint: client menu, runtime verification blocked
+
+Reviewed the inherited uncommitted menu diff. Kept its worker integration,
+hand/cursor/movement behavior, hit-test, sprites, GRAYSCALE, and script hook.
+Fixed the refusal timeout reading the emptied state after `mem::take`;
+rendered ingredient names/counts/colors in the shared tooltip text (the
+separate ingredient icons remain unported); connected newly analyzed tech
+to the existing pop-up and new known tech to Blueprints notifications and
+the Journal toolbar count, baselining initial session/save state. Blueprint
+entry targets remain unported. No dependencies or whitelist changes.
+
+**Verified:** `cargo test --workspace`: 767 passed, zero failed, 66 ignored;
+`cargo clippy --workspace --all-targets -- -D warnings` and
+`cargo fmt --all -- --check` passed on the final code. Release build passed.
+With SUBNAUTICA_DIR set, `target/release/sn-inspect ui --crafting`: 22/22,
+100 total nodes, 33 visible with 46 starting blueprints, layout replay
+4/4 top-level, 2/2 Resources, 5/5 Basic materials. Initial scripted menu
+run: expand Resources and BasicMaterials, hover/click Titanium, request
+Craft(16), consume one salvage, four Titanium collected after 140 ticks
+(2.8 s), power 75 to 70, four inventory notifications, exit 0, zero
+WARN/ERROR. Range run `target/release/sn-client --no-save --view 400
+--resolution 960 540 --craft 3=open --hold-back 6 --shot 12 m9e4b-close`:
+close at 3.0057 m against 3 m; exit 0, zero WARN/ERROR.
+
+**Dead end / stop:** the initial craft exposed a queued-frame lock race.
+Keeping only the click frame in progress did not bridge subsequent stale
+frames. The final worker latches pending until the main world observes it
+(bounded two seconds). Two runs of that binary failed the locker-transfer
+prerequisite: TakeAll logged seven requests, authoritative locker stayed
+seven, inventory empty, world events two, Titanium correctly denied.
+Own steps skipped 978 / 1,250; second run 52 hash checks, zero differences.
+Host-load / request-timing interaction is a hypothesis, not a diagnosis.
+Final fade and recovery: **not tested** successfully. Stopped under the
+two-attempt rule and wrote STATUS.md; M9e4 remains open. No commits,
+survival merge or M9e5 runs. Existing successful evidence does not prove
+the final pending latch. Unlock-on-craft pop-up path, manual input and
+original-game visual parity: **not tested**.
+
+Exact solo command is in ignored `out/m9e-runs.py` (`python out/m9e-runs.py`);
+logs `out/m9e4b-{client,close,ui-crafting,tests-final,clippy-final,build-final}.log`.
+The harness uses the supplied game path via environment and fresh temp
+save slots. Nothing outside our source/docs is tracked in this change.
+
 ## 2026-10-27 — M9e4a: crafting menu rules, tooltip texts, `ui --crafting`
 
 **What/why:** split M9e4 as its risk note allows (DESIGN rows M9e4a/b):

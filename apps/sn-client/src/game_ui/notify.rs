@@ -57,6 +57,8 @@ pub(super) struct Notices {
     toolbar_anchor: V2,
     toolbar_offset: V2,
     count: usize,
+    known: Option<BTreeSet<i32>>,
+    blueprint_count: usize,
     /// Each target's last progress, for the logs (quarter steps).
     logged: HashMap<usize, i32>,
     /// The icons glowing (strength above 0), by root, and `PDA.time`.
@@ -100,11 +102,58 @@ impl Notices {
             toolbar_anchor: anchor_point(toolbar_anchor),
             toolbar_offset,
             count: 0,
+            known: None,
+            blueprint_count: 0,
             logged: HashMap::new(),
             glowing: BTreeMap::new(),
             pda_time: 0.0,
             state: UiState::default(),
         }
+    }
+
+    /// New known tech is unread until its blueprint target is read. The
+    /// blueprint tab's entries are not ported, so these have no targets.
+    pub(super) fn blueprints(
+        &mut self,
+        scene: &mut sn_assets::UiScene,
+        toolbar: Option<&Toolbar>,
+        known: &[i32],
+        time: f32,
+    ) -> Result<(), String> {
+        let now: BTreeSet<i32> = known.iter().copied().collect();
+        if now.is_empty() {
+            return Ok(());
+        }
+        if let Some(seen) = &self.known {
+            for tech in now.difference(seen) {
+                self.manager.add((Group::Blueprints, *tech as u64), 3.0);
+                info!("game UI notifications at {time:.3} s: Add(Blueprints, {tech}, 3)");
+            }
+        }
+        self.known = Some(now);
+        let count = self.manager.count(Group::Blueprints);
+        let index = REGULAR_TABS
+            .iter()
+            .position(|t| *t == sn_ui::pda::Tab::Journal);
+        if let (Some(tb), Some(i)) = (toolbar, index)
+            && let Some(icon) = tb.icons.get(i).filter(|_| i < tb.count)
+            && count != self.blueprint_count
+        {
+            self.show(
+                scene,
+                icon.root,
+                &count.to_string(),
+                if count > 0 { 1.0 } else { 0.0 },
+                self.toolbar_offset,
+                self.toolbar_anchor,
+            )?;
+            info!(
+                "game UI notifications at {time:.3} s: blueprints tab count {} → {count}",
+                self.blueprint_count
+            );
+        }
+        self.blueprint_count = count;
+        Ok(())
     }
 
     /// `INotificationTarget.IsVisible` for an icon in `state`.

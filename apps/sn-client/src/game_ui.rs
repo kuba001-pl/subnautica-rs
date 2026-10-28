@@ -76,10 +76,12 @@ use sn_ui::toolbar::{Toolbar, ToolbarIcon, ToolbarSprites};
 
 use crate::inventory::{ScreenClick, ScriptedHover};
 
+mod craft;
 mod drag;
 mod notify;
 mod tooltip;
 use crate::textures::linear;
+pub(crate) use craft::{CraftFrame, CraftOut};
 
 /// The main camera's planes in the main scene; the UI camera takes them
 /// (`SNCameraRoot.Awake`; `docs/formats/ui.md` § Canvas placement).
@@ -89,8 +91,9 @@ const FAR: f32 = 1700.0;
 const VERTEX_BYTES: usize = 32;
 
 /// `UI/Icon`'s keywords (M9u7c1): a material with one other than
-/// `SLICE_9_GRID` (M9u8b2b) and `NOTIFICATION` (M9u8b5b), whose variants
-/// are ported, is drawn as `UI/Default` and named in the log.
+/// `SLICE_9_GRID` (M9u8b2b), `NOTIFICATION` (M9u8b5b) and `GRAYSCALE`
+/// (M9e4b, not with `NOTIFICATION`), whose variants are ported, is drawn
+/// as `UI/Default` and named in the log.
 const ICON_KEYWORDS: [&str; 7] = [
     "ALPHA_PREMULTIPLY",
     "FILL_HORIZONTAL",
@@ -110,6 +113,7 @@ const COMPASS: u32 = 16;
 const SLICE_9: u32 = 32;
 const CIRCLE: u32 = 64;
 const NOTIFICATION: u32 = 128;
+const GRAYSCALE: u32 = 256;
 
 /// A clip rect that clips nothing (`UI/Simple` always tests `_ClipRect`;
 /// *hypothesis*: Unity's native default covers everything).
@@ -156,6 +160,8 @@ pub(crate) struct UiDrawCmd {
     /// `_PDATime`, `_Size`; and `_NotificationOverlayTex`'s key (0: white).
     pub notification: [f32; 4],
     pub overlay: u64,
+    /// `UI/Icon`'s `_Chroma` (flag 256, `GRAYSCALE`, M9e4b).
+    pub chroma: f32,
     /// A TMP text's material values (`game_ui_text.wgsl`); `None` for an
     /// image.
     pub text: Option<TextValues>,
@@ -272,6 +278,8 @@ pub(crate) struct UiBuild {
     /// Item clicks found since the last build (M9u8b3a).
     pub item_clicks: Vec<(u64, u8)>,
     pub item_moves: Vec<sn_protocol::Request>,
+    /// The crafting menu's clicks since the last build (M9e4b).
+    pub craft_out: Vec<CraftOut>,
     /// The tooltip while shown (M9u8b3b3): placed from the PDA's pose each
     /// frame.
     pub tooltip: Option<TooltipOnPda>,
@@ -310,6 +318,7 @@ type FrameInputs = (
     PdaFlags,
     PdaClicks,
     TabContents,
+    CraftFrame,
 );
 
 /// One item for the inventory tab's icons (M9u8b2a): our id, tech type,
@@ -408,6 +417,8 @@ pub(crate) struct GameUiFrame {
     /// (item, button), for `crate::inventory` to act on.
     pub(crate) item_clicks: Vec<(u64, u8)>,
     pub(crate) item_moves: Vec<sn_protocol::Request>,
+    /// The crafting menu's clicks (M9e4b), for `crate::items`.
+    pub(crate) craft_out: Vec<CraftOut>,
 }
 
 /// Marks the camera the UI is drawn over.
@@ -926,6 +937,22 @@ fn run_worker(
         toolbar_data.notification_offset,
     );
     let mut tooltips = tooltip::Tooltips::new(&assets, &layouts, &tree, &game, &set, &language)?;
+    // The crafting menu (M9e4b).
+    let mut craft_ui = craft::CraftUi::new(
+        &assets,
+        &layouts,
+        &tree,
+        &mut scene,
+        &item_sprites,
+        &icon_material,
+        &tech_code,
+        &tech_data,
+    )?;
+    let mut pending_craft: Vec<CraftOut> = Vec::new();
+    let analysis_player = sn_assets::player_data(&assets)?;
+    let analysis_popups = assets.analysis_popups(&layouts, &analysis_player)?;
+    let analysis_text = sn_assets::item_text(&game, &code, "English")?;
+    let mut analyzed_seen: Option<Vec<i32>> = None;
     let mut tooltip_pose = None;
     // Dragging (M9u8b4): the icons' items by id (from the last sync) and
     // `ItemActions/Swap` at its native size (`SetNativeSize`, the drag
@@ -1003,6 +1030,7 @@ fn run_worker(
                         pda,
                         pda_clicks,
                         tab_contents,
+                        craft_frame,
                     ) = *frame;
                     inputs.food = food;
                     inputs.water = water;
@@ -1150,6 +1178,34 @@ fn run_worker(
                     // `uGUI_PopupNotification` (M9u7d1): `--analyze`'s
                     // entries once the HUD is active, then `OnUpdate` and
                     // `SetTransition`.
+                    if let Some(seen) = &analyzed_seen {
+                        for tech in craft_frame.analyzed.iter().filter(|t| !seen.contains(t)) {
+                            if let Some(a) = analysis_popups.get(tech) {
+                                let name = analysis_text
+                                    .tech_names
+                                    .get(tech)
+                                    .cloned()
+                                    .unwrap_or_else(|| tech.to_string());
+                                let e = sn_assets::analysis_entry(
+                                    &popup.config,
+                                    a,
+                                    &name,
+                                    &analysis_text.strings,
+                                    &mut scene,
+                                );
+                                analyze_entries.push((name, e));
+                            }
+                        }
+                    }
+                    if !craft_frame.known.is_empty() {
+                        analyzed_seen = Some(craft_frame.analyzed.clone());
+                    }
+                    notices.blueprints(
+                        &mut scene,
+                        pda_screen.toolbar.as_ref(),
+                        &craft_frame.known,
+                        inputs.time,
+                    )?;
                     let enqueue: Vec<Entry> = if inputs.active && !analyze_entries.is_empty() {
                         let queued = popup.queue.len();
                         analyze_entries
@@ -1424,7 +1480,24 @@ fn run_worker(
                     if !hover_on {
                         inventory_tab.set_hovered(None);
                     }
-                    if tooltip_pose.is_none() {
+                    // The crafting menu (M9e4b), on `CraftingCanvas`.
+                    let (craft_out, craft_tooltip) = craft_ui.frame(
+                        &craft_frame,
+                        &assets,
+                        &set,
+                        &mut scene,
+                        &language,
+                        &mut tooltips,
+                        &start_state,
+                        &mut placements,
+                        &mut rules,
+                        &camera,
+                        screen,
+                        inputs.delta_time,
+                        inputs.time,
+                    )?;
+                    pending_craft.extend(craft_out);
+                    if tooltip_pose.is_none() && !craft_tooltip {
                         tooltips.clear(&mut rules, inputs.time);
                     }
                     rules.apply(&pda_screen.state);
@@ -1565,6 +1638,7 @@ fn run_worker(
         build.tooltip = tooltip_pose;
         build.item_moves = std::mem::take(&mut pending_moves);
         build.item_clicks = std::mem::take(&mut pending_item_clicks);
+        build.craft_out = std::mem::take(&mut pending_craft);
         for (key, object) in &d.textures {
             if sent.contains(key) {
                 continue;
@@ -2251,6 +2325,7 @@ fn convert(
         let mut bar = None;
         let mut notification = [0.0; 4];
         let mut overlay = 0;
+        let mut chroma = 1.0;
         match m.shader.as_str() {
             "TextMeshPro/Distance Field" => {
                 census.texts += 1;
@@ -2345,12 +2420,25 @@ fn convert(
             // `_SrcFactor`/`_DstFactor` for colour and alpha; with
             // `SLICE_9_GRID` (M9u8b2b) the UV first goes round the border.
             sn_ui::icon::SHADER
-                if !ICON_KEYWORDS
-                    .iter()
-                    .any(|k| *k != "SLICE_9_GRID" && *k != "NOTIFICATION" && m.has_keyword(k)) =>
+                if !(ICON_KEYWORDS.iter().any(|k| {
+                    *k != "SLICE_9_GRID"
+                        && *k != "NOTIFICATION"
+                        && *k != "GRAYSCALE"
+                        && m.has_keyword(k)
+                }) || m.has_keyword("GRAYSCALE") && m.has_keyword("NOTIFICATION")) =>
             {
                 flags |= HARD_CLIP;
                 let mut key = m.shader.clone();
+                if m.has_keyword("GRAYSCALE") {
+                    // M9e4b: blob 136 (`_Chroma` @ 80).
+                    flags |= GRAYSCALE;
+                    key.push_str(" GRAYSCALE");
+                    chroma = if m.has("_Chroma") {
+                        m.float("_Chroma")
+                    } else {
+                        1.0
+                    };
+                }
                 if m.has_keyword("NOTIFICATION") {
                     // M9u8b5b: the glow (blobs 144 and 176).
                     flags |= NOTIFICATION;
@@ -2462,6 +2550,7 @@ fn convert(
             flags,
             notification,
             overlay,
+            chroma,
             text,
             bar,
         });
@@ -2550,6 +2639,7 @@ fn convert(
         resized: log,
         item_clicks: Vec::new(),
         item_moves: Vec::new(),
+        craft_out: Vec::new(),
         tooltip: None,
     }
 }
@@ -2584,7 +2674,7 @@ fn send_inputs(
     real: Res<Time<Real>>,
     mut panel: Option<ResMut<crate::inventory::Panel>>,
     session: Option<Res<crate::session::Session>>,
-    sim: Option<Res<crate::player::PlayerSim>>,
+    mut sim: Option<ResMut<crate::player::PlayerSim>>,
     text: Option<Res<crate::items::Text>>,
     camera: Query<&Transform, With<GameUiCamera>>,
     frame: Res<GameUiFrame>,
@@ -2761,6 +2851,54 @@ fn send_inputs(
         }
         _ => false,
     };
+    // The crafting menu (M9e4b): what `uGUI_CraftingMenu` reads.
+    let mut craft = CraftFrame::default();
+    if let Some(sim) = sim.as_mut() {
+        let m = &mut sim.craft_menu;
+        craft.open = m.open;
+        craft.script_sequence = m.script_sequence;
+        craft.test_script = m.test_script;
+        craft.lock = std::mem::take(&mut m.lock);
+        craft.pointer = m.pointer;
+        craft.scripted = m.scripted.clone();
+        craft.clicks = std::mem::take(&mut m.clicks);
+        craft.in_progress = m.pending.is_some();
+    }
+    if let Some(s) = &session {
+        let me = s.player();
+        let tick = s.server_tick();
+        if let Some((known, analyzed, counts, job)) = s
+            .with_items(|items, _| {
+                let p = items.players.get(&me?)?;
+                let mut counts: BTreeMap<i32, usize> = BTreeMap::new();
+                for i in p.inventory.container.items() {
+                    *counts.entry(i.tech).or_default() += 1;
+                }
+                let job = items
+                    .fabricator
+                    .job
+                    .as_ref()
+                    .filter(|j| !j.done)
+                    .map(|j| (j.start, j.end));
+                Some((
+                    p.inventory.known.known().collect::<Vec<i32>>(),
+                    p.inventory.known.analyzed_all().collect::<Vec<i32>>(),
+                    counts.into_iter().collect::<Vec<_>>(),
+                    job,
+                ))
+            })
+            .flatten()
+        {
+            craft.known = known;
+            craft.analyzed = analyzed;
+            craft.counts = counts;
+            if let Some((start, end)) = job {
+                craft.in_progress = true;
+                craft.progress = ((tick - f64::from(start)) / f64::from(end - start).max(1.0))
+                    .clamp(0.0, 1.0) as f32;
+            }
+        }
+    }
     let _ = worker.requests.send(Request::Frame(Box::new((
         HudInputs {
             active: hud.shown,
@@ -2808,6 +2946,7 @@ fn send_inputs(
         }),
         pda_clicks,
         tab_contents,
+        craft,
     ))));
 }
 
@@ -2830,6 +2969,7 @@ fn receive_build(
                 // Every build's item clicks.
                 frame.item_clicks.append(&mut b.item_clicks);
                 frame.item_moves.append(&mut b.item_moves);
+                frame.craft_out.append(&mut b.craft_out);
                 if let Some(old) = latest.take() {
                     let mut textures = old.textures;
                     textures.append(&mut b.textures);
@@ -3376,7 +3516,7 @@ fn prepare_buffers(
             st: Vec4::from_array(d.st),
             texture_add,
             clip_rect: Vec4::from_array(d.clip),
-            softness: Vec4::new(d.softness[0], d.softness[1], d.flags as f32, 0.0),
+            softness: Vec4::new(d.softness[0], d.softness[1], d.flags as f32, d.chroma),
             pixel,
             notification: Vec4::from_array(d.notification),
         });

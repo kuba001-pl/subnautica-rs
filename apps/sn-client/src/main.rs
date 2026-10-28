@@ -169,6 +169,11 @@ Usage: sn-client [--game-dir <PATH>] [--start <X> <Y> <Z>] [--look <X> <Y> <Z>]
                  finished output, TECH=open turns to the fabricator and
                  clicks it with the hand (debug hook, server checks the
                  request)
+  --menu         --menu SECONDS=STEP[,SECONDS=STEP…] (M9e4b, a test hook): the
+                 crafting menu's pointer; STEP is hover:PATH, click:PATH,
+                 right:PATH (PATH a craft tree path, e.g.
+                 Resources/BasicMaterials/Titanium) or away (a left click
+                 on no icon)
   --test-supply  --test-supply <TECH>[,<TECH>…]: a debug aid for a solo or
                  host run: one item of each tech type (by its name in the
                  game's code, e.g. Compass) put into the new world's
@@ -285,6 +290,7 @@ struct Args {
     /// `--test-supply`: tech type names put into a new world's locker.
     test_supply: Vec<String>,
     craft: Vec<(f64, String)>,
+    menu: Vec<(f64, items::MenuStep)>,
     /// `--turn`: the player's look turns at this many degrees a second.
     turn: Option<f32>,
     /// `--kill`: seconds of play before the player dies.
@@ -369,6 +375,7 @@ fn parse_args_from(raw: &[String]) -> Result<Args, String> {
         hold_back: None,
         test_supply: Vec::new(),
         craft: Vec::new(),
+        menu: Vec::new(),
         turn: None,
         kill: None,
         pick_up: None,
@@ -564,6 +571,22 @@ fn parse_args_from(raw: &[String]) -> Result<Args, String> {
                     args.craft.push((at, name.to_owned()));
                 }
                 args.craft.sort_by(|a, b| a.0.total_cmp(&b.0));
+            }
+            "--menu" => {
+                let list = it
+                    .next()
+                    .ok_or("--menu takes SECONDS=STEP[,SECONDS=STEP]")?;
+                for entry in list.split(',') {
+                    let (at, step) = entry
+                        .split_once('=')
+                        .ok_or("--menu requires SECONDS=STEP")?;
+                    let at: f64 = at.parse().map_err(|_| "invalid --menu time")?;
+                    if !at.is_finite() || at < 0.0 {
+                        return Err("invalid --menu time".into());
+                    }
+                    args.menu.push((at, items::MenuStep::parse(step)?));
+                }
+                args.menu.sort_by(|a, b| a.0.total_cmp(&b.0));
             }
             "--test-supply" => {
                 let list = it.next().ok_or("--test-supply takes TECH[,TECH…]")?;
@@ -1333,6 +1356,7 @@ fn main() -> AppExit {
                         args.pick_up.map(f64::from),
                         args.drop.map(f64::from),
                         args.craft.clone(),
+                        args.menu.clone(),
                     ))
                     .add_systems(
                         Update,

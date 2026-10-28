@@ -80,7 +80,6 @@ impl Tooltips {
         let (Some(e), Some(point)) = (entry, pointer) else {
             return Ok(None);
         };
-        let c = &self.config;
         let name = self
             .names
             .get(&e.tech)
@@ -120,6 +119,41 @@ impl Tooltips {
             [e.actions[0], e.actions[1], 0, 0],
             e.bind,
         );
+        self.show(
+            scene, set, &name, e.id, prefix, postfix, point, layout, root, graphic, placed, camera,
+            state, placements, rules, time,
+        )
+    }
+
+    pub(super) fn strings(&self) -> &TooltipStrings {
+        &self.strings
+    }
+
+    /// `uGUI_Tooltip`'s layout and `UpdatePosition` for these texts beside
+    /// `point` on `root`'s canvas (placed at `placed`), hovering `graphic`
+    /// (M9u8b3b; since M9e4b also the crafting menu's). `id` and `name` are
+    /// for the log.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn show(
+        &mut self,
+        scene: &mut sn_assets::UiScene,
+        set: &sn_ui::text::FontSet,
+        name: &str,
+        id: u64,
+        prefix: String,
+        postfix: String,
+        point: [f32; 2],
+        layout: &sn_ui::layout::Tree,
+        root: usize,
+        graphic: usize,
+        placed: &Placement,
+        camera: &UiCamera,
+        state: &UiState,
+        placements: &mut HashMap<usize, Placement>,
+        rules: &mut UiState,
+        time: f32,
+    ) -> Result<Option<TooltipOnPda>, String> {
+        let c = &self.config;
         let pref = |node, text: &str, width| {
             scene
                 .preferred_size(set, node, text, width)
@@ -160,7 +194,7 @@ impl Tooltips {
         rules.group_alpha.insert(c.canvas_group, alpha);
         let sorting = scene
             .canvas_sorting(root)
-            .ok_or("tooltip: PDA has no canvas")?;
+            .ok_or("tooltip: the hovered canvas has no canvas")?;
         scene.set_canvas_sorting(c.canvas, sorting.0, sorting.1.saturating_add(2));
         placements.insert(
             c.root,
@@ -172,11 +206,11 @@ impl Tooltips {
                 scale_factor: 1.0,
             },
         );
-        let key = (e.id, prefix, postfix);
+        let key = (id, prefix, postfix);
         if self.shown.as_ref() != Some(&key) {
             info!(
                 "game UI tooltip at {time:.3} s: {name} #{}: prefix {:?}; postfix {:?}; pointer {point:?}, rect top-left {:?}, size {:?}, canvas size {:?}, scale {}, alpha {alpha}, sorting {:?}+2",
-                e.id,
+                id,
                 key.1,
                 key.2,
                 pose.point,

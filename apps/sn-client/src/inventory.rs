@@ -186,6 +186,9 @@ pub struct Panel {
     draws: Draws,
     /// `--panel`, latest first.
     script: Vec<(f64, Scripted)>,
+    /// Test script barrier: wait for these items in our authoritative grid.
+    pub script_transfers: Vec<ItemId>,
+    script_retry_at: f64,
     /// Clicks on the PDA's screen since the last frame sent to the UI
     /// worker.
     pub screen_clicks: Vec<ScreenClick>,
@@ -202,6 +205,12 @@ pub struct Panel {
 impl Panel {
     /// The panel (the inventory tab's content) is shown: from `Open` to
     /// `Close` (`content.SetVisible`).
+    pub fn script_ready(&self) -> bool {
+        self.script.is_empty()
+            && self.script_transfers.is_empty()
+            && self.pda.state() == PdaState::Closed
+    }
+
     pub fn shown(&self) -> bool {
         self.pda.using_pda()
     }
@@ -222,6 +231,8 @@ impl Panel {
             target: None,
             draws: Draws(seed),
             script,
+            script_transfers: Vec::new(),
+            script_retry_at: 0.0,
             screen_clicks: Vec::new(),
             pointer: None,
             hover: None,
@@ -648,15 +659,65 @@ pub fn input(
         f.item_moves.clear();
     }
 
+    // Test scripts advance only after the server confirms TakeAll. Keep
+    // normal input and game rules unchanged while the UI worker catches up.
+    if !panel.script_transfers.is_empty() {
+        let me = session.player();
+        let confirmed = session
+            .with_items(|items, _| {
+                me.and_then(|me| items.players.get(&me)).is_some_and(|p| {
+                    let ids: Vec<_> = p
+                        .inventory
+                        .container
+                        .layout()
+                        .0
+                        .iter()
+                        .map(|q| ItemId(q.id.0 as u32))
+                        .collect();
+                    panel.script_transfers.iter().all(|id| ids.contains(id))
+                })
+            })
+            .unwrap_or(false);
+        if confirmed {
+            info!(
+                "inventory: scripted transfer confirmed: {} items at {now:.3}s",
+                panel.script_transfers.len()
+            );
+            panel.script_transfers.clear();
+        } else if now >= panel.script_retry_at && panel.pda.focused() {
+            // A scripted click can precede the animated screen's first
+            // usable pose. Retry only items still in the server's locker;
+            // never advance the script on the strength of queued clicks.
+            let remaining = session
+                .with_items(|items, _| {
+                    items
+                        .locker
+                        .layout()
+                        .0
+                        .iter()
+                        .map(|q| ItemId(q.id.0 as u32))
+                        .filter(|id| panel.script_transfers.contains(id))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            for item in remaining {
+                panel.screen_clicks.push(ScreenClick::Item {
+                    id: u64::from(item.0),
+                    button: 0,
+                });
+            }
+            panel.script_retry_at = now + 1.0;
+        }
+    }
     // `--panel`.
-    while panel.script.last().is_some_and(|&(t, step)| {
+    if panel.script.last().is_some_and(|&(t, step)| {
         // A click waits while the PDA opens (not focused yet).
         let waits = !matches!(step, Scripted::Open | Scripted::Close)
             && panel.pda.state() == PdaState::Opening;
-        now >= t && sim.controls() && !waits
+        now >= t && sim.controls() && !waits && panel.script_transfers.is_empty()
     }) {
         let Some((t, step)) = panel.script.pop() else {
-            break;
+            return;
         };
         info!("inventory: --panel at {t:.1} s: {step:?}");
         let me = session.player();
@@ -709,6 +770,8 @@ pub fn input(
             Scripted::Close => close(panel, &mut sim, &mut drive, &mut windows, "--panel"),
             Scripted::TakeAll if panel.shown() && with_locker => {
                 info!("inventory: taking {} items out of the locker", locker.len());
+                panel.script_transfers.clone_from(&locker);
+                panel.script_retry_at = now + 1.0;
                 for item in locker {
                     panel.screen_clicks.push(ScreenClick::Item {
                         id: u64::from(item.0),

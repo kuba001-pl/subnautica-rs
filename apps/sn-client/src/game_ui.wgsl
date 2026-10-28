@@ -25,6 +25,9 @@
 //   `_PDATime`, `_Size`): rgb × (1 + 0.75 · strength · the overlay's red at
 //   (|UV − ½| · `_Size` × 0.015152 − 3.18 · `_PDATime`, ½)); alpha as before
 //   (`sn_ui::notifications::glow`, which this mirrors).
+// - `UI/Icon` with `GRAYSCALE` (M9e4b, flag 256, with or without
+//   `SLICE_9_GRID`; blob 136; `_Chroma` in `softness.w`): g = dot(rgb,
+//   (0.3, 0.59, 0.11)); rgb = g + `_Chroma` · (rgb − g); alpha as before.
 // Vertex colours arrive as stored (sRGB bytes) and are made linear, as
 // Unity does in a linear project (*hypothesis*, `docs/formats/ui.md`).
 
@@ -39,7 +42,7 @@ struct Item {
     texture_add: vec4<f32>,
     // `_ClipRect`: x min, y min, x max, y max in the root canvas's space.
     clip_rect: vec4<f32>,
-    // `_UIMaskSoftnessX`, `_UIMaskSoftnessY`, flags, unused. Flags: 1 the
+    // `_UIMaskSoftnessX`, `_UIMaskSoftnessY`, flags, `_Chroma` (flag 256). Flags: 1 the
     // soft clip (`UNITY_UI_CLIP_RECT`), 2 the hard clip (`UI/Simple`), 4
     // premultiply (`ALPHA_PREMULTIPLY`), 8 `_MainTex_ST` applies, 16
     // `uGUI/Compass`, 32 `SLICE_9_GRID`, 64 `UI/Circle`.
@@ -182,6 +185,10 @@ fn fragment(in: VertexOut) -> @location(0) vec4<f32> {
     let glow = textureSample(overlay_tex, overlay_sampler, vec2<f32>(ring, 0.5)).r;
     if has(it.softness.z, 128u) {
         c = vec4<f32>(c.rgb * (1.0 + 0.75 * n.x * glow), c.a);
+    }
+    if has(it.softness.z, 256u) {
+        let g = dot(c.rgb, vec3<f32>(0.3, 0.59, 0.11));
+        c = vec4<f32>(vec3<f32>(g) + it.softness.w * (c.rgb - vec3<f32>(g)), c.a);
     }
     if compass {
         c.a = c.a * window;

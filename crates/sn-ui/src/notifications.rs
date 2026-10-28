@@ -29,6 +29,7 @@ use crate::state::UiState;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Group {
     Inventory,
+    Blueprints,
 }
 
 /// `NotificationId`: the group and the key (the item's id for the

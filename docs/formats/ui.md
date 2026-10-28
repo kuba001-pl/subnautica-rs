@@ -2635,3 +2635,18 @@ Our port: `crates/sn-ui/src/crafting.rs` (rules),
   fill (`FILL_RADIAL`) is set on the materials but not drawn (the menu is
   faded out over the first 30 % of a craft anyway).
 
+**Client implementation (M9e4b):** `game_ui/craft.rs` grafts the runtime
+icon sprites onto `CraftingCanvas`, uses the pure menu's hit-test and
+punch/hover/chroma state, and shares the existing tooltip text renderer.
+`UI/Icon GRAYSCALE` uses the documented fragment formula. Ingredient
+names and counts are logged, but the separate tooltip ingredient icons
+are not drawn. The hand frees the cursor and stops look while movement
+continues; Escape, a press outside the icons or closing the lid deselects.
+`--menu SECONDS=click:PATH` projects the icon centre through the same
+camera and hit-test as the mouse. A click sends the server request;
+pending requests count as in progress until accepted or timed out.
+New analyzed tech queues the existing unlock pop-up; new known tech adds
+the Blueprints notification (3 s) and Journal toolbar count. Initial
+session/save state is the baseline. Blueprint entry targets remain
+unported, so those unread notifications have no target to count down.
+

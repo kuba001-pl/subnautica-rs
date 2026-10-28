@@ -220,6 +220,10 @@ pub struct PlayerSim {
     pub fabricator: Option<sn_assets::PodFabricator>,
     pub fabricator_opened: u32,
     pub use_fabricator: bool,
+    /// The crafting menu (M9e4b).
+    pub craft_menu: crate::items::CraftMenu,
+    /// The cursor was freed for the menu (locked again when it closes).
+    craft_menu_freed: bool,
     to_worker: Sender<ToWorker>,
     from_worker: Mutex<Receiver<FromWorker>>,
     world: World,
@@ -452,6 +456,8 @@ impl PlayerSim {
             fabricator: None,
             fabricator_opened: 0,
             use_fabricator: false,
+            craft_menu: crate::items::CraftMenu::default(),
+            craft_menu_freed: false,
             to_worker,
             from_worker: Mutex::new(from_worker),
             world: World::new(),
@@ -1033,7 +1039,10 @@ pub fn update(
     let pda_focused = pda.is_some_and(|p| p.focused());
     let using_pda = pda.is_some_and(|p| p.using_pda());
     drive.pda_model = pda.is_some_and(|p| p.active());
-    let panel_open = pda_in_use;
+    // The crafting menu (M9e4b): selected without locking movement, its
+    // `InterceptInput` frees the cursor and takes the look and the hand.
+    let menu_open = sim.craft_menu.open;
+    let panel_open = pda_in_use || menu_open;
     // Messages from the worker.
     let messages: Vec<FromWorker> = match sim.from_worker.lock() {
         Ok(rx) => rx.try_iter().collect(),
@@ -1227,9 +1236,33 @@ pub fn update(
 
     // Mouse capture and look.
     let mut captured = false;
+    sim.craft_menu.pointer = None;
     for (window, mut cursor) in &mut windows {
         if pda_focused {
             continue;
+        }
+        if menu_open {
+            cursor.grab_mode = CursorGrabMode::None;
+            cursor.visible = true;
+            if let Some(c) = window.physical_cursor_position() {
+                sim.craft_menu.pointer = Some([c.x, window.physical_height() as f32 - c.y]);
+            }
+            for (b, n) in [(MouseButton::Left, 0u8), (MouseButton::Right, 1)] {
+                if buttons.just_pressed(b) {
+                    sim.craft_menu.clicks.push(n);
+                }
+            }
+            if keys.just_pressed(KeyCode::Escape) {
+                sim.craft_menu.open = false;
+                info!("crafting menu: closed by Escape");
+            }
+            sim.craft_menu_freed = true;
+            continue;
+        }
+        if std::mem::take(&mut sim.craft_menu_freed) && window.focused {
+            // `InterceptInput(false)`: the cursor lock as it was.
+            cursor.grab_mode = CursorGrabMode::Locked;
+            cursor.visible = false;
         }
         if buttons.just_pressed(MouseButton::Left) && window.focused {
             cursor.grab_mode = CursorGrabMode::Locked;
@@ -1633,7 +1666,9 @@ pub fn update(
                 }
                 Some((None, power)) if power >= sn_sim::craft::ENERGY => {
                     sim.fabricator_opened += 1;
-                    info!("fabricator: opened by the hand");
+                    // `uGUI.main.craftingMenu.Open(craftTree, this)`.
+                    sim.craft_menu.open = true;
+                    info!("fabricator: opened by the hand; crafting menu opened");
                 }
                 _ => {}
             }
