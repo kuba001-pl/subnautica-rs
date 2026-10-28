@@ -461,3 +461,59 @@ are pipelined and bound by the render thread; the frame-level gain is
 **not** established by these contended runs. Scene counts and the face
 census are identical in all six reports (same values as above, zero
 unsettled samples).
+
+### P2d — send PDA and item-atlas textures ahead of first use
+
+Attribution (P2c executable, scripted player): when the PDA first shows the
+locker items (play ≈ 4.4 s), the game UI uploads 25,196,976 bytes of textures
+at once: item and background atlas pages up to 2048×2048 (16,777,216 +
+8,388,608 + 262,144 bytes plus small ones). `render::images` costs 7.4–9.0 ms
+in that frame. P2d lists the textures stored on the PDA's graphics
+(`UiScene::stored_textures`) plus every page of the Items and Backgrounds
+sprite atlases (70 candidates; 67 are already sent by the HUD), then sends
+**one** not-yet-sent texture per UI build, only in builds that send no
+texture of their own. Same images, same keys, same draws; only their upload
+time changes. In these runs all three remaining pages are sent before play
+sampling starts.
+
+Matched runs `out/p2/d{1,2,3}-{base,pre}-player.*` (order B/A, A/B, B/A; base =
+`out/p2/wind-client.exe` (P2c), pre = `out/p2/prefetch-client.exe`; runner
+`out/p2/run2.py player`, analysis `out/p2/pda.py`, `pda_summary.py`). 1–3
+`cargo`/`rustc` processes were running at each start. Windows are play seconds, and
+capture/exit are excluded:
+
+| ms, rounds 1 / 2 / 3 | P2c (before) | P2d (after) |
+|---|---|---|
+| UI texture bytes uploaded, PDA window 2.8–5.2 s | 28,342,704 each | 3,176,880 each |
+| `render::images` max, PDA window | 8.273 / 7.401 / 9.007 | 6.054 / 5.056 / 4.719 |
+| Frame max, items shown 4.2–4.8 s | 28.947 / 27.453 / 33.529 | 23.202 / 23.155 / 23.602 |
+| Frame max, PDA open 3.0–3.3 s | 26.251 / 33.546 / 33.793 | 30.617 / 38.754 / 33.642 |
+| Frame max, PDA window 2.8–5.2 s | 28.947 / 33.905 / 33.793 | 30.617 / 38.754 / 36.300 |
+| Frame max, take-all 5.8–6.8 s | 24.348 / 28.784 / 25.918 | 35.435 / 35.771 / 31.787 |
+| Sampled frame p50 | 18.206 / 19.246 / 18.824 | 18.609 / 18.865 / 18.991 |
+
+Parity: UI draws in all six runs are 147 / 147 / 146 in the 5.0–5.7 / 8–9.2 /
+10.5–11.5 s windows. Each run opens the locker with 6 icons and makes the same item
+moves. 0 warnings/errors.
+
+What it fixes: the 25 MB upload burst is gone from the PDA activation, and the
+items-shown frame falls in all three rounds with no overlap. What it does not fix: the
+PDA-window maximum (target < 20 ms) is not met and not improved. The open frame
+(≈ 3.1 s) is dominated by `game_ui::worker_build`/`scene_draw` (15–18 ms)
+and `render::specialize` (≈ 8 ms, new pipeline variants), not by uploads. The
+take-all window maxima are higher in all three P2d runs. The worst frames there show
+no UI texture work; they show render-world asset and mesh allocation costs
+(`render::mesh_alloc` 7.5–7.9 ms) while object streaming is running. The P2d runs
+had streamed 15,412–21,412 object entities by the first stats line versus
+8,174–14,183 before, so streaming timing differs between runs. That
+regression is **not attributed** and remains open. A repeat series
+(`out/p2/e{1,2,3}-*`) ran with 25–50 compiler processes from other agents
+(frame p50 136–504 ms). It is unusable and was not used.
+
+Cost: about 25 MB of extra GPU texture memory from startup instead of from
+first PDA use. Reproduce: build release, then for each round run
+`python out/p2/run2.py player NAME EXE` for both executables, alternating
+order, then `python out/p2/pda.py NAME…` and
+`python out/p2/pda_summary.py out/p2/NAME.log…`. Expected: the before runs show
+a ≈ 25.2 MB `game_ui::image_bytes` burst at play ≈ 4.4 s, and the after runs
+show it only before sampling, plus `game UI: 70 textures to send ahead` in the log.

@@ -25,7 +25,7 @@
 //! Materials, fonts' materials and sprites are read the first time a draw
 //! needs them and kept, so a draw reads nothing else from the install.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use sn_ui::draw::{DrawInput, Graphic, GroupInfo, draw_list, scale_y_in_root_canvas};
@@ -392,6 +392,31 @@ impl UiScene {
         let id = SpriteId(texture_key(o));
         self.sprite_refs.insert(id, o.clone());
         id
+    }
+
+    /// The stored textures of the graphics on `nodes` (enabled or not, in
+    /// graphic order, each once), keyed as a draw keys them. A state may
+    /// swap a sprite for another; those are not listed.
+    pub fn stored_textures(&self, nodes: std::ops::Range<usize>) -> Vec<(u64, ObjectRef)> {
+        let mut seen = HashSet::new();
+        let mut out = Vec::new();
+        for g in self.graphics.iter().filter(|g| nodes.contains(&g.node)) {
+            let objects = match &g.kind {
+                UiGraphicKind::Image { texture, .. }
+                | UiGraphicKind::RawImage { texture, .. }
+                | UiGraphicKind::Compass { texture, .. } => [texture.as_ref(), None],
+                UiGraphicKind::CircularBar {
+                    texture, overlay, ..
+                } => [texture.as_ref(), overlay.as_ref()],
+                _ => [None, None],
+            };
+            for o in objects.into_iter().flatten() {
+                if seen.insert(texture_key(o)) {
+                    out.push((texture_key(o), o.clone()));
+                }
+            }
+        }
+        out
     }
 
     /// `Object.Instantiate(template)` then `SetParent(parent, false)`

@@ -2,6 +2,35 @@
 
 One entry per change: what, why, how it was verified. Record dead ends too.
 
+## 2026-10-28 — P2d: send PDA and item-atlas textures ahead of first use
+
+**What/why:** the first time the PDA shows items, the game UI uploaded
+25.2 MB of atlas pages in one frame (`render::images` 7.4–9.0 ms). The
+worker now sends the PDA graphics' stored textures and the Items/Backgrounds
+atlas pages ahead of time, one per UI build and only when that build sends
+nothing itself. These are the same images, keys and draws. New
+`UiScene::stored_textures` and `sn_assets::GROUP_BACKGROUND`.
+
+**Measured** (3 matched player rounds, B/A A/B B/A, 1–3 cargo/rustc at
+start): UI bytes uploaded in the PDA window 28,342,704 → 3,176,880;
+`render::images` max 8.273 / 7.401 / 9.007 → 6.054 / 5.056 / 4.719 ms;
+items-shown frame max 28.947 / 27.453 / 33.529 → 23.202 / 23.155 / 23.602 ms.
+**Not improved:** PDA-window max 28.947 / 33.905 / 33.793 → 30.617 / 38.754 /
+36.300 ms (the open frame is UI worker build + pipeline specialization, not
+uploads). Take-all window max got worse in all three rounds, 24.3–28.8 → 31.8–35.8 ms,
+with no UI texture work in those frames; object streaming timing differed.
+That is not attributed and stays open. UI draws (147/147/146), locker icons and
+item moves are identical, with 0 warnings. A repeat series with 25–50 foreign compiler
+processes (p50 136–504 ms) is recorded as unusable. Details:
+`docs/P1-PERFORMANCE.md` § P2d.
+
+**Verification:** workspace tests 749 passed, 0 failed, 64 ignored
+(SUBNAUTICA_DIR unset); clippy with warnings denied and fmt pass
+(`out/p2/p2d-*.log`). The measured executable was built before the
+`GROUP_BACKGROUND` rename (same value 2, no behaviour change); the renamed
+source was compiled by clippy/tests only and not re-run in the game. No
+dependencies, whitelist or game-rule changes; game data stays in out/.
+
 ## 2026-10-27 — P2c: repair winding only for changed parts
 
 **What/why:** `repair_winding` scanned every object part each frame

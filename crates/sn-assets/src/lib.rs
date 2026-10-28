@@ -116,8 +116,8 @@ pub use skin::{Mat4, skin};
 pub use slots::{LootTable, entity_infos, loot_table, parse_loot_table};
 pub use sn_ui::state::{LocalTransform, MaterialValues, SpriteId, UiState, color32};
 pub use sprites::{
-    AtlasSprite, GROUP_ATLASES, GROUP_ITEM, GROUP_ITEM_ACTIONS, GROUP_TAB, LoadedAtlas,
-    SPRITE_ATLASES_LABEL, Sprites, cut,
+    AtlasSprite, GROUP_ATLASES, GROUP_BACKGROUND, GROUP_ITEM, GROUP_ITEM_ACTIONS, GROUP_TAB,
+    LoadedAtlas, SPRITE_ATLASES_LABEL, Sprites, cut,
 };
 pub use terrain::{
     BlendSettings, BlockSource, GrassLook, GrassShader, SurfaceLayer, TerrainGrass,

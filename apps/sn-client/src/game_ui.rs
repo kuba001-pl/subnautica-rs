@@ -974,6 +974,26 @@ fn run_worker(
     );
     let camera = UiCamera::game(fov, NEAR, FAR);
     let mut sent: std::collections::HashSet<u64> = std::collections::HashSet::new();
+    // Textures the PDA and item icons draw with, sent one per build
+    // before first use (Perf P2d): the same images, uploaded early instead
+    // of in one burst when the PDA first shows items (atlas pages up to
+    // 2048×2048).
+    let mut prefetch = scene.stored_textures(pda_root..pda_root + pda_tree.nodes.len());
+    for atlas in [sn_assets::GROUP_ITEM, sn_assets::GROUP_BACKGROUND] {
+        let name = sn_assets::GROUP_ATLASES[atlas];
+        let mut pages: Vec<_> = item_sprites
+            .atlases
+            .get(name)
+            .into_iter()
+            .flat_map(|a| a.sprites.values())
+            .map(|s| (sn_assets::texture_key(&s.page), s.page.clone()))
+            .collect();
+        pages.sort_by_key(|(key, _)| *key);
+        pages.dedup_by_key(|(key, _)| *key);
+        prefetch.extend(pages);
+    }
+    prefetch.reverse();
+    info!("game UI: {} textures to send ahead", prefetch.len());
     // Glyphs per font atlas when it was last sent.
     let mut sent_glyphs: HashMap<usize, usize> = HashMap::new();
     let mut screen: Option<[i32; 2]> = None;
@@ -1576,6 +1596,24 @@ fn run_worker(
                     build.textures.push(t);
                 }
                 Err(e) => warn!("game UI: texture {key:x}: {e}"),
+            }
+        }
+        if build.textures.is_empty() {
+            while let Some((key, object)) = prefetch.pop() {
+                if !sent.insert(key) {
+                    continue;
+                }
+                match load_texture(&assets, key, &object) {
+                    Ok(t) => {
+                        crate::perf::count("game_ui::prefetch_bytes", t.data.len());
+                        build.textures.push(t);
+                        break;
+                    }
+                    Err(e) => {
+                        sent.remove(&key);
+                        warn!("game UI: texture {key:x}: {e}");
+                    }
+                }
             }
         }
         // Font atlases with new glyphs (sent whole; their texels are
