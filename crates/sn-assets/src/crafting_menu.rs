@@ -10,12 +10,12 @@ use sn_ui::material::UiMaterial;
 use sn_unity::Value;
 
 use crate::icons::foreground_material;
+use crate::sprites::GROUP_BACKGROUND;
 use crate::ui_scene::CodeNode;
 use crate::{Assets, GameCode, Layouts, Result, Sprites, UiGraphicKind, UiScene, UiTree};
 
 const MENU: &str = "uGUI_CraftingMenu";
-/// `SpriteManager.Group.Background` and `Category`.
-pub const GROUP_BACKGROUND: usize = 2;
+/// `SpriteManager.Group.Category` (`Background` is `sprites::GROUP_BACKGROUND`).
 pub const GROUP_CATEGORY: usize = 3;
 
 /// The menu's nodes in the tree.

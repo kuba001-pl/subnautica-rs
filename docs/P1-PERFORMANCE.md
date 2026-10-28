@@ -1,5 +1,8 @@
 # P1 client performance evidence (2026-10-27)
 
+Perf P2 continuation is recorded at the end of this document. P1 measurements
+below are historical evidence, not a P2 baseline.
+
 P1b removes main-thread texture conversion stalls. P1c inactive UI pruning
 was rejected after repeat measurements failed to establish a net frame-time win.
 The retained change preserves the scene and game rules. A universal
@@ -310,3 +313,207 @@ from the previous agent; matched-eager/pruned runs and c-test-final /
 c-clippy-final were run by the continuation. Repeat static snapshots match
 exactly across all six fixed runs; all twelve runs have zero warnings/errors
 and every player run performs six item moves.
+
+## Perf P2 (2026-10-27): default view and PDA activation
+
+Plan and numerical acceptance targets: DESIGN § Perf P2. P2a adds attribution
+probes without changing drawing or simulation. `main::schedules` covers First
+through Last (including nested systems); it excludes pipelined extraction,
+rendering and presentation outside those schedules. Player reports now retain
+recent GPU scopes as well as CPU scopes every 120 frames. `game_ui` GPU timing
+covers its render pass. UI counters record actual submitted indexed draws,
+texture binding groups and newly queued pipeline variants. The baseline mesh
+census counts main-world `ViewVisibility`, including any view; these instance
+and unique-mesh counts are **not** GPU draw-call or instancing statistics.
+
+Reproduce P1's commands above with `--view 1200` and fresh `p2-*` names;
+preserve `out/p1/frames.csv` and `spans.csv` under separate `out/p2/` names after
+each player run (the profiler overwrites them on exit). Keep three repetitions
+per case/build, record other clients/compiler processes, and compare the same
+camera/seeds/resolution/effects. PDA activation attribution uses the scripted
+3 s use-item event, independently from the 6 s take-all and 9.5 s close events.
+Capture/exit remain excluded. Targets and runtime verification: **not tested**
+until the repeated results below are recorded.
+
+### P2b — direct instanced submission for CPU-culled views
+
+The default camera has CPU frustum/range culling and no GPU occlusion culling.
+Bevy 0.19's indirect path nevertheless rebuilds bin buffers and preprocessing
+bind groups for 503 opaque + 137 alpha-mask + 106 shadow batch sets each frame.
+Use `NoIndirectDrawing` on the camera: Bevy retains mesh/material instancing,
+the existing CPU visibility rules, all four shadow views, and every effect.
+`SN_CLIENT_INDIRECT_DRAWING=1` restores the old path for repeat attribution.
+No dependencies, whitelist changes, asset changes or game-rule changes.
+
+Initial paired rounds (`out/p2/r{0,1,2}-{baseline,direct}-fixed-1.*`) used one
+archived release executable, switching only the camera flag. Order was B/A,
+A/B, B/A. Each measured 600 frames after 120 consecutive settled frames.
+All six had zero unsettled samples and identical drawn scene counts. Concurrent
+clients/compiler processes were present; round 1 suffered extreme contention,
+including a 149.947 ms recent opaque GPU scope. Keep that result visible rather
+than treating its before/after ratio as the optimization's intrinsic speedup.
+
+| Metric, ms; rounds 0 / 1 / 2 | Indirect before | Direct after |
+|---|---|---|
+| Frame p50 | 36.227 / 176.883 / 36.112 | 23.570 / 36.502 / 24.823 |
+| Frame p95 | 63.042 / 305.159 / 121.890 | 42.165 / 91.648 / 43.444 |
+| Frame p99 | 114.365 / 402.090 / 189.644 | 63.967 / 133.021 / 68.616 |
+| Render batching mean | 8.889 / 30.225 / 14.713 | 2.123 / 8.772 / 2.360 |
+| Bind-group preparation mean | 4.983 / 18.152 / 7.810 | 0.611 / 3.658 / 0.640 |
+| Render graph mean | 23.591 / 36.526 / 23.217 | 21.113 / 26.101 / 21.430 |
+
+Normal-round stage medians are less sensitive to descheduling: batching
+7.678 / 7.913 → 1.729 / 1.850 ms; bind groups 4.283 / 4.332 → 0.422 / 0.453 ms.
+Opaque CPU encoding rises (more direct API calls); the savings come from
+removing indirect preprocessing, buffer/bind-group churn and bin unpacking,
+not reducing mesh draws. The old path has 746 multi-draw batch sets; the direct
+path has 1,814 opaque + 298 mask draws, and shadow draws [52, 53, 232, 290].
+The transparent phase retains 1,071 sorted items (items are not draw calls).
+A supplemental post-preparation census records effective indirect draw slots
+as well as direct bins so these different submission APIs can be compared.
+
+Static parity in all six reports: 1,393 terrain batches [8, 35, 205, 1,145],
+7,759,704 terrain triangles, 2,083 logical terrain meshes; 34,469 grass tufts,
+2,891,017 grass triangles; 39,353 object entities, 12,493 object meshes,
+1,968 materials, 2,265 textures; 37,183 mesh instances, 6,171 view-visible
+instances and 2,765 visible unique meshes; face census 2,819 off / 31,687 back,
+524 reflected instances / 325 reversed variants / 0 unsupported. LRU cache
+occupancy is not drawn content and varies. Four shadow views are preserved.
+
+Direct-path recent GPU scopes across these rounds, ms: opaque 2.981–3.882,
+transparent 1.209–1.480, shafts 1.293–2.134, UI 0.194–0.449, water surface
+0.218–0.318, FFT 0.162–0.279, clustering 0.084–0.133. Bin unpacking disappears.
+The instrumented GPU-scope sum is 6.472–9.094 ms versus 21.113–26.101 ms CPU
+render graph wall time: the normal default-view cases are CPU/driver limited.
+These scopes are recent windows, not total GPU-frame timings. Separate GPU
+shadow timing and a full heap-allocation trace are **not tested**; the inherited
+Bevy trace attributes 0.290 ms/frame CPU shadow recording under its own load.
+GPU buffer/bind-group churn is attributed through batch-set counts and stage
+costs, not presented as a count of all CPU heap allocations.
+
+The absolute 16.667 ms target is not met by these contended runs. Workspace tests (748 passed, 64 ignored), clippy with warnings denied,
+and fmt pass (`out/p2/p2b-validation.log`). Supplemental counted runs
+`census-{baseline,direct}-fixed-1` confirm exactly 1,814 opaque, 298 mask and
+627 shadow effective mesh draws in both paths; 1,071 transparent sorted items.
+Direct instancing contains 3,926 opaque, 713 mask and 1,392 shadow instances.
+
+Reproduce from PowerShell using the common flags in § Reproduction, with
+`--view 1200`, `SN_CLIENT_PERF=1`, and a release build. For each of three rounds,
+run the fixed command once with `$env:SN_CLIENT_INDIRECT_DRAWING='1'` (before)
+and once after `Remove-Item Env:SN_CLIENT_INDIRECT_DRAWING -ErrorAction
+SilentlyContinue` (after), alternating order. Use new baseline/log names and
+archive profiler CSVs after each run. Expected: zero unsettled samples; scene
+and effective draw counts above, with bin unpacking present only before.
+Actual timing depends strongly on concurrent GPU/compiler work.
+
+### P2b re-measurement (matched, after the disk-full interruption)
+
+Same archived P2b release executable (`out/p2/p2b-client.exe`), only
+`SN_CLIENT_INDIRECT_DRAWING` switched; order direct/indirect, indirect/direct,
+direct/indirect (`out/p2/m{1b,2,3}-indirect-fixed.*`, `m{1,2,3}-direct-fixed.*`).
+Runner `out/p2/run2.py`. Every start had 2–8 `cargo` and 1–8 `rustc`
+processes of other agents; round 3 direct also had another `sn-client`. The
+first indirect attempt ended in a driver `DeviceLost` (another client was
+using the GPU); it is kept as `m1-indirect-fixed.log` and not used.
+
+| ms, rounds 1 / 2 / 3 | Indirect (before) | Direct (P2b) |
+|---|---|---|
+| Frame p50 | 28.619 / 26.050 / 32.983 | 18.974 / 19.106 / 15.988 |
+| Frame p95 | 43.904 / 33.038 / 61.276 | 27.585 / 25.444 / 19.325 |
+| Frame p99 | 68.017 / 39.986 / 147.268 | 34.317 / 115.214 / 20.727 |
+| `render::batch` p50 | 6.040 / 5.447 / 7.209 | 1.466 / 1.452 / 1.234 |
+| `render::bind_groups` p50 | 3.560 / 3.268 / 4.096 | 0.372 / 0.359 / 0.316 |
+| `render::graph` p50 | 16.810 / 15.250 / 19.978 | 15.200 / 15.418 / 12.808 |
+
+Median frame time falls by 33–52 % per round (spread dominated by other
+agents' compilers). All six reports: 1,393 batches / 7,759,704 triangles,
+34,469 tufts, 39,353 object entities, 12,493 meshes, 1,968 materials,
+2,265 textures; face census 2,819 off / 31,687 back / 524 reflected /
+325 reversed / 0 unsupported; zero unsettled samples. Retained.
+
+### P2c — winding repair only on change
+
+Ranked main-thread cost after P2b: `sidedness::repair_winding` visited all
+~37k object parts every frame (determinant + two hash lookups), 2.3–4.5 ms
+p50 of a 6–15 ms main schedule. P2c checks only parts whose `GlobalTransform`
+or `Mesh3d` changed or whose object material was added, plus a retry list
+for reflected parts whose mesh data was not loaded yet; the census is
+recounted only when parts appear, disappear, change material or flip. A
+synthetic test covers a late material and a mesh that arrives later.
+
+Fixed camera, view 1200, three rounds, order B/A, A/B, B/A
+(`out/p2/w{1,2,3}-{base,wind}-fixed.*`; base = P2b executable, wind =
+`out/p2/wind-client.exe`). Concurrent `cargo`/`rustc` at every start
+(round 3: 16–20 `rustc`).
+
+| ms, rounds 1 / 2 / 3 | P2b (before) | P2c (after) |
+|---|---|---|
+| `repair_winding` p50 | 3.653 / 2.181 / 4.365 | 0.124 / 0.179 / 0.126 |
+| `repair_winding` max | 5.324 / 5.122 / 8.399 | 0.404 / 1.145 / 0.359 |
+| `main::schedules` p50 | 9.033 / 6.043 / 15.068 | 3.323 / 4.958 / 3.651 |
+| Frame p50 | 22.198 / 14.672 / 40.814 | 16.593 / 18.484 / 14.005 |
+| Frame p95 | 27.487 / 18.881 / 58.530 | 18.639 / 40.829 / 15.897 |
+| `render::graph` p50 | 18.193 / 11.781 / 24.312 | 10.595 / 14.858 / 11.251 |
+
+The system cost falls 12–35× in every round and the main schedule by
+1.1–11 ms. Whole-frame medians overlap (round 2 reversed) because frames
+are pipelined and bound by the render thread; the frame-level gain is
+**not** established by these contended runs. Scene counts and the face
+census are identical in all six reports (same values as above, zero
+unsettled samples).
+
+### P2d — send PDA and item-atlas textures ahead of first use
+
+Attribution (P2c executable, scripted player): when the PDA first shows the
+locker items (play ≈ 4.4 s), the game UI uploads 25,196,976 bytes of textures
+at once: item and background atlas pages up to 2048×2048 (16,777,216 +
+8,388,608 + 262,144 bytes plus small ones). `render::images` costs 7.4–9.0 ms
+in that frame. P2d lists the textures stored on the PDA's graphics
+(`UiScene::stored_textures`) plus every page of the Items and Backgrounds
+sprite atlases (70 candidates; 67 are already sent by the HUD), then sends
+**one** not-yet-sent texture per UI build, only in builds that send no
+texture of their own. Same images, same keys, same draws; only their upload
+time changes. In these runs all three remaining pages are sent before play
+sampling starts.
+
+Matched runs `out/p2/d{1,2,3}-{base,pre}-player.*` (order B/A, A/B, B/A; base =
+`out/p2/wind-client.exe` (P2c), pre = `out/p2/prefetch-client.exe`; runner
+`out/p2/run2.py player`, analysis `out/p2/pda.py`, `pda_summary.py`). 1–3
+`cargo`/`rustc` processes were running at each start. Windows are play seconds, and
+capture/exit are excluded:
+
+| ms, rounds 1 / 2 / 3 | P2c (before) | P2d (after) |
+|---|---|---|
+| UI texture bytes uploaded, PDA window 2.8–5.2 s | 28,342,704 each | 3,176,880 each |
+| `render::images` max, PDA window | 8.273 / 7.401 / 9.007 | 6.054 / 5.056 / 4.719 |
+| Frame max, items shown 4.2–4.8 s | 28.947 / 27.453 / 33.529 | 23.202 / 23.155 / 23.602 |
+| Frame max, PDA open 3.0–3.3 s | 26.251 / 33.546 / 33.793 | 30.617 / 38.754 / 33.642 |
+| Frame max, PDA window 2.8–5.2 s | 28.947 / 33.905 / 33.793 | 30.617 / 38.754 / 36.300 |
+| Frame max, take-all 5.8–6.8 s | 24.348 / 28.784 / 25.918 | 35.435 / 35.771 / 31.787 |
+| Sampled frame p50 | 18.206 / 19.246 / 18.824 | 18.609 / 18.865 / 18.991 |
+
+Parity: UI draws in all six runs are 147 / 147 / 146 in the 5.0–5.7 / 8–9.2 /
+10.5–11.5 s windows. Each run opens the locker with 6 icons and makes the same item
+moves. 0 warnings/errors.
+
+What it fixes: the 25 MB upload burst is gone from the PDA activation, and the
+items-shown frame falls in all three rounds with no overlap. What it does not fix: the
+PDA-window maximum (target < 20 ms) is not met and not improved. The open frame
+(≈ 3.1 s) is dominated by `game_ui::worker_build`/`scene_draw` (15–18 ms)
+and `render::specialize` (≈ 8 ms, new pipeline variants), not by uploads. The
+take-all window maxima are higher in all three P2d runs. The worst frames there show
+no UI texture work; they show render-world asset and mesh allocation costs
+(`render::mesh_alloc` 7.5–7.9 ms) while object streaming is running. The P2d runs
+had streamed 15,412–21,412 object entities by the first stats line versus
+8,174–14,183 before, so streaming timing differs between runs. That
+regression is **not attributed** and remains open. A repeat series
+(`out/p2/e{1,2,3}-*`) ran with 25–50 compiler processes from other agents
+(frame p50 136–504 ms). It is unusable and was not used.
+
+Cost: about 25 MB of extra GPU texture memory from startup instead of from
+first PDA use. Reproduce: build release, then for each round run
+`python out/p2/run2.py player NAME EXE` for both executables, alternating
+order, then `python out/p2/pda.py NAME…` and
+`python out/p2/pda_summary.py out/p2/NAME.log…`. Expected: the before runs show
+a ≈ 25.2 MB `game_ui::image_bytes` burst at play ≈ 4.4 s, and the after runs
+show it only before sampling, plus `game UI: 70 textures to send ahead` in the log.

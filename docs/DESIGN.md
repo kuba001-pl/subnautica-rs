@@ -211,6 +211,68 @@ Completion checks:
 - [x] Default view-distance and dev/release profile checks recorded, with
   noise and remaining untested costs stated; no universal FPS claim.
 
+### Perf P2 — Default-view steady frames and PDA activation (plan 2026-10-27, closed 2026-10-28, targets not met)
+
+| # | Goal | Done when |
+|---|---|---|
+| **Perf P2** | Reduce steady frame time at view 1200 and remove the PDA-open stall while preserving drawn content and game rules. Rank measured costs before fixing them; one concern per local P2 commit. | Three matched release runs per fix, identical scene/draw counts, default-view median below 16.667 ms and at least 10% below the matched baseline; PDA activation window maximum below 20 ms in three runs, excluding capture/exit; tests, clippy and fmt pass after merging local main. Targets are machine-specific and remain unchecked until measured. |
+
+Measure fixed camera (600 frames, 120 settled warm-up, 1600 × 900, view 1200)
+and scripted player/PDA, retaining raw logs and profiler CSVs under ignored
+`out/p2/`. Record concurrent processes and timing spread. Compare CPU stages
+with recent GPU pass timings; inspect draw/instance counts, object and terrain
+culling, repeated-mesh batching, material/bind-group churn, shadows, fog/post,
+Bevy systems, allocations, and PDA activation. Do not reduce view distance,
+disable effects, or change visibility rules to meet targets.
+
+Implementation order after attribution: (1) measure Bevy direct instanced
+submission against the indirect path for these CPU-culled, non-occlusion
+views, preserving effective mesh draws and instances; (2) repair winding only
+when a mesh/transform/material component changes, retrying unavailable meshes;
+(3) update only newly written font-atlas regions rather than replacing whole
+images on PDA activation. Keep these changes in separate commits. The inherited
+atmosphere-volume candidate is deferred: it addresses streaming updates rather
+than the measured steady render bottleneck. No dependency, whitelist, game-rule
+or architecture change is planned. Machine contention is recorded per run;
+contended frame distributions do not establish an uncontended FPS target.
+
+- [x] Repeated baseline and ranked CPU/GPU/PDA attribution recorded (P2a).
+- [x] Each retained fix has repeated before/after evidence and scene/draw parity
+  (P2b, P2c, P2d; `docs/P1-PERFORMANCE.md` § Perf P2).
+- [ ] Default-view median and PDA activation targets above passed: **not met**.
+- [ ] Local main merged with crafting/UI changes preserved; workspace tests,
+  clippy with warnings denied, and fmt pass; no game data tracked. The merge
+  is left to the orchestrator. The branch alone passes tests, clippy and fmt.
+
+**P2 close-out (2026-10-28).** All runs were contended by other agents'
+builds; spreads are in `docs/P1-PERFORMANCE.md`.
+- *P2a*: attribution probes only. The default view is CPU/driver-bound in
+  render preparation, not GPU-bound. The PDA stall coincides with a 25 MB UI
+  upload plus UI worker build and pipeline specialization.
+- *P2b*: direct instanced draws (`NoIndirectDrawing`; the old path is behind
+  `SN_CLIENT_INDIRECT_DRAWING=1`). In the matched re-measurement, fixed-view
+  frame p50 went from 28.6 / 26.1 / 33.0 to 19.0 / 19.1 / 16.0 ms, with
+  identical scene and effective-draw counts.
+- *P2c*: winding repair only for changed parts. `repair_winding` p50 went
+  from 2.2–4.4 to 0.12–0.18 ms and the main schedule from 6.0–15.1 to
+  3.3–5.0 ms. The whole-frame medians overlap, so the frame-level gain is not established.
+- *P2d*: PDA and item-atlas textures are sent ahead of time. The PDA
+  window's UI upload went from 28.3 to 3.2 MB and the items-shown frame max from
+  27.5–33.5 to 23.2–23.6 ms. The PDA-window max did not improve.
+- Planned step (3), partial font-atlas region updates, was not started. A
+  3,145,728-byte UI upload remains at PDA open (play ≈ 3.1 s, `render::images`
+  2.7–4.7 ms). It is not identified; it may be a font atlas.
+
+Open (not started): the default-view median is below 16.667 ms in only one
+contended run (P2b round 3, 15.988 ms) and is not established. Uncontended
+runs are needed. The PDA activation max is 30–39 ms against a 20 ms target. The
+open frame is dominated by `game_ui::worker_build`/`scene_draw` (15–18 ms)
+and `render::specialize` (≈ 8 ms for new pipeline variants); candidates are
+warming those pipelines and building the PDA's draw lists ahead of time. After
+P2d the take-all window max is higher (31.8–35.8 vs 24.3–28.8 ms) with no UI
+texture work in those frames; the cause is not attributed. Font-atlas partial
+updates and the atmosphere-volume candidate remain unmeasured.
+
 ### Phase A — Terrain, headless → visible
 
 | # | Goal | Done when |

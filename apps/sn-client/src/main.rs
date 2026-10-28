@@ -1565,6 +1565,12 @@ fn setup(
         }),
         Transform::from_translation(settings.start).looking_at(settings.look, Vec3::Y),
     ));
+    // These views already use CPU visibility checks, without GPU occlusion
+    // culling. Direct instanced draws avoid rebuilding hundreds of indirect
+    // bin buffers/bind groups each frame. Keep the old path for matched probes.
+    if std::env::var("SN_CLIENT_INDIRECT_DRAWING").as_deref() != Ok("1") {
+        camera.insert(bevy::render::view::NoIndirectDrawing);
+    }
     // Measurements keep the camera where they put it (mouse or keyboard
     // input in the window would otherwise move it).
     if measuring.is_none() && settings.free_camera {

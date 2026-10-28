@@ -82,8 +82,8 @@ pub use collision_world::{
 };
 pub use crafting::{Ghost, PodFabricator, fabricator_ghosts, pod_crafting_power, pod_fabricator};
 pub use crafting_menu::{
-    CraftingMenuNodes, GROUP_BACKGROUND, GROUP_CATEGORY, craft_source, crafting_foreground,
-    crafting_icon_nodes, crafting_menu_config,
+    CraftingMenuNodes, GROUP_CATEGORY, craft_source, crafting_foreground, crafting_icon_nodes,
+    crafting_menu_config,
 };
 pub use death::vignette_times;
 pub use fonts::{
@@ -129,8 +129,8 @@ pub use skin::{Mat4, skin};
 pub use slots::{LootTable, entity_infos, loot_table, parse_loot_table};
 pub use sn_ui::state::{LocalTransform, MaterialValues, SpriteId, UiState, color32};
 pub use sprites::{
-    AtlasSprite, GROUP_ATLASES, GROUP_ITEM, GROUP_ITEM_ACTIONS, GROUP_TAB, LoadedAtlas,
-    SPRITE_ATLASES_LABEL, Sprites, cut,
+    AtlasSprite, GROUP_ATLASES, GROUP_BACKGROUND, GROUP_ITEM, GROUP_ITEM_ACTIONS, GROUP_TAB,
+    LoadedAtlas, SPRITE_ATLASES_LABEL, Sprites, cut,
 };
 pub use survival::{
     consume_rules, decay_rules, energy_rules, equipment_rules, hunger_rules, quick_rules,

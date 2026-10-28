@@ -42,6 +42,7 @@ use bevy::core_pipeline::tonemapping::tonemapping;
 use bevy::image::{ImageAddressMode, ImageFilterMode, ImageSampler, ImageSamplerDescriptor};
 use bevy::mesh::VertexBufferLayout;
 use bevy::prelude::*;
+use bevy::render::diagnostic::RecordDiagnostics;
 use bevy::render::extract_component::{ExtractComponent, ExtractComponentPlugin};
 use bevy::render::extract_resource::{ExtractResource, ExtractResourcePlugin};
 use bevy::render::render_asset::RenderAssets;
@@ -1000,6 +1001,26 @@ fn run_worker(
     );
     let camera = UiCamera::game(fov, NEAR, FAR);
     let mut sent: std::collections::HashSet<u64> = std::collections::HashSet::new();
+    // Textures the PDA and item icons draw with, sent one per build
+    // before first use (Perf P2d): the same images, uploaded early instead
+    // of in one burst when the PDA first shows items (atlas pages up to
+    // 2048×2048).
+    let mut prefetch = scene.stored_textures(pda_root..pda_root + pda_tree.nodes.len());
+    for atlas in [sn_assets::GROUP_ITEM, sn_assets::GROUP_BACKGROUND] {
+        let name = sn_assets::GROUP_ATLASES[atlas];
+        let mut pages: Vec<_> = item_sprites
+            .atlases
+            .get(name)
+            .into_iter()
+            .flat_map(|a| a.sprites.values())
+            .map(|s| (sn_assets::texture_key(&s.page), s.page.clone()))
+            .collect();
+        pages.sort_by_key(|(key, _)| *key);
+        pages.dedup_by_key(|(key, _)| *key);
+        prefetch.extend(pages);
+    }
+    prefetch.reverse();
+    info!("game UI: {} textures to send ahead", prefetch.len());
     // Glyphs per font atlas when it was last sent.
     let mut sent_glyphs: HashMap<usize, usize> = HashMap::new();
     let mut screen: Option<[i32; 2]> = None;
@@ -1649,6 +1670,24 @@ fn run_worker(
                     build.textures.push(t);
                 }
                 Err(e) => warn!("game UI: texture {key:x}: {e}"),
+            }
+        }
+        if build.textures.is_empty() {
+            while let Some((key, object)) = prefetch.pop() {
+                if !sent.insert(key) {
+                    continue;
+                }
+                match load_texture(&assets, key, &object) {
+                    Ok(t) => {
+                        crate::perf::count("game_ui::prefetch_bytes", t.data.len());
+                        build.textures.push(t);
+                        break;
+                    }
+                    Err(e) => {
+                        sent.remove(&key);
+                        warn!("game UI: texture {key:x}: {e}");
+                    }
+                }
             }
         }
         // Font atlases with new glyphs (sent whole; their texels are
@@ -3319,6 +3358,7 @@ fn prepare_pipelines(
     frame: Option<Res<GameUiFrame>>,
     views: Query<(Entity, &ExtractedView), With<GameUiCamera>>,
 ) {
+    let _perf = crate::perf::span("game_ui::prepare_pipelines");
     let Some(build) = frame.as_ref().and_then(|f| f.build.clone()) else {
         return;
     };
@@ -3333,6 +3373,7 @@ fn prepare_pipelines(
             let id = match pipelines.by_key.get(&key) {
                 Some(id) => *id,
                 None => {
+                    crate::perf::count("game_ui::new_pipelines", 1);
                     let d = pipeline_descriptor(&pipelines, view.target_format, b.0, b.1);
                     let id = pipeline_cache.queue_render_pipeline(d);
                     pipelines.by_key.insert(key, id);
@@ -3625,6 +3666,10 @@ fn game_ui_pass(
             })
         });
     }
+    crate::perf::count("game_ui::texture_bind_groups", texture_groups.len());
+    let diagnostics = ctx.diagnostic_recorder();
+    let diagnostics = diagnostics.as_deref();
+    let span = diagnostics.time_span(ctx.command_encoder(), "game_ui");
     let mut pass = ctx
         .command_encoder()
         .begin_render_pass(&RenderPassDescriptor {
@@ -3694,6 +3739,8 @@ fn game_ui_pass(
         drawn += 1;
     }
     drop(pass);
+    span.end(ctx.command_encoder());
+    crate::perf::count("game_ui::draws", drawn);
     cost.seconds += begin.elapsed().as_secs_f64();
     cost.frames += 1;
     if cost.frames == 600 {

@@ -785,6 +785,115 @@ regeneration/repair/relay-connection timing. The server's in_pod gate
 must gain the fabricator's stored close distance in M9e3. No assets sent
 over the network or committed.
 
+## 2026-10-28 — Perf P2 close-out (DESIGN only)
+
+**What/why:** closed Perf P2 in DESIGN. It records P2a–P2d with their measured
+results and marks which "Done when" items passed. The default-view median and
+PDA activation targets are **not met**, and the open items are listed as text
+(PDA open frame: UI worker build + pipeline specialization; P2d take-all
+window regression not attributed; uncontended re-measurement; font-atlas
+partial updates and atmosphere volumes not started). No code changes. The
+merge with main is left to the orchestrator.
+
+**Verification:** docs only. `git diff --check` is clean and the status lists only
+DESIGN.md and MODLOG.md.
+
+## 2026-10-28 — P2d: send PDA and item-atlas textures ahead of first use
+
+**What/why:** the first time the PDA shows items, the game UI uploaded
+25.2 MB of atlas pages in one frame (`render::images` 7.4–9.0 ms). The
+worker now sends the PDA graphics' stored textures and the Items/Backgrounds
+atlas pages ahead of time, one per UI build and only when that build sends
+nothing itself. These are the same images, keys and draws. New
+`UiScene::stored_textures` and `sn_assets::GROUP_BACKGROUND`.
+
+**Measured** (3 matched player rounds, B/A A/B B/A, 1–3 cargo/rustc at
+start): UI bytes uploaded in the PDA window 28,342,704 → 3,176,880;
+`render::images` max 8.273 / 7.401 / 9.007 → 6.054 / 5.056 / 4.719 ms;
+items-shown frame max 28.947 / 27.453 / 33.529 → 23.202 / 23.155 / 23.602 ms.
+**Not improved:** PDA-window max 28.947 / 33.905 / 33.793 → 30.617 / 38.754 /
+36.300 ms (the open frame is UI worker build + pipeline specialization, not
+uploads). Take-all window max got worse in all three rounds, 24.3–28.8 → 31.8–35.8 ms,
+with no UI texture work in those frames; object streaming timing differed.
+That is not attributed and stays open. UI draws (147/147/146), locker icons and
+item moves are identical, with 0 warnings. A repeat series with 25–50 foreign compiler
+processes (p50 136–504 ms) is recorded as unusable. Details:
+`docs/P1-PERFORMANCE.md` § P2d.
+
+**Verification:** workspace tests 749 passed, 0 failed, 64 ignored
+(SUBNAUTICA_DIR unset); clippy with warnings denied and fmt pass
+(`out/p2/p2d-*.log`). The measured executable was built before the
+`GROUP_BACKGROUND` rename (same value 2, no behaviour change); the renamed
+source was compiled by clippy/tests only and not re-run in the game. No
+dependencies, whitelist or game-rule changes; game data stays in out/.
+
+## 2026-10-27 — P2c: repair winding only for changed parts
+
+**What/why:** `repair_winding` scanned every object part each frame
+(2.2–4.4 ms p50 on the main thread at view 1200). Now only parts with a
+changed transform/mesh or a newly added material are checked, plus a retry
+list for reflected parts whose mesh data was not loaded; the census log is
+recounted only when parts are added/removed/re-materialled or flipped.
+New synthetic test: late material + delayed mesh. P2b re-measured cleanly
+first (matched direct/indirect, same executable): frame p50 28.619 /
+26.050 / 32.983 → 18.974 / 19.106 / 15.988 ms. A first indirect attempt hit
+a driver DeviceLost while another client used the GPU (kept, unused).
+
+**Measured (3 rounds, B/A A/B B/A, contended by other agents' builds):**
+`repair_winding` p50 3.653 / 2.181 / 4.365 → 0.124 / 0.179 / 0.126 ms;
+`main::schedules` p50 9.033 / 6.043 / 15.068 → 3.323 / 4.958 / 3.651 ms.
+Frame p50 22.198 / 14.672 / 40.814 → 16.593 / 18.484 / 14.005 ms — overlap,
+so no frame-time claim. Scene counts and face census (524 reflected, 325
+reversed, 0 unsupported) identical in all six reports. Details:
+`docs/P1-PERFORMANCE.md` § P2c.
+
+**Verification:** workspace tests 749 passed, 0 failed, 64 ignored (SUBNAUTICA_DIR unset); clippy with warnings denied and fmt pass (`out/p2/p2c2-*.log`).
+No dependencies, whitelist or game-rule changes; game data stays in out/.
+
+## 2026-10-27 — P2b: avoid indirect preprocessing for CPU-culled views
+
+**What/why:** the default-view bottleneck is CPU/driver render preparation,
+not normal GPU shading. Use Bevy's direct instanced path on the existing
+CPU-culled camera; preserve shadows, visibility, materials and effects. The
+old submission path remains available with `SN_CLIENT_INDIRECT_DRAWING=1`.
+Retain/refine the inherited opt-in render-stage probes and phase census.
+Discard the temporary readiness logging and defer the unmeasured atmosphere
+candidate. The winding candidate remains separate for the next fix.
+
+**Measured:** three paired 600-frame, view-1200 runs; frame p50 before
+36.227 / 176.883 / 36.112 ms, after 23.570 / 36.502 / 24.823 ms. These are
+heavily contended; the middle baseline has a 149.947 ms recent opaque GPU
+scope. Normal-round batching medians 7.678 / 7.913 → 1.729 / 1.850 ms;
+bind-group medians 4.283 / 4.332 → 0.422 / 0.453 ms. Bin unpacking disappears.
+All six scene snapshots match, including 37,183 mesh instances, 6,171 visible
+instances, 2,765 visible unique meshes and 39,353 object entities. Details,
+full spreads, GPU passes and reproduction: `docs/P1-PERFORMANCE.md` § P2b.
+The 16.667 ms target is not established by these runs.
+
+**Verification:** workspace tests 748 passed, 64 ignored, 0 failed, with
+SUBNAUTICA_DIR unset. Clippy with warnings denied and fmt pass. Supplemental effective-draw
+parity: opaque 1,814, mask 298, shadows 627, transparent 1,071 sorted
+items in both paths. Release build passes; all six fixed and six scripted player runs
+exit 0. A separate `cargo check` attempt failed while the shared disk was
+full (os error 112); no test result came from it. Free space recovered and
+validation was retried with CARGO_BUILD_JOBS=2. No dependencies or whitelist
+changes; game data remains in ignored out/, install read-only.
+
+## 2026-10-27 — P2a: default-view plan and attribution probes
+
+**What/why:** planned Perf P2 beside P1 before implementation. Extend the
+opt-in profiler with main schedule wall time, winding repair and UI pipeline
+preparation; retain recent GPU as well as CPU diagnostics for player runs.
+Add UI GPU timestamps, new-pipeline/texture-bind-group/draw counters and a
+baseline mesh-instance census (explicitly not a GPU draw-call count).
+No rendering rules, game data, dependencies or whitelist changes.
+
+**Verify:** cargo build -p sn-client --release, then P1's fixed/player
+commands with --view 1200, SN_CLIENT_PERF=1, and new output names under
+out/p2/. Expect existing scene counts plus labelled census, CPU/GPU scopes
+and unchanged UI draw totals. cargo fmt --all run. Runtime, workspace tests
+and clippy: **not tested yet**; release compilation is in progress.
+
 ## 2026-10-27 — M9e1: fabricator rules, headless
 
 **What/why:** direct source research (local ILSpy decompile, read only)
